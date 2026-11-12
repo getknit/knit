@@ -131,5 +131,107 @@ class IsolateTest(unittest.TestCase):
         self.assertEqual(self.host.packets, [ext_event(ext_report(PHONE, presence_ad(0xFE30)))])
 
 
+def command(op: int, params: bytes) -> bytes:
+    return bytes([CMD, op & 0xFF, op >> 8, len(params)]) + params
+
+
+def ext_create(filter_policy: int) -> bytes:
+    """LE Extended Create Connection on 1M, through the accept list (1) or to an address (0)."""
+    peer = bytes(7) if filter_policy else bytes([1]) + PARTNER
+    block = bytes.fromhex("6000300018002800" "0000f40100000000")
+    return command(0x2043, bytes([filter_policy, 1]) + peer + bytes([0x01]) + block)
+
+
+def adv_enable(on: int, *handles: int) -> bytes:
+    return command(0x2039, bytes([on, len(handles)]) + b"".join(bytes([h, 0, 0, 0]) for h in handles))
+
+
+def command_status(op: int, status: int) -> bytes:
+    return bytes([EVT, 0x0F, 4, status, 1, op & 0xFF, op >> 8])
+
+
+def command_complete(op: int, status: int) -> bytes:
+    return bytes([EVT, 0x0E, 4, 1, op & 0xFF, op >> 8, status])
+
+
+def connection_complete(status: int, role: int = 0) -> bytes:
+    """LE Enhanced Connection Complete, handle 1, a 50 ms interval and a 5 s timeout."""
+    p = (bytes([0x0A, status, 1, 0, role, 1]) + PARTNER + bytes(12) + (40).to_bytes(2, "little") + bytes(2)
+         + (500).to_bytes(2, "little") + bytes([0]))
+    return bytes([EVT, LE_META, len(p)]) + p
+
+
+class AdvertArbiterTest(unittest.TestCase):
+    """Zephyr empties an accept-list dial's filter when an advert set turns on, so the bridge holds those enables
+    until the dial ends."""
+
+    def setUp(self):
+        self.host, self.controller = Sink(), Sink()
+        self.bridge = bridge_mod.Bridge(self.host, self.controller, None, trace=False)
+        bridge_mod.say = lambda line: None
+        # Names come from Bumble's tables, which these tests run without.
+        bridge_mod.op_name = lambda op: f"0x{op:04x}"
+        bridge_mod.status_name = lambda status: f"0x{status:02x}"
+
+    def dial(self, filter_policy: int = 1) -> None:
+        self.bridge.from_host(ext_create(filter_policy))
+        self.bridge.from_controller(command_status(0x2043, 0))
+
+    def test_an_enable_during_an_accept_list_dial_waits_for_the_link(self):
+        self.dial()
+        self.bridge.from_host(adv_enable(1, 0))
+        self.assertNotIn(adv_enable(1, 0), self.controller.packets)
+        self.assertEqual(self.host.packets[-1], command_complete(0x2039, 0))  # the host is answered at once
+        self.bridge.from_controller(connection_complete(0))
+        self.assertEqual(self.controller.packets[-1], adv_enable(1, 0))
+        answered = len(self.host.packets)
+        self.bridge.from_controller(command_complete(0x2039, 0))
+        self.assertEqual(len(self.host.packets), answered)  # the bridge's own enable is answered to the bridge
+
+    def test_a_cancelled_dial_lets_the_enable_go(self):
+        self.dial()
+        self.bridge.from_host(adv_enable(1, 0))
+        self.bridge.from_host(command(0x200E, b""))
+        self.bridge.from_controller(command_complete(0x200E, 0))
+        self.bridge.from_controller(connection_complete(0x02))
+        self.assertEqual(self.controller.packets[-1], adv_enable(1, 0))
+
+    def test_several_enables_go_out_as_one_naming_each_set_once(self):
+        self.dial()
+        for handles in ((0,), (0,), (1,)):
+            self.bridge.from_host(adv_enable(1, *handles))
+        self.bridge.from_controller(connection_complete(0))
+        self.assertEqual(self.controller.packets[-1], adv_enable(1, 0, 1))
+        self.assertEqual(self.bridge.counts["adverts_held"], 3)
+
+    def test_a_disable_during_the_dial_goes_through_and_drops_the_held_set(self):
+        self.dial()
+        self.bridge.from_host(adv_enable(1, 0))
+        self.bridge.from_host(adv_enable(0, 0))
+        self.assertEqual(self.controller.packets[-1], adv_enable(0, 0))
+        self.bridge.from_controller(command_complete(0x2039, 0))
+        sent = len(self.controller.packets)
+        self.bridge.from_controller(connection_complete(0))
+        self.assertEqual(len(self.controller.packets), sent)
+
+    def test_a_dial_to_an_address_leaves_enables_alone(self):
+        self.dial(filter_policy=0)
+        self.bridge.from_host(adv_enable(1, 0))
+        self.assertEqual(self.controller.packets[-1], adv_enable(1, 0))
+
+    def test_after_a_refused_dial_enables_pass(self):
+        self.bridge.from_host(ext_create(1))
+        self.bridge.from_controller(command_status(0x2043, 0x0B))
+        self.bridge.from_host(adv_enable(1, 0))
+        self.assertEqual(self.controller.packets[-1], adv_enable(1, 0))
+
+    def test_without_the_shim_enables_pass(self):
+        plain = bridge_mod.Bridge(self.host, self.controller, None, trace=False, shim=False)
+        plain.from_host(ext_create(1))
+        plain.from_controller(command_status(0x2043, 0))
+        plain.from_host(adv_enable(1, 0))
+        self.assertEqual(self.controller.packets[-1], adv_enable(1, 0))
+
+
 if __name__ == "__main__":
     unittest.main()

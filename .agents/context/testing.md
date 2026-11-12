@@ -1192,10 +1192,11 @@ ways.
   - GD pauses and resumes every advertising set around each accept-list write (9utz's reading, live).
   - Zephyr refuses a second accept-list dial while a link it dialed is up (`0x0b`). See the limits in the
     script's docstring.
-- **The BR/EDR shim and the scan arbiter are load-bearing.** Without the shim, GD crash-loops on an LE-only
+- **The BR/EDR shim and both arbiters are load-bearing.** Without the shim, GD crash-loops on an LE-only
   controller (`controller.cc:330 read_local_name_complete_handler`, then `btm_sec.cc` "only controllers with
-  SSP"). Without the arbiter, GD's dial-while-scanning gets Zephyr's `0x0c`, and the emulator never dials. Both
-  are in the script's docstring.
+  SSP"). Without the scan arbiter, GD's dial-while-scanning gets Zephyr's `0x0c`, and the emulator never dials.
+  Without the advert arbiter, an accept-list dial goes deaf whenever GD turns its advert back on mid-dial (the pair
+  section below). All three are in the script's docstring.
 - **The dongles are knit-ios's rig** (its `.agents/rules/devices.md`): A is knit-peer's default adapter, B its
   second peer. While the bridge holds one, BlueZ has no such adapter. Check that no knit-ios run uses it, and
   give it back with `down`, which resets the controller before letting go: a dongle released mid-stream wedged
@@ -1257,30 +1258,26 @@ logcat and that side's bridge log and btsnoop.
   from the dialer's cached sighting relinked 11 s into a 40 s "outage" on the first run.
 - **Between runs the apps keep meshing.** The system restarts the sticky `MeshService` after `am instrument` kills
   the process, so a pair left up relinks by itself; `run` starts clean anyway.
-- **Link setup on this rig comes and goes; the tests wait up to 5 min for it.** On 2026-10-05 a GD dial from one
-  emulator to the other connected in under a second for the first hour. Later, the same dials from one side failed
-  run after run, timing out at Knit's 12 s watchdog with no connection attempt (no 0x3e). They aimed at the
-  address the peer was airing, and the peer's adverts were heard as often as in the green runs. Nothing single
-  explained it. It survived bridge restarts (HCI Reset), a replug of the dongle and a swap of the dongles between
-  the emulators, then cleared on its own; 1M-only dials and holding the peer's scanner off changed nothing
-  reliable. `scripts/dongle-dial.py` (both bridges down) dials dongle to dongle with Bumble's own host: 6 of 6 each
-  way in about 1 s during the worst of it, so the dongles were fine and the fault lies between what GD's dial asks
-  (accept list, 1M + 2M + Coded, RPAs) and Zephyr's initiator. The tell, before blaming the app: tally each side's
-  dials from its capture (`btmon -r build/hci-bridge/latest-<d>/hci.btsnoop`, an Extended Create Connection then
-  an Enhanced Connection Complete with `Success` or `0x02`). The host's own Bluetooth streaming audio to a speaker
-  beside the dongles was going during the worst stretch too; turning it off alone did not help.
-- **When only one side's dials fail, give the other side the dials: `KNIT_PAIR_DIALER=a|b`.** With the blind switch
-  off, the larger node id dials, and every `run` mints fresh ids, so which dongle dials is a coin toss. A side holding
-  the larger id while its own dials time out also refuses the other side's working dials ("bt refused client …
-  sighted=true"), so the pair never links. `KNIT_PAIR_DIALER=b scripts/ble-pair-test.sh all` mints fresh identity
-  pairs (`pm clear`) until side b holds the larger id, up to 12 tries, then runs. With `KNIT_PAIR_KEEP` it refuses a
-  pair the wrong way round instead of minting. It fixes only a one-sided fault, which the btsnoop tally above tells
-  apart.
-- **A pair that never links from one checkout: try a clean worktree before blaming the rig.** On 2026-11-11, eight runs
-  from the main checkout never formed an ACL in either direction (dials dead at the 12 s watchdog or in
-  `BluetoothSocketException`), whichever side dialed. In the same hour `scripts/dongle-dial.py` connected 6 of 6
-  each way, and the same commits built and run from a fresh `git worktree` linked in 14 to 38 s, 8 of 8 on both
-  sides. A fresh uv cache for the bridge did not fix the main checkout. The cause is still unknown, so run the pair
-  from `git worktree add --detach <dir> <commit>`, with `local.properties` copied, until it is found.
+- **Dials that never landed were Zephyr's; the bridge's advert arbiter now holds the cause off.** From 2026-10-05,
+  a GD dial from one emulator to the other either connected within seconds or timed out at Knit's 12 s watchdog run
+  after run, with no connection attempt (no 0x3e), aimed at the address the peer was airing. It survived bridge
+  restarts, a replug and a dongle swap. On 2026-11-11 it passed for a checkout fault (runs from the main checkout
+  failed while fresh worktrees passed) until a main-checkout run passed too. The cause: GD turns its own advert off,
+  dials through the accept list, and turns the advert on again 3 ms later. Zephyr's advert enable empties the
+  accept list the running dial matches against (the code path is in the script's docstring). So the dial landed
+  only when the initiator armed its radio filter first: runs went bimodal, and one direction could work in the
+  same minute the other did not. `scripts/dongle-dial.py` never met it, since it dials an address and airs no
+  advert of its own. Replayed on the bare dongles with raw HCI, GD's order connected 0/4 and 3/4, the advert turned
+  on before the dial 8/8, and a dial without the accept list 4/4; PHYs and the peer's advert interval changed
+  nothing. The tests still wait up to 5 min for the link. If dials stop landing again, tally each side's dials
+  from its capture (`btmon -r build/hci-bridge/latest-<d>/hci.btsnoop`: an Extended Create Connection, then an
+  Enhanced Connection Complete with `Success` or `0x02`) and read `adverts_held` in `ctl status`.
+- **`KNIT_PAIR_DIALER=a|b` picks the dialing side.** With the blind switch off, the larger node id dials, and every
+  `run` mints fresh ids, so which dongle dials is a coin toss. A side holding the larger id while its own dials
+  time out also refuses the other side's working dials ("bt refused client … sighted=true"), so the pair never
+  links. `KNIT_PAIR_DIALER=b scripts/ble-pair-test.sh all` mints fresh identity pairs (`pm clear`) until side b
+  holds the larger id, up to 12 tries, then runs. With `KNIT_PAIR_KEEP` it refuses a pair the wrong way round
+  instead of minting. It came in for the dial fault above, before its cause was found; it still helps only when one
+  side's dials fail, which the btsnoop tally tells apart.
 - **`ctl dial-phys 0x01`** limits a dial's initiating PHYs (an experiment knob: 1M-only dials relinked no better).
 

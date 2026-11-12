@@ -58,6 +58,19 @@ point: everything the host stack says to the controller, and everything the cont
   second boot failed. The bridge turns the scanner off before forwarding a dial. It answers scan commands sent
   during the dial itself and keeps them, then restores the scanner the way the host last asked once the dial
   completes or is cancelled. `counts.arbitrated` counts the dials it stepped in for.
+- **The advert arbiter (off with the shim too).** Zephyr empties a running dial's accept list whenever an advert
+  set goes from off to on: `ll_adv_enable` calls `ull_filter_adv_update` (`ull_filter.c`, privacy builds), which
+  clears the filter the initiator matches against and refills it only for an advert that filters by the accept
+  list itself. GD's advert does not, and GD turns it off, dials through the accept list, then turns it back on 3 ms
+  later. So a dial heard nobody for its 30 s unless the initiator armed its radio filter in those 3 ms. Whole runs
+  of the pair failed, others passed, and one direction could work in the same minute the other did not (2026-10-05,
+  2026-11-11). Replayed on the bare dongles with raw HCI, GD's order connected 0/4 and 3/4, while the advert turned
+  on before the dial, or a dial without the accept list, connected every time. So while an accept-list dial is out,
+  the bridge answers an LE Set Extended Advertising Enable that turns sets on, keeps it, and sends it once the dial
+  completes, is cancelled or is refused. An enable of a set already on is harmless (Zephyr returns before the
+  filter), so GD's 10 s re-asserts are held needlessly but cost nothing. `counts.adverts_held` counts them. Phones'
+  controllers dial through GD's order every day, so this is the rig's; the cure in `knit-hci` would be a Zephyr
+  patch (unfixed upstream as of 2026-11).
 - **Known limits of the rig, not of Knit:**
   - Zephyr refuses a second accept-list dial while a link it dialed is up (`0x0b`, ACL Connection Already Exists):
     `ll_create_connection` records the command's all-zero peer address on the link, and its same-peer check then
@@ -87,6 +100,8 @@ EV_LE_META = 0x3E
 OP_DISCONNECT = 0x0406
 OP_READ_LOCAL_EXTENDED_FEATURES = 0x1004
 OP_SCAN_PARAMS, OP_SCAN_ENABLE = 0x2041, 0x2042  # LE Set Extended Scan Parameters / Enable
+OP_EXT_ADV_ENABLE = 0x2039  # LE Set Extended Advertising Enable
+OP_CREATE_CONNECTION = 0x200D
 DIALS = {0x200D, 0x2043}  # LE Create Connection, LE Extended Create Connection
 OP_EXT_CREATE_CONNECTION = 0x2043
 DIAL_PHY_BLOCK = 16  # an Extended Create Connection's per-PHY parameters (scan interval/window … max CE length)
@@ -209,6 +224,13 @@ def addr(b: bytes) -> str:
     return ":".join(f"{x:02X}" for x in reversed(b))
 
 
+def uses_accept_list(op: int, params: bytes) -> bool:
+    """Whether a dial's initiator filter policy is the accept list: LE Create Connection carries it after the scan
+    interval and window, LE Extended Create Connection first."""
+    i = 4 if op == OP_CREATE_CONNECTION else 0
+    return len(params) > i and params[i] == 1
+
+
 def remap_uuids(data: bytes, mapping: dict[int, int]) -> tuple[bytes, bool]:
     """[data] (AD structures) with every 16-bit service UUID in [mapping]'s keys swapped for its value, and whether
     any was. A structure cut short by the end of the buffer (a fragmented advert's head) is remapped as far as it
@@ -297,6 +319,10 @@ class Bridge:
         self.scan_params: bytes | None = None  # the host's last scan parameters
         self.scan_params_owed = False  # changed while a dial held the scanner off
         self.dialing = False
+        # The advert arbiter: whether the dial out uses the accept list, and the sets the host turned on meanwhile
+        # (handle → duration and max events, as its last enable gave them).
+        self.accept_list_dial = False
+        self.held_adverts: dict[int, bytes] = {}
         self.counts = {"cmd": 0, "acl_out": 0, "acl_in": 0, "acl_out_bytes": 0, "acl_in_bytes": 0, "evt": 0,
                        "adv_reports": 0, "adv_dropped": 0, "adv_isolated": 0, "refused": 0, "controller_errors": 0,
                        "cuts": 0}
@@ -327,6 +353,8 @@ class Bridge:
                 self.own_pending.clear()
                 self.host_cmds_in_flight = 0
                 self.scan_on = self.scan_wanted = self.dialing = self.scan_params_owed = False
+                self.accept_list_dial = False
+                self.held_adverts.clear()
             self.host_params[op] = packet[4:]
             self.host_cmds_in_flight += 1
             if self.arbiter and self.arbitrate(op, packet):
@@ -338,7 +366,12 @@ class Bridge:
         """Zephyr's initiator runs on its scanner (`ull_central.c`: a dial while the 1M scanner is on is Command
         Disallowed), and GD dials with its scan on, as a phone's controller allows. So a dial turns the scanner off
         first, scan commands during a dial are answered here and kept, and the scanner comes back the way the host
-        last asked once the dial ends. True when the packet was handled here."""
+        last asked once the dial ends. Advert enables during an accept-list dial are held the same way (`hold_advert`).
+        True when the packet was handled here."""
+        if op in DIALS:
+            self.accept_list_dial = uses_accept_list(op, packet[4:])
+        elif op == OP_EXT_ADV_ENABLE and self.accept_list_dial and self.hold_advert(packet):
+            return True
         if op == OP_SCAN_PARAMS:
             self.scan_params = packet[4:]
         elif op == OP_SCAN_ENABLE and len(packet) > 4:
@@ -371,8 +404,45 @@ class Bridge:
         self.host_cmds_in_flight = max(0, self.host_cmds_in_flight - 1)
         self.to_host(bytes([EVT, EV_COMMAND_COMPLETE, 4, 1, op & 0xFF, op >> 8, status]))
 
+    def hold_advert(self, packet: bytes) -> bool:
+        """An LE Set Extended Advertising Enable while an accept-list dial is out. Zephyr's `ll_adv_enable` runs
+        `ull_filter_adv_update` for every set it turns on, and that empties the filter the initiator matches against
+        (refilled only for an advert that filters by the accept list itself, which GD's does not), so the dial would
+        hear nobody until it is cancelled. An enable is answered here and kept, to go out once the dial ends
+        (`release_adverts`); a disable goes through as sent and drops the sets it names from what is kept. True when
+        the packet was handled here."""
+        p = packet[4:]
+        if len(p) < 2 or len(p) < 2 + 4 * p[1]:
+            return False
+        sets = {p[2 + 4 * i]: p[3 + 4 * i:6 + 4 * i] for i in range(p[1])}
+        if p[0] != 1:
+            if p[1] == 0:  # every set
+                self.held_adverts.clear()
+            for handle in sets:
+                self.held_adverts.pop(handle, None)
+            return False
+        if not sets:
+            return False
+        self.held_adverts.update(sets)
+        self.counts["adverts_held"] = self.counts.get("adverts_held", 0) + 1
+        self.snoop(packet, 0)
+        self.answer_host(OP_EXT_ADV_ENABLE, 0)
+        return True
+
+    def release_adverts(self) -> None:
+        """The dial is over: the sets the host turned on during it go on now, in one enable."""
+        self.accept_list_dial = False
+        if not self.held_adverts:
+            return
+        params = bytes([1, len(self.held_adverts)]) + b"".join(
+            bytes([handle]) + rest for handle, rest in self.held_adverts.items())
+        self.held_adverts.clear()
+        enable = bytes([CMD, OP_EXT_ADV_ENABLE & 0xFF, OP_EXT_ADV_ENABLE >> 8, len(params)]) + params
+        self.inject(enable, lambda p: p[3] and say(f"arbiter: the held advert enable was refused ({status_name(p[3])})"))
+
     def dial_ended(self) -> None:
         self.dialing = False
+        self.release_adverts()
         if not self.arbiter or not self.scan_wanted or self.scan_on or self.scan_enable is None:
             return
 
@@ -517,6 +587,8 @@ class Bridge:
                     self.dialing = True
                 elif self.dialing:
                     self.dial_ended()
+                else:  # refused before it started: nothing to wait for
+                    self.release_adverts()
             if p[0] == UNKNOWN_COMMAND and (shimmed := self.on_unknown(op, p[1], packet)) is not None:
                 return shimmed or None
             if p[0]:
