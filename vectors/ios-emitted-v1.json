@@ -1,5 +1,5 @@
 {
-  "about" : "Frames the iOS port emits: Carol's identity from fixed keys, her signed profile and room post, a v1 DM she seals to Bob from keyed-v1.json, their safety number, and a group she makes with Alice and Bob: a v1 group message, her rename and her leave. With the ratchet (A10): her ratchet profile, and what her mesh engine sends Bob and Alice with the ratchet on: a v3 DM that opens a session, inline acks, a sealed receipt, profile, reaction and retraction, seeds for a group of the three, a group-form message and a group-form reaction; ratchet says how to open them. Carol's link proofs as dialer and responder, under link, with every HELLO at caps 40009 (link-hello-proof), and her sealed links as dialer and responder, under link.seal, with every HELLO at caps 140009 (link-seal). Written by knit-ios with KNIT_WRITE_VECTORS=1; IosEmittedVectorTest checks it. See vectors/README.md.",
+  "about" : "Frames the iOS port emits: Carol's identity from fixed keys, her signed profile and room post, a v1 DM she seals to Bob from keyed-v1.json, their safety number, and a group she makes with Alice and Bob: a v1 group message, her rename and her leave. With the ratchet (A10): her ratchet profile, and what her mesh engine sends Bob and Alice with the ratchet on: a v3 DM that opens a session, inline acks, a sealed receipt, profile, reaction and retraction, seeds for a group of the three, a group-form message and a group-form reaction, and her presence keys in a ctl 11 padded to 128 bytes (ADR 2026-11.prsp); ratchet says how to open them. Carol's link proofs as dialer and responder, under link, with every HELLO at caps 40009 (link-hello-proof), and her sealed links as dialer and responder, under link.seal, with every HELLO at caps 140009 (link-seal). Written by knit-ios with KNIT_WRITE_VECTORS=1; IosEmittedVectorTest checks it. See vectors/README.md.",
   "frames" : {
     "carolDmToBob" : {
       "body" : "Hi Bob, from Swift",
@@ -183,6 +183,31 @@
       },
       "sender" : "carol",
       "wire" : "a2637369675840f807694bd7edc3eba78b13e970bb43f80f2e835a66c0f35e2230dbfa6eb86e670720bd7a2b1ced03cb2eb357f9f5789175f1c63e627adeaf312835df5cba440c667369676e6564590153a664747970656463686174626964764557437836676c705a6a6574744136514a426b5653516873656e6465724964781a37766f33706e6c6b63666265337168617736376671626f7933346673656e7441741b00000198e5ad8cc86b726563697069656e744964781a7261756e7a7034337333736e63796f6a69657a676737756c6e61677061796c6f616458c7a163656e63a5617603656e6f6e636540626374583bf960cf7979384ab98de68cd4858012e84bd813e4eaa521ac88844c964ef64a3fae49124a975108e0c5963ec922c7f9356a078167d89fbdeb947205646b657973806172a56273650162656b58201476ae402e7cd6c65f31241887f79abc4f7a9986aa8167b30506b9c9aea9724b62706500616e0164696e6974a36365706858202ea7e7f9e18fddf333c4b2a84efa3cf950f7c217508163f5d2f631c8cb29ba0e64706b6964016261741b00000198e5ad84f8"
+    },
+    "carolPresenceKeysToBob" : {
+      "recipient" : "bob",
+      "sealed" : {
+        "content" : {
+          "body" : "",
+          "ctl" : 11,
+          "pk" : {
+            "generation" : 1756200021000,
+            "key" : "c3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959c",
+            "nextGeneration" : 1756200021001,
+            "nextKey" : "c4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969d",
+            "padBytes" : 13
+          }
+        },
+        "form" : "dm",
+        "n" : 5,
+        "pe" : 1,
+        "plaintext" : "a364626f6479606363746c0b62706ba561671b00000198e5adac08616b5820c3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959c626e671b00000198e5adac09626e6b5820c4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969d61704d00000000000000000000000000",
+        "plaintextSchema" : "MessageContent",
+        "se" : 2,
+        "v" : 2
+      },
+      "sender" : "carol",
+      "wire" : "a36572656c6179f4637369675840834a2abf2f18c166d63a2b1c7062b3e871baa6f0284f04f9d9797439d349c93937afdb188302209ab625e4f47943a903b2aa66f4a2653cd5e61203388c99b20a667369676e6564590176a664747970656463686174626964766a756a334d7631493136777535454753616e595037416873656e6465724964781a37766f33706e6c6b63666265337168617736376671626f7933346673656e7441741b00000198e5adac086b726563697069656e744964781a7261756e7a7034337333736e63796f6a69657a676737756c6e61677061796c6f616458eaa163656e63a5617602656e6f6e63654cc5ccd3dae1e8eff6fd040b126263745890dbde8d2f263e06721e0474b7381d2ed688a70bc116f8403c70b4e42138322f850fd48cb860d365f89390a608c6f7294a2feb11557283cf28108eaef3aba704891f24e0bad3ce34e827c3844cc71c3be56cf9a3f948d8dd169c995dc65dd0da5437e19fea4400f45363eeb1d83d2627e7f353ca7e01607959d7ec89429f2ce07e19d17ecd1c8393eb25dfa14fb75adb49646b657973806172a46273650262656b58205d66629a5a111c84dc3b1245c2a43f7c94ec70ee8d5954bec3dee58173975a2a62706501616e05"
     },
     "carolProfile" : {
       "sender" : "carol",
@@ -424,7 +449,7 @@
     }
   },
   "ratchet" : {
-    "about" : "Carol's ratchet frames (A10): what the iOS port's mesh engine sends with the ratchet on, from fixed draws (carolDraws; keyPair is an X25519 private key fixtureBytes(32, seed), iv fixtureBytes(12, seed), groupSeed fixtureBytes(32, seed), groupIv fixtureBytes(12, seed)). To check them, each reader in replay is a fresh RatchetSessions holding its prekey from prekeys, beside a fresh GroupRatchetSessions, and takes its steps in order at each frame's sentAt: open is a DM-form frame opened and committed through the session layer (peek, then commit), then for a CTL_GROUP_KEY its seeds adopted from the sender; seal is the reader's own frame from seals, sealed at its sentAt on its draws, whose signed bytes must come out as listed; openGroup is a group-form frame opened through GroupRatchetSessions. Nothing is sent back: no tick, no init answer, no key ack. Each frame's sealed says what it must open to: plaintext exactly, as plaintextSchema lays it out, with the fields in content.",
+    "about" : "Carol's ratchet frames (A10): what the iOS port's mesh engine sends with the ratchet on, from fixed draws (carolDraws; keyPair is an X25519 private key fixtureBytes(32, seed), iv fixtureBytes(12, seed), groupSeed fixtureBytes(32, seed), groupIv fixtureBytes(12, seed), presenceKey fixtureBytes(32, seed)). To check them, each reader in replay is a fresh RatchetSessions holding its prekey from prekeys, beside a fresh GroupRatchetSessions, and takes its steps in order at each frame's sentAt: open is a DM-form frame opened and committed through the session layer (peek, then commit), then for a CTL_GROUP_KEY its seeds adopted from the sender; seal is the reader's own frame from seals, sealed at its sentAt on its draws, whose signed bytes must come out as listed; openGroup is a group-form frame opened through GroupRatchetSessions. Nothing is sent back: no tick, no init answer, no key ack. Each frame's sealed says what it must open to: plaintext exactly, as plaintextSchema lays it out, with the fields in content.",
     "carolDraws" : [
       {
         "kind" : "keyPair",
@@ -465,6 +490,18 @@
       {
         "kind" : "groupIv",
         "seed" : 193
+      },
+      {
+        "kind" : "presenceKey",
+        "seed" : 195
+      },
+      {
+        "kind" : "presenceKey",
+        "seed" : 196
+      },
+      {
+        "kind" : "iv",
+        "seed" : 197
       }
     ],
     "prekeys" : {
@@ -545,6 +582,10 @@
         {
           "frame" : "carolGroupFormReaction",
           "op" : "openGroup"
+        },
+        {
+          "frame" : "carolPresenceKeysToBob",
+          "op" : "open"
         }
       ]
     },

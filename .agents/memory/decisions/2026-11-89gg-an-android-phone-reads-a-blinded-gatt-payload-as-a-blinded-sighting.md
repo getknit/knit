@@ -131,8 +131,11 @@ payload**: turning it on in release is `docs/NEXT_WIRE_BREAK.md` item 13's decis
   refunded as any other.
 - **Each unlinked blinding iPhone costs a read per slot and per address rotation,** charged against the 12-read budget
   and refunded once a link proves. A linked address is spared rule 4.
-- **The iPhone's links stay plain** until knit-ios #51: `LinkHandshake.refusesPlain` admits its plain HELLO, which
-  carries no `CAP_LINK_SEAL`, and the payload's flags carry no `FLAG_LINK_SEAL`. Once Android reads the payload, ADR
+- **The iPhone seals its links** since knit-ios's link-seal port (knit-ios #51, its `main` at `7234ef3`): its HELLO
+  carries `CAP_LINK_SEAL`, and its blinded GATT payload carries `FLAG_LINK_SEAL` beside `FLAG_BLINDED`. The flag rides
+  the read and the cached payload into the sighting's `HeardDevice.linkSeal`, so the tag dial opens sealed
+  (`LinkSealPolicy.dialsSealed`, then `LinkHandshake.dialTagSealed`) with no code of its own here. An older iPhone build
+  without the bit links plain: `LinkHandshake.refusesPlain` admits its plain HELLO. Once Android reads the payload, ADR
   2026-11.8mhs's worry about an unread seal flag is met for A11 readers.
 
 **What keeps it true:** `GattPayloadsTest` mirrors knit-ios's `GattPayloadsTests` case for case (rule 2 on tags and
@@ -143,8 +146,10 @@ leaving a blinded payload alone. `BleGattPayloadReaderTest` reads a blinded payl
 `0xFE30` services and none from a foreign service, and keeps a malformed one a stranger of its own phase.
 `DoorbellPolicyTest` covers the lookup across D and P, the combined service and the settle bound, after Swift's
 `DoorbellLookupTests`. `BlindGattReadTest` checks that no new line carries a tag and that the harness regexes read them
-as intended, and `AdvertAliases.announced`. `SealedLinkHandshakeTest` admits an iPhone's plain, proven HELLO with no
-seal bit. The blinding lab scenarios (`PresenceKeyLabTest`, `PresenceKeyForkLabTest`, `PresenceKeyFeedLabTest`) still
+as intended, and `AdvertAliases.announced`. `LinkSealPolicyTest` opens a tag dial sealed from a blinded GATT payload
+that carries the seal flag, and plain without it; `SealedLinkHandshakeTest` admits an older iPhone's plain, proven HELLO
+with no seal bit. `IosEmittedVectorTest` opens the iPhone's padded ctl 11 (`carolPresenceKeysToBob`) and rebuilds its
+plaintext with `PresenceKeyFrame.content`. The blinding lab scenarios (`PresenceKeyLabTest`, `PresenceKeyForkLabTest`, `PresenceKeyFeedLabTest`) still
 pass; the lab has no radio layer, so the GATT path is covered by the unit tests alone. The re-key's GATT mark and rule
 1's call site are wiring with no seam, read in review. The device trial is knit-ios's (the paired change's step 5): the Pixel 9, a contact,
 resolves the iPhone by key over GATT; the Pixel 3, which the iPhone holds but does not hold the iPhone, holds it under a

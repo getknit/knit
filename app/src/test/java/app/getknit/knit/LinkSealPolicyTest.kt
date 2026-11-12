@@ -3,8 +3,10 @@ package app.getknit.knit
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.bluetooth.BleAdvertPayload
 import app.getknit.knit.mesh.bluetooth.DialPlan
+import app.getknit.knit.mesh.bluetooth.GattPayloads
 import app.getknit.knit.mesh.bluetooth.LinkSealPolicy
 import app.getknit.knit.mesh.bluetooth.LinkSealPolicy.Count
+import app.getknit.knit.mesh.crypto.BlindTag
 import app.getknit.knit.mesh.link.LinkHandshake
 import app.getknit.knit.mesh.link.LinkHandshake.AnswerOutcome
 import app.getknit.knit.mesh.link.LinkHandshake.DialOutcome
@@ -61,6 +63,26 @@ class LinkSealPolicyTest {
         val sealed = hex("09294213fa67091e03c2f2ae8d071b9d6700000000008012")
         assertEquals(false, sealedTo(false, Heard("iphone", BleAdvertPayload.parse(unsealed)!!.linkSeal), null))
         assertEquals(true, sealedTo(false, Heard("iphone", BleAdvertPayload.parse(sealed)!!.linkSeal), null))
+    }
+
+    @Test
+    fun aTagDialOpensSealedFromABlindedGattPayloadThatCarriesTheSealFlag() {
+        // A blinding iPhone with link-seal (companion change A11, contract §8): its GATT value is the blinded advert with the
+        // cue zeroed, FLAG_BLINDED | FLAG_DIALS_GATT_PEERS, and FLAG_LINK_SEAL beside them. The flag survives the read and the
+        // cached payload a later advert is sighted from, and it alone picks the form the tag dial opens with
+        // (`LinkHandshake.dialTagSealed`, pinned against a responder by `SealedLinkHandshakeTest`).
+        val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 7 }, NodeId.toBytes(peer), slot = 1, restart = 0))
+        val blind = BleAdvertPayload.FLAG_BLINDED or BleAdvertPayload.FLAG_DIALS_GATT_PEERS
+        for ((flags, opensSealed) in listOf(blind or BleAdvertPayload.FLAG_LINK_SEAL to true, blind to false)) {
+            val value = BleAdvertPayload.encode(tag, 0x09L, 0L, 0x80, flags)
+            val parsed = checkNotNull(BleAdvertPayload.parse(value))
+            assertTrue(parsed.blinded)
+            val reads = GattPayloads()
+            assertTrue(reads.begin("iphone", now = 0))
+            reads.finish("iphone", GattPayloads.Outcome.Read(parsed), now = 0)
+            val cached = checkNotNull(reads.heard("iphone").payload) { "the cached blinded payload" }
+            assertEquals("flags $flags", opensSealed, sealedTo(false, Heard("iphone", cached.linkSeal), null))
+        }
     }
 
     @Test

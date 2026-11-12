@@ -8,6 +8,7 @@ import app.getknit.knit.mesh.crypto.LinkProof
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
+import app.getknit.knit.mesh.crypto.PresenceKeyFrame
 import app.getknit.knit.mesh.crypto.SafetyNumber
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
@@ -220,7 +221,7 @@ class IosEmittedVectorTest {
 
     @Test
     fun `carol's ratchet frames verify, re-encode and carry the headers they state`() {
-        assertEquals(10, sealedFrames.size)
+        assertEquals(11, sealedFrames.size)
         for (name in sealedFrames) {
             val entry = frame(name)
             val sealed = entry.getValue("sealed").jsonObject
@@ -547,6 +548,27 @@ class IosEmittedVectorTest {
             group.photoUpdatedAt?.let { put("photoUpdatedAt", it) }
             group.departed?.let { departed -> putJsonArray("departed") { departed.forEach { add(name(it)) } } }
         }
+
+    /**
+     * Carol's ctl 11 pads as Android's does (companion change A11, knit-ios ADR 2026-11.prsp): the two keys it hands Bob,
+     * put through [PresenceKeyFrame.content], encode to the plaintext the iPhone sealed, byte for byte, at
+     * [PresenceKeyFrame.PLAINTEXT_BYTES]. The size is what a listener compares, so the two platforms must agree on the
+     * two-key path as `wire-v1.json`'s `messageContentPresenceKey` pins the one-key path.
+     */
+    @Test
+    fun `carol's presence keys pad to the plaintext Android builds`() {
+        val sealed = frame("carolPresenceKeysToBob").getValue("sealed").jsonObject
+        val pk =
+            sealed
+                .getValue("content")
+                .jsonObject
+                .getValue("pk")
+                .jsonObject
+        val keys = listOf(pk.long("generation") to pk.hex("key"), pk.long("nextGeneration") to pk.hex("nextKey"))
+        val plaintext = field(sealed, "plaintext").fromHex()
+        assertEquals(PresenceKeyFrame.PLAINTEXT_BYTES, plaintext.size)
+        assertEquals(field(sealed, "plaintext"), PresenceKeyFrame.content(keys).encode().toHex())
+    }
 
     /**
      * Carol's link proofs as the iPhone signs them (ADR 2026-11.264w): each HELLO record is the frozen framing of its
