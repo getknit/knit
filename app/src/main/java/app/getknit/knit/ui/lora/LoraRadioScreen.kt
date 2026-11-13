@@ -335,11 +335,11 @@ private fun BoardRow(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .selectable(selected = board.selected, onClick = onClick, role = Role.RadioButton)
+                .selectable(selected = board.selected, enabled = board.pickable, onClick = onClick, role = Role.RadioButton)
                 .testTag("lora_board_${board.address}"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RadioButton(selected = board.selected, onClick = null)
+        RadioButton(selected = board.selected, onClick = null, enabled = board.pickable)
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(board.name, style = MaterialTheme.typography.bodyLarge)

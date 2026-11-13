@@ -50,6 +50,15 @@ internal sealed interface NusDialResult {
     data object AdapterOff : NusDialResult
 
     data object NoHardware : NusDialResult
+
+    /**
+     * The dial's first protected op (the TX subscribe, on a board whose CCCD needs encryption) was refused for want of a
+     * bond, with the stack's [status], or the link closed under it while the board stayed unbonded. Terminal, like the
+     * session's own first write: `NeedsPairing`, or `StaleBond` on a bonded board — a redial would only prompt again.
+     */
+    data class BondRefused(
+        val status: Int,
+    ) : NusDialResult
 }
 
 /**

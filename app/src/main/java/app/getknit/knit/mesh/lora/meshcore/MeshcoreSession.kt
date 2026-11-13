@@ -12,6 +12,7 @@ import app.getknit.knit.mesh.lora.BoardLink
 import app.getknit.knit.mesh.lora.BoardPacket
 import app.getknit.knit.mesh.lora.BoardSend
 import app.getknit.knit.mesh.lora.BoardState
+import app.getknit.knit.mesh.lora.BondSettle
 import app.getknit.knit.mesh.lora.BondState
 import app.getknit.knit.mesh.lora.DialMode
 import app.getknit.knit.mesh.lora.GattResult
@@ -373,6 +374,15 @@ internal class MeshcoreSession(
 
             is NusDialResult.Failed -> {
                 backoffAndWait("$REASON_DIAL ${result.phase} ${result.status}", streak)
+            }
+
+            // The dial's subscribe was the first protected op and the bond failed there: terminal, as [classify] makes a
+            // first write's, never a backoff that would prompt for the PIN again (binding rule "pairing").
+            is NusDialResult.BondRefused -> {
+                log("meshcore dial bond refused ${result.status}")
+                val bonded = dialer.bondState(address) == BondState.BONDED
+                _state.value = down(if (bonded) MeshcoreLinkState.StaleBond(address) else MeshcoreLinkState.NeedsPairing(address))
+                null
             }
 
             NusDialResult.Timeout -> {
@@ -1692,12 +1702,19 @@ internal class MeshcoreSession(
      * bonded board and [MeshcoreLinkState.NeedsPairing] otherwise; a write that started unbonded and was closed under
      * us with the board still unbonded is a pairing that never happened, never a backoff (binding rule "pairing").
      */
-    private fun classify(
+    private suspend fun classify(
         address: String,
         result: GattResult<*>,
         startedUnbonded: Boolean,
     ): SessionEnd? {
-        val bond = dialer.bondState(address)
+        // A close under a write that started unbonded is judged on the settled bond: read at once it can still say
+        // BONDING for a pairing the user just cancelled, and a drop redials into a second passkey prompt (BondSettle).
+        val bond =
+            if (result is GattResult.Closed && startedUnbonded) {
+                BondSettle.settled(waits, now) { dialer.bondState(address) }
+            } else {
+                dialer.bondState(address)
+            }
         val auth = result is GattResult.Failed && result.status in AUTH_STATUSES
         return when {
             auth && bond == BondState.BONDED -> {

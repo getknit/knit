@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.lora.AirtimeSnapshot
 import app.getknit.knit.mesh.lora.BoardBattery
 import app.getknit.knit.mesh.lora.BoardDirectory
 import app.getknit.knit.mesh.lora.BoardFilter
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.BoardName
 import app.getknit.knit.mesh.lora.BoardOwner
 import app.getknit.knit.mesh.lora.BoardRef
@@ -31,11 +32,16 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.Locale
 
-/** A bonded board the user can bind the LoRa plane to. */
+/**
+ * A bonded board the user can bind the LoRa plane to. [pickable] is false for a MeshCore board: it is listed, but there
+ * is no MeshCore plane to bind it to until ADR 2026-11.gsqu's Stage 5, and binding it as Meshtastic would only dial the
+ * wrong firmware.
+ */
 data class BoardOption(
     val address: String,
     val name: String,
     val selected: Boolean,
+    val pickable: Boolean = true,
 )
 
 /**
@@ -260,7 +266,7 @@ internal class LoraRadioViewModel(
                 boards =
                     BoardFilter
                         .visible(picker.bonded, address, picker.showAll)
-                        .map { BoardOption(it.address, it.name, it.address == address) },
+                        .map { BoardOption(it.address, it.name, it.address == address, pickable = it.kind != BoardKind.MESHCORE) },
                 hiddenBoards = BoardFilter.hidden(picker.bonded, address),
                 showAllBoards = picker.showAll,
                 anyBonded = picker.bonded.isNotEmpty(),
@@ -345,6 +351,8 @@ internal class LoraRadioViewModel(
     }
 
     fun pickBoard(board: BoardOption) {
+        // Never a MeshCore board onto the Meshtastic session (ADR 2026-11.gsqu, Stage 3d): the screen greys it out too.
+        if (!board.pickable) return
         viewModelScope.launch { settings.setLoraDevice(board.address, board.name) }
     }
 

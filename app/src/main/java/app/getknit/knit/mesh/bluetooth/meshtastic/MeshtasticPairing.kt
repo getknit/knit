@@ -14,12 +14,12 @@ import app.getknit.knit.mesh.lora.BoardFilter
 import app.getknit.knit.mesh.lora.BoardRef
 
 /**
- * Lists the bonded devices for the settings picker, each with a verdict on whether it looks like a Meshtastic
- * board: LE-capable (a board is never Classic-only, which rules out most headsets outright), and either a
- * board-like name ([BoardFilter.looksLikeBoard]) or the Meshtastic service UUID in the stack's cached
- * services — a positive-only signal, since the cache is empty for most LE bonds until a first connection. A
- * `SecurityException` (permission revoked out from under us) degrades to an empty list rather than crashing,
- * matching the mesh BLE plane's posture.
+ * Lists the bonded devices for the settings picker, each tagged with the board kind it looks like
+ * ([BoardFilter.kindOf]): never a Classic-only device (which rules out most headsets outright); MeshCore on its
+ * `MeshCore-` name alone, tested first; else Meshtastic on a board-like name ([BoardFilter.looksLikeBoard]) or the
+ * Meshtastic service UUID in the stack's cached services — a positive-only signal, since the cache is empty for most LE
+ * bonds until a first connection. A `SecurityException` (permission revoked out from under us) degrades to an empty list
+ * rather than crashing, matching the mesh BLE plane's posture.
  */
 @SuppressLint("MissingPermission")
 internal class BondedBoardDirectory(
@@ -35,8 +35,8 @@ internal class BondedBoardDirectory(
                 BoardRef(
                     address = device.address,
                     name = name,
-                    meshtastic =
-                        BoardFilter.isMeshtastic(name, classicOnly = device.type == BluetoothDevice.DEVICE_TYPE_CLASSIC) {
+                    kind =
+                        BoardFilter.kindOf(name, classicOnly = device.type == BluetoothDevice.DEVICE_TYPE_CLASSIC) {
                             device.uuids?.any { it.uuid == MeshtasticUuids.SERVICE } == true
                         },
                 )

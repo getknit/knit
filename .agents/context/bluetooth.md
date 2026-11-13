@@ -409,6 +409,25 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   `up` (a pending tag airs nothing yet), the form's `blinded` at `install`, false at `down`; never `AdvertStatus.blinding`
   (what it asks for) nor `form()` alone (`aired` outlives `down`). Tests: `NeighborViewTest`, `AdvertWriterTest`.
 
+- **When touching `mesh/bluetooth/BoardGatt` (`Spec`, `Route`, `Outcomes`, `Link`, `holding`, `hold` / `Hold`, `stackCall`, `mapOk`),
+  `BleConnectArbiter`, or `mesh/bluetooth/meshcore/` (`MeshcoreGatt`, `MeshcoreUuids`, `NusInbox`, `NusLinkPolicy`):**
+  READ ADR 2026-11.gsqu (its Stage 3c/3d amendment carries the bluetooth design pass's binding rules), ADR 2026-09.hp88
+  (the two dial modes), then "The layers" and "The MeshCore client" in `lora-bridge.md`. `BoardGatt` is the one GATT
+  client core both board kinds dial through: the four-argument, null-`Handler` `connectGatt` (callbacks inline on a
+  binder thread, in order, never the main looper), every notify and read value copied inside the callback, the MTU and
+  discovery deferreds `@Volatile`, the deprecated overrides gated below SDK 33, the reported MTU trusted over its status
+  (b407293d), every call through `stackCall`. Everything per kind is a parameter, never shared: the numbers and log tag
+  (`Spec`; Meshtastic's lines stay under `MeshtasticGatt`, a recipe oracle), the UUID demultiplexing (`Route`), the
+  result mapping (`Outcomes`), the arbiter tag and span (`holding`; `lora-dial`, `meshcore-dial`), and the channel's own
+  close on every dial that does not open. `BleConnectArbiter` counts holds per tag, so a cancelled dial's `end` never
+  clears a newer hold under the same tag. The MeshCore link opens at MTU ≥ 176 (`NusLinkPolicy.MIN_MTU`, the firmware's
+  `MAX_FRAME_SIZE`), refuses a write over `mtu − 3` (never a long write), writes `WRITE_TYPE_DEFAULT` only, never dials an
+  unbonded board in the background, gives an unbonded TX subscribe the 90-s pairing window with its arbiter hold released
+  first (`BoardGatt.hold` / `Hold.release`: no wait on the user pauses the mesh scan), reads a bond refused there as
+  terminal (`NusDialResult.BondRefused`), judges a close under an unbonded op on the settled bond (`BondSettle`), and bounds its unlimited notify channel at 1,024 frames or 256 KiB held, past
+  which it ends the connection under `NusInbox.STATUS_OVERFLOW` (counted, `MeshcoreGatt.inboxOverflows`), never dropping a
+  frame. Tests: `BleConnectArbiterTest`, `NusInboxTest`, `NusLinkPolicyTest`, `BondSettleTest`; the Android halves are device-verified only.
+
 ## Adding an entry
 
 A new decision about this plane gets a bullet here — the symbols that trigger it, the ADR, and the invariant in a

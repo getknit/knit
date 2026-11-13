@@ -48,6 +48,15 @@ internal sealed interface DialResult {
     data object AdapterOff : DialResult
 
     data object NoHardware : DialResult
+
+    /**
+     * Discovery finished and the board has no Meshtastic service: other firmware (a MeshCore board bound before the
+     * picker told the kinds apart), or the stack's GATT cache from before a reflash. Redialling fixes neither: wrong
+     * firmware is left by forgetting the board or picking another, and only a stale cache is fixed by re-pairing. The
+     * session backs off the first reading like the failed discovery it used to be, and ends terminal on a second in a row
+     * (ADR 2026-11.gsqu, Stage 3d).
+     */
+    data object ServiceAbsent : DialResult
 }
 
 /**

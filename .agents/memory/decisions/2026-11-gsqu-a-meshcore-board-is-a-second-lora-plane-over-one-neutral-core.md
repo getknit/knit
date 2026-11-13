@@ -408,3 +408,43 @@ ambiguous (no answer, never a refusal). **A known limit:** a barrier ends at the
 `GET_DEVICE_TIME` answer cannot be told from ours — it carries only the board's clock. One that lands first ends our
 barrier early: a late answer of ours is then a stray, counted and dropped, and the request reads as unanswered (a
 timeout, never a refusal).
+
+## Amendment 2026-11-13 — Stage 3c/3d: the shared GATT core, the MeshCore GATT client and the picker (draft)
+
+Built under the bluetooth design pass's binding rules, reachable from nothing until Stage 5.
+
+- **One GATT core, per-kind parameters.** The connect, the MTU settle, discovery, the one-op-at-a-time serialisation
+  and `stackCall` moved out of `MeshtasticGatt` into `mesh/bluetooth/BoardGatt`, which both kinds dial through. It keeps
+  the four-argument, null-`Handler` `connectGatt` (callbacks inline on a binder thread, in order; `MeshtasticGatt`'s KDoc
+  said the main looper, which was wrong), copies every notify and read value inside the callback, makes the MTU and
+  discovery deferreds `@Volatile`, and keeps the deprecated overrides gated below SDK 33. What differs per kind is passed
+  in, never shared: the numbers and the log tag (`BoardGatt.Spec`; Meshtastic's lines keep the `MeshtasticGatt` tag and
+  their words), the UUID demultiplexing (`Route`), the result mapping including `Refused` → `Failed` and the
+  `connectGatt`-threw status (`Outcomes`), the arbiter tag and span (`holding`), and the channel's own close on every dial
+  that does not open. `GattChannel` / `GattEvent` are unchanged.
+- **The arbiter counts holds per tag.** A cancelled dial's `end` can run after the next dial under the same tag began;
+  a set of tags let it clear the newer hold. `BleConnectArbiter` now counts, and an `end` with no hold is ignored.
+- **The MeshCore link.** `MeshcoreGatt` over NUS: MTU floor 176 (`MAX_FRAME_SIZE`, the ESP32 board's own cap), a write
+  over `mtu − 3` refused rather than long-written, `WRITE_TYPE_DEFAULT` only, arbiter tag `meshcore-dial`, TX subscribed
+  before the dial opens. Notifies land in an unlimited channel bounded at 1,024 frames or 256 KiB held (`NusInbox`, an
+  upper bound counted from the last time the channel was seen empty); past it the connection ends under its own status
+  and is counted, nothing dropped.
+- **Pairing.** No bond receiver and no `MeshtasticBonder`: the bond is polled. An unbonded board is never dialled in the
+  background (the session never asks, and the dialer refuses). The first protected op pairs: on an ESP32 companion the
+  CCCD is open, so it is the session's first RX write, under its 90-s window and its terminal `NeedsPairing` /
+  `StaleBond`; a board whose CCCD needs encryption pairs at the dial's subscribe, given the same 90 s, and a bond refused
+  there (or the link closed with the board still unbonded) is the new terminal `NusDialResult.BondRefused`. That
+  subscribe runs with the `meshcore-dial` hold released, so a passkey the user takes 90 s over never pauses the mesh
+  scan. After a close under an op that started unbonded the bond is read settled (`BondSettle`: polled until not
+  `BONDING`, at most 2 s on the elapsed clock), since the bond broadcast and the disconnect are not ordered and a
+  `BONDING` read would redial into a second prompt.
+- **The picker.** `BoardRef` carries its `BoardKind`; `BoardFilter.kindOf` tests the MeshCore rule first, on the
+  `MeshCore-` prefix alone (the firmware's `BLE_NAME_PREFIX`; never the generic NUS UUID), so a MeshCore board is no
+  longer listed as Meshtastic. Until Stage 5 a MeshCore entry is listed but not pickable. A Meshtastic dial whose
+  discovery succeeded without the Meshtastic service is `DialResult.ServiceAbsent`. The first reading backs off like the
+  failed discovery it used to be; a second in a row is terminal (`StaleBond` bonded, `NeedsPairing` otherwise). Neither
+  cause is fixed by a redial: wrong firmware is left by forgetting the board or picking another, and only a cache from
+  before a reflash is fixed by re-pairing. The "Pairing needed" wording for the wrong-firmware cause is Stage 7's
+  (strings and translations).
+- **Left for Stage 5.** A MeshCore dial that finds no NUS service still backs off (`Failed`, phase `service`); nothing
+  dials a board the picker did not name MeshCore, and Stage 5 decides whether that ends terminal too.

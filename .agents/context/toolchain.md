@@ -114,8 +114,8 @@ bytecode, so release-APK bytes (and F-Droid's rebuild) are unaffected either way
 Two rules that follow from this, when a warning has no clean fix:
 
 - **Suppress at the narrowest scope, with the reason.** `MainActivity.disableContentCapture()` exists only
-  so `@Suppress("DEPRECATION")` covers one platform call instead of all of `onCreate`; `MeshtasticGatt`
-  carries one on `connectAndConfigure` because every `connectGatt(Context, …)` overload is deprecated in
+  so `@Suppress("DEPRECATION")` covers one platform call instead of all of `onCreate`; `BoardGatt`
+  carries one on `connect` because every `connectGatt(Context, …)` overload is deprecated in
   compileSdk 37 in favour of an API-37-only replacement, eight releases above minSdk 29.
 - **A no-op `when` branch is `-> {}`, never `-> { Unit }`.** The lone `Unit` inside a block is an unused
   expression; the braces themselves are required by ktlint whenever a sibling entry is braced.

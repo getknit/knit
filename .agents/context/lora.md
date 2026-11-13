@@ -13,9 +13,10 @@ LoRa-adjacent routing that lives in another subsystem's file under `.agents/cont
 2026-10.rp3s no room tick rides LoRa), a link preview on
 a LoRa thread (ADR 2026-09.7x8k), a blob re-wanted at link-up (ADR 2026-09.ptv8), the presence tiers (`ui/Reach.kt`,
 ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edges `LoraFieldLog` follows (ADR
-2026-10.a239 and its 2026-10-18 amendment). The GATT client
-(`MeshtasticGatt`, the plane's only `android.bluetooth.*` importer; `mesh/lora/` is pure and JVM-tested) is also
-Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-reviewer`.
+2026-10.a239 and its 2026-10-18 amendment). The GATT clients
+(`MeshtasticGatt` and `MeshcoreGatt` over the shared `BoardGatt` core, the plane's only `android.bluetooth.*` importers;
+`mesh/lora/` is pure and JVM-tested) are also Bluetooth code, routed in `bluetooth.md`: a change there owes
+`bluetooth-reviewer` as well as `lora-reviewer`.
 
 ## Entries
 
@@ -181,7 +182,7 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
 - **When touching `MeshtasticSession` (handshake, heartbeat, drain, admin passkey, `routeNak`), `MeshtasticLink`
   (`LinkDestination`, `BoardAddr`, `PacketOutcome`), `ReceivedPacket` (`wantAck`, `hopLimit`, `nextHop`, `rxTime`),
   `PacketIdSource`, `BoardBattery`, `ChannelInfo.useAead`, `LinkState.Ready.signaturePolicy`, `aeadBlocks`, or
-  `MeshtasticGatt` (`negotiateMtu`, `SETTLE_MS`):** READ ADR 038 §2, ADR 041, ADR 2026-10.x9fa (the board-neutral seam,
+  `MeshtasticGatt` (`SETTLE_MS`, `BoardGatt.Link.negotiateMtu`):** READ ADR 038 §2, ADR 041, ADR 2026-10.x9fa (the board-neutral seam,
   `want_ack`, `rx_time`), ADR 2026-09.mhs5's 2026-10-30 amendment (the security config) and "The layers" / "Board
   facts" in `lora-bridge.md`. The handshake's `SecurityConfig` is read for `packet_signature_policy` alone, inside the
   decoder, never captured whole (it carries the board's private and admin keys); a session that streams none reads as
@@ -199,8 +200,11 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `autoConnect` with an hourly direct net and no arbiter while waiting; a refusal backs off, only a spent window
   doesn't; the pacer parks on `link.state`, never its 1 s tick. Its 2026-11-06 amendment (draft): a throw costs one
   pass of the loop and never the loop (`runRound`, `threw <class>`), the connect and every GATT op go through
-  `MeshtasticGatt.stackCall`, the adapter going off ends a session at once from `dialer.adapterOn`, and a session's
-  inbox ends with it, so every `send` / `provisionChannel` is answered. `NotReady` means the packet is owed (unsent, or
+  `BoardGatt.stackCall` (under Meshtastic's own tag), the adapter going off ends a session at once from
+  `dialer.adapterOn`, and a session's inbox ends with it, so every `send` / `provisionChannel` is answered. A dial whose
+  discovery succeeded without the Meshtastic service (`DialResult.ServiceAbsent`: other firmware, or a GATT cache from
+  before a reflash) backs off once and ends terminal on a second reading in a row — `StaleBond` on a bonded board,
+  `NeedsPairing` otherwise (ADR 2026-11.gsqu, Stage 3d); a discovery that failed always backs off. `NotReady` means the packet is owed (unsent, or
   its write failed, which can rarely mean it got there), and `sendMessage` requeues on it (`FragmentOutcome.OWED`: a
   requeued Meshtastic room post or auto-reply is never counted refused, #307); `Timeout` means it likely went, and it is
   never re-aired.
@@ -227,7 +231,7 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   dedicated-slot board), the plane's one direct send without `want_ack`. Its memory persists for the per-sender cap
   across a restart: the board hands a packet to the phone once, so a read DM never comes back (#241).
 - **When touching the plane's face — `DeliveryPlane.LoRa`, `InboundFrame.kind`, `LoraPlane`, `LoraStatus` /
-  `LoraStatusRepository`, `BoardFilter`, `LoraSizeHint`, `ui/chat/LoraReach.kt` (`RoomSaturated`, `RoomBandBusy`, `GroupUnsupported`,
+  `LoraStatusRepository`, `BoardFilter` / `BoardRef.kind`, `LoraSizeHint`, `ui/chat/LoraReach.kt` (`RoomSaturated`, `RoomBandBusy`, `GroupUnsupported`,
   `LoraOnlySaturated`, `loraHintFor`), or `ui/lora/`:** READ ADR 040 (its §1 collapse amended by ADR 2026-10.e42d), ADR
   2026-09.ursc and ADR 2026-09.6ww7. The kind is for presentation only — carry, relay and convergence never read it,
   and it is never folded into `fromNodeId`. A notice
@@ -237,7 +241,10 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   over a newer Disconnected is a phantom down and up (ADR 2026-10.a239's 2026-10-18 amendment). Its reason words are
   `MeshtasticSession`'s companion constants, folded onto `LoraLinkEnd` and pinned by `LoraFieldLogTest`. The room's
   composer hint says a post past its one-packet budget, or one with a reply or an attachment, is not carried
-  (`loraHintFor`, ADR 2026-10.rp3s); a DM's still hedges.
+  (`loraHintFor`, ADR 2026-10.rp3s); a DM's still hedges. The picker tags each bonded device with its `BoardKind`
+  (`BoardFilter.kindOf`): the MeshCore rule first, on the `MeshCore-` name prefix alone and never the generic NUS UUID,
+  then the Meshtastic name or cached service; until Stage 5 a MeshCore entry is listed but not pickable
+  (`BoardOption.pickable`), so it never binds to the Meshtastic session (ADR 2026-11.gsqu's Stage 3c/3d amendment).
 
 - **When touching the chat's "reached their LoRa radio" — `LoraMeshTransport.onRadioReached`, `radioReached`,
   `MeshManager.onLoraRadioReached`, `MeshController.loraRadioReached`, `LoraRadioReached`, `DeliveryStatus.RadioReached`
@@ -301,7 +308,7 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `NusChannel` / `NusEvent` / `NusDialResult`, `MeshcoreAckTable`, `MeshcorePins`, `MeshcoreHeadroom`, `MeshcoreAirRing`,
   `MeshcoreDetail`, `MeshcorePacket`, `MeshcoreAir`, `MeshcoreSetupRecord` / `MeshcoreSetupResult` /
   `MeshcoreRestoreResult`, `ContactWrite` / `ContactRead`, `MeshcoreRefusal`, `MeshcoreNames`, `MeshcoreCounters`,
-  `MeshcoreLinkState`, or `PacketOutcome.flown`:** READ ADR 2026-11.gsqu (§2–§6 and its Stage 3 amendment, which carries
+  `MeshcoreLinkState`, `NusDialResult.BondRefused`, `MeshcoreGatt`, or `PacketOutcome.flown`:** READ ADR 2026-11.gsqu (§2–§6 and its Stage 3 amendment, which carries
   the 2026-11-13 design passes' binding rules), then "The MeshCore client" in `lora-bridge.md`. The board answers every
   connected client: drained data (7, 8, 16, 17, 27) is never matched to a request and never discarded; `SENT` is ours only
   by the ack code the phone computes, `SEND_CONFIRMED` only by our table, a bare `OK` / `ERR` is followed by a barrier on
@@ -313,6 +320,9 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   Knit's. The encoder's command set is pinned (`MeshcoreProtoTest`): never a key export or import, a PIN, the radio, a raw
   packet or the CLI. Room posts ride `DATA_TYPE_DEV` until registered, and a release build may not ship on it. Pinned
   against the real firmware's frames (`src/test/resources/meshcore/`) and, through `MeshcoreFakeVsSimTest`, the fake.
+  The Android half (Stage 3c, `mesh/bluetooth/meshcore/MeshcoreGatt` over the shared `BoardGatt`) is routed in
+  `bluetooth.md`; a dial whose own subscribe failed the bond is terminal (`NusDialResult.BondRefused`), as a first write's; after a close
+  under an op that started unbonded the bond is read settled (`BondSettle`, ≤ 2 s), never a `BONDING` the disconnect beat.
 
 ## Adding an entry
 

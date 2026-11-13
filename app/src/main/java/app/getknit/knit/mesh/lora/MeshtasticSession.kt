@@ -125,6 +125,13 @@ internal class MeshtasticSession(
     // When the reconnect loop last dialled direct; the hourly net under a background wait is timed from it.
     private var lastDirectAt: Long? = null
 
+    /**
+     * Whether the dial before this one, in this loop, read [DialResult.ServiceAbsent]. Only a second reading in a row is
+     * terminal: one can be a discovery the stack served half-built, and the next direct dial is cheap against stranding
+     * a working board in a terminal state.
+     */
+    private var serviceAbsentBefore = false
+
     // The admin write the stack threw on during this provisioning, if one did; only the actor touches it.
     private var adminWriteLost: GattResult<*>? = null
 
@@ -213,6 +220,7 @@ internal class MeshtasticSession(
     private suspend fun connectLoop(address: String) {
         var streak = 0
         lastDirectAt = null
+        serviceAbsentBefore = false
         try {
             while (scope.isActive) {
                 runRound(onFailure = { e ->
@@ -241,7 +249,10 @@ internal class MeshtasticSession(
         val mode = BoardDialPolicy.mode(streak, now(), lastDirectAt)
         val timeout = armDial(mode, streak)
         readyAt = null
-        return when (val result = dialer.dial(address, mode, timeout)) {
+        val result = dialer.dial(address, mode, timeout)
+        val absentAgain = result == DialResult.ServiceAbsent && serviceAbsentBefore
+        serviceAbsentBefore = result == DialResult.ServiceAbsent
+        return when (result) {
             is DialResult.Opened -> {
                 val end =
                     try {
@@ -269,6 +280,22 @@ internal class MeshtasticSession(
 
             is DialResult.Failed -> {
                 backoffAndWait("$REASON_DIAL ${result.phase} ${result.status}", streak)
+            }
+
+            // Other firmware behind the address, or a GATT cache from before a reflash: a MeshCore board bound as
+            // Meshtastic used to be redialled forever. The first reading backs off exactly as the failed discovery it used
+            // to be; a second in a row ends terminal, in the states whose words say the user has to act (Forget or pick
+            // another board for wrong firmware, re-pair for a stale cache; ADR 2026-11.gsqu, Stage 3d).
+            DialResult.ServiceAbsent -> {
+                if (absentAgain) {
+                    log("lora dial service absent again: wrong firmware or a stale GATT cache, stopping")
+                    _state.value =
+                        if (dialer.bondState(address) == BondState.BONDED) LinkState.StaleBond(address) else LinkState.NeedsPairing(address)
+                    null
+                } else {
+                    log("lora dial service absent: retrying once")
+                    backoffAndWait("$REASON_DIAL service -1", streak)
+                }
             }
 
             // A background window that ran out is not a failure to back off from: the net's direct dial is

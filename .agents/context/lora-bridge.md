@@ -128,7 +128,10 @@ LoraMeshTransport (pure)      fastFanout/longRangeFanout · LoraFramePolicy (air
           (pure)              client packet ids ↔ queueStatus/NAK · reconnect-with-backoff (ConnectBackoffPolicy) ·
                               direct-then-background dial (BoardDialPolicy, ADR 2026-09.hp88)
             └─ MeshtasticGattDialer (seam)   dial() → connect · requestMtu(512, floor 128) · discover · resolve chars
-                 └─ MeshtasticGatt           the ONLY android.bluetooth importer for the feature (mesh/bluetooth/meshtastic/)
+                 └─ MeshtasticGatt           the kind's android.bluetooth half (mesh/bluetooth/meshtastic/): UUIDs,
+                    │                        numbers, `lora-dial`, FromNum, the `MeshtasticGatt` log tag
+                    └─ BoardGatt             the shared GATT core both kinds dial through (mesh/bluetooth/, Stage 3c):
+                                             connect · MTU settle · discover · one op at a time · stackCall
 ```
 
 **The neutral seam (ADR 2026-11.gsqu, Stage 1).** The transport reads its board through `BoardLink`, never
@@ -767,8 +770,12 @@ false are two encodings — both read as messagable); `Channel{ index=1, setting
 - **Header.** `LoraPlane { Off, Down, Live }` (`mesh/lora/LoraPlane.kt`) from `LoraStatusRepository.facts`
   (pushed) → `ConnectionStatusRow(lora = …)`: `Icons.Outlined.Sensors` (Live, tertiary) / `SensorsOff` (Down)
   after the cloud, spoken as "LoRa radio connected / not connected"; 45 s grace on the Down edge.
-- **LoRa radio screen.** `BondedBoardDirectory` marks each bonded device board-like (LE + `Meshtastic_xxxx` /
-  `<short>_xxxx` / the service UUID in cache); `BoardFilter.visible` lists those plus the bound board, with
+- **LoRa radio screen.** `BondedBoardDirectory` tags each bonded device with its `BoardKind` (`BoardFilter.kindOf`: LE
+  only; MeshCore first, on the `MeshCore-` name prefix alone, never the generic NUS UUID; else Meshtastic on
+  `Meshtastic_xxxx` / `<short>_xxxx` / the service UUID in cache). A MeshCore entry is listed but not pickable until
+  Stage 5 (`BoardOption.pickable`); a Meshtastic dial that finds no Meshtastic service twice in a row ends terminal
+  (`DialResult.ServiceAbsent`), so a MeshCore board bound by an older build is no longer redialled forever.
+  `BoardFilter.visible` lists the tagged devices plus the bound board, with
   "Show all paired devices" (`lora_show_all_boards`) for the rest; the list re-reads on resume
   (`refreshBoards`). A connected board shows the one setup section (`lora_setup` / `lora_restore`, ADR 045),
   firmware, **radios in range** (`lora_boards_heard`,
@@ -970,7 +977,8 @@ MeshcoreSession (pure, a BoardLink)   handshake · drain · polls · sends and t
   ├─ MeshcoreProto + Cobs             the companion frames both ways, total; COBS for the compact DM's text
   ├─ MeshcoreAckTable · MeshcorePins · MeshcoreHeadroom · MeshcoreAirRing   pure policies, @Synchronized
   └─ MeshcoreDialer / NusChannel (seam)   one frame per RX write and per TX notify; NusEvent.Frame / Disconnected
-       └─ (Stage 3c) mesh/bluetooth/meshcore/MeshcoreGatt
+       └─ MeshcoreGatt (Stage 3c)     mesh/bluetooth/meshcore/: NUS, MTU ≥ 176, `meshcore-dial`, TX subscribe, NusInbox
+            └─ BoardGatt               the GATT core it shares with MeshtasticGatt
 ```
 
 **The board answers every connected client at once** (`MultiSerialInterface`, bench Q8), and the user's own MeshCore
@@ -1035,6 +1043,19 @@ have held it. RADIO stats feed `BoardAir` over a ≥ 60 s ring
 - **The fake.** `FakeMeshcoreAir` runs the command handler per board and an air of neighbours and repeaters;
   `MeshcoreFakeVsSimTest` replays the simulator runs of Q11–Q15 into it and checks its answers and airings node by node.
   Nothing in it models the BLE side (Q8's 173-B notify cut, the four-frame queue) beyond `FakeNusChannel.dropFrame`.
+- **The GATT client (Stage 3c).** `MeshcoreGatt` dials through the `BoardGatt` core `MeshtasticGatt` uses, with its own
+  parameters: the Nordic UART service (`MeshcoreUuids`: RX `…02` written, TX `…03` notified, one companion frame each,
+  no framing byte), a 176-B MTU floor (`NusLinkPolicy.MIN_MTU`, the firmware's `MAX_FRAME_SIZE` and an ESP32 board's
+  cap, so a notify carries at most 173 B), its own arbiter tag `meshcore-dial`, and the `MeshcoreGatt` log tag. The dial
+  subscribes to TX before it opens. A write longer than `mtu − 3` is refused (`STATUS_TOO_LONG`), never sent as a long
+  write; every write is `WRITE_TYPE_DEFAULT`. Notifies land in a `NusInbox`: an unlimited channel bounded at 1,024 frames
+  or 256 KiB held, past which the connection ends under `STATUS_OVERFLOW` (counted in `inboxOverflows`), nothing
+  dropped. Pairing (`ESP_LE_AUTH_REQ_SC_MITM_BOND`, static passkey 123456 or the board's screen; Q8's random-PIN trap)
+  is the system's, at the first protected op: on an ESP32 the session's first RX write, under `BONDING_TIMEOUT_MS`; if a
+  board's CCCD needs encryption, the TX subscribe, given the same 90 s with the `meshcore-dial` hold released, and read
+  the same way — a bond refused, or a link closed with the board still unbonded (read settled, `BondSettle`), is
+  `NusDialResult.BondRefused`, terminal. No bond receiver (the bond is polled),
+  and an unbonded board is never dialled in the background. Nothing constructs it before Stage 5.
 
 ## Board setup (once, Meshtastic CLI or app)
 
