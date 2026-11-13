@@ -448,3 +448,113 @@ Built under the bluetooth design pass's binding rules, reachable from nothing un
   (strings and translations).
 - **Left for Stage 5.** A MeshCore dial that finds no NUS service still backs off (`Failed`, phase `service`); nothing
   dials a board the picker did not name MeshCore, and Stage 5 decides whether that ends terminal too.
+
+## Amendment 2026-11-13 — Stage 4: the profile names a MeshCore board, sealed-only and with no bit (draft)
+
+Built under the crypto- and security-reviewer design passes of 2026-11-13, whose rules were binding on the brief. It
+amends §7's "The profile" and §3's "Which contacts" and "What Knit removes". Nothing reads the field to act yet: Stage 5
+teaches from it.
+
+- **Sealed-only.** `meshcoreKey` rides `ProfilePayload` (text key `meshcoreKey`, canonical base64) and `ProfileV2` (label
+  **9**, 32 raw bytes) and **never** `ProfileContent`, so `FrameTranscoder` is untouched. §7 said "the profile"; the
+  cleartext frame floods eight hops, sits in every carrier's custody and reaches spools and the LoRa transcoder, and a key
+  there would tie the Knit node id, already in clear BLE and Aware adverts, to a radio identity whose adverts flood the
+  MeshCore network publicly and may carry a position. **Direct contacts only**: each recipient's sealed copy carries the
+  key only when it is in `DirectContacts`' set (an accept that is not a commons poster's automatic one, a verify, a DM we
+  wrote in; never the blocked, the tag-blocked or us). Every other confirmed session gets the same version without it: a
+  stranger gets a responder-confirmed session from one DM (#290) and a blocked person keeps theirs (#249). The accepted
+  cost: a contact learns the key only once a session is confirmed.
+- **No capability bit.** `CAP_MESHCORE_DIRECT` (§3, §7) is not minted. The key's presence in our sealed profile is the
+  claim of the compact DM door on that board, sent only while all four hold: the LoRa plane is on, the DM switch is on, a
+  MeshCore board reported a key `MeshcoreKey` accepts (`meshcore_board_pubkey`), and the build is bound to read a MeshCore
+  DM (`MeshManager.bindMeshcoreDirect`, beside `bindLoraDirect`). Nothing binds the seam in Stage 4; Stage 5 binds it from
+  `di/MeshModule` once the MeshCore child, the teaching and the inbox exist, so a Stage 4 build never claims a door it
+  cannot open, even when a backup brings `meshcore_board_pubkey` into it (`ownLora`'s own rule).
+- **Republishing.** A claim change moves a sealed-only version past the cleartext one, judged against a persisted
+  fingerprint (`MeshcoreClaimStore`: `meshcore_sealed_version`, `meshcore_published`, both riding a backup), as
+  `BadgeJournal.sealedVersion` does: one fresh version per change, so `sentProfileVersions` re-sends it to every
+  confirmed session, and the cleartext version never moves with no visible field changed. `custodyPresentsOtherThan`
+  could not judge it: it reads the cleartext custody row. **The audience is in the fingerprint**: while a key is claimed,
+  a change in the direct-contact set mints a fresh version too, and a version is only sealed for the set it was minted
+  for. The receiver's gate takes an equal version, so a peer that becomes a contact must get a strictly newer version
+  carrying the key, or the keyless copy it holds at the same version would stand; a peer blocked gets a newer keyless one,
+  which clears it.
+- **`CAP_LORA_DIRECT` is per kind.** It now needs a bound Meshtastic board (`ownLora`). It read only the switches, so after
+  a MeshCore bind cleared the Meshtastic identity the profile dropped `loraNode` / `loraKey` and kept the bit. §7's
+  "Binding a MeshCore board clears the Meshtastic binding, so `CAP_LORA_DIRECT` is not claimed beside it" was true of the
+  settings and not of the profile until this.
+- **Keys.** Canonical padded standard base64 of exactly 32 bytes (`CanonicalText.base64BytesOrNull`, the v3 encoder's
+  round trip), stored in that spelling and compared as bytes; an Ed25519 point by RFC 8032 §5.1.3, and not of low order,
+  which refuses the all-zero key with the rest of the 8-torsion (the #172 precedent). Field arithmetic over `BigInteger`,
+  as `XeddsaVerify` already does: a check, not a primitive. A key that fails drops the field and never the profile, and,
+  the profile being signed and newer, clears a stored key.
+- **Storage.** `peers.meshcoreKey` (DB 35 → 36 after the rebase onto main's v35, its own step; Stage 5 bumps again for its SQLCipher
+  contact table rather than change v36 in place, the 83cb47ce6 precedent; both fold into the next release's single bump, as v22–v27 did on
+  2026-10-18). Written only by the sealed writer under the existing gate (`version <= 0 || version < updatedAt` refused,
+  after `clampFuture`; absent clears); the cleartext writer never names it and carries it through on a `copy`.
+- **The board map** (`MeshManager.meshcoreBoardMap`, `MeshcoreBoardMap`), the input Stage 5 teaches from. Direct contacts
+  only (`DirectContacts.observe()`, so never a stranger, a commons poster's automatic accept — anyone with an invite could
+  otherwise contest a contact's key or have a key taught —, a blocked or tag-blocked peer, or ourselves), with a pinned
+  key, ranked verified, accepted (less the commons marks), authored, each carrying its row's `latestProfileVersion` — the
+  presentation watermark, not the claim's own version, so never what a re-teach is ordered by. Never a row whose key, as
+  bytes, is our bound board's. **Contested among live claimants only**: a key two live contacts claim is marked
+  `contested` on both and neither is taught; with no proof of possession nothing here can tell which holds it, and a newer
+  version alone never decides. A claimant is not live once this phone has not heard from it for 30 days (`lastSeenAt`, our
+  clock merged with `MAX`; the ratchet era's hard cap): a wiped or reinstalled identity never sends the sealed profile that
+  would clear its old claim, and would otherwise contest its successor's key at every contact for ever. Beside a live
+  claimant the dead ones leave the map. The profile version takes no part: it moves only on an edit, so a contact who has
+  not edited for a month is as live as one who did today, and two claimants' versions are two senders' clocks.
+- **A routing hint only.** Stage 5 never attributes an inbound DM by a board's 6-byte sender prefix: the compact door
+  names its sender by the pair seal's tag and AEAD alone (`LoraDirectSeal`'s trust boundary).
+- **Never in logs or exports.** No log line, field-log line, debug-bridge or USB-control reply carries the key or a map
+  entry (`MeshcoreBoardHolder.toString` names no key; `MeshcoreProfileLabTest` checks every node's log).
+- **Owed by Stage 5.**
+  - Before it binds the seam, narrow the fan-out on an audience-only mint: seal only to the peers whose `keyFor` answer
+    changed, and mark every other owed session sent at the new version. A full fan-out per contact change is a burst of
+    sealed `CHAT` frames under our own sender, and custody's per-sender quota of 200 can evict our own older DMs in it.
+  - `offerLoraDirect` and the compact-tick gate read the claim of the kind `LoraDirectRouter.sinkFor` answered —
+    `CAP_LORA_DIRECT` for a Meshtastic sink, a stored `meshcoreKey` for a MeshCore one — never the bit alone.
+  - `bindMeshcoreDirect` is bound in `di/MeshModule` **before** `start()`: bound after it, every restart mints twice (an
+    unclaimed version at start, then the claim).
+  - `MeshcoreKey`'s point check is memoized by key string before anything collects `meshcoreBoardMap` on every
+    `observePeers` emission: it is a few hundred microseconds of `BigInteger` per row.
+
+Review of Stage 4 (crypto- and security-reviewer, 2026-11-13), applied: the key to direct contacts only, with the
+audience in the version; the map fed by the direct-contact set; contests among live claimants only;
+`MeshcoreBoardHolder.latestProfileVersion` named for what it is; `PeerEntity.toString` says the key only as set or unset.
+
+Second round (2026-11-13), applied:
+
+- **Liveness is `lastSeenAt` alone.** The first round's "or its newest profile is more than 30 days behind a rival's"
+  decided on the newer version, which the contested rule forbids: it dropped a live contact who had not edited for 35 days
+  whenever anyone claimed her key today.
+- **One version, one length.** With the key going to direct contacts only, a keyed copy was 35 B (compact) or 58 B
+  (named) longer than the copies every other confirmed session gets, and the burst of `CHAT` frames, each naming its
+  recipient, would show every relay, radio and carrier who is a contact, and date an accept or a block by a copy that grew
+  or shrank. While a key is claimed, every keyless copy carries `MessageContent.pad` (`"p"` on the named layout, the
+  reserved compact label 12), zero bytes sized by the sealing encoder so its plaintext is exactly the keyed copy's length
+  in the recipient's layout (`MeshcoreProfilePad`; a byte long where CBOR cannot spell the gap, never short), as ADR
+  2026-11.xp6d pads `CTL_PRESENCE_KEY`. Additive: old builds and iOS skip an unknown label or key, and a receiver reads
+  and discards it (nothing on the receive side changed). Vectors `messageContentV2ProfilePadded` and
+  `messageContentProfilePadded`. **Accepted cost:** a burst on a contact-set change still dates "the contact set
+  changed" — a version minted with no visible field moved — though not whose membership moved.
+- **One version, one audience.** The audience carries the version it was read at under `profileLock`, and the fan-out and
+  the intro seal and record that version, re-reading once if another was minted in between; before, they re-read
+  `profileVersion()` after the lock and could seal the newer version for the older set.
+
+**§3 amended.** "Which contacts" is the board map above, not "the pinned contacts whose signed profile carries `meshcoreKey`
+and `CAP_MESHCORE_DIRECT`". "What Knit removes" changes from snapshot-and-overwrite to **refusal**: Stage 5 never
+overwrites a board contact Knit did not add, so there is no snapshot to put back; a key already on the board as someone
+else's contact is left alone and the teaching refused (the Stage 3 amendment's "teaching never evicts" said the same of
+slots). Re-teach churn is bounded as Meshtastic's is: `LoraContactPolicy`'s `MAX_KEYS_PER_DAY` (2 distinct keys per peer
+per day) and a write memo per board and key, so a contact whose profile flips between keys cannot make our board rewrite
+its table.
+
+**Deferred, a decision for the maintainer: proof of possession.** A sealed `meshcoreSig`, the board's Ed25519 signature over
+`"knit-meshcore-bind/v1" ‖ nodeId ‖ key` made through `CMD_SIGN_START` / `DATA` / `FINISH`, can be added later as another
+optional sealed field. Until then a false claim can only misroute the claimant's own DMs to a board that drops them, since
+a board drops DMs from non-contacts.
+
+**Paired.** knit-ios parses label 9 and the text key on `ProfilePayload` only, keeps the key apart from what its cleartext
+writer touches, applies the same canonical-32-byte and point checks, and never advertises a key. iOS skips unknown CBOR
+labels, so an older iOS keeps the profile. The brief is written and not yet sent.

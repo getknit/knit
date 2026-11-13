@@ -30,6 +30,7 @@ class PeerDaoTest : RoomDbTest() {
                     deviceTag = "tag",
                     updatedAt = 5L,
                     openToChat = true,
+                    meshcoreKey = MESHCORE_A,
                 ),
             )
             val got = dao.findByNodeId("a")!!
@@ -38,6 +39,14 @@ class PeerDaoTest : RoomDbTest() {
             assertTrue(got.verified)
             assertEquals("tag", got.deviceTag)
             assertTrue(got.openToChat)
+            assertEquals(MESHCORE_A, got.meshcoreKey)
+            // The ON CONFLICT branch replaces the MeshCore key in place (ADR 2026-11.gsqu, Stage 4): a newer sealed profile's
+            // key, then its absence, which clears it.
+            dao.upsert(got.copy(meshcoreKey = MESHCORE_B, updatedAt = 6L))
+            assertEquals(MESHCORE_B, dao.findByNodeId("a")!!.meshcoreKey)
+            dao.upsert(got.copy(meshcoreKey = null, updatedAt = 7L))
+            assertNull(dao.findByNodeId("a")!!.meshcoreKey)
+            assertEquals("the rest of the row stayed", "Ada", dao.findByNodeId("a")!!.name)
         }
 
     @Test
@@ -285,5 +294,9 @@ class PeerDaoTest : RoomDbTest() {
 
     private companion object {
         const val LIMIT = 1_024
+
+        // RFC 8032 TESTs 1 and 2's public keys.
+        const val MESHCORE_A = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+        const val MESHCORE_B = "PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw="
     }
 }

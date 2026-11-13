@@ -5882,6 +5882,94 @@ class InboundPipelineTest {
             assertNull(checkNotNull(rig.peerMap[alice.nodeId]).loraKey)
         }
 
+    // --- The MeshCore board a sealed profile claims (ADR 2026-11.gsqu, Stage 4) ---
+
+    /** RFC 8032 TEST 1's public key: a full-order Ed25519 point, as a MeshCore board's is. */
+    private val meshcoreKey = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+
+    /** A sealed `CTL_PROFILE` from [author] at [version], compact (v3) whenever its content has a compact form. */
+    private fun V2Author.sealedProfile(
+        id: String,
+        version: Long,
+        name: String = "Ann",
+        key: String? = null,
+    ): RelayEnvelope {
+        val pr = ProfilePayload(name = name, status = "", version = version, meshcoreKey = key)
+        val v3 = MessageContentV2.encodeOrNull(MessageContent(body = "", ctl = MessageContent.CTL_PROFILE, pr = pr)) != null
+        return dm(id, "", ctl = MessageContent.CTL_PROFILE, pr = pr, v3 = v3)
+    }
+
+    /**
+     * The key is the sealed writer's alone: a sealed profile stores it, a newer cleartext profile neither sets nor clears
+     * it (it has no such field), a sealed name edit over v3 carries it again and keeps it, a stale sealed profile moves
+     * nothing, and a newer sealed one without it clears it.
+     */
+    @Test
+    fun aSealedProfileStoresTheMeshcoreKeyAndOnlyANewerSealedOneMovesIt() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profileWithPrekey(alice, sentAt = 10L, prekey = null, version = 10L))
+            val author = V2Author(alice, rig)
+
+            fun row() = checkNotNull(rig.peerMap[alice.nodeId])
+
+            rig.deliver(alice, author.sealedProfile("mc-1", version = 20L, key = meshcoreKey))
+            assertEquals(meshcoreKey, row().meshcoreKey)
+
+            rig.deliver(alice, rig.profileWithPrekey(alice, sentAt = 30L, prekey = null, version = 30L, name = "Clear"))
+            assertEquals("the cleartext profile applied", "Clear", row().name)
+            assertEquals("and left the key alone", meshcoreKey, row().meshcoreKey)
+
+            rig.deliver(alice, author.sealedProfile("mc-2", version = 40L, name = "Ann B", key = meshcoreKey))
+            assertEquals("Ann B", row().name)
+            assertEquals(meshcoreKey, row().meshcoreKey)
+
+            // Custody re-serving an older sealed profile, one that predates the claim: refused whole.
+            rig.deliver(alice, author.sealedProfile("mc-3", version = 35L, name = "Stale"))
+            assertEquals("Ann B", row().name)
+            assertEquals("a stale sealed profile clears nothing", meshcoreKey, row().meshcoreKey)
+
+            rig.deliver(alice, author.sealedProfile("mc-4", version = 50L))
+            assertNull("absent on a newer sealed profile clears it", row().meshcoreKey)
+        }
+
+    /**
+     * A key that is not a canonical, full-order Ed25519 key drops the field alone: the rest of the profile applies, and,
+     * the profile being newer, the key it replaces is cleared.
+     */
+    @Test
+    fun aBadMeshcoreKeyDropsTheFieldNotTheProfile() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profileWithPrekey(alice, sentAt = 10L, prekey = null, version = 10L))
+            val author = V2Author(alice, rig)
+
+            fun hexKey(hex: String): String = b64(ByteArray(32) { hex.substring(2 * it, 2 * it + 2).toInt(16).toByte() })
+            val bad =
+                listOf(
+                    "stray bits" to "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURp=",
+                    "unpadded" to meshcoreKey.trimEnd('='),
+                    "31 bytes" to b64(ByteArray(31) { 9 }),
+                    "33 bytes" to b64(ByteArray(33) { 9 }),
+                    "all zero" to b64(ByteArray(32)),
+                    "not a point" to hexKey("02" + "00".repeat(31)),
+                    "the identity" to hexKey("01" + "00".repeat(31)),
+                    "order 8" to hexKey("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"),
+                    "y ≥ p" to hexKey("ed" + "ff".repeat(30) + "7f"),
+                )
+            var version = 20L
+            for ((what, key) in bad) {
+                rig.deliver(alice, author.sealedProfile("mc-good-$version", version = version++, key = meshcoreKey))
+                assertEquals(meshcoreKey, rig.peerMap[alice.nodeId]?.meshcoreKey)
+                rig.deliver(alice, author.sealedProfile("mc-bad-$version", version = version, name = "Ann $what", key = key))
+                assertEquals("$what: the profile applied", "Ann $what", rig.peerMap[alice.nodeId]?.name)
+                assertNull("$what: the key dropped and cleared", rig.peerMap[alice.nodeId]?.meshcoreKey)
+                version++
+            }
+        }
+
     @Test
     fun aMismatchFromABlockedContactsNumberIsAStrangersPostNotTheirs() =
         runTest {

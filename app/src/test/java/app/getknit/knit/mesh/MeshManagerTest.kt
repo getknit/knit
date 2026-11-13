@@ -495,6 +495,8 @@ class MeshManagerTest {
         private val rootChanges: MutableSharedFlow<String>? = null,
         // When set, the manager runs a presence-key engine over it (ADR 2026-11.xp6d); null runs none, as before.
         private val directContacts: DirectContacts? = null,
+        // When set, the manager keeps its sealed MeshCore claim here (ADR 2026-11.gsqu, Stage 4); null reads none, as before.
+        private val meshcoreClaims: MeshcoreClaimJournal? = null,
     ) {
         val me = party()
         val bob = party()
@@ -687,6 +689,7 @@ class MeshManagerTest {
                 commons = commons,
                 extraCapabilities = extraCapabilities,
                 directContacts = directContacts,
+                meshcoreClaims = meshcoreClaims,
             )
 
         /**
@@ -2890,6 +2893,82 @@ class MeshManagerTest {
             rig.loraEnabled.value = false
             rig.await(3) { rig.custodiedProfiles().size }
             assertNull("no board named while the plane is off", latest().loraNode)
+            rig.manager.stop()
+        }
+
+    /**
+     * [Protocol.CAP_LORA_DIRECT] is Meshtastic's door (ADR 2026-11.gsqu, Stage 4): claimed only beside a bound Meshtastic
+     * board. A MeshCore bind clears the Meshtastic identity ([app.getknit.knit.data.settings.BoardBindPolicy]), and the
+     * profile then drops `loraNode` / `loraKey` and the bit together, where it used to keep the bit.
+     */
+    @Test
+    fun theLoraDoorIsClaimedOnlyBesideABoundMeshtasticBoard() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(rig.now))
+            rig.stubHealState()
+
+            fun latest(): ProfileContent = WireCodec.decodePayload<ProfileContent>(rig.custodiedProfiles().last().payload)!!
+
+            fun claims(): Boolean = (latest().capabilities ?: 0L) and Protocol.CAP_LORA_DIRECT != 0L
+
+            rig.bindLora()
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size }
+            assertNull(latest().loraNode)
+            assertFalse("no board bound, no door: the switches alone claim nothing", claims())
+
+            rig.loraBoard.value = LoraBoard(0x1234L, "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4=")
+            rig.await(2) { rig.custodiedProfiles().size }
+            assertEquals(0x1234L, latest().loraNode)
+            assertTrue(claims())
+
+            // A MeshCore bind: BoardBindPolicy clears lora_board_node and lora_board_key, the switches stay on.
+            rig.loraBoard.value = null
+            rig.await(3) { rig.custodiedProfiles().size }
+            assertNull(latest().loraNode)
+            assertNull(latest().loraKey)
+            assertFalse("the door goes with the board", claims())
+            rig.manager.stop()
+        }
+
+    /**
+     * Our sealed profile's MeshCore key (ADR 2026-11.gsqu, Stage 4) is claimed only with the seam bound, the plane and its
+     * DM switch on and a MeshCore board's key reported; each change of the claim mints exactly one sealed-only version, and
+     * the cleartext profile never moves for it (the key is not on it, and its version moving would tell every carrier).
+     */
+    @Test
+    fun theMeshcoreClaimMintsOneSealedVersionPerChangeAndNeedsTheSeam() =
+        runTest(UnconfinedTestDispatcher()) {
+            val claims = FakeMeshcoreClaims()
+            val rig = Rig(backgroundScope, meshcoreClaims = claims)
+            rig.stubProfileState(MutableStateFlow(rig.now))
+            rig.stubHealState()
+            claims.boardKey.value = MESHCORE_KEY
+
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size }
+            rig.healAndAwait()
+            assertEquals("a board bound, the switches on, but no seam: no claim, so nothing to publish", 0, claims.puts.size)
+
+            rig.manager.bindMeshcoreDirect()
+            rig.await(1) { claims.puts.size }
+            rig.healAndAwait()
+            assertEquals("one version for the claim, and a heal with nothing changed mints none", 1, claims.puts.size)
+
+            rig.loraDmEnabled.value = false
+            rig.await(2) { claims.puts.size }
+            rig.loraDmEnabled.value = true
+            rig.await(3) { claims.puts.size }
+            // The board unbound, then a report that is not a key: both claim nothing, so only the first is a change.
+            claims.boardKey.value = null
+            rig.await(4) { claims.puts.size }
+            claims.boardKey.value = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+            rig.healAndAwait()
+            assertEquals(4, claims.puts.size)
+            assertEquals("each version is past the one before", claims.puts.sorted(), claims.puts.distinct())
+            assertTrue(claims.puts.first() >= rig.now)
+            assertEquals("the cleartext profile never moved for it", 1, rig.custodiedProfiles().size)
             rig.manager.stop()
         }
 
@@ -7450,3 +7529,23 @@ internal class LoraOffer(
     val plaintext: ByteArray,
     val kind: DirectKind,
 )
+
+/** The sealed MeshCore claim's journal in memory (ADR 2026-11.gsqu, Stage 4), recording each version minted. */
+private class FakeMeshcoreClaims : MeshcoreClaimJournal {
+    override val boardKey = MutableStateFlow<String?>(null)
+    override val sealedVersion = MutableStateFlow(0L)
+    override val publishedFingerprint = MutableStateFlow<String?>(null)
+    val puts = CopyOnWriteArrayList<Long>()
+
+    override suspend fun putSealed(
+        version: Long,
+        fingerprint: String,
+    ) {
+        sealedVersion.value = version
+        publishedFingerprint.value = fingerprint
+        puts += version
+    }
+}
+
+/** RFC 8032 TEST 1's public key: a full-order Ed25519 point, as a MeshCore board's is. */
+private const val MESHCORE_KEY = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="

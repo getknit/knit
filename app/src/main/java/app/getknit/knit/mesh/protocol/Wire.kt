@@ -880,6 +880,17 @@ class PresenceKeyPayload(
  * in their display order. Sealed-only, so payment status reaches contacts and never a carrier or the LoRa
  * bootstrap; a receiver keeps them in a store of their own that only a sealed profile replaces, which is what
  * keeps a cleartext profile from reverting them. Nullable, elided while none is shown, and absent clears.
+ *
+ * [meshcoreKey] is the second sealed-only field (ADR 2026-11.gsqu, Stage 4): the 32-byte Ed25519 public key of the
+ * MeshCore board the sender's phone drives, as canonical padded base64 (the [loraKey] convention; raw on the compact
+ * layout). **Its presence is the claim of the compact DM door on that board**, so it is sent only while the sender's LoRa
+ * plane and DM switch are on, a MeshCore board is bound and its build reads a MeshCore DM: there is no capability bit
+ * beside it. Never on [ProfileContent]: the cleartext frame floods eight hops and sits in every carrier's custody, and a
+ * key there would tie a Knit node id, already in clear adverts, to a radio identity whose own adverts flood publicly. A
+ * receiver keeps it apart from what the cleartext writer touches, replaces it only from a sealed profile that passes the
+ * version gate (absent clears), and refuses a non-canonical or low-order key by dropping the field alone
+ * (`mesh/crypto/MeshcoreKey`). A routing hint only: never what an inbound DM is attributed by. Nullable, elided while
+ * unclaimed, so every existing profile's bytes are unchanged.
  */
 @Serializable
 data class ProfilePayload(
@@ -891,6 +902,7 @@ data class ProfilePayload(
     val loraNode: Long? = null,
     val loraKey: String? = null,
     val badges: List<BadgeEntry>? = null,
+    val meshcoreKey: String? = null,
 )
 
 /**

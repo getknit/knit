@@ -53,6 +53,7 @@ import app.getknit.knit.location.GeoUri
 import app.getknit.knit.mesh.crypto.AesGcm
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.LinkSignals
+import app.getknit.knit.mesh.crypto.MeshcoreKey
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
@@ -2365,6 +2366,11 @@ class InboundPipeline(
                 openToChat = payload.openToChat,
                 loraNode = payload.loraNode,
                 loraKey = payload.loraKey,
+                // This path's alone (ADR 2026-11.gsqu, Stage 4): the MeshCore board the sender claims the compact door on.
+                // The cleartext writer never names it, so only a newer sealed profile moves it, and absent clears. A key that
+                // is not a canonical, full-order Ed25519 key drops the field alone, and so clears it too: the profile is the
+                // sender's own signed and newer word that it names no board we could teach.
+                meshcoreKey = MeshcoreKey.canonicalOrNull(payload.meshcoreKey),
             ),
         )
         // The supporter badges are this path's alone (docs/SUPPORTER_BADGE.md C-6-2, ADR 2026-10.r99s): stored apart,

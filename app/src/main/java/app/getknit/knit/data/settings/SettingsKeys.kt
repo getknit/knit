@@ -127,6 +127,12 @@ object SettingsKeys {
     const val MESHCORE_ROOM_ENABLED = "meshcore_room_enabled"
     const val MESHCORE_POST_CONSENTED = "meshcore_post_consented"
 
+    // The sealed profile's MeshCore claim (ADR 2026-11.gsqu, Stage 4, `MeshcoreClaimStore`): the version a claim change
+    // was published under and a fingerprint of what it published (never the key). Both ride a backup, as the badge's
+    // pair does, since a restored phone must never publish below a version its peers hold.
+    const val MESHCORE_SEALED_VERSION = "meshcore_sealed_version"
+    const val MESHCORE_PUBLISHED = "meshcore_published"
+
     /**
      * Keys a backup never carries: state about *this phone's* radios and ROM (the Aware give-up and
      * initiator-hold journals, the model poison-pill latch), and the paired LoRa board's address, names and

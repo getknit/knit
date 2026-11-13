@@ -1297,12 +1297,41 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 35 to 36 keeps every peer and records no MeshCore board for any`() =
+        runTest {
+            helper.createDatabase(35).use { c ->
+                c.execSQL(
+                    "INSERT INTO peers (nodeId, name, status, verified, updatedAt, openToChat, loraNode, loraKey, lastSeenAt, " +
+                        "advertisedKnown) VALUES ('peer-1','Ann','',1,7,0,3735928559,'lora-key',9,1)",
+                )
+            }
+            helper.runMigrationsAndValidate(36, listOf(KnitMigrations.MIGRATION_35_36)).use { c ->
+                c.prepare("SELECT name, verified, loraNode, loraKey, meshcoreKey FROM peers WHERE nodeId = 'peer-1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("Ann", s.getText(0))
+                    assertEquals(1L, s.getLong(1))
+                    assertEquals(3735928559L, s.getLong(2))
+                    assertEquals("lora-key", s.getText(3))
+                    // ADR 2026-11.gsqu, Stage 4: no profile before this carried one; the next sealed profile fills it.
+                    assertTrue(s.isNull(4))
+                    assertFalse(s.step())
+                }
+                // The sealed writer's shape: the column takes a key and gives it back.
+                c.execSQL("UPDATE peers SET meshcoreKey = '11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=' WHERE nodeId = 'peer-1'")
+                c.prepare("SELECT meshcoreKey FROM peers WHERE nodeId = 'peer-1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=", s.getText(0))
+                }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 35
+        const val CURRENT_VERSION = 36
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

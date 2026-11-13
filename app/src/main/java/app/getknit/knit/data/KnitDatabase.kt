@@ -74,7 +74,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 35
+internal const val KNIT_DB_SCHEMA_VERSION = 36
 
 @Database(
     entities = [
@@ -297,6 +297,10 @@ internal const val KNIT_DB_SCHEMA_VERSION = 35
     //     our messages was applied (null on existing rows: we never observed a read), and one `read_marks` table, the
     //     reader's durable outbox of reads owed to their authors. `read_marks` is local only and never in a backup.
     //     Migrated by KnitMigrations.MIGRATION_34_35.
+    // v36: `peers.meshcoreKey` — the MeshCore board a peer's latest sealed profile claims (ADR 2026-11.gsqu, Stage 4),
+    //     written only by the sealed profile writer. Carried in a backup with its row; null on existing rows (no profile
+    //     before this carried one). Its own version because lab phones run Stage 4 before Stage 5's own bump; both fold
+    //     into the next release's. Migrated by KnitMigrations.MIGRATION_35_36.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds

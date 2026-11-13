@@ -22,11 +22,16 @@ import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.VideoInfo
 import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ByteArraySerializer
 import kotlinx.serialization.cbor.ByteString
 import kotlinx.serialization.decodeFromByteArray
+import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encodeToByteArray
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 
 /**
  * The plaintext payload of an encrypted DM/group message — everything that must stay private. It is
@@ -138,6 +143,14 @@ data class MessageContent(
     // Toward one that has it, every receipt and every inline-ack DM carries it. Label 20 in the compact layout. A build that
     // predates it ignores the key and applies the ids as a plain ✓✓, which a read implies.
     val rm: Long? = null,
+    // Filler that means nothing, as a byte count (additive; ADR 2026-11.gsqu's Stage 4 review): one CBOR byte string of
+    // that many zero bytes under "p", label 12 in the compact layout (the label `MessageContentV2` reserved for exactly
+    // this). A sender sizes it so every copy of one sealed profile version is one length whether or not it carries the
+    // MeshCore key (`MeshcoreProfilePad`); a reader discards it. Absent while null, so nothing unpadded moved a byte.
+    @SerialName("p")
+    @ByteString
+    @Serializable(with = PadSerializer::class)
+    val pad: Int? = null,
 ) {
     @OptIn(ExperimentalSerializationApi::class)
     fun encode(): ByteArray = cryptoCbor.encodeToByteArray(this)
@@ -258,4 +271,21 @@ internal fun MessageEntity.sealedContent(): MessageContent {
         lang = declared.langIndex,
         reads = declared.readsIndex,
     )
+}
+
+/**
+ * [MessageContent.pad] on the wire: a byte string of that many zero bytes, read back as its length. The domain keeps the
+ * count, not the bytes, so the data class stays equal by value and no filler is ever held.
+ */
+internal object PadSerializer : KSerializer<Int> {
+    private val bytes = ByteArraySerializer()
+
+    override val descriptor: SerialDescriptor = SerialDescriptor("app.getknit.knit.Pad", bytes.descriptor)
+
+    override fun serialize(
+        encoder: Encoder,
+        value: Int,
+    ) = encoder.encodeSerializableValue(bytes, ByteArray(value.coerceAtLeast(0)))
+
+    override fun deserialize(decoder: Decoder): Int = decoder.decodeSerializableValue(bytes).size
 }

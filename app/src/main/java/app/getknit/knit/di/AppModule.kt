@@ -62,6 +62,7 @@ import app.getknit.knit.data.settings.CallPreferenceStore
 import app.getknit.knit.data.settings.HiddenKnownStore
 import app.getknit.knit.data.settings.HomeStore
 import app.getknit.knit.data.settings.IncomingCallStore
+import app.getknit.knit.data.settings.MeshcoreClaimStore
 import app.getknit.knit.data.settings.OwnIceStore
 import app.getknit.knit.data.settings.ReviewPromptStore
 import app.getknit.knit.data.settings.SettingsKeys
@@ -272,6 +273,8 @@ val appModule =
         // The supporter badge (docs/SUPPORTER_BADGE.md, ADR 2026-10.r99s): the holder's toggle and held badges beside the
         // customer keys, and every peer's received badges verified at display time against this build's pinned keys.
         single { BadgeStore(get()) }
+        // The sealed profile's MeshCore claim (ADR 2026-11.gsqu, Stage 4): the bound board's key and its sealed-only version.
+        single { MeshcoreClaimStore(get()) }
         single { HiddenKnownStore(get()) }
         single { PeerBadges(get<PeerRepository>().observeBadges(), get<CoroutineScope>(), BadgeKeys.forBuild(BuildConfig.DEBUG)) }
         // A build without Knit Anywhere (release: ANYWHERE_WIRED off) hands the applier no key store, so an invite's

@@ -252,6 +252,7 @@ interface PeerDao {
             lastSeenAt = peer.lastSeenAt,
             advertisedAvatar = peer.advertisedAvatar,
             advertisedKnown = peer.advertisedKnown,
+            meshcoreKey = peer.meshcoreKey,
         )
 
     /** The statement [upsert] actually runs, flattened — see its doc comment for why. */
@@ -259,10 +260,10 @@ interface PeerDao {
     @Query(
         "INSERT INTO peers (nodeId, name, status, avatarHash, pubKey, verified, deviceTag, protoVersion, " +
             "capabilities, updatedAt, prekeyId, prekeyPub, prekeySig, prekeyProfileAt, openToChat, loraNode, loraKey, " +
-            "lastSeenAt, advertisedAvatar, advertisedKnown) " +
+            "lastSeenAt, advertisedAvatar, advertisedKnown, meshcoreKey) " +
             "VALUES (:nodeId, :name, :status, :avatarHash, :pubKey, :verified, :deviceTag, :protoVersion, " +
             ":capabilities, :updatedAt, :prekeyId, :prekeyPub, :prekeySig, :prekeyProfileAt, :openToChat, " +
-            ":loraNode, :loraKey, :lastSeenAt, :advertisedAvatar, :advertisedKnown) " +
+            ":loraNode, :loraKey, :lastSeenAt, :advertisedAvatar, :advertisedKnown, :meshcoreKey) " +
             "ON CONFLICT(nodeId) DO UPDATE SET " +
             "name = excluded.name, status = excluded.status, avatarHash = excluded.avatarHash, " +
             "pubKey = excluded.pubKey, verified = excluded.verified, deviceTag = excluded.deviceTag, " +
@@ -271,7 +272,8 @@ interface PeerDao {
             "prekeySig = excluded.prekeySig, prekeyProfileAt = excluded.prekeyProfileAt, " +
             "openToChat = excluded.openToChat, loraNode = excluded.loraNode, loraKey = excluded.loraKey, " +
             "lastSeenAt = MAX(peers.lastSeenAt, excluded.lastSeenAt), " +
-            "advertisedAvatar = excluded.advertisedAvatar, advertisedKnown = excluded.advertisedKnown",
+            "advertisedAvatar = excluded.advertisedAvatar, advertisedKnown = excluded.advertisedKnown, " +
+            "meshcoreKey = excluded.meshcoreKey",
     )
     suspend fun upsertRow(
         nodeId: String,
@@ -294,5 +296,6 @@ interface PeerDao {
         lastSeenAt: Long,
         advertisedAvatar: String?,
         advertisedKnown: Boolean,
+        meshcoreKey: String?,
     )
 }

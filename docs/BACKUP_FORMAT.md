@@ -144,8 +144,10 @@ board again brings them back), and the profile frame this phone signed last (`ow
 phone's first start mints a fresh stamp before it reads one). The board's node number and key stay — they ride the
 profile. A MeshCore board's keys split the same way, key by key (ADR 2026-11.gsqu): its `meshcore_device_address`,
 `meshcore_device_name`, `meshcore_setup_…`, `meshcore_prior_…` and `meshcore_plane_state` stay, while its public key
-(`meshcore_board_pubkey`), its Public-channel switch and its post consent ride. No settings key holds a board's
-contacts. Relay URLs are carried
+(`meshcore_board_pubkey`), its Public-channel switch and its post consent ride, as do the version and fingerprint the
+sealed profile's MeshCore claim was last published under (`meshcore_sealed_version`, `meshcore_published`; ADR
+2026-11.gsqu, Stage 4), so a restored phone never publishes below a version its peers hold. No settings key holds a
+board's contacts. Relay URLs are carried
 *with* their bearer tokens: they are the user's, and the file is sealed.
 
 Two keys are written **at restore time**, not at backup time: `onboarding_seen = true` (or the name page

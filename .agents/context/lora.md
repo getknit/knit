@@ -257,7 +257,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   persisted or pruned; `received` always wins in every reader. A flight evicted from the full table is remembered, so
   its late ack still moves the marks.
 - **Before adding a second board kind (MeshCore), making `MeshtasticLink` board-neutral, or touching `BoardLink`,
-  `BoardKindHooks`, `BoardTraits`, `BoardKind`, `Ceiling.FLOOD`, `meshcoreKey` / `CAP_MESHCORE_DIRECT` or anything
+  `BoardKindHooks`, `BoardTraits`, `BoardKind`, `Ceiling.FLOOD`, `meshcoreKey` (there is no `CAP_MESHCORE_DIRECT`: the next entry) or anything
   under `mesh/lora/meshcore/` / `mesh/bluetooth/meshcore/`:** READ ADR 2026-11.gsqu (the build shape: one plane
   instance per board kind over a neutral core, a ledger per board; the compact DM as a COBS-framed contact text DM,
   pinned zero-hop on both boards and retried by Knit; own room posts in up to two elided packets under
@@ -302,6 +302,27 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   set plugs in. Every transmission carries a byte that varies per send, because MeshCore drops byte-identical packets
   network-wide. The Meshtastic plane's ADRs above do not carry over: no signing cliff, no `hop_limit`, no
   `BoardQuiet`.
+
+- **Before touching what our profile claims about a board — `MeshManager.ownLora` / `OwnLora`, `Protocol.CAP_LORA_DIRECT` as
+  we claim it, `MeshManager.bindMeshcoreDirect` / `ownMeshcoreKey` / `watchMeshcoreClaim` /
+  `publishMeshcoreClaimIfChanged`, `MeshcoreClaimRule`, `MeshcoreClaimJournal` / `MeshcoreClaimStore`
+  (`meshcore_sealed_version`, `meshcore_published`), `ProfilePayload.meshcoreKey` / `ProfileV2` label 9,
+  `PeerEntity.meshcoreKey`, `MeshManager.meshcoreBoardMap` / `MeshcoreBoardMap` / `MeshcoreBoardHolder` /
+  `MeshcoreRank`, or `MeshcoreKey`:** READ ADR 2026-11.gsqu's Stage 4 amendment, then `docs/WIRE_COMPAT.md`'s MeshCore-key
+  precedent and the contacts entry in `contacts.md`. Each kind claims its own door. `CAP_LORA_DIRECT` is Meshtastic's:
+  claimed only beside a bound Meshtastic board (the reported node `loraNode` names), so a MeshCore bind, which clears that
+  identity, takes the bit with it. MeshCore's door has **no bit**: the sealed profile's `meshcoreKey` is the claim, sent
+  only while the plane and its DM switch are on, a MeshCore board reported a key `MeshcoreKey` accepts, and the build is
+  bound to read a MeshCore DM (`bindMeshcoreDirect`, bound by nothing until Stage 5, which binds it from `di/MeshModule`
+  beside `bindLoraDirect`). A claim change mints a sealed-only version (`MeshcoreClaimStore`, the badge's rule), never a
+  cleartext one. **Owed by Stage 5:** `offerLoraDirect` and the compact-tick gate must read the claim of the kind
+  `LoraDirectRouter.sinkFor` answered (`CAP_LORA_DIRECT` for a Meshtastic sink, a stored `meshcoreKey` for a MeshCore one),
+  never the bit alone; bind `bindMeshcoreDirect` before `start()`; memoize `MeshcoreKey`'s point check before collecting
+  the map; and the board map Stage 5 teaches from is `meshcoreBoardMap` (`DirectContacts`' set only, ranked, our own
+  board excluded, contested keys among live claimants marked and never taught, `latestProfileVersion` never a re-teach
+  order). The key itself is sent to direct contacts only (`MeshcoreAudience`). Regression: `MeshcoreClaimTest`, `MeshcoreKeyTest`,
+  `MeshManagerTest.theLoraDoorIsClaimedOnlyBesideABoundMeshtasticBoard` /
+  `theMeshcoreClaimMintsOneSealedVersionPerChangeAndNeedsTheSeam`, `MeshcoreProfileLabTest`.
 
 - **Before touching the MeshCore client — `MeshcoreSession`, `MeshcoreProto` (`McFrame`, `McReject`, `ContactRecord`,
   `expectedAck`, `ENCODED_COMMANDS`, `KNIT_DATA_TYPE`, `MIN_FIRMWARE_VERSION_CODE`), `Cobs`, `MeshcoreDialer` /

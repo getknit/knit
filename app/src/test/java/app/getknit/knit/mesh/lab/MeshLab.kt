@@ -66,6 +66,7 @@ import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.CallTombStore
 import app.getknit.knit.data.settings.ContributionTotals
 import app.getknit.knit.data.settings.HomeStore
+import app.getknit.knit.data.settings.MeshcoreClaimStore
 import app.getknit.knit.data.settings.SettingsKeys
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.settings.TicketKeyStore
@@ -1571,6 +1572,17 @@ class LabNode internal constructor(
     /** The holder's side of the supporter badge (ADR 2026-10.r99s), in the same settings file, kept across restarts. */
     val badges = BadgeStore(dataStore)
 
+    /** The sealed profile's MeshCore claim (ADR 2026-11.gsqu, Stage 4), in the same settings file, kept across restarts. */
+    val meshcoreClaims = MeshcoreClaimStore(dataStore)
+
+    /**
+     * Whether this node's build reads a MeshCore DM: each boot binds `MeshManager.bindMeshcoreDirect`, as Stage 5's
+     * `di/MeshModule` will. Off by default, as a Stage 4 build is. Set by [driveMeshcoreBoard].
+     */
+    @Volatile
+    var readsMeshcoreDms = false
+        private set
+
     /**
      * Whether this node's image classifier calls every picture it decodes explicit — what the bundled model
      * says of a picture it minds. Read at each classification, so a scenario can flip it mid-run; kept across
@@ -2156,6 +2168,7 @@ class LabNode internal constructor(
                 freeKeys = freeKeys,
                 accountIssuer = freeIssuer,
                 badgeJournal = badges,
+                meshcoreClaims = meshcoreClaims,
                 badgePins = listOf(BadgeKeys.RFC8032_TEST1),
                 onCallSignal = { sender, payload, sentAt -> calls.onSignal(sender, payload, sentAt) },
                 onCallTalk = { _, chunk, _, _, viaRelay -> heardTalk(chunk, viaRelay) },
@@ -2267,11 +2280,29 @@ class LabNode internal constructor(
         )
     }
 
+    /**
+     * This node drives a MeshCore board whose public key is [key] (ADR 2026-11.gsqu, Stage 4), or none when null: the key
+     * as the board's session reports it, the plane and its DM switch on, and — from this boot on — a build that reads a
+     * MeshCore DM. No board is modelled on the air: what this changes is what the node's sealed profile claims.
+     */
+    suspend fun driveMeshcoreBoard(key: String?) {
+        settings.setLoraEnabled(true)
+        meshcoreClaims.setBoardKey(key)
+        if (!readsMeshcoreDms) {
+            readsMeshcoreDms = true
+            manager.bindMeshcoreDirect()
+        }
+    }
+
     /** This boot's pair seal, beside [lora]; null without a board. */
     private var boardSeal: LoraDirectSeal? = null
 
-    /** Binds the manager to this boot's board and seal, as `di/MeshModule` does on a build with the plane; nothing without one. */
+    /**
+     * Binds the manager to this boot's board and seal, as `di/MeshModule` does on a build with the plane; nothing without one.
+     * And the MeshCore seam on a node that reads MeshCore DMs ([readsMeshcoreDms]), board or none.
+     */
     private fun bindBoard() {
+        if (readsMeshcoreDms) manager.bindMeshcoreDirect()
         val board = lora ?: return
         manager.bindLoraDirect(sink = { board }, seal = checkNotNull(boardSeal))
     }
@@ -3347,6 +3378,13 @@ class LabNode internal constructor(
     /** The carried hashes the database re-arm would want now: custody's carrier column, less what is held. */
     suspend fun carrierWants(): Set<String> = forwardStore.attachmentsNeedingFetch(now()).keys
 
+    /** The payload bytes of every profile frame from [sender] this node holds in custody: what it would re-serve. */
+    suspend fun custodiedProfilePayloadsFrom(sender: LabNode): List<ByteArray> =
+        forwardStore
+            .liveFrames(now())
+            .filter { it.envelope.type == FrameType.PROFILE && it.envelope.senderId == sender.nodeId }
+            .map { it.envelope.payload }
+
     /** Every live custody row as `id:type:sender→recipient@sentAt#sigHash` — a diff of two of these names the odd frame out. */
     suspend fun custodyFrames(): List<String> =
         forwardStore
@@ -3932,8 +3970,9 @@ class LabNode internal constructor(
             settings.status.first(),
             settings.openToChat.first(),
             settings.ownAvatarHash.first(),
-            // The version peers hold: past the cleartext one when a badge-only change was published since (ADR 2026-10.r99s).
-            maxOf(settings.profileVersion.first(), badges.sealedVersion.first()),
+            // The version peers hold: past the cleartext one when a badge-only change (ADR 2026-10.r99s) or a MeshCore claim
+            // change (ADR 2026-11.gsqu, Stage 4) was published since.
+            maxOf(settings.profileVersion.first(), badges.sealedVersion.first(), meshcoreClaims.sealedVersion.first()),
         )
 
     /** The DM session with [peer] as Diagnostics lists it, or null when this node holds no row for them. */

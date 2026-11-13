@@ -74,7 +74,11 @@ data class PeerEntity(
      * (`app.getknit.knit.data.LabelFade.SEEN_GATE_MS`). The one reader is the name-clash fade (ADR
      * 2026-10.k8ge): a stranger not heard from for a week stops adding an alias to anyone else's label.
      * **Presentation only** — the stamp is sender-asserted and rides custody replays, so it must never feed a
-     * presence tier (`ui/Reach.kt`), routing, custody or eviction. Writes merge with `MAX`, so it never moves back.
+     * presence tier (`ui/Reach.kt`), routing, custody or eviction. One bounded exception: `MeshcoreBoardMap` reads it to
+     * stop a claimant silent for 30 days from contesting another's MeshCore key (ADR 2026-11.gsqu, Stage 4). It adds no
+     * claim and no route, but it decides between two: the silent claimant leaves the map, and the live one's claim is then
+     * uncontested and taught. Keeping a stale claimant "live" needs that identity's own signed frames inside the window.
+     * Writes merge with `MAX`, so it never moves back.
      */
     val lastSeenAt: Long = 0L,
     /**
@@ -93,4 +97,26 @@ data class PeerEntity(
      * adopted as it was before the column. True once any profile writer has recorded what it advertises.
      */
     val advertisedKnown: Boolean = false,
-)
+    /**
+     * The MeshCore board this peer's latest **sealed** profile claims (`ProfilePayload.meshcoreKey`, ADR 2026-11.gsqu,
+     * Stage 4): canonical base64 of its 32-byte Ed25519 key, already checked by `MeshcoreKey`. Its presence is their claim
+     * of the compact DM door on that board. Written only by the sealed profile writer, under the presentation watermark
+     * ([updatedAt]), where absent (or a key that fails the check) clears; the cleartext writer never names it, so a
+     * cleartext profile can neither set nor revert it — it rides a `copy` of the row. A routing hint for teaching our own
+     * board, never what an inbound DM is attributed by. Never in a log line, a field-log line, a debug-bridge or a
+     * USB-control reply: it ties this node id to a radio identity whose adverts flood publicly.
+     */
+    val meshcoreKey: String? = null,
+) {
+    /**
+     * The generated form with [meshcoreKey] said only as set or unset: a row printed anywhere — a test failure, a log line
+     * someone adds later — must not put this node id beside its MeshCore radio identity (ADR 2026-11.gsqu, Stage 4).
+     */
+    override fun toString(): String =
+        "PeerEntity(nodeId=$nodeId, name=$name, status=$status, avatarHash=$avatarHash, pubKey=$pubKey, verified=$verified, " +
+            "deviceTag=$deviceTag, protoVersion=$protoVersion, capabilities=$capabilities, updatedAt=$updatedAt, " +
+            "prekeyId=$prekeyId, prekeyPub=$prekeyPub, prekeySig=$prekeySig, prekeyProfileAt=$prekeyProfileAt, " +
+            "openToChat=$openToChat, loraNode=$loraNode, loraKey=$loraKey, lastSeenAt=$lastSeenAt, " +
+            "advertisedAvatar=$advertisedAvatar, advertisedKnown=$advertisedKnown, " +
+            "meshcoreKey=${if (meshcoreKey != null) "set" else "unset"})"
+}

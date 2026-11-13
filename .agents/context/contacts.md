@@ -17,6 +17,22 @@ lines.
   receiver stores it apart and only a sealed profile replaces it; it is verified when drawn, never only on arrival,
   against the pinned keys in `BadgeKeys`. The
   coordinator's vectors are copied from its SHA, never recomputed. Never log or dump an `r`, a `sub` or a wrapper.
+- **When touching `ProfilePayload.meshcoreKey` / `ProfileV2` label 9, `PeerEntity.meshcoreKey` (`peers.meshcoreKey`, DB
+  v36), `InboundPipeline.applySealedProfile`'s key line, `MeshcoreKey`, or `MeshManager.meshcoreBoardMap` /
+  `MeshcoreBoardMap`:** READ ADR 2026-11.gsqu's Stage 4 amendment and `docs/WIRE_COMPAT.md`'s MeshCore-key precedent. The
+  MeshCore board a contact drives rides the sealed profile only, never `ProfileContent`, and our own goes only to direct
+  contacts (each recipient's copy, with the contact set in the sealed version's fingerprint; every other copy padded to
+  the keyed length with `MessageContent.pad`, `MeshcoreProfilePad`): the sealed writer stores it under
+  the presentation version gate (absent clears), the cleartext writer never names it, and a key that is not canonical
+  32-byte base64 of a full-order Ed25519 point drops the field alone (and so clears it). Compared as bytes. **A routing hint
+  only:** it decides which contacts' boards our own board is taught (`meshcoreBoardMap`: `DirectContacts`' set only, so never
+  a stranger, a commons poster's automatic accept, a blocked or tag-blocked peer or ourselves; ranked verified, accepted,
+  authored; never a row naming our own board's key; a key two live contacts claim is marked contested and neither is
+  taught, and a claimant this phone has not heard from for 30 days contests nothing; the version never decides), and **never** who an inbound DM is from — Stage 5 never attributes a DM by the
+  board's 6-byte sender prefix; the compact door names its sender by the pair seal's tag and the AEAD alone
+  (`LoraDirectSeal`'s trust boundary). Never in a log line, a field-log line, a debug-bridge or USB-control reply
+  (`MeshcoreBoardHolder.toString` names no key). Regression: `InboundPipelineTest`'s MeshCore-key cases,
+  `MeshcoreClaimTest`, `MeshcoreProfileLabTest`.
 - **When touching a presence dot or an online / offline label** (Profile Details, Diagnostics' node
   sections, `Avatar`'s `online` dot on the chat list, the DM header, contacts and group and commons members): the four evidence tiers live in `ui/Reach.kt` — `Direct` is
   `MeshController.neighbors` (a short-range radio saw the peer's own radio), `Indirect` is

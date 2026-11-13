@@ -18,6 +18,8 @@ import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.VideoInfo
 import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.CborLabel
 import kotlinx.serialization.descriptors.elementNames
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -221,6 +223,59 @@ class MessageContentV2Test {
         assertTrue(checkNotNull(roundTrip(on).pr).openToChat)
     }
 
+    /**
+     * The MeshCore board's key (ADR 2026-11.gsqu, Stage 4) takes label 9 as 32 raw bytes, and a profile that claims none
+     * carries no label 9, so every profile's bytes are what they were.
+     */
+    @Test
+    fun aMeshcoreKeyTakesLabelNineAsRawBytesAndIsElidedWhileUnclaimed() {
+        val off = MessageContent(body = "", ctl = MessageContent.CTL_PROFILE, pr = ProfilePayload(name = "A", status = "", version = 5L))
+        val on = off.copy(pr = checkNotNull(off.pr).copy(meshcoreKey = MESHCORE_KEY))
+        val offBytes = checkNotNull(MessageContentV2.encodeOrNull(off))
+        val onBytes = checkNotNull(MessageContentV2.encodeOrNull(on))
+        assertEquals("label 9 + bstr(32): 1 + 2 + 32", offBytes.size + 35, onBytes.size)
+        assertTrue("the raw key, not its base64", hex(onBytes).contains("095820" + MESHCORE_KEY_HEX))
+        assertEquals(on, roundTrip(on))
+        assertNull(checkNotNull(roundTrip(off).pr).meshcoreKey)
+        // A spelling that is not canonical has no raw form: the codec refuses rather than mangles (the caller seals named).
+        assertNull(MessageContentV2.encodeOrNull(off.copy(pr = checkNotNull(off.pr).copy(meshcoreKey = MESHCORE_KEY.trimEnd('=')))))
+    }
+
+    /** The pad (ADR 2026-11.gsqu's Stage 4 review) takes the reserved label 12 as zero bytes, and its count round-trips. */
+    @OptIn(ExperimentalSerializationApi::class)
+    @Test
+    fun aPadTakesLabelTwelveAsZeroBytes() {
+        val padded =
+            MessageContent(body = "", ctl = MessageContent.CTL_PROFILE, pr = ProfilePayload(name = "A", status = "", version = 5L), pad = 4)
+        assertTrue(hex(checkNotNull(MessageContentV2.encodeOrNull(padded))).endsWith("0c4400000000"))
+        assertEquals(padded, roundTrip(padded))
+        assertEquals(4, MessageContent.decode(padded.encode())?.pad)
+        // An older build models no label 12 and skips it, as kotlinx skips every label it does not model.
+        assertEquals(
+            MessageContent.CTL_PROFILE,
+            compactCbor.decodeFromByteArray(OlderWire.serializer(), checkNotNull(MessageContentV2.encodeOrNull(padded))).ctl,
+        )
+    }
+
+    /** An older build's compact layout, which models labels 1–8 of the profile only: what it reads of a label-9 profile. */
+    @OptIn(ExperimentalSerializationApi::class)
+    @Test
+    fun anOlderBuildReadsAMeshcoreProfileAndSkipsTheKey() {
+        val on =
+            MessageContent(
+                body = "",
+                ctl = MessageContent.CTL_PROFILE,
+                pr = ProfilePayload(name = "Ann", status = "out", version = 9L, loraNode = 7L, meshcoreKey = MESHCORE_KEY),
+            )
+        val old = compactCbor.decodeFromByteArray(OlderWire.serializer(), checkNotNull(MessageContentV2.encodeOrNull(on)))
+        assertEquals(MessageContent.CTL_PROFILE, old.ctl)
+        val pr = checkNotNull(old.pr)
+        assertEquals("Ann", pr.name)
+        assertEquals("out", pr.status)
+        assertEquals(9L, pr.version)
+        assertEquals(7L, pr.loraNode)
+    }
+
     /** The two file labels are additive: an image's compact bytes must not move because they exist. */
     @Test
     fun anImageAttachmentCarriesNeitherLabel() {
@@ -295,6 +350,7 @@ class MessageContentV2Test {
                 lang = 1,
                 reads = 24,
                 rm = -2L,
+                pad = 3,
             )
         val set = JSON.encodeToJsonElement(MessageContent.serializer(), full).jsonObject.keys
         val fields =
@@ -319,7 +375,41 @@ class MessageContentV2Test {
 
     private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
+    /** The top-level compact layout as an older build models it, reduced to what a profile reads. */
+    @OptIn(ExperimentalSerializationApi::class)
+    @Serializable
+    private class OlderWire(
+        @CborLabel(7)
+        val ctl: Int? = null,
+        @CborLabel(11)
+        val pr: OlderProfileV2? = null,
+    )
+
+    /** `ProfileV2` before label 9. */
+    @OptIn(ExperimentalSerializationApi::class)
+    @Serializable
+    private class OlderProfileV2(
+        @CborLabel(1)
+        val name: String,
+        @CborLabel(2)
+        val status: String,
+        @CborLabel(3)
+        val avatarHash: ByteArray? = null,
+        @CborLabel(4)
+        val version: Long = 0L,
+        @CborLabel(5)
+        val openToChat: Boolean = false,
+        @CborLabel(6)
+        val loraNode: Long? = null,
+        @CborLabel(7)
+        val loraKey: ByteArray? = null,
+    )
+
     private companion object {
+        /** RFC 8032 TEST 1's public key: a full-order Ed25519 point, as a MeshCore board's is. */
+        const val MESHCORE_KEY = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+        const val MESHCORE_KEY_HEX = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+
         /** The schema version (elided while default) and the payloads [MessageContentV2] has no label for. */
         val NAMED_ONLY = setOf("v", "gk", "xf", "cl", "sc", "pk")
 

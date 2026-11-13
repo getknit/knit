@@ -155,7 +155,9 @@ free). Two invariants that are easy to break:
   touches the pinned key, the prekey, the device tag or the capabilities, and never inserts a peer row.
   **A presentation field rides all three profile layouts together** — `ProfileContent`, `ProfilePayload`
   and the compact `ProfileV2` — or the next sealed update silently reverts it (the `openToChat` precedent in
-  `docs/WIRE_COMPAT.md`); and it is not a status notice unless `peerPresentationNotices` is taught it.
+  `docs/WIRE_COMPAT.md`); and it is not a status notice unless `peerPresentationNotices` is taught it. The exception is
+  a **sealed-only** field (the badges, the MeshCore board's `meshcoreKey`): never on `ProfileContent`, and never named by
+  the cleartext writer, or a cleartext profile reverts it.
 - **A pair scope is the DM rule with a different secret, and it is temporary** (`ScopeRegistry.pairs`,
   spec §3.5, ADR 042). It is derived from `ScopeCrypto.pairSecret` — the one identity-keyed scope input —
   and named only while `IntroSync` holds the peer pending or in its 48 h grace. Never widen its frame

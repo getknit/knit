@@ -99,12 +99,14 @@ internal object MessageContentV2 {
                         loraNode = it.loraNode,
                         loraKey = it.loraKey?.let(::keyBytes),
                         badges = it.badges?.map { badge -> BadgeV2(w = badge.w, r = badge.r) },
+                        meshcoreKey = it.meshcoreKey?.let(::keyBytes),
                     )
                 },
             st = StyleSpans.pack(content.styles),
             lang = content.lang,
             reads = content.reads,
             rm = content.rm,
+            pad = content.pad?.let { ByteArray(it.coerceAtLeast(0)) },
         )
 
     private fun replyRefOf(ref: ReplyRef): ReplyRefV2 =
@@ -163,12 +165,14 @@ internal object MessageContentV2 {
                             loraNode = it.loraNode,
                             loraKey = it.loraKey?.let(::b64),
                             badges = it.badges?.map { badge -> BadgeEntry(w = badge.w, r = badge.r) },
+                            meshcoreKey = it.meshcoreKey?.let(::b64),
                         )
                     },
                 styles = StyleSpans.unpack(w.st),
                 lang = w.lang,
                 reads = w.reads,
                 rm = w.rm,
+                pad = w.pad?.size,
             )
         }.getOrNull()?.normalized()
 
@@ -189,14 +193,19 @@ internal object MessageContentV2 {
      * forever; a new style rides inside the bytes. `18` and `19` are the body's declared language and the language its
      * author reads (ADR 2026-10.t2h6's 2026-10-29 amendment), each a `LanguageRegistry` index, the named layouts' `"l"`
      * and `"r"`: absent while implied (English, or the same as `18`), and a CBOR uint forever, so a text or out-of-range
-     * value fails this decode. `20` is the read mask (`MessageContent.rm`, ADR 2026-11.z6jw) over the receipt's id list as
-     * sent: a CBOR integer whose bits at or past the list's end mean nothing, spelt so its width depends on the list's
-     * length alone (`ReadMask.encode`) — never confuse it with `19`, the language the author reads. Never recycle a label.
+     * value fails this decode. Label 12 is spent as reserved (ADR 2026-11.gsqu's Stage 4 review): `MessageContent.pad`,
+     * filler a reader discards, that keeps every copy of one sealed profile version one length. `20` is the read mask
+     * (`MessageContent.rm`, ADR 2026-11.z6jw) over the receipt's id list as sent: a CBOR integer whose bits at or past the
+     * list's end mean nothing, spelt so its width depends on the list's length alone (`ReadMask.encode`) — never confuse it
+     * with `19`, the language the author reads. Never recycle a label.
      * The nested layouts are append-only too: `ProfileV2`'s label 5 is the open-to-chat flag (defaulted, so
      * elided while off — a profile without it decodes as before), label 6 the bound LoRa board's node
      * number (nullable, elided while unbound) and label 7 that board's signing key (32 raw bytes here, base64
      * on the public layouts; nullable, elided unless the board signs). Label 8 is the supporter badges
      * (docs/SUPPORTER_BADGE.md): sealed-only, so it has no public twin, and each entry is `{1: wrapper, 2: r}`.
+     * Label 9 is the MeshCore board's public key (ADR 2026-11.gsqu, Stage 4): sealed-only too, 32 raw bytes here and
+     * canonical base64 on `ProfilePayload`, nullable and elided while unclaimed. Its length and point are the receiver's
+     * check (`MeshcoreKey`), never this codec's: a key of the wrong shape decodes and is dropped there, field alone.
      */
     @Serializable
     @Suppress("MagicNumber") // the CBOR labels are the layout itself, pinned by GoldenVectorTest
@@ -225,6 +234,8 @@ internal object MessageContentV2 {
         val rp: ReactionV2? = null,
         @CborLabel(11)
         val pr: ProfileV2? = null,
+        @CborLabel(12)
+        val pad: ByteArray? = null,
         @CborLabel(14)
         val attachmentName: String? = null,
         @CborLabel(15)
@@ -307,6 +318,8 @@ internal object MessageContentV2 {
         val loraKey: ByteArray? = null,
         @CborLabel(8)
         val badges: List<BadgeV2>? = null,
+        @CborLabel(9)
+        val meshcoreKey: ByteArray? = null,
     )
 
     @Serializable

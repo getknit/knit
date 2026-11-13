@@ -202,7 +202,10 @@ LoRa plane (2026-09.ggq4).
   build would persist an empty bubble): its fallback is the legacy cleartext frame. A tick is sealed once, at `owe()`,
   and re-sent verbatim on a backoff — re-sealing per retry burns chain keys and starves the receiver's skipped-key
   budget. The sealed profile carries presentation fields only, ordered by the profile version, never `pubKey` or
-  `prekey`, and never inserts a peer row.
+  `prekey`, and never inserts a peer row. Two fields ride it alone, never the cleartext frame: the badges and the
+  MeshCore board's key (`meshcoreKey`, label 9, ADR 2026-11.gsqu's Stage 4 amendment; checked by `MeshcoreKey`, a
+  field-only drop, never the profile's); each moves a sealed-only version past the cleartext one, which `profileVersion()`
+  states and every edit mints past.
 - **When touching read receipts on the wire or the seal paths — `MessageContent.rm` / `MessageContentV2` label 20,
   `ReadMask`, `Protocol.CAP_READ_RECEIPTS`, `ReadSync` / `ReadRiding` / `ReadMarkStore`, `MeshManager.onMessagesRead` /
   `originateReads` / `spoolReads` / `quickReads` / `readNearby` / `inlineReadsFor` / `tellInlineReads`, `SealedTick.read` /
@@ -347,7 +350,9 @@ LoRa plane (2026-09.ggq4).
   first, a compact commit between the reads acked a first contact's signed copy unopened (#261, x9fa's 2026-11-01
   amendment); never decide on the row alone, a mark with no row is a deleted message. A marked id is refused on the
   compact door whether or not its row exists (deleted stays deleted). Offers ride beside the signed copy only, toward a
-  pinned profile with the bit, inside 23 h; the bit is ours only while the plane and its DM switch are on. Regression:
+  pinned profile with the bit, inside 23 h; the bit is ours only while the plane and its DM switch are on and a Meshtastic
+  board is bound (ADR 2026-11.gsqu, Stage 4: a MeshCore door is claimed by the sealed `meshcoreKey`, never this bit; see
+  `lora.md`). Regression:
   `LoraDirectSealTest`, `LoraDirectVectorTest`, `InboundPipelineTest`'s compact-door cases, `MeshManagerTest`'s compact
   cases, `LoraDirectLabTest`.
 - **When touching `RatchetSessions.sealAnswer` / `sealCtl` / `AnswerSeal`, what a ✓✓ or a DM reaction is sealed with, or

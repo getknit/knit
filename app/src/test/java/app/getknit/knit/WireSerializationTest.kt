@@ -1,5 +1,6 @@
 package app.getknit.knit
 
+import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.DEFAULT_TTL
@@ -28,6 +29,7 @@ import app.getknit.knit.mesh.protocol.WrappedKey
 import app.getknit.knit.mesh.protocol.isStorable
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
+import kotlinx.serialization.descriptors.elementNames
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -547,6 +549,44 @@ class WireSerializationTest {
         val sealed = ProfilePayload(name = "Ann", status = "", version = 1L, loraNode = 0xdeadbeefL)
         assertEquals(sealed, WireCodec.decodePayload<ProfilePayload>(WireCodec.encodePayload(sealed)))
     }
+
+    /**
+     * The MeshCore board's key (ADR 2026-11.gsqu, Stage 4) rides the sealed layout only: it round-trips on
+     * [ProfilePayload], a payload without it is the bytes it always was (so an older reader holds every other field), an
+     * older reader skips it, and [ProfileContent] has no such field at all — the cleartext frame floods and is custodied.
+     */
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @Test
+    fun `a MeshCore key rides the sealed profile only and an older reader skips it`() {
+        val key = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+        val sealed = ProfilePayload(name = "Ann", status = "", version = 1L, loraNode = 7L, meshcoreKey = key)
+        assertEquals(sealed, WireCodec.decodePayload<ProfilePayload>(WireCodec.encodePayload(sealed)))
+        assertArrayEquals(
+            "unclaimed, the bytes are the old ones",
+            WireCodec.encodePayload(OlderProfilePayload(name = "Ann", status = "", version = 1L, loraNode = 7L)),
+            WireCodec.encodePayload(sealed.copy(meshcoreKey = null)),
+        )
+        assertEquals(
+            OlderProfilePayload(name = "Ann", status = "", version = 1L, loraNode = 7L),
+            WireCodec.decodePayload<OlderProfilePayload>(WireCodec.encodePayload(sealed)),
+        )
+        // The named v2 plaintext carries it under its text key too, and the cleartext profile knows no such field.
+        val v2 = MessageContent(body = "", ctl = MessageContent.CTL_PROFILE, pr = sealed)
+        assertEquals(key, MessageContent.decode(v2.encode())?.pr?.meshcoreKey)
+        assertFalse("meshcoreKey" in ProfileContent.serializer().descriptor.elementNames)
+    }
+
+    /** `ProfilePayload` as builds before ADR 2026-11.gsqu's Stage 4 encoded it, up to the fields this test sets. */
+    @Serializable
+    private data class OlderProfilePayload(
+        val name: String,
+        val status: String,
+        val avatarHash: String? = null,
+        val version: Long = 0L,
+        val openToChat: Boolean = false,
+        val loraNode: Long? = null,
+        val loraKey: String? = null,
+    )
 
     // --- signature binding (the bytes the wrapper signature covers) ---
 

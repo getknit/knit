@@ -122,6 +122,17 @@ class SettingsSnapshotTest {
         assertFalse("never one bare meshcore_ prefix", SettingsKeys.TRANSIENT_PREFIXES.contains("meshcore_"))
     }
 
+    /**
+     * The sealed MeshCore claim's version and fingerprint ride a backup (ADR 2026-11.gsqu, Stage 4), as the badge's pair
+     * does: a restored phone must never publish below a version its peers hold as its watermark.
+     */
+    @Test
+    fun theMeshcoreClaimsSealedVersionRidesABackup() {
+        for (rides in listOf(SettingsKeys.MESHCORE_SEALED_VERSION, SettingsKeys.MESHCORE_PUBLISHED, SettingsKeys.BADGE_SEALED_VERSION)) {
+            assertFalse("$rides would not ride a backup", SettingsSnapshot.isTransient(rides))
+        }
+    }
+
     /** GitHub #44: whether this phone's Wi-Fi can spare Wi-Fi Aware's airtime is about this phone, and so is its move. */
     @Test
     fun dropsTheWifiAwareSwitchAndItsMove() =

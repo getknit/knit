@@ -27,6 +27,7 @@ import app.getknit.knit.data.settings.DirectHostStore
 import app.getknit.knit.data.settings.HomeStore
 import app.getknit.knit.data.settings.LoraPlaneStateStore
 import app.getknit.knit.data.settings.LowPowerSwitch
+import app.getknit.knit.data.settings.MeshcoreClaimStore
 import app.getknit.knit.data.settings.NanJournalStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.settings.TicketKeyStore
@@ -596,6 +597,9 @@ val meshModule =
                 allowCleartext = BuildConfig.DEBUG,
                 // The supporter badge (ADR 2026-10.r99s): the journal in every build, the issuer beside the ticket swap's.
                 badgeJournal = get<BadgeStore>(),
+                // The sealed profile's MeshCore claim (ADR 2026-11.gsqu, Stage 4): read in every build, claimed only once
+                // `bindMeshcoreDirect` is bound, which Stage 5 does here beside `bindLoraDirect`.
+                meshcoreClaims = get<MeshcoreClaimStore>(),
                 badgeIssuer = if (ANYWHERE_WIRED) get<TicketIssuer>() as? BadgeIssuer else null,
                 badgePins = BadgeKeys.forBuild(BuildConfig.DEBUG),
                 identities = get(),

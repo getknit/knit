@@ -810,6 +810,21 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v35 → v36 (ADR 2026-11.gsqu, Stage 4): `peers.meshcoreKey`, the MeshCore board a peer's latest sealed profile claims.
+     * Null on every existing row: no profile before this carried one, and the next sealed profile from a peer that claims
+     * one fills it. Carried in a backup with its row. Its own version rather than folded into Stage 5's, because a lab phone
+     * that ran this step would refuse to open a v36 whose identity hash changed (the 83cb47ce6 precedent): both steps fold
+     * into the next release's single bump, as v22–v27 did on 2026-10-18. The SQL must stay byte-equivalent to what Room
+     * generates for `app/schemas/**/36.json`.
+     */
+    val MIGRATION_35_36 =
+        object : Migration(35, 36) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `peers` ADD COLUMN `meshcoreKey` TEXT DEFAULT NULL")
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -847,5 +862,6 @@ object KnitMigrations {
             MIGRATION_32_33,
             MIGRATION_33_34,
             MIGRATION_34_35,
+            MIGRATION_35_36,
         )
 }

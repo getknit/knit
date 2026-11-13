@@ -340,6 +340,18 @@ class GoldenVectorTest {
                         badges = listOf(BadgeEntry(w = bytes(24, 21), r = bytes(16, 0))),
                     ),
                 ),
+            // The MeshCore board's key (ADR 2026-11.gsqu, Stage 4): sealed-only like the badges, so there is no
+            // `profileContent` twin. RFC 8032 TEST 1's public key, a full-order Ed25519 point as a board's is.
+            "profilePayloadMeshcoreKey" to
+                WireCodec.encodePayload(
+                    ProfilePayload(
+                        name = "Ann",
+                        status = "hiking",
+                        avatarHash = "av1",
+                        version = 1700L,
+                        meshcoreKey = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+                    ),
+                ),
             "groupRootPayload" to WireCodec.encodePayload(GroupRootPayload(root = bytes(32, 13), version = 2, minter = "aa")),
             "groupKeyPayloadRoot" to
                 WireCodec.encodePayload(
@@ -532,6 +544,39 @@ class GoldenVectorTest {
                             ),
                     ),
                 ),
+            "messageContentV2ProfileMeshcoreKey" to
+                compact(
+                    MessageContent(
+                        body = "",
+                        ctl = MessageContent.CTL_PROFILE,
+                        pr =
+                            ProfilePayload(
+                                name = "Ann",
+                                status = "hiking",
+                                avatarHash = hex(bytes(32, 7)),
+                                version = 1700L,
+                                meshcoreKey = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+                            ),
+                    ),
+                ),
+            // The pad (ADR 2026-11.gsqu's Stage 4 review): the keyless copy of a profile version whose keyed copies carry the
+            // MeshCore key, padded to their length — label 12 on the compact layout, "p" on the named one, zero bytes.
+            "messageContentV2ProfilePadded" to
+                compact(
+                    MessageContent(
+                        body = "",
+                        ctl = MessageContent.CTL_PROFILE,
+                        pr = ProfilePayload(name = "Ann", status = "hiking", avatarHash = hex(bytes(32, 7)), version = 1700L),
+                        pad = 32,
+                    ),
+                ),
+            "messageContentProfilePadded" to
+                MessageContent(
+                    body = "",
+                    ctl = MessageContent.CTL_PROFILE,
+                    pr = ProfilePayload(name = "Ann", status = "hiking", avatarHash = "av1", version = 1700L),
+                    pad = 52,
+                ).encode(),
             // Arbitrary-file attachments (ADR 2026-09.qq2r): the sealed name/size, in both plaintext layouts.
             // Every fixture above stays byte-identical — the two fields are additive and absent unless set,
             // which is what makes an image or a voice note's frame the same bytes it was before files existed.

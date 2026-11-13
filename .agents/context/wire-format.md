@@ -60,6 +60,13 @@ the HELLO on; frame boundaries mean nothing. The PROOF inside signs `"knit/link/
 HELLOs`; plain links keep v1 byte for byte. Tags 10 and 11 are never written on a plain link (every shipped build drops
 the link on them), and a plain link whose two HELLOs both carry the bit is refused. Direct links never seal.
 
+**Two profile layouts are sealed-only.** The cleartext `ProfileContent` floods and is custodied; the sealed
+`ProfilePayload` (named) and `ProfileV2` (compact, CBOR labels) ride `CTL_PROFILE` to confirmed sessions. Every
+presentation field rides all three, except the sealed-only ones, which `ProfileContent` must never gain: the supporter
+badges (label 8) and the MeshCore board's key (label 9, `meshcoreKey`, ADR 2026-11.gsqu's Stage 4 amendment: no capability
+bit, its presence is the claim). A receiver keeps each where the cleartext writer cannot reach it, and only a sealed profile
+that passes the version gate replaces it (`docs/WIRE_COMPAT.md`).
+
 `WireCodec` exposes `encodeWire`/`decodeWire` (WireEnvelope), `encodeEnvelope`/`decodeEnvelope`
 (RelayEnvelope), and `encodePayload`/`decodePayload<T>` (content) — see `docs/WIRE_COMPAT.md`.
 

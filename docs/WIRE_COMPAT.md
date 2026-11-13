@@ -630,6 +630,38 @@ changed would tell every carrier the holder shows a badge. Every peer with a DM 
 the holder shows it, and the holder chose that (opt-in, off by default). *Size:* one badge adds 185 B to a max-size compact sealed profile
 (`SupporterBadgeSizeTest`).
 
+**Precedent — the second sealed-only field, and the first claim with no capability bit (the MeshCore board's key, ADR
+2026-11.gsqu's Stage 4, 2026-11-13).** `ProfilePayload.meshcoreKey: String? = null` and `ProfileV2` label **9**
+(`ByteArray?`): the 32-byte Ed25519 public key of the MeshCore board the sender's phone drives, canonical padded base64
+on the named layout (the `loraKey` convention) and the raw bytes on the compact one. Rule 1 by the nullable route,
+elided while unclaimed, so every existing golden vector stayed put (two new ones, `profilePayloadMeshcoreKey` and
+`messageContentV2ProfileMeshcoreKey`), and an old build skips the key (both layouts ignore what they do not model).
+**Not on `ProfileContent`, on purpose, and not for size**: the cleartext frame floods eight hops and sits in every
+carrier's custody and on every spool, and a key there would tie a Knit node id, already in clear BLE and Aware adverts,
+to a radio identity whose own adverts flood the MeshCore network publicly and may carry a position. So the transcoder
+never sees it, and a receiver stores it on `peers.meshcoreKey` (DB v36), written only by the sealed writer under the
+version gate (absent clears) and never named by the cleartext writer, which carries it through on a `copy` of the row —
+the badge's inverse-trap rule, met with a column the cleartext writer cannot reach rather than a table. **No capability
+bit:** the key's presence is the claim of the compact DM door on that board, sent only while the sender's LoRa plane and
+DM switch are on, a MeshCore board has reported a key, and the build reads a MeshCore DM (`MeshManager.bindMeshcoreDirect`,
+which nothing binds until Stage 5). A bit beside the key would be a second statement that could disagree with it, and a
+bit on the cleartext profile would announce to every carrier that its holder drives a MeshCore board. Validation is the
+receiver's: a key that is not canonical, not 32 bytes, not an Ed25519 point or of low order drops the field alone
+(`mesh/crypto/MeshcoreKey`), and, the profile being newer, clears a stored key; a wrong CBOR type at label 9 fails the
+plaintext decode as any mistyped label does. No ctl value, no version bump, no discovery marker. *Version:* a claim
+change moves only a sealed-only version past the cleartext one (`meshcore_sealed_version`, the badge's
+`badge_sealed_version` rule), so a carrier never sees the cleartext version move with no field changed. *Metadata cost:*
+inside the seal, and **to direct contacts only**: each recipient's sealed copy carries the key only if it is one (an
+accept that is not a commons poster's automatic one, a verify, a DM written in; never the blocked), and every other
+confirmed session — a stranger who DMed once, a blocked contact — gets the same version without it. A change in that set
+mints a fresh sealed version while a key is claimed, since a receiver takes an equal version and a keyless copy must never
+stand at a new contact. Every keyless copy of a version carries `MessageContent.pad` (`"p"` named, the reserved compact
+label 12: zero bytes a reader discards, additive, vectors `messageContentV2ProfilePadded` / `messageContentProfilePadded`)
+sized to the keyed copy's sealed length in its layout, so copy lengths never mark who is a contact. The accepted costs: a
+contact learns the key only once a session is confirmed, and the burst a contact-set change mints still dates that the set
+changed, never whose membership did. *Size:* 35 B on the compact sealed profile, 58 B on the named one. A routing hint only: no build
+attributes an inbound DM by a board's sender prefix. Paired with knit-ios, which parses and keeps it apart.
+
 **Withdrawn precedent — the one `type` string minted since the v1 baseline (`meshpost`, ADR 2026-09.cf7a and
 2026-09.7r4d, September 2026), taken back before it shipped (ADR 2026-09.26q3).** It was the first entry on
 `isCustodial` since v1, and it is gone because of exactly the cost every earlier precedent had avoided:

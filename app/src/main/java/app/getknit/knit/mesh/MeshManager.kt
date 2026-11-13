@@ -59,6 +59,8 @@ import app.getknit.knit.mesh.bluetooth.FormKeys
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.LinkSignals
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
+import app.getknit.knit.mesh.crypto.MeshcoreKey
+import app.getknit.knit.mesh.crypto.MeshcoreProfilePad
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
@@ -458,6 +460,9 @@ class MeshManager(
     // sealed profile, and the issuer that signs them. The journal is wired in every build (a release build simply never
     // holds a badge); the refresher runs only where tickets are wired, since earning one takes a customer key.
     private val badgeJournal: BadgeJournal? = null,
+    // The sealed profile's MeshCore claim (ADR 2026-11.gsqu, Stage 4): the bound board's key and the sealed-only version a
+    // claim change was published under. Wired in every build; null in a test that claims nothing, which reads nothing.
+    private val meshcoreClaims: MeshcoreClaimJournal? = null,
     badgeIssuer: BadgeIssuer? = null,
     badgePins: List<PinnedBadgeKey> = emptyList(),
     // This phone's home relay and the public directory it is picked from (ADR 2026-10.8kfx). Null in a test that keeps
@@ -549,6 +554,24 @@ class MeshManager(
     ) {
         loraDirectSink = sinkFor
         loraSeal = seal
+    }
+
+    /**
+     * Whether this build reads a compact DM off a MeshCore board ([bindMeshcoreDirect]): one of the four things our sealed
+     * profile's `meshcoreKey` needs before it is sent ([ownMeshcoreKey]). A flow, so a bind after [start] is a change the
+     * claim watcher sees.
+     */
+    private val meshcoreDirectBound = MutableStateFlow(false)
+
+    /**
+     * Binds the MeshCore compact-DM seam (ADR 2026-11.gsqu, Stage 4), beside [bindLoraDirect]. Our sealed profile names the
+     * MeshCore board it drives — which is the claim of the compact DM door on it, there being no capability bit — only on
+     * a manager bound here. Nothing binds it in Stage 4: Stage 5 binds it from `di/MeshModule` once the MeshCore child, the
+     * teaching and the inbox exist, so a build that cannot open a MeshCore DM never claims one, even when a backup brought
+     * `meshcore_board_pubkey` into it. The tests and the lab bind it themselves.
+     */
+    internal fun bindMeshcoreDirect() {
+        meshcoreDirectBound.value = true
     }
 
     // Serialises the database re-arm and the user's tap (ADR 2026-10.js2p): see [rewantMissingBlobsLocked].
@@ -1463,7 +1486,7 @@ class MeshManager(
         blockListWatch.start(session)
         val seeded = seedOwnProfileCustody(session)
         watchProfileChanges(session, seeded = seeded)
-        watchBadgeChanges(session)
+        watchSealedOnlyChanges(session)
         watchIncomingFiles(session)
         watchIncomingDigests(session)
         resumePendingFetches(session)
@@ -5332,12 +5355,21 @@ class MeshManager(
      * and nobody reads — and [Protocol.CAP_LORA_DIRECT] only while the DM switch is on too, and only on a build bound to
      * read `0x11` ([bindLoraDirect]). With DMs off our ✓✓ would never ride back compact, and the sender's re-probe would
      * ask that board for ever.
+     *
+     * The bit is Meshtastic's door and nobody else's (ADR 2026-11.gsqu, Stage 4): it needs a bound Meshtastic [board], the
+     * one `loraNode` names. Before, it read only the switches, so after a MeshCore bind cleared the Meshtastic identity
+     * ([app.getknit.knit.data.settings.BoardBindPolicy]) the profile dropped `loraNode` / `loraKey` and kept the bit,
+     * telling contacts to address a board it no longer had. MeshCore's door is claimed by the sealed `meshcoreKey` alone
+     * ([ownMeshcoreKey]).
      */
     private fun ownLora(
         board: LoraBoard?,
         enabled: Boolean,
         dms: Boolean,
-    ): OwnLora = OwnLora(board = board.takeIf { enabled }, direct = enabled && dms && loraSeal != null)
+    ): OwnLora {
+        val named = board.takeIf { enabled }
+        return OwnLora(board = named, direct = named != null && dms && loraSeal != null)
+    }
 
     /** [ownLora] as the settings read now: what the next profile we sign carries. */
     private suspend fun currentLora(): OwnLora =
@@ -5486,9 +5518,12 @@ class MeshManager(
      * `profile` frame is deliberately not scope-carried (`docs/SPOOL_PROTOCOL.md` §4.4), and it takes
      * name/status/avatar changes off the cleartext plane for peers that can read it.
      *
-     * The target set is confirmed sessions rather than "accepted conversations": a sealed profile
-     * discloses strictly less than the cleartext frame already floods to everyone, so narrowing it would
-     * cost propagation and buy no privacy.
+     * The target set is confirmed sessions rather than "accepted conversations": for every field the cleartext
+     * frame also carries, a sealed profile discloses nothing that frame does not already flood to everyone, so
+     * narrowing it would cost propagation and buy no privacy. The sealed-only fields are not that: the MeshCore
+     * board's key goes to **direct contacts only** ([MeshcoreAudience], ADR 2026-11.gsqu's Stage 4 amendment), since
+     * a stranger gets a confirmed session from one DM (#290) and a blocked person keeps theirs (#249); every other
+     * confirmed session gets the same version without it.
      *
      * Deduped per (peer, version) rather than floored on a timer. A profile edit is rare and
      * user-visible, so a time floor would suppress a real second edit — worse than the storm it
@@ -5506,7 +5541,10 @@ class MeshManager(
      */
     private suspend fun broadcastSealedProfile() {
         publishBadgesIfChanged()
-        val version = profileVersion()
+        val audience = currentAudience()
+        // Sealed and recorded at the version the audience was read with, never one read after it: a mint in between
+        // (a block, an accept) would otherwise seal the newer version for the older set (the Stage 4 review).
+        val version = audience.version
         if (version <= 0L) return
         // Who is owed this version comes first: on every heal with nobody owed — the common case — the payload's
         // five settings reads and its build are skipped, not just the sends.
@@ -5516,19 +5554,84 @@ class MeshManager(
         if (owed.isEmpty()) return
         val me = identity.nodeId()
         val avatarHash = settings.ownAvatarHash.first()
-        val payload = currentProfilePayload(version, avatarHash)
+        val payload = currentProfilePayload(version, avatarHash, meshcoreKey = null)
         owed.forEach { session ->
-            if (sendCtlDm(session.peerId, payload, avatarHash, me, CtlDmPurpose.PROFILE_FANOUT)) {
-                sentProfileVersions[session.peerId] =
-                    version
+            // Per recipient: the MeshCore key to a direct contact of the set this version was minted for, to no one else,
+            // and every other copy padded to the same length.
+            var sealed: SealedProfileSend? = null
+            val sent =
+                sendCtlDm(session.peerId, payload, avatarHash, me, CtlDmPurpose.PROFILE_FANOUT) { v3 ->
+                    profileCopy(session.peerId, payload, audience, v3).also {
+                        if (onSealedProfile !=
+                            null
+                        ) {
+                            sealed = SealedProfileSend(session.peerId, version, it, it.sealBytes(v3).plaintext.size)
+                        }
+                    }
+                }
+            if (sent) {
+                sentProfileVersions[session.peerId] = version
+                sealed?.let { onSealedProfile?.invoke(it) }
             }
         }
     }
 
-    /** The sealed presentation payload (`CTL_PROFILE`) for the current profile at [version]. */
+    /**
+     * [audience]'s copy of [keyless] for [peerId] in the layout [v3] picks: the key for a direct contact of the set the
+     * version was minted for; for anyone else, while a key is claimed, the keyless copy padded to the keyed one's length
+     * ([MeshcoreProfilePad]), so the copies of one version are one size whoever they go to.
+     */
+    private fun profileCopy(
+        peerId: String,
+        keyless: MessageContent,
+        audience: MeshcoreAudience,
+        v3: Boolean,
+    ): MessageContent {
+        val key = audience.key ?: return keyless
+        val keyed = keyless.copy(pr = keyless.pr?.copy(meshcoreKey = key))
+        return if (audience.keyFor(peerId) != null) keyed else MeshcoreProfilePad.padded(keyless, keyed, v3)
+    }
+
+    /**
+     * The audience to seal for now: [publishMeshcoreClaimIfChanged]'s, read again once if another version was minted
+     * between its read and this one, so the fan-out seals the newest version there is, and always for its own set.
+     */
+    private suspend fun currentAudience(): MeshcoreAudience {
+        val audience = publishMeshcoreClaimIfChanged()
+        beforeSealedProfileFanOut?.invoke()
+        return if (profileVersion() != audience.version) publishMeshcoreClaimIfChanged() else audience
+    }
+
+    /** One sealed profile copy sent, as [onSealedProfile] reports it: never logged, it holds the key when keyed. */
+    internal class SealedProfileSend(
+        val peerId: String,
+        val version: Long,
+        val content: MessageContent,
+        /** The sealed plaintext's length, in the layout its recipient's seal picked. */
+        val plaintextBytes: Int,
+    ) {
+        override fun toString(): String = "SealedProfileSend($peerId, v=$version)"
+    }
+
+    /**
+     * Test seam: runs in [currentAudience] between the audience read and its re-check — where `mesh/lab` changes the
+     * contact set to race a mint against the seal. Null in production.
+     */
+    @Volatile
+    internal var beforeSealedProfileFanOut: (suspend () -> Unit)? = null
+
+    /** Test seam: told of each sealed profile copy the fan-out sent, with the content it sealed. Null in production. */
+    @Volatile
+    internal var onSealedProfile: ((SealedProfileSend) -> Unit)? = null
+
+    /**
+     * The sealed presentation payload (`CTL_PROFILE`) for the current profile at [version], carrying [meshcoreKey] — the
+     * recipient's own answer from [MeshcoreAudience.keyFor], never a key for everyone.
+     */
     private suspend fun currentProfilePayload(
         version: Long,
         avatarHash: String?,
+        meshcoreKey: String?,
     ): MessageContent {
         val board = currentLora().board
         return MessageContent(
@@ -5544,15 +5647,22 @@ class MeshManager(
                     loraNode = board?.node,
                     loraKey = board?.key,
                     badges = shownBadges().first().ifEmpty { null },
+                    meshcoreKey = meshcoreKey,
                 ),
         )
     }
 
     /**
      * Our profile version as the sealed path states it: the cleartext profile's, or the later one a badge-only change
-     * was published under ([BadgeJournal.sealedVersion]). Every edit mints past both.
+     * was published under ([BadgeJournal.sealedVersion]), or a MeshCore claim change ([MeshcoreClaimJournal.sealedVersion]).
+     * Every edit mints past all three.
      */
-    private suspend fun profileVersion(): Long = maxOf(settings.profileVersion.first(), badgeJournal?.sealedVersion?.first() ?: 0L)
+    private suspend fun profileVersion(): Long =
+        maxOf(
+            settings.profileVersion.first(),
+            badgeJournal?.sealedVersion?.first() ?: 0L,
+            meshcoreClaims?.sealedVersion?.first() ?: 0L,
+        )
 
     /**
      * Publishes a change in the badges our sealed profile carries (ADR 2026-10.r99s) **without** touching the cleartext
@@ -5566,6 +5676,12 @@ class MeshManager(
         session.launch {
             shownBadges().collect { if (publishBadgesIfChanged()) broadcastSealedProfile() }
         }
+    }
+
+    /** The sealed-only fields' watchers: each mints a sealed version of its own, never a cleartext one. */
+    private fun watchSealedOnlyChanges(session: CoroutineScope) {
+        watchBadgeChanges(session)
+        watchMeshcoreClaim(session)
     }
 
     /**
@@ -5597,6 +5713,88 @@ class MeshManager(
         }.distinctUntilChanged()
     }
 
+    /**
+     * The MeshCore board our sealed profile names (ADR 2026-11.gsqu, Stage 4) — and, there being no capability bit, the
+     * claim of the compact DM door on it: [MeshcoreClaimRule] over the settings as they stand and the seam
+     * ([bindMeshcoreDirect]). Null, which a receiver reads as no claim, in a manager wired with no claim journal.
+     */
+    private suspend fun ownMeshcoreKey(): String? {
+        val journal = meshcoreClaims ?: return null
+        return MeshcoreClaimRule.claim(
+            boardKey = journal.boardKey.first(),
+            enabled = settings.loraEnabled.first(),
+            dms = settings.loraDmEnabled.first(),
+            readsMeshcoreDms = meshcoreDirectBound.value,
+        )
+    }
+
+    /**
+     * Publishes a change in what our sealed profile claims about MeshCore ([ownMeshcoreKey]), or in the direct contacts it
+     * is claimed to ([MeshcoreAudience]), **without** touching the cleartext profile, as a badge change is
+     * ([watchBadgeChanges]): the key is sealed-only, so a cleartext version that moved with no visible field changed would
+     * tell every carrier something sealed did. Judged against the fingerprint published last, persisted, so a change made
+     * while the mesh was stopped mints a version of its own too, and one version never carries two claims or two
+     * audiences. Collects the inputs only to be woken: each pass reads them afresh.
+     */
+    private fun watchMeshcoreClaim(session: CoroutineScope) {
+        val journal = meshcoreClaims ?: return
+        session.launch {
+            combine(
+                journal.boardKey,
+                settings.loraEnabled,
+                settings.loraDmEnabled,
+                meshcoreDirectBound,
+                directContacts?.observe() ?: flowOf(emptySet()),
+            ) { key, on, dms, bound, direct ->
+                // The contacts matter only while a key is claimed: unclaimed, every recipient gets the same bytes.
+                MeshcoreClaimRule.claim(key, on, dms, bound)?.let { it to direct }
+            }.distinctUntilChanged()
+                .conflate()
+                .collect { if (publishMeshcoreClaimIfChanged().minted) broadcastSealedProfile() }
+        }
+    }
+
+    /**
+     * Mints a sealed version for the MeshCore claim and its audience as they stand, if they are not the ones published last,
+     * and answers that audience ([MeshcoreAudience.minted] says whether it minted). Run before every sealed send as well as
+     * by [watchMeshcoreClaim], and the send keys each recipient's copy off the audience it answers, so a version is only
+     * ever sealed for the contact set it was minted for. Under [profileLock], read and write together.
+     *
+     * The audience is in the version on purpose. [sentProfileVersions] dedupes by version and the receiver's gate takes an
+     * equal version (`version < updatedAt` is refused, `==` applies), so a peer that becomes a contact — an accept, a
+     * verify, an unblock — must get a strictly newer version carrying the key, or the keyless copy it already holds would
+     * stand; and one that stops being a contact (a block) gets a newer keyless one, which clears the key it holds.
+     */
+    private suspend fun publishMeshcoreClaimIfChanged(): MeshcoreAudience =
+        profileLock.withLock {
+            val journal = meshcoreClaims ?: return@withLock MeshcoreAudience.NONE.at(profileVersion())
+            val audience = meshcoreAudience()
+            val fingerprint = meshcoreFingerprint(audience)
+            if (fingerprint ==
+                (journal.publishedFingerprint.first() ?: meshcoreFingerprint(MeshcoreAudience.NONE))
+            ) {
+                return@withLock audience.at(profileVersion())
+            }
+            journal.putSealed(maxOf(clock(), profileVersion() + 1), fingerprint)
+            audience.at(profileVersion(), minted = true)
+        }
+
+    /** Our claim ([ownMeshcoreKey]) and, only while there is one, the direct contacts it goes to, read afresh. */
+    private suspend fun meshcoreAudience(): MeshcoreAudience {
+        val key = ownMeshcoreKey() ?: return MeshcoreAudience.NONE
+        return MeshcoreAudience(key, directContacts?.read().orEmpty())
+    }
+
+    /**
+     * A local fingerprint of a claim and its audience, the key by its bytes and the contacts sorted: what
+     * [publishMeshcoreClaimIfChanged] compares. Never sent, never logged.
+     */
+    private fun meshcoreFingerprint(audience: MeshcoreAudience): String {
+        val key = audience.key?.let(MeshcoreKey::bytesOrNull) ?: ByteArray(0)
+        val contacts = audience.direct.sorted().fold(ByteArray(0)) { acc, id -> acc + id.encodeToByteArray() + 0.toByte() }
+        return hexOf(sha256("knit-meshcore-claim".encodeToByteArray() + key + contacts))
+    }
+
     /** A local fingerprint of a badge list: what [watchBadgeChanges] compares. Never sent anywhere. */
     private fun badgeFingerprint(badges: List<BadgeEntry>): String =
         hexOf(
@@ -5621,8 +5819,11 @@ class MeshManager(
     private suspend fun sendIntroTo(peerId: String): Boolean {
         val avatarHash = settings.ownAvatarHash.first()
         publishBadgesIfChanged()
-        val payload = currentProfilePayload(profileVersion(), avatarHash)
-        return sendCtlDm(peerId, payload, avatarHash, identity.nodeId(), CtlDmPurpose.INTRO)
+        val audience = currentAudience()
+        val payload = currentProfilePayload(audience.version, avatarHash, meshcoreKey = null)
+        return sendCtlDm(peerId, payload, avatarHash, identity.nodeId(), CtlDmPurpose.INTRO) { v3 ->
+            profileCopy(peerId, payload, audience, v3)
+        }
     }
 
     /**
@@ -6164,6 +6365,8 @@ class MeshManager(
         avatarHash: String?,
         me: String,
         purpose: CtlDmPurpose,
+        // The content to seal once the recipient's layout is known: a sealed profile's padded copy needs it.
+        shape: (v3: Boolean) -> MessageContent = { payload },
     ): Boolean {
         val peer = peers.find(peerId) ?: return false
         if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return false
@@ -6171,7 +6374,8 @@ class MeshManager(
         val id = FrameId.new()
         val now = clock()
         val aad = MessageCrypto.header(id, me, now, peerId)
-        val (plaintext, scheme) = payload.sealBytes(peer.readsCryptoV3())
+        val v3 = peer.readsCryptoV3()
+        val (plaintext, scheme) = shape(v3).sealBytes(v3)
         val sealed = ratchet.sealDm(peerId, bundle.dhPublicKey(), ratchetPrekeyOf(peer), plaintext, aad, now, scheme) ?: return false
         if (scheme == EncEnvelope.VERSION_DM_V3) metrics.onDmSealedV3()
         metrics.onCtlDmSealed(purpose)
@@ -6647,6 +6851,30 @@ class MeshManager(
                         contested = contested,
                     )
             }
+
+    /**
+     * The MeshCore board map (ADR 2026-11.gsqu, Stage 4): the direct contacts whose latest sealed profile claims a MeshCore
+     * board, by node id, ranked, with each row's latest profile version and whether the claim is contested —
+     * [MeshcoreBoardMap]'s rule over the peers, [DirectContacts]' set (which leaves out commons posters' automatic accepts,
+     * the blocked, the tag-blocked and us), the accepted conversations less those marks (for the rank) and our own bound
+     * board, judged at [clock]. The input Stage 5 teaches our board from; nothing collects it yet. Empty in a manager wired
+     * with no contact set. Its entries never reach a log line.
+     */
+    internal fun meshcoreBoardMap(): Flow<Map<String, MeshcoreBoardHolder>> =
+        flow {
+            val me = identity.nodeId()
+            emitAll(
+                combine(
+                    peers.observePeers(),
+                    directContacts?.observe() ?: flowOf(emptySet()),
+                    settings.acceptedConversations,
+                    settings.commonsAccepts,
+                    meshcoreClaims?.boardKey ?: flowOf(null),
+                ) { all, direct, accepted, commonsMarks, ownKey ->
+                    MeshcoreBoardMap.of(all, me, direct, accepted - commonsMarks, ownKey, clock())
+                },
+            )
+        }.distinctUntilChanged()
 
     /** Whether [peer]'s profile key binds its `loraNode`: the CRC32 of the 32-byte key is the number, as on 2.8. */
     private fun bindsBoard(peer: PeerEntity): Boolean {
@@ -7250,6 +7478,32 @@ private data class OwnPresentation(
     val openToChat: Boolean,
     val lora: OwnLora,
 )
+
+/**
+ * One sealed version's MeshCore claim (ADR 2026-11.gsqu, Stage 4): the [key] our profile claims, or none, and the direct
+ * contacts it goes to — the only recipients [keyFor] answers it for. [minted] when this version was minted just now.
+ * Names neither when printed.
+ */
+private class MeshcoreAudience(
+    val key: String?,
+    val direct: Set<String>,
+    val version: Long = 0L,
+    val minted: Boolean = false,
+) {
+    fun keyFor(peerId: String): String? = key?.takeIf { peerId in direct }
+
+    /** This audience as read at [version] under `profileLock`: the version a copy for it is sealed and recorded at. */
+    fun at(
+        version: Long,
+        minted: Boolean = false,
+    ): MeshcoreAudience = MeshcoreAudience(key, direct, version, minted)
+
+    override fun toString(): String = "MeshcoreAudience(claimed=${key != null}, contacts=${direct.size}, v=$version, minted=$minted)"
+
+    companion object {
+        val NONE = MeshcoreAudience(key = null, direct = emptySet())
+    }
+}
 
 /** What our profile says about LoRa: the board it names, if any, and whether it claims the compact door (`MeshManager.ownLora`). */
 private data class OwnLora(
