@@ -8,8 +8,9 @@ topics: [lora, meshcore, crypto, airtime]
 
 # ADR 2026-11.gsqu — a MeshCore board is a second LoRa plane over one neutral core
 
-Status: Proposed (2026-11-12). Nothing is built yet. The five bench checks were answered on the firmware itself in a
-simulator (2026-11-13, below); only the BLE half of the first is still owed, on boards.
+Status: Proposed (2026-11-12). Stage 1, the board-neutral seam with Meshtastic unchanged, is built (2026-11-13); no
+MeshCore code exists yet. The five bench checks were answered on the firmware itself in a simulator (2026-11-13,
+below); only the BLE half of the first is still owed, on boards.
 
 It amends four ADRs:
 
@@ -87,7 +88,7 @@ The firmware source (tag `companion-v1.18.0`) answers the question jend left ope
 It runs over a neutral `BoardLink`. A board kind supplies three things:
 
 - **the link itself.**
-- **`BoardKindHooks`.** These are stateless and called only on the core's own collector and pacer coroutines. They
+- **`BoardKindHooks`.** One object per plane instance, holding the kind's own state (amended 2026-11-13, below). They
   carry the inbound dispatch, kind-only features, refusal handling and send-time slot guards.
 - **`BoardTraits`.** These hold:
   - payload caps;
@@ -275,3 +276,28 @@ The invariants that keep this true, each to be written with its stage:
 - a MeshCore column in `CoordinationPlaneSizeBudgetTest`, covering the room body in one and two elided packets and the
   DM budget at 157 B after COBS;
 - `MeshcoreDirectLabTest`, where path drift is re-pinned and a DM never floods.
+
+## Amendment 2026-11-13 — the hooks are a per-instance kind object, not a stateless one (draft, Stage 1c)
+
+§1 called `BoardKindHooks` stateless and called only on the core's collector and pacer coroutines. Building Stage 1c
+showed neither holds. The Meshtastic-only features keep state of their own: the auto-reply's memory, the taught keys,
+the room's post floor and the setup flag. And three of them are reached from outside the plane: `postToPublicChannel`
+from `MeshManager`, `provisionKnitChannel` from the settings, and the limiter snapshot from the save loop and `stop()`.
+
+So, as built:
+
+- **One hooks object per plane instance** (`MeshtasticHooks`). It creates the kind's state objects itself, and the core
+  names none of them (`DmAutoReplyPolicy`, `LoraContactPolicy`, `PublicChannelPolicy`, `PublicPostPolicy`).
+- **Any coroutine.** A hook may be called from any plane coroutine and from those entry points. Every state object
+  behind it is `@Synchronized`, atomic or volatile (`DmAutoReplyPolicy` gained `@Synchronized` for this). A hook takes the pacer's
+  and the ledger's monitors only inside its own call. No hook is entered holding either, and `statusOf` runs under the
+  status lock reading nothing that waits.
+- **On the packet and outcomes collectors** a hook returns at once: it never suspends, waits on a launch or re-enters
+  the core (the rule at `LoraMeshTransport.kt:123-127`). A write that has to wait, such as aajj's `add_contact`, is
+  launched on the plane's scope.
+- **The way back.** A hook reaches the core through `PlaneCore`: the ledger, the config, the payload cap, `restored`, a
+  room-class `enqueue`, `limitersMoved` and `onBoardKeyHeard`. The core keeps every neutral structure (the marks, the
+  flights, the re-probe, the held frame) and acts on what a hook answers (`PacketRoute`, `SlotCheck`, `KeyTeach`,
+  `KeyWrite`).
+- **A slot no kind can vouch for is refused.** `checkSlot` returns null when the kind cannot read the slot, and the core
+  refuses the frame.

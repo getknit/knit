@@ -1279,7 +1279,7 @@ internal data class ChannelInfo(
      * `ChannelSettings.use_aead` (8): the channel encrypts with AES-CCM, which adds
      * [MeshtasticProto.AEAD_OVERHEAD_BYTES] to every packet, stops firmware with upstream `34cb8d582` signing on it, and
      * changes the channel's hash (`Channels.cpp:53`, `h ^= 0xAE`) — so a Knit slot switched to it is no longer the
-     * channel every other Knit board is on (`LoraMeshTransport.boundSlotIsKnit`). Read only: Knit never writes it.
+     * channel every other Knit board is on (`MeshtasticHooks.boundSlotIsKnit`). Read only: Knit never writes it.
      */
     val useAead: Boolean = false,
     /**

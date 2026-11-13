@@ -144,8 +144,22 @@ numbers are `BoardTraits` (`MeshtasticTraits` reads every Meshtastic constant wh
 `BoardTraits.refusalOf` (`RefusalClass`: `OWN_NO_KEY`, `PEER_LACKS_KEY`, `PACE`, `DEST_REFUSED`, `OTHER`). `LoraAirtime`
 prices from `RadioParams` and a `DutyPolicy`, mapped from a `LoraRadioConfig` in one place. `MeshManager` sizes a compact
 copy by its sink's `LoraDirectSink.budgetFor` (Meshtastic: 168 B, 9 tick acks), and a copy that sheds its inline acks
-gives the LoRa-held ones back to the coalescer (`compactCopyOf`). The Meshtastic-only features still read the Meshtastic
-records until Stage 1c moves them behind `BoardKindHooks`.
+gives the LoRa-held ones back to the coalescer (`compactCopyOf`).
+
+Everything only a Meshtastic board does sits behind `BoardKindHooks` (Stage 1c), and the transport reads the
+`MeshtasticLink` in one place, where it builds `MeshtasticBoardLink` and `MeshtasticHooks`. `MeshtasticHooks` is made
+per plane instance and creates the kind's state itself (`DmAutoReplyPolicy`, `LoraContactPolicy`, the room's post
+floor, the setup flag); it reaches back through `PlaneCore` (the ledger, the config, the payload cap, `restored`, a
+room-class `enqueue`, `limitersMoved`, `onBoardKeyHeard`). The inbound dispatch is `route` → `PacketRoute` (`DIRECT`,
+`KNIT`, `RETIRED`, `KIND`, `HEARD`, `DROPPED`) in the order the transport always read it: the compact DM on the bound
+slot or index 0 ahead of everything, a hearing for everything else, then a `NodeInfo` or a text to the hooks
+(`onKindPacket`), a Knit frame on the bound slot, or the burned tag. The board's ACK of a compact DM to us is
+`bookDirectAck`; the room is `postToPublicChannel` and `sendKindFrame` (the reply too); the auto-reply's memory goes in
+and out of the plane state through `restoreState` / `snapshotState` with no format change; the slot guards are
+`directSlotRefused` (slot 0) and `checkSlot` (`SlotCheck`, and the core refuses a slot the kind has no answer for);
+the session-up pricing and binding are `onReady`; a missing key is `teachKey` (`KeyTeach`, `KeyWrite`, the core holding
+and releasing the frame), `onDelivered` and `bookKeyReply`, and the setup is `provision`. The core keeps every branch
+order: a handled missing key, the ended send, the 35, the destination's refusal.
 
 `MeshtasticProto` + `ProtoIo` are a hand-rolled protobuf codec (zero new deps): `ToRadio{want_config_id,
 heartbeat, disconnect, packet{Data{portnum=PRIVATE_APP 256, payload}}}` out; `FromRadio{my_info,
@@ -688,12 +702,12 @@ before), and never the default.
 
 Drive it headlessly with `…debug.LORAPROV --es mode dedicated`; `--es mode restore` undoes either setup.
 
-A board whose bound slot is **not** the Knit channel never transmits (`LoraMeshTransport.boundSlotIsKnit`,
+A board whose bound slot is **not** the Knit channel never transmits (`MeshtasticHooks.boundSlotIsKnit`,
 counted as `loraSuppressed`): after a restore, or before a setup, sending would put Knit's cleartext frames
 onto whatever channel the board is on — most likely the public one. A board that reports no channel table at
 all is given the benefit of the doubt, since going mute on unreadable firmware is the worse failure. A Knit slot
 another client switched to AEAD (`use_aead`, #243) refuses a Knit broadcast and a ham-mode compact DM
-(`LoraMeshTransport.aeadBlocks`, `lora send skipped: slot N is AEAD`, also `loraSuppressed`), since AEAD changes the
+(`MeshtasticHooks.aeadBlocks`, `lora send skipped: slot N is AEAD`, also `loraSuppressed`), since AEAD changes the
 channel hash; a PKI compact DM leaves on channel 0 and still goes. The radio screen then reads the board as not set up,
 and the setup writes the slot's own settings back with field 8 alone removed, which clears AEAD and keeps everything
 else, position precision included (`MeshtasticSession.identityOnly`, `ChannelInfo.settingsRaw`). Trial owed: two
@@ -841,7 +855,7 @@ each hear the channel for themselves.
   self-asserted node number — **unless the signature checks out** (ADR 2026-09.ggq4). The profile also
   carries the board's Curve25519 key (`ProfileContent.loraKey` ← `SettingsStore.loraBoard.key`, written with
   the number in one edit, read with it from one snapshot, and only when the number is the key's CRC32 — signing or not,
-  ggq4's 2026-10-30 amendment; `LoraMeshTransport.boundKey`), `peers.loraKey` stores it, and `deliverMeshPost`
+  ggq4's 2026-10-30 amendment; `MeshtasticHooks.boundKey`), `peers.loraKey` stores it, and `deliverMeshPost`
   verifies a signed post on the phone (`mesh/crypto/XeddsaVerify`, in 2.8.1's layout over `MeshPost.signedFields`
   — the packet's `to` and its `Data` envelope as decoded — then, only when the board may have merged the bitfield's
   bit into `want_response`, with it read as signed `false`; always over the payload as heard — `MeshPost.payload`,

@@ -131,7 +131,7 @@ internal object PublicChannelPolicy {
      * and there is no primary to mirror or to post on.
      *
      * Decided off the channel **table**, never off the bound index — the same reading as
-     * `LoraMeshTransport.boundSlotIsKnit`. `SettingsStore.loraChannelIndex` defaults to 0, so a board that was
+     * `MeshtasticHooks.boundSlotIsKnit`. `SettingsStore.loraChannelIndex` defaults to 0, so a board that was
      * paired but never ran Knit's setup would otherwise read as "Knit at slot 0" and mirror nothing, when
      * slot 0 on it is exactly the primary the room is for. A board reporting no table cannot have Knit there.
      */

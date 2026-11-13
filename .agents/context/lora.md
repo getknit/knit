@@ -256,7 +256,12 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `Ceiling.FLOOD`; the zero-hop hearing hook), then ADR 2026-10.jend for the scope it amends, then "The layers" in
   `lora-bridge.md`. Stage 1 (built): the core reads the board through `BoardLink` / `MeshtasticBoardLink` (`BoardState`,
   `BoardPacket`, `SendPurpose`, `BoardSend`), a kind's numbers through `BoardTraits` / `MeshtasticTraits`, refusals through
-  `BoardTraits.refusalOf` (`RefusalClass`) and its status half through `BoardKindHooks`; `LoraAirtime` prices from
+  `BoardTraits.refusalOf` (`RefusalClass`), and everything only the kind does through `BoardKindHooks` (Stage 1c:
+  `MeshtasticHooks`, made per instance with the kind's own `DmAutoReplyPolicy` / `LoraContactPolicy`, reaching back
+  through `PlaneCore`; the dispatch `route` → `PacketRoute`, `bookDirectAck`, `onKindPacket`, `postToPublicChannel`,
+  `sendKindFrame` / `FragmentOutcome`, `restoreState` / `snapshotState`, `directSlotRefused`, `checkSlot` / `SlotCheck`,
+  `onReady`, `provision`, `teachKey` / `KeyTeach` / `KeyWrite`, `onDelivered`, `bookKeyReply`), so the core reads
+  `MeshtasticLink` only where it builds the board link and the hooks; `LoraAirtime` prices from
   `RadioParams` and `DutyPolicy`; a compact DM's `DirectSend.airings` ride the frame; `BoardAddr` is kind-tagged
   (`BoardAddr.Meshtastic`, `BoardAddr.MeshCore`, `meshtasticNode`); `MeshManager` sizes compact copies by
   `LoraDirectSink.budgetFor` (`LoraDirectBudget`, `compactTickAcks`) and `compactCopyOf` gives shed LoRa-held acks back to

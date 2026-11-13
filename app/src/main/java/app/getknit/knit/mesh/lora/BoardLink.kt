@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.lora
 
+import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.TransportHealth
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -142,10 +143,16 @@ internal class BoardSend(
 )
 
 /**
- * What only a board kind does, called by the plane core (ADR 2026-11.gsqu §1). Stateless: called from any plane coroutine
- * and from the entry points outside the plane, never under the pacer's or the ledger's monitor. Stage 1b carries the
- * status; Stage 1c moves the kind's inbound dispatch and features behind it.
+ * What only a board kind does, called by the plane core (ADR 2026-11.gsqu §1, Stage 1b and 1c). One per plane instance,
+ * made by the kind (Meshtastic's is [MeshtasticHooks]) with the kind's own state objects inside it — the core never
+ * names them. A hook is called from any plane coroutine and from the entry points outside the plane
+ * (`postToPublicChannel` from `MeshManager`, `provisionKnitChannel` from the settings, the limiter snapshot from the
+ * save loop and `stop()`), never under the pacer's or the ledger's monitor; so every piece of state behind it has
+ * `@Synchronized` entry points or atomics, and a hook takes the pacer's and the ledger's monitors only inside its own
+ * call, never the other way round. A hook called on the outcomes collector ([onDelivered]) or the packet collector
+ * ([route], [bookDirectAck], [onKindPacket]) returns at once: no suspending, no waiting on a launch, no re-entry.
  */
+@Suppress("TooManyFunctions") // one seam per kind: every Meshtastic-only behaviour the core calls, grouped by stage
 internal interface BoardKindHooks {
     /**
      * [status] with the board's half filled in from [state]: the link state the settings row and the field log render
@@ -156,4 +163,242 @@ internal interface BoardKindHooks {
         state: BoardState,
         status: LoraStatus,
     ): LoraStatus
+
+    // --- the inbound dispatch (Stage 1c.0) ---
+
+    /**
+     * What [packet] is to the core ([PacketRoute]), given the slot the plane is bound to ([bound], null with no config):
+     * the kind's own portnums, its compact-DM marker and the slots each may arrive on.
+     */
+    fun route(
+        packet: BoardPacket,
+        bound: Int?,
+    ): PacketRoute
+
+    /**
+     * Books the air our own board spends acknowledging [packet], a compact DM addressed to it ([own]), when the board did
+     * send an acknowledgement; [onBound] says it arrived on the bound slot. Called before the DM is opened: the board
+     * acked a stranger's and a forged one too.
+     */
+    fun bookDirectAck(
+        packet: BoardPacket,
+        own: BoardAddr,
+        onBound: Boolean,
+    )
+
+    /** Acts on a packet [route] called [PacketRoute.KIND], after the core has noted the hearing. */
+    fun onKindPacket(packet: BoardPacket)
+
+    // --- the kind's own public channel (Stage 1c.1) ---
+
+    /**
+     * Puts the user's post on the board's public channel, or says why not — the core's `PublicChannelSink`. Called from
+     * `MeshManager`'s coroutine.
+     */
+    suspend fun postToPublicChannel(body: String): PublicPostRefusal?
+
+    /**
+     * Writes one of the kind's own queued frames (any [Destination] but Knit's: the public post, the auto-reply) through
+     * the core's [send], which books it, and counts what became of it. Called on the pacer.
+     */
+    suspend fun sendKindFrame(
+        frame: OutboundFrame,
+        send: suspend (ByteArray, SendPurpose) -> FragmentOutcome,
+    )
+
+    // --- the kind's limiters that outlive the process (Stage 1c.2) ---
+
+    /**
+     * Puts back the kind's share of the last process's [snapshot] (the auto-reply's memory, [LoraPlaneSnapshot.autoReplied]),
+     * its stamps moved onto this process's clock by [shift]. Called once, before the core's `restored` gate opens.
+     */
+    fun restoreState(
+        snapshot: LoraPlaneSnapshot,
+        shift: WallShift,
+    )
+
+    /**
+     * The kind's share of the plane snapshot — [LoraPlaneSnapshot.autoReplied], on the wall clock by [shift], capped as
+     * persisted. Called from the save loop and from `stop()`.
+     */
+    fun snapshotState(shift: WallShift): List<SeenStamp>
+
+    // --- the send-time slot guards (Stage 1c.3) ---
+
+    /**
+     * Whether a compact DM may not leave from bound slot [bound] at all (Meshtastic: slot 0, the public channel —
+     * `loraDirectSlotZero`, `StaleAtSend.SLOT_ZERO`). Asked at the offer, the resend and again at send.
+     */
+    fun directSlotRefused(bound: Int?): Boolean
+
+    /**
+     * Whether bound slot [ch] of the Ready board [ready] may carry the Knit [frame] now — the board's channel table read
+     * at send — or null when the kind cannot tell, which the core refuses: silence is the only safe reading of a slot
+     * nobody can vouch for.
+     */
+    fun checkSlot(
+        frame: OutboundFrame,
+        ready: BoardState.Ready,
+        ch: Int,
+    ): SlotCheck?
+
+    // --- a session coming up (Stage 1c.4) ---
+
+    /**
+     * The kind's half of a session coming up, after the core took [ready]'s payload cap: what it tells the ledger about
+     * how the board prices a packet (its radio, how it signs), the `lora ready` line, and the binding the profile
+     * advertises. Called on the board-state collector.
+     */
+    fun onReady(ready: BoardState.Ready)
+
+    // --- our board without the destination's key, and the destination without ours (Stage 1c.5, ADR 2026-10.aajj) ---
+
+    /** Sets the board up for Knit, or puts it back ([ProvisionMode]) — the core's `provisionKnitChannel`. */
+    suspend fun provision(
+        mode: ProvisionMode,
+        previous: BoardSettings?,
+    ): ProvisionResult
+
+    /** True while [provision] runs: nothing is taught to the board inside its admin transaction. */
+    val provisioning: Boolean
+
+    /**
+     * What may be done about our own board [own] refusing a compact DM to [peerId]'s board ([holder]) for want of its key
+     * ([RefusalClass.OWN_NO_KEY]): a key written to the board ([KeyTeach.Write]), or nothing ([KeyTeach.Refused]).
+     * [sentAfter] is the token stamped before the refused send ([BoardSend.preSend]): what the kind learned about that
+     * board after it, the refusal cannot cover. Called on the pacer or the outcomes collector; returns at once.
+     */
+    fun teachKey(
+        peerId: String,
+        holder: LoraBoardHolder,
+        own: BoardAddr,
+        sentAfter: Long,
+    ): KeyTeach
+
+    /**
+     * The destination's board [to] took a compact DM: what the kind keeps about teaching our board its key may be taught
+     * again should it lose it. Called on the outcomes collector, between the mark and the radio-reached report.
+     */
+    fun onDelivered(to: BoardAddr)
+
+    /**
+     * The destination's board lacks our key ([RefusalClass.PEER_LACKS_KEY]), and ours answers it on its own (Meshtastic:
+     * our `NodeInfo`): books that air at [now]. Called on the outcomes collector.
+     */
+    fun bookKeyReply(now: Long)
+}
+
+/** What a kind can do about our own board lacking a destination's key ([BoardKindHooks.teachKey]). */
+internal sealed interface KeyTeach {
+    /**
+     * Teach the board: [write] does it, on the plane's scope, and says what came of it. The core holds the frame
+     * meanwhile and acts on the answer.
+     */
+    class Write(
+        val write: suspend () -> KeyWrite,
+    ) : KeyTeach
+
+    /** Nothing may be written (counted and logged by the kind): the peer is marked keyless and the frame let go. */
+    data object Refused : KeyTeach
+}
+
+/** What became of a [KeyTeach.Write], for the core's held frame. */
+internal enum class KeyWrite {
+    /** The board took the key: the frame goes again through the pacer. */
+    WRITTEN,
+
+    /** The write went out and nothing confirmed it: the frame goes again once, and a second refusal is terminal. */
+    UNCONFIRMED,
+
+    /** Never written (the board busy, the link gone): the frame is owed and goes back on the queue. */
+    NOT_WRITTEN,
+
+    /** Our board refused the write: the peer is marked keyless and the frame let go. */
+    REFUSED,
+}
+
+/** What a kind's [BoardKindHooks.checkSlot] says about a bound slot: clear, or refused in the words `lora send skipped` logs. */
+internal sealed interface SlotCheck {
+    data object Clear : SlotCheck
+
+    data class Refused(
+        val why: String,
+    ) : SlotCheck
+}
+
+/**
+ * What the core's write of one fragment did with its frame. Three ways, not a Boolean, because a frame put back on the
+ * queue is not one the board refused: a Meshtastic room post or auto-reply caught by a board drop was counted refused,
+ * then sent when it aired after the reconnect (#307).
+ */
+internal enum class FragmentOutcome {
+    /** The board took the fragment (or may have, a compact DM's timeout): booked, the cursor moved. */
+    SENT,
+
+    /** Still owed: requeued at its cursor for a busy board or a session that ended, or a compact DM held for a missing key. */
+    OWED,
+
+    /** Ended: a NAK, a broadcast's timeout or another give-up. Abandoned unless a fragment already flew. */
+    ENDED,
+}
+
+/**
+ * What a packet off the board is to the plane core (ADR 2026-11.gsqu, Stage 1c.0), as the kind's [BoardKindHooks.route]
+ * reads it. Every route but [DIRECT] and [DROPPED] is a hearing first ([BoardTraits.heardLive] decides whether it counts).
+ */
+internal enum class PacketRoute {
+    /** A compact DM on a slot one may arrive on: the core opens it when it is addressed to our board. */
+    DIRECT,
+
+    /** A Knit frame on the bound slot: the radio is counted, and the frame decoded and handed to the router. */
+    KNIT,
+
+    /** A Knit packet under a burned tag ([LoraMeshTransport.RETIRED_CTL_TAG]): the radio is counted, the packet dropped. */
+    RETIRED,
+
+    /** The kind's own traffic, which its [BoardKindHooks.onKindPacket] acts on. */
+    KIND,
+
+    /** A hearing, and nothing more: off the bound slot, empty, or a port nothing here reads. */
+    HEARD,
+
+    /** Not even a hearing: a packet the kind could not read, or a compact DM on a slot none arrives on. */
+    DROPPED,
+}
+
+/**
+ * The plane core as a board kind's hooks reach it (ADR 2026-11.gsqu, Stage 1c): the ledger, the config and the payload
+ * cap as they stand, the queue, and the core's own neutral handlers. Implemented by the core; read on the hook's caller's
+ * coroutine.
+ */
+internal interface PlaneCore {
+    /** The one ledger: what a kind's own transmission is priced, admitted and booked against. */
+    val airtime: LoraAirtime
+
+    /** The plane's config, null with no board configured. */
+    val config: LoraConfig?
+
+    /** The largest payload one packet carries now. */
+    val maxPayload: Int
+
+    /** Whether the last process's limiters are back ([LoraPlaneState]): nothing may claim one before. */
+    val restored: Boolean
+
+    /** Queues a kind's own one-packet frame, as a room-class frame at [ceiling]; true when it is in the queue now. */
+    fun enqueue(
+        parts: List<ByteArray>,
+        label: String,
+        ceiling: Ceiling,
+        destination: Destination,
+        to: BoardAddr? = null,
+    ): Boolean
+
+    /** A persisted limiter moved: the core saves the plane state behind its debounce. */
+    fun limitersMoved()
+
+    /**
+     * [from], a board on the air, was heard announcing its key — our board stores a key it lacks off that — so a
+     * missing-key mark on its peer lifts and the newest DM still without its ✓✓ goes again (ADR 2026-10.aajj).
+     */
+    fun onBoardKeyHeard(from: BoardAddr)
 }

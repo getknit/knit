@@ -350,7 +350,7 @@ internal class LoraAirtime(
      * The target is the firmware's own `signedDataFits` edge, one past [MeshtasticProto.MAX_SIGNED_PAYLOAD], not the
      * priced cliff: the two differ only on a 2.8.1 AEAD channel, where the board signs up to that edge and then refuses
      * the packets the AEAD tag pushes over (`Router.cpp:1377-1379`), and no Knit broadcast is written to an AEAD bound
-     * slot (`LoraMeshTransport.aeadBlocks`).
+     * slot (`MeshtasticHooks.aeadBlocks`).
      *
      * The **caller** owes the other half of the bargain — pad only a frame whose body is a deflate stream
      * ([app.getknit.knit.mesh.link.FastFrameCodec.deflated]), the only form where a receiver ignores the

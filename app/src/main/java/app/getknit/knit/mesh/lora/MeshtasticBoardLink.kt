@@ -167,17 +167,6 @@ internal val BoardState.meshtasticReady: LinkState.Ready? get() = detail as? Lin
 internal val BoardAddr.meshtasticNode: UInt? get() = (this as? BoardAddr.Meshtastic)?.node
 
 /**
- * The Meshtastic half of the plane's status: the link state as it stands, and the board's own number while Ready —
- * byte-identical to what the transport wrote before the seam.
- */
-internal object MeshtasticHooks : BoardKindHooks {
-    override fun statusOf(
-        state: BoardState,
-        status: LoraStatus,
-    ): LoraStatus = status.copy(state = state.meshtastic, boardNodeNum = state.meshtasticReady?.board?.myNodeNum)
-}
-
-/**
  * A [StateFlow] that is [source] seen through [transform]: [value] maps the source's value on every read, and a collector
  * gets every source value mapped, on its own coroutine. No `stateIn`, so no scope and no second copy of the state to go
  * stale — a synchronous read is always the source's latest.

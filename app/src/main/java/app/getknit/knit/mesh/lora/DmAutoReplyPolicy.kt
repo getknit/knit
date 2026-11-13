@@ -96,8 +96,12 @@ internal class DmAutoReplyPolicy(
      * [ownNode] is our own board's node number: the reply goes only to a text addressed to it. [carried] is the caller's
      * last word, whether the air will take the reply ([Refusal.NO_AIR] when not): asked once every cap here has passed
      * and before either is claimed, so a reply the window refuses uses up nobody's answer (ADR 2026-10.ug4a). Called on
-     * the board's packet collector, one packet at a time, so the peek and the stamp below cannot interleave.
+     * the board's packet collector, one packet at a time, so the peek and the stamp below cannot interleave; synchronised
+     * all the same, with [stamps] and [restore], because the plane's save loop and `stop()` read the memory from other
+     * coroutines (ADR 2026-11.gsqu's concurrency rule for a kind's state). [carried] takes the ledger's monitor inside
+     * this one, never the other way round.
      */
+    @Synchronized
     fun judge(
         packet: ReceivedPacket,
         ownNode: UInt,
@@ -121,9 +125,11 @@ internal class DmAutoReplyPolicy(
     }
 
     /** The senders answered inside the window, oldest first, on [clock] — what the plane snapshot persists. */
+    @Synchronized
     fun stamps(): List<Pair<String, Long>> = replied.stamps()
 
     /** Re-applies [stamps] from a previous process, on [clock]; anything past the window is left out. */
+    @Synchronized
     fun restore(stamps: List<Pair<String, Long>>) = replied.restore(stamps)
 
     companion object {
@@ -162,7 +168,7 @@ internal class DmAutoReplyPolicy(
 }
 
 /**
- * Why `LoraMeshTransport.onDirectMessage` did not answer a DM the policy would have — the transport's own
+ * Why `MeshtasticHooks.onDirectMessage` did not answer a DM the policy would have — the transport's own
  * gates, counted into the same `autoReplyRefusedByReason` map as [DmAutoReplyPolicy.Refusal] by name.
  * Kept beside the policy so the whole vocabulary a `…debug.LORA` dump can print is in one file.
  */

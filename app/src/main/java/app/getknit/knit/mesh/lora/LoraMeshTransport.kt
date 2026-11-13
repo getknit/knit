@@ -14,7 +14,6 @@ import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.isPresenceEvidence
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.link.FragReassembler
-import app.getknit.knit.mesh.meshNodeLabel
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -40,7 +39,6 @@ import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * A [MeshTransport] that carries this phone's user's own small frames over LoRa via a Meshtastic board
@@ -83,12 +81,12 @@ import java.util.concurrent.atomic.AtomicLong
  * stamp cannot survive a reboot). Pure/Android-free — the only `android.bluetooth.*` sits behind the
  * [MeshtasticLink]/[MeshtasticGattDialer] seam.
  *
- * Becoming the board-neutral plane core (ADR 2026-11.gsqu, Stage 1): it reads the board through [BoardLink], a board
- * kind's numbers through [BoardTraits] and its status half through [BoardKindHooks]. Meshtastic is the only kind, so
- * the constructor still takes the [MeshtasticLink] and adapts it here. The Meshtastic-only features — the slot-0 room,
- * the auto-reply, the `add_contact`, the reply to a 35, the slot and AEAD guards, signing — still read the Meshtastic
- * link and its records ([BoardPacket.meshtastic], [BoardState.meshtasticReady]) until Stage 1c moves them behind the
- * hooks.
+ * The board-neutral plane core (ADR 2026-11.gsqu, Stage 1): it reads the board through [BoardLink], a board kind's
+ * numbers through [BoardTraits] and everything only the kind does through [BoardKindHooks] — the inbound dispatch, the
+ * slot-0 room, the auto-reply and its persisted memory, the send-time slot and AEAD guards, how the board signs, the
+ * setup, teaching the board a key and the answer to a destination without ours. Meshtastic is the only kind, so the
+ * constructor still takes the [MeshtasticLink], and it is read in one place: where the core builds the board link and
+ * the hooks ([MeshtasticBoardLink], [MeshtasticHooks]), which make the kind's own state objects themselves.
  *
  * Large by suppression, as [MeshtasticSession] is: this is the plane's single owner. The pacer loop, the
  * linger sweep and the published status all read and write one set of mutable fields under one scope, so
@@ -97,7 +95,7 @@ import java.util.concurrent.atomic.AtomicLong
 @Suppress("TooManyFunctions", "LongParameterList", "LargeClass")
 internal class LoraMeshTransport(
     private val selfId: suspend () -> String,
-    private val link: MeshtasticLink,
+    link: MeshtasticLink,
     private val config: Flow<LoraConfig?>,
     /** Seals and opens a compact DM (ADR 2026-10.x9fa); [LoraDirectCrypto.None] seals nothing. */
     private val crypto: LoraDirectCrypto = LoraDirectCrypto.None,
@@ -111,14 +109,14 @@ internal class LoraMeshTransport(
      */
     private val boardMap: LoraBoardMap? = null,
     /** Delivers a post heard on the board's primary channel into the Meshtastic room — [app.getknit.knit.mesh.MeshPostSink]. */
-    private val onPublicPost: suspend (MeshPost) -> Unit = {},
+    onPublicPost: suspend (MeshPost) -> Unit = {},
     /**
      * The bound board's node number and key ([BoardBinding]), reported each time its session comes up. What the
      * profile advertises so a contact's phone can line a heard post up with this one and verify it
      * (`SettingsStore.loraBoard`); persisted by the caller, so a link drop does not unsay it and only a
      * different board changes it.
      */
-    private val onBoardBound: suspend (BoardBinding) -> Unit = {},
+    onBoardBound: suspend (BoardBinding) -> Unit = {},
     /**
      * One of our compact DMs ([DirectKind.MESSAGE], by its row id) reached its recipient's **radio**: the destination's
      * own board acked it — its phone may be away, and the board's to-phone queue can still drop it — so the chat shows
@@ -183,11 +181,37 @@ internal class LoraMeshTransport(
     /** The board kind's numbers (ADR 2026-11.gsqu, Stage 1a): Meshtastic's, the one kind there is. */
     private val traits: BoardTraits = BoardTraits.MESHTASTIC
 
-    /** What only the board kind does, as far as Stage 1b has moved it: the status's board half. */
-    private val hooks: BoardKindHooks = MeshtasticHooks
-
     /** The board as the core reads it: [link] seen through the neutral seam, with no buffering of its own (Stage 1b). */
     private val board: BoardLink = MeshtasticBoardLink(link)
+
+    /**
+     * The plane core as the kind's hooks reach it (Stage 1c): read lazily, so the fields it names are set by the time a
+     * hook calls in.
+     */
+    private val core =
+        object : PlaneCore {
+            override val airtime: LoraAirtime get() = pace.airtime
+            override val config: LoraConfig? get() = currentConfig
+            override val maxPayload: Int get() = this@LoraMeshTransport.maxPayload
+            override val restored: Boolean get() = this@LoraMeshTransport.restored.value
+
+            override fun enqueue(
+                parts: List<ByteArray>,
+                label: String,
+                ceiling: Ceiling,
+                destination: Destination,
+                to: BoardAddr?,
+            ): Boolean = this@LoraMeshTransport.enqueue(parts, label, ceiling, destination, to = to)
+
+            override fun limitersMoved() {
+                stateWake.trySend(Unit)
+            }
+
+            override fun onBoardKeyHeard(from: BoardAddr) = this@LoraMeshTransport.onBoardKeyHeard(from)
+        }
+
+    /** What only the board kind does (Stage 1b and 1c): made here, per instance, with the kind's own state inside. */
+    private val hooks: BoardKindHooks = MeshtasticHooks(link, board, core, scope, metrics, clock, log, onPublicPost, onBoardBound)
 
     /** A compact DM's budget on this kind ([LoraDirectSink.budgetFor]): fixed, so any coroutine reads it. */
     private val directBudget: LoraDirectBudget = traits.directBudget()
@@ -210,16 +234,9 @@ internal class LoraMeshTransport(
     private val sigSeen = LoraFanoutSeen()
 
     /**
-     * Who has been told the board is unmonitored, and when the board last said so — the DM auto-reply's two
-     * caps. Not cleared by [quiesce]: the memory is about the senders, not the board, and losing the link
-     * for a minute must not earn anybody a second reply.
-     */
-    private val autoReply = DmAutoReplyPolicy(clock = clock)
-
-    /**
      * The backed-off re-probe per peer with own DMs still without their ✓✓ (ADR 2026-10.rp3s, re-keyed by ADR
      * 2026-10.x9fa): what asks a quiet board's phone again, whatever its board said. Persisted with the other limiters
-     * and, like [autoReply], not cleared by [quiesce] — see [LoraReprobe].
+     * and, like the kind's auto-reply memory, not cleared by [quiesce] — see [LoraReprobe].
      */
     private val reprobe = LoraReprobe()
 
@@ -228,19 +245,6 @@ internal class LoraMeshTransport(
      * memory only: after a restart every board is unknown and the first DM's ack decides. Cleared by [quiesce].
      */
     private val direct = LoraDirectPolicy(maxFlights = traits.maxFlights)
-
-    /**
-     * Which pinned contacts' keys our board was taught with `add_contact`, and whether it may be taught another (ADR
-     * 2026-10.aajj). In memory only: a restart may write a key once more, which costs one NodeDB save.
-     */
-    private val contacts = LoraContactPolicy()
-
-    /**
-     * Set while a setup or restore runs (ADR 045's one admin transaction): no `add_contact` is written inside it. The
-     * session's actor would serialise the two anyway; this keeps the write from landing just before the commit's reboot.
-     */
-    @Volatile
-    private var provisioning = false
 
     /** The re-probe's schedules, soonest first: for the JVM tests, which read what a round decided. */
     internal fun reprobeSchedule(): List<LoraReprobe.Entry> = reprobe.stamps()
@@ -328,10 +332,6 @@ internal class LoraMeshTransport(
     // "is this frame addressed to us?" answers no, so [pacerLoop] takes nothing before it does (#141).
     private val selfIdKnown = MutableStateFlow<String?>(null)
     private val selfIdCached: String? get() = selfIdKnown.value
-
-    // When this phone last put a post on the foreign public channel, for the per-phone floor. Monotonic
-    // (`clock`), so it survives a wall-clock jump; NEVER so the first post of a session is never held.
-    private val lastPublicPostAt = AtomicLong(NEVER)
 
     /**
      * Whether a board is configured — the gate the timed loop parks on. Mirrors `currentConfig != null`
@@ -571,7 +571,7 @@ internal class LoraMeshTransport(
         val now = clock()
         val shift = WallShift(now, nowWall)
         // An older build's ledger (`air`) is not read back (ADR 2026-10.ug4a): the window starts empty.
-        autoReply.restore(snapshot.autoReplied.map { it.id to shift.toMono(it.atWall) })
+        hooks.restoreState(snapshot, shift)
         reprobe.restore(
             snapshot.reprobes.map { LoraReprobe.Entry(it.id, shift.toMono(it.dueAtWall), it.gapMs, it.lastFrameId) },
         )
@@ -585,10 +585,8 @@ internal class LoraMeshTransport(
         val holders = boardHolders
         return LoraPlaneSnapshot(
             savedAtWall = nowWall,
-            // The DM auto-reply's once-a-day memory: a restart that forgot who was answered would answer the same sender
-            // twice in a day — their next DM, or one that queued on the board while the phone was away. The board hands a
-            // packet over once (`PhoneAPI::getFromRadio`), so a DM already read never comes back (ADR 2026-09.4n5p).
-            autoReplied = autoReply.stamps().takeLast(STATE_AUTO_REPLY_CAP).map { SeenStamp(it.first, shift.toWall(it.second)) },
+            // The kind's limiters: on Meshtastic the DM auto-reply's once-a-day memory (ADR 2026-09.4n5p).
+            autoReplied = hooks.snapshotState(shift),
             // And the re-probe's backoff (ADR 2026-10.rp3s): forgotten, every restart would re-probe each silent
             // recipient at the base gap again. Under the cap, direct board holders first and then the soonest, so a
             // holder's earned backoff is never the one dropped (ADR 2026-10.ug4a).
@@ -672,22 +670,14 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * Sets the connected board up for Knit — the one-tap alternative to configuring a Meshtastic board by
-     * hand. On [ProvisionResult.Provisioned] the settings VM persists the returned index so this plane binds
-     * to it, along with the intervals the board had before so a restore can put them back. Requires a Ready
-     * link.
+     * Sets the connected board up for Knit, or puts it back ([ProvisionMode.Restore]) — the kind's setup
+     * ([BoardKindHooks.provision], ADR 045), which also keeps a key from being taught to the board inside its admin
+     * transaction. Requires a Ready link.
      */
     override suspend fun provisionKnitChannel(
         mode: ProvisionMode,
         previous: BoardSettings?,
-    ): ProvisionResult {
-        provisioning = true
-        try {
-            return board.provision(ProvisionSpec(KnitChannel.NAME, KnitChannel.PSK, mode, previous))
-        } finally {
-            provisioning = false
-        }
-    }
+    ): ProvisionResult = hooks.provision(mode, previous)
 
     // --- outbound (fast plane only) ---
 
@@ -951,7 +941,7 @@ internal class LoraMeshTransport(
                 false
             }
 
-            currentConfig?.channelIndex == PublicChannelPolicy.PRIMARY_INDEX -> {
+            hooks.directSlotRefused(currentConfig?.channelIndex) -> {
                 metrics.onLoraDirectSlotZero()
                 false
             }
@@ -1050,7 +1040,7 @@ internal class LoraMeshTransport(
         val holder = boardHolders?.get(peerId)
         if (holder == null || !holder.direct) return false
         if (peerId in linkedPeers || peerId in covered) return false
-        if (currentConfig?.channelIndex == PublicChannelPolicy.PRIMARY_INDEX) return false
+        if (hooks.directSlotRefused(currentConfig?.channelIndex)) return false
         if (copyWaiting(dm.frameId)) return false
         if (direct.reachOf(peerId, clock()).keepsResendsOff()) return false
         if (direct.mustWait(peerId, clock(), pace.hasQueuedTo(peerId))) return false
@@ -1280,7 +1270,7 @@ internal class LoraMeshTransport(
                 if (!outcome.byDestination) return
                 val send = direct.ended(outcome.id) ?: return
                 direct.onAcked(send.peerId, now)
-                noteContactDelivered(send)
+                hooks.onDelivered(send.addr)
                 if (send.kind == DirectKind.MESSAGE) {
                     reprobe.onAcked(send.peerId, now, fresh = !send.resend)
                     radioReached(send, outcome, late = true)
@@ -1326,7 +1316,7 @@ internal class LoraMeshTransport(
 
             refusal == RefusalClass.PEER_LACKS_KEY -> {
                 metrics.onLoraDirectPeerLacksOurKey()
-                bookNodeInfoReply(now)
+                hooks.bookKeyReply(now)
             }
 
             refusal == RefusalClass.DEST_REFUSED -> {
@@ -1383,7 +1373,7 @@ internal class LoraMeshTransport(
                 metrics.onLoraDirectAcked()
                 direct.onAcked(peer, now)
                 // Their board took a PKI packet under the key ours holds: should ours lose it again, it may be taught once more.
-                noteContactDelivered(send)
+                hooks.onDelivered(send.addr)
                 if (send.kind == DirectKind.MESSAGE) {
                     reprobe.onAcked(peer, now, fresh = !send.resend)
                     radioReached(send, outcome, late = false)
@@ -1465,7 +1455,7 @@ internal class LoraMeshTransport(
         val send = flight.send
         val peer = send.peerId
         metrics.onLoraDirectPeerLacksOurKey()
-        bookNodeInfoReply(now)
+        hooks.bookKeyReply(now)
         val packet = flight.packet
         if (send.afterPeerKey || packet == null) {
             metrics.onLoraDirectUnreachable()
@@ -1489,25 +1479,6 @@ internal class LoraMeshTransport(
         direct.scheduleRetry(peer, now + flight.retransmitMs, frameOf(flight, retry, packet))
         flightWake.trySend(Unit)
         log("lora direct peer lacks our key ${send.frameId} -> $peer: re-offer in ${flight.retransmitMs}ms")
-    }
-
-    /**
-     * Books the `NodeInfo` our board sends a destination that answered `PKI_UNKNOWN_PUBKEY`: our board's own `User` as
-     * its NodeInfo stream reported it, or a nominal one. Never PKI'd, and sent on the channel the NAK arrived on — their
-     * primary, which is ours when we heard it at all (`ReliableRouter.cpp:162-168`). Signed by the firmware's rule
-     * (#243, [LoraAirtime.price]): on 2.8.2+ under `BALANCED` or `STRICT` even unicast (`Router.cpp:1222-1227` at
-     * `34cb8d5`), on 2.8.1 only in ham mode (`Router.cpp:1270`).
-     */
-    private fun bookNodeInfoReply(now: Long) {
-        val size =
-            ownNode()?.let {
-                link
-                    .nodeUser(it)
-                    ?.user
-                    ?.raw
-                    ?.size
-            } ?: LoraDirectPolicy.NODEINFO_USER_BYTES
-        pace.airtime.record(size, now, pace.airtime.price(AirSlot.PRIMARY, PacketKind.NODEINFO_UNICAST, MeshtasticProto.PORT_NODEINFO))
     }
 
     /** A queued frame again for [flight]'s sealed [packet], as [send], under the gates its own path asked. */
@@ -1538,27 +1509,16 @@ internal class LoraMeshTransport(
     /** Our bound board's address, or null with no session up. */
     private fun ownBoard(): BoardAddr? = (board.state.value as? BoardState.Ready)?.own
 
-    // --- Meshtastic-only reads of a board address: what the `add_contact` and NodeInfo paths key on (Stage 1c moves them) ---
-
-    /** Our bound Meshtastic board's node number, or null with no session up. */
-    private fun ownNode(): UInt? = ownBoard()?.meshtasticNode
-
-    /** The destination's board took [send]: our board may be taught its key once more should it lose it (ADR 2026-10.aajj). */
-    private fun noteContactDelivered(send: DirectSend) {
-        val own = ownNode() ?: return
-        send.addr.meshtasticNode?.let { contacts.onDelivered(own, it) }
-    }
-
     // --- a missing key on our board: the add_contact (ADR 2026-10.aajj) ---
 
     /**
-     * Our own board refused [frame] before it aired, for want of the destination board's key (`39`, packet [handle]):
-     * acted on once per handle, whichever of its `queueStatus` and its self-NAK came first. Nothing flew and nothing was
-     * booked. The frame is **held**, never given up, while the one thing that can help is tried: an `add_contact` for a
-     * pinned contact's board ([LoraContactPolicy]), after which it is re-offered through the pacer and its own gates.
-     * When none may be written — no rank, no binding key, the board's own key for them, one written already — the peer
-     * is marked [LoraDirectPolicy.Reach.NO_KEY]: held, counted (`loraDirectNoKey`), never silent, and the DM stays with
-     * the source for the re-probe.
+     * Our own board refused [frame] before it aired, for want of the destination board's key ([RefusalClass.OWN_NO_KEY],
+     * packet [handle]): acted on once per handle, whichever of its synchronous answer and its late refusal came first.
+     * Nothing flew and nothing was booked. The frame is **held**, never given up, while the one thing that can help is
+     * tried: the kind teaching the board the key ([BoardKindHooks.teachKey]; on Meshtastic an `add_contact` for a pinned
+     * contact's board), after which it is re-offered through the pacer and its own gates. When none may be written the
+     * peer is marked [LoraDirectPolicy.Reach.NO_KEY]: held, counted (`loraDirectNoKey`), never silent, and the DM stays
+     * with the source for the re-probe.
      */
     private fun onNoKey(
         frame: OutboundFrame,
@@ -1571,9 +1531,9 @@ internal class LoraMeshTransport(
         metrics.onLoraDirectNoKey()
         val peer = send.peerId
         log("lora direct no key ${send.frameId} -> $peer id=$handle")
-        val own = ownNode()
+        val own = ownBoard()
         val holder = boardHolders?.get(peer)
-        if (own == null || provisioning) {
+        if (own == null || hooks.provisioning) {
             // Between sessions, or inside a setup's admin transaction: ask again once it is over.
             requeue(frame)
             return
@@ -1582,18 +1542,14 @@ internal class LoraMeshTransport(
             abandon(frame) // their board changed while it waited: the offer's gates decide anew
             return
         }
-        // The 39 is the board's word that it holds no key for them now; the stream's copy of their NodeInfo is read for a
-        // key only if it raced this send (`sentAfter`), never a stale or forged one from before.
-        val streamed = holder.addr.meshtasticNode?.let(link::nodeUser)
-        when (val verdict = contacts.judge(peer, holder, own, streamed, sentAfter, clock())) {
-            is LoraContactPolicy.Verdict.Write -> {
+        when (val teach = hooks.teachKey(peer, holder, own, sentAfter)) {
+            is KeyTeach.Write -> {
                 direct.holdForContact(peer, frame)
-                scope.launch { writeContact(peer, own, verdict) }
+                // A coroutine on the plane's scope: the write waits on the board's answer.
+                scope.launch { onKeyWritten(peer, teach.write()) }
             }
 
-            is LoraContactPolicy.Verdict.Refused -> {
-                if (verdict.reason == LoraContactPolicy.Refusal.BOARD_KEY_CONFLICT) metrics.onLoraDirectBoardKeyConflict()
-                log("lora direct no contact $peer reason=${verdict.reason}")
+            KeyTeach.Refused -> {
                 direct.onNoKey(peer, clock())
                 abandon(frame)
             }
@@ -1602,46 +1558,26 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * Writes [write]'s `add_contact` to our own board [own] — a local admin message, no passkey, nothing on the air —
-     * and re-offers the frame held for [peerId] once the board's `queueStatus` for it says res 0: the firmware handles a
-     * local admin message, and saves the NodeDB, before it answers (`Router.cpp:427-432`). A board that refused it, or
-     * silently dropped it (`is_managed`, locked storage, `AdminModule.cpp:127`, `:178-181`), shows as the re-offer's
-     * second `39`, which is then terminal. One that was never written to (no headroom, the link gone) is asked again.
+     * What became of the key written for [peerId] ([KeyWrite]), for the frame held for it: taken or unconfirmed, it goes
+     * again through the pacer (a refused admission hands it to the shed, which [enqueue] abandons, so what was parked
+     * behind it is offered again); never written, it is owed; refused by our board, the peer is marked keyless and the
+     * frame let go.
      */
-    private suspend fun writeContact(
+    private fun onKeyWritten(
         peerId: String,
-        own: UInt,
-        write: LoraContactPolicy.Verdict.Write,
+        written: KeyWrite,
     ) {
-        val result = board.send(write.admin, SendPurpose.Admin(BoardAddr(own))).result
-        val now = clock()
-        when (result) {
-            // Only res 0 records the write. A refused admission hands the frame to the shed, which `enqueue` abandons, so
-            // what was parked behind it is offered again.
-            is SendResult.Queued -> {
-                contacts.onWritten(peerId, own, write.node, write.key, now)
-                metrics.onLoraDirectContactAdded()
-                log("lora direct contact added ${meshNodeLabel(write.node.toLong())} for $peerId")
+        when (written) {
+            KeyWrite.WRITTEN, KeyWrite.UNCONFIRMED -> {
                 direct.releaseContact(peerId)?.let { enqueue(it) }
             }
 
-            // The write went out and no queueStatus came back: re-offered once, the write not recorded; the next 39 for
-            // the same key is terminal (`LoraContactPolicy.onTimedOut`), so this cannot loop.
-            is SendResult.Timeout -> {
-                contacts.onTimedOut(own, write.node, write.key)
-                log("lora direct contact unconfirmed ${meshNodeLabel(write.node.toLong())} for $peerId")
-                direct.releaseContact(peerId)?.let { enqueue(it) }
-            }
-
-            is SendResult.Busy, is SendResult.NotReady -> {
-                log("lora direct contact not written for $peerId: $result")
+            KeyWrite.NOT_WRITTEN -> {
                 direct.releaseContact(peerId)?.let(::requeue)
             }
 
-            else -> {
-                contacts.onWritten(peerId, own, write.node, write.key, now)
-                log("lora direct contact refused by our board for $peerId: $result")
-                direct.onNoKey(peerId, now)
+            KeyWrite.REFUSED -> {
+                direct.onNoKey(peerId, clock())
                 direct.releaseContact(peerId)?.let(::abandon)
             }
         }
@@ -1699,27 +1635,19 @@ internal class LoraMeshTransport(
      */
     private fun onDirectPacket(
         packet: BoardPacket,
-        raw: ReceivedPacket,
         bound: Int?,
     ) {
         val ready = board.state.value as? BoardState.Ready ?: return
-        // Addressed to our board, and not from it: our own unicast echoed back is nobody's DM to us.
+        // Addressed to our board, and not from it: our own unicast echoed back is nobody's DM to us. The slots it may
+        // arrive on are the kind's ([BoardKindHooks.route]).
         if (!packet.toUs || packet.from == ready.own) return
-        if (packet.channel != bound && packet.channel != PublicChannelPolicy.PRIMARY_INDEX) return
         // A radio sending Knit frames on the bound slot counts at once, as every Knit packet there does. One on index 0 —
         // where firmware 2.8 reports every PKI DM, which every compact DM now is — counts once it has authenticated
         // below: index 0 is the public slot too, and only a pinned peer's seal says the radio is a Knit one.
         if (packet.channel == bound) noteBoard(packet)
         // Our board acked it on our behalf, before the phone could open it — a stranger's and a forged one too: air the
-        // window owes (ADR 2026-10.x9fa). Only when the firmware did send that ACK: a unicast that asked for none, and
-        // named nobody's next hop as ours, drew none. A routing unicast on the channel the DM came in on: unsigned but in
-        // 2.8.1's ham mode, +12 B on an AEAD slot 0 (#243, LoraAirtime.price). Read off the Meshtastic record (Stage 1c.0).
-        val own = ready.own.meshtasticNode
-        if (own != null && LoraDirectPolicy.boardAcks(raw, own)) {
-            val slot = if (packet.channel == bound) AirSlot.KNIT else AirSlot.PRIMARY
-            val price = pace.airtime.price(slot, PacketKind.ROUTING_UNICAST, MeshtasticProto.PORT_ROUTING)
-            pace.airtime.record(traits.ackPayloadBytes, clock(), price)
-        }
+        // window owes (ADR 2026-10.x9fa), booked by the kind when its board did send one.
+        hooks.bookDirectAck(packet, ready.own, onBound = packet.channel == bound)
         val opened = openDirect(packet) ?: return
         if (packet.channel != bound) noteBoard(packet)
         metrics.onLoraDirectDelivered()
@@ -1791,13 +1719,13 @@ internal class LoraMeshTransport(
     private fun isLive(packet: BoardPacket): Boolean = traits.heardLive(packet, wallClock())
 
     /**
-     * A pinned contact's board broadcast its `NodeInfo` with a key (ADR 2026-10.aajj): our board stores a key it lacks
-     * off one, so a missing-key mark on that peer lifts, and the newest DM still without its ✓✓ goes again — once; if the
-     * board still has no key, its `39` marks the peer again with nothing written. Never behind a timer.
+     * A pinned contact's board was heard announcing its key ([PlaneCore.onBoardKeyHeard]; on Meshtastic a `NodeInfo`,
+     * ADR 2026-10.aajj): our board stores a key it lacks off one, so a missing-key mark on that peer lifts, and the newest
+     * DM still without its ✓✓ goes again — once; if the board still has no key, its refusal marks the peer again with
+     * nothing written. Never behind a timer.
      */
-    private fun onNodeInfoHeard(packet: ReceivedPacket) {
-        val peer = peerByBoard[BoardAddr(packet.from)] ?: return
-        if (BoardOwnerRaw(packet.payload).owner.publicKey == null) return
+    private fun onBoardKeyHeard(from: BoardAddr) {
+        val peer = peerByBoard[from] ?: return
         if (!direct.onKeyLearned(peer)) return
         log("lora direct key heard for $peer")
         publishStatus()
@@ -1807,42 +1735,6 @@ internal class LoraMeshTransport(
             if (enqueueResend(peer, newest, flushAfter = emptyList())) log("lora resend ${newest.frameId} -> $peer (key heard)")
         }
     }
-
-    /**
-     * Whether the bound slot really is the Knit channel. Since ADR 045 a board is either set up for Knit or a
-     * stock Meshtastic node, so a bound slot carrying anything else means the setup was undone or never run —
-     * and transmitting there would put Knit's cleartext frames onto somebody else's channel, most likely the
-     * public one every stock radio listens to. Silence is the only safe reading of that.
-     *
-     * A board that reports no channel table at all is given the benefit of the doubt: going mute on firmware
-     * whose table we failed to read would be a worse failure than the one this guards against.
-     *
-     * Takes [channels] rather than reading the link itself, because "the board is between sessions" is not an
-     * answer to this question and must never be confused with one: a disconnected link used to fail here and
-     * cost the frame, when the only correct handling of it is to put the frame back — see [sendFrame].
-     *
-     * The name alone: a Knit slot another client switched to AEAD is still the board's Knit setup. Whether a frame may
-     * ride it is [aeadBlocks]'s question, asked of the frames the slot's hash reaches.
-     */
-    private fun boundSlotIsKnit(
-        channels: List<ChannelInfo>,
-        index: Int,
-    ): Boolean = channels.isEmpty() || channels.any { it.index == index && it.name == KnitChannel.NAME }
-
-    /**
-     * Whether [frame] must not be written to bound slot [index] because that slot is AEAD (`use_aead`, set by another
-     * client; Knit's setup clears it, `MeshtasticSession.identityOnly`). The firmware folds AEAD into the channel hash
-     * (`Channels.cpp:53`, `h ^= 0xAE`), so no other Knit board decodes a packet encrypted under it — but only a packet
-     * that rides the slot: a broadcast, or a compact DM from a board in ham mode (no PKI). A compact DM off any other
-     * board is PKI-encrypted and its channel set to 0 (`Router.cpp:1189-1210`, `:1366` at v2.8.1), so the slot's AEAD
-     * and hash never touch it (#243, lora-reviewer's finding). `LoraAirtime.padTo` relies on the broadcast half: the bound slot a
-     * Knit broadcast leaves on is never AEAD.
-     */
-    private fun aeadBlocks(
-        frame: OutboundFrame,
-        ready: LinkState.Ready?,
-        index: Int,
-    ): Boolean = ready != null && (frame.direct == null || ready.board.licensed) && ready.channels.any { it.index == index && it.useAead }
 
     /**
      * The two covers for a compact DM (ADR 054, ADR 2026-09.y5f3), each counted under its own name; true means the
@@ -1919,7 +1811,7 @@ internal class LoraMeshTransport(
         val addressed = frame.direct?.addr
         return when {
             currentConfig?.dms != true || holder == null || !holder.direct || holder.addr != addressed -> StaleAtSend.NOT_DIRECT
-            currentConfig?.channelIndex == PublicChannelPolicy.PRIMARY_INDEX -> StaleAtSend.SLOT_ZERO
+            hooks.directSlotRefused(currentConfig?.channelIndex) -> StaleAtSend.SLOT_ZERO
             frame.gate.reachHeld && direct.holds(to, clock()) -> StaleAtSend.HELD
             else -> null
         }
@@ -1939,57 +1831,10 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * Puts this phone's user's post on the board's primary channel — [PublicChannelSink], the Meshtastic
-     * room's outbound half. Called by [app.getknit.knit.mesh.MeshManager.sendPublicPost] for a post typed on
-     * this phone and no other: the room posts through its own board, never through a pocket-mate's, and a
-     * refusal is something the composer shows the user.
-     *
-     * The guards are all here rather than at the write, so each one can be counted and named. They are
-     * deliberately **not** [boundSlotIsKnit]'s: that guard exists to keep Knit's cleartext frames off the
-     * public channel by accident and reads an unknown channel table as "stay silent", while this is a
-     * consented path *to* that channel. Same shape, opposite safe answer, so sharing code between them would
-     * make one of the two wrong.
+     * Puts this phone's user's post on the board's public channel — [PublicChannelSink], the Meshtastic room's outbound
+     * half — or says why not: the kind's ([BoardKindHooks.postToPublicChannel], Stage 1c.1).
      */
-    override suspend fun postToPublicChannel(body: String): PublicPostRefusal? {
-        // The composer is gone with the room's row, so this is the net under a route that no longer draws one
-        // (the debug SEND intent, a screen still on the back stack) — the same net `MeshManager.sendTyping`
-        // keeps under the room it must not cue.
-        if (currentConfig?.room == false) return refusePublicPost(PublicPostRefusal.ROOM_OFF)
-        // A board on a dedicated RF slot (ADR 067) has no public channel under it: a post would go on the
-        // air where only other pinned Knit boards could hear it, into a room this phone no longer draws.
-        if (pace.airtime.dedicated()) return refusePublicPost(PublicPostRefusal.DEDICATED)
-        val ready = board.state.value.meshtasticReady ?: return refusePublicPost(PublicPostRefusal.NOT_READY)
-        // A board whose slot 0 is the Knit channel has no primary to post on — the debug-bridge shape the
-        // receive half refuses to read for the same reason, decided off the same table.
-        if (PublicChannelPolicy.isKnitPrimary(ready.channels)) return refusePublicPost(PublicPostRefusal.KNIT_ON_PRIMARY)
-        val now = clock()
-        val last = lastPublicPostAt.get()
-        if (last != NEVER && now - last < PUBLIC_POST_FLOOR_MS) return refusePublicPost(PublicPostRefusal.TOO_SOON)
-        // Slot 0's own price (#243): its cliff on the text port, by the board's policy and the channel's AEAD.
-        val price = pace.airtime.price(AirSlot.PRIMARY, PacketKind.BROADCAST, MeshtasticProto.PORT_TEXT_MESSAGE)
-        // The same budget the composer applied — a draft typed while the facts still said 200 (a board that
-        // came up signing after the draft began) is trimmed here rather than sent past the cliff unsigned.
-        val message = PublicPostPolicy.onAirText(body, PublicPostPolicy.onAirBudget(price.signedUpTo)).encodeToByteArray()
-        if (message.size > minOf(maxPayload, price.cap)) return refusePublicPost(PublicPostRefusal.TOO_LARGE)
-        // Asked before queueing rather than left to the pacer: a post the window will not carry under the foreign
-        // audience's ceiling (half, ADR 2026-10.ug4a) should be counted as refused now, not sit in the queue looking
-        // sent until the window rolls over. Priced at slot 0's cliff: a post at the cap is signed air, not an unsigned
-        // packet.
-        if (!pace.airtime.admits(Ceiling.HALF, listOf(message.size), now, price)) {
-            return refusePublicPost(PublicPostRefusal.NO_AIR)
-        }
-        // Claimed at enqueue, not at write: the floor is about how often this phone *decides* to speak, and
-        // charging it only once the pacer drains would let a burst queue up behind one 3 s gap.
-        lastPublicPostAt.set(now)
-        enqueue(listOf(message), "public", Ceiling.HALF, Destination.Public)
-        return null
-    }
-
-    private fun refusePublicPost(reason: PublicPostRefusal): PublicPostRefusal {
-        metrics.onPublicPostRefused(reason.name)
-        log("lora public post refused: $reason")
-        return reason
-    }
+    override suspend fun postToPublicChannel(body: String): PublicPostRefusal? = hooks.postToPublicChannel(body)
 
     // --- the pacer ---
 
@@ -2057,11 +1902,11 @@ internal class LoraMeshTransport(
 
     private suspend fun sendFrame(frame: OutboundFrame) {
         // Two destinations, two guards, and deliberately no shared code between them (§5 of work item #37):
-        // `boundSlotIsKnit` stops Knit's own frames reaching the public channel by accident, while the public
-        // post's guards were all applied at `postToPublicChannel`, where a refusal could still be counted and
-        // reported. All that is left here is which channel and which portnum.
+        // the slot guard ([slotRefusal]) stops Knit's own frames reaching the public channel by accident, while the
+        // kind's own frames had their guards applied where they were queued (`postToPublicChannel`, the auto-reply),
+        // where a refusal could still be counted and reported. All that is left for them is which channel and port.
         if (frame.destination != Destination.Knit) {
-            sendPublicFrame(frame)
+            hooks.sendKindFrame(frame) { message, purpose -> sendMessage(message, frame, purpose) }
             return
         }
         // The board went away between the take and here — a GATT drop, or the reconnect backoff still running.
@@ -2110,56 +1955,20 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * Why bound slot [ch] must not carry [frame], in the words `lora send skipped` logs, or null to send it. The slot
-     * guards read the Meshtastic channel table ([boundSlotIsKnit], [aeadBlocks]); Stage 1c.3 moves them behind the hooks.
-     * Until then a Ready board with no Meshtastic session under it is not set up as far as these guards can tell, and is
-     * refused: an empty table would read as "don't suppress" and skip both guards. Never the case on a Meshtastic board.
+     * Why bound slot [ch] must not carry [frame], in the words `lora send skipped` logs, or null to send it: the kind's
+     * reading of its channel table ([BoardKindHooks.checkSlot], Stage 1c.3). A kind with no answer is refused — a slot
+     * nobody can vouch for is one Knit's cleartext frames must not reach.
      */
     private fun slotRefusal(
         frame: OutboundFrame,
         ready: BoardState.Ready,
         ch: Int,
-    ): String? {
-        val session = ready.meshtasticReady ?: return "slot $ch cannot be checked: no Meshtastic session under this board"
-        return when {
-            !boundSlotIsKnit(session.channels, ch) -> "slot $ch is not the Knit channel — set this board up"
-            aeadBlocks(frame, session, ch) -> "slot $ch is AEAD (use_aead), which no other Knit board shares — set it up again"
-            else -> null
+    ): String? =
+        when (val check = hooks.checkSlot(frame, ready, ch)) {
+            null -> "slot $ch cannot be checked: the board kind has no answer for it"
+            SlotCheck.Clear -> null
+            is SlotCheck.Refused -> check.why
         }
-    }
-
-    /**
-     * Writes one public post on the foreign mesh's primary channel: index 0, `TEXT_MESSAGE_APP`, cleartext —
-     * or, for a [Destination.Reply], the same write addressed to one node, which the firmware then encrypts
-     * to that node's key rather than to the channel.
-     *
-     * Never fragmented — [PublicPostPolicy.MAX_ON_AIR_BYTES] is a fifth of what one packet carries — so there
-     * is no resume cursor to honour and one `sendMessage` is the whole frame.
-     */
-    private suspend fun sendPublicFrame(frame: OutboundFrame) {
-        val message = frame.messages.firstOrNull() ?: return
-        val reply = frame.destination == Destination.Reply
-        // The auto-reply is the one direct send without `want_ack`: a stock client's board answers nobody's retries
-        // for us, and the window would pay for them (ADR 2026-09.4n5p).
-        val replyTo = frame.to ?: BoardAddr(MeshtasticProto.BROADCAST)
-        val purpose = if (reply) SendPurpose.AutoReply(replyTo) else SendPurpose.PublicPost
-        val outcome = sendMessage(message, frame, purpose)
-        // OWED is back on the queue (the board busy, or the session gone under it): not a refusal, and its airing after
-        // the reconnect is counted sent then, once (#307). Should it never air, the pacer's shed counts it
-        // `loraDroppedQueue`, as it does any frame; the refusal counters are for what the board refused.
-        if (outcome == FragmentOutcome.OWED) return
-        if (outcome == FragmentOutcome.ENDED) {
-            if (reply) metrics.onAutoReplyRefused(AutoReplyRefusal.NAK.name) else metrics.onPublicPostRefused(PublicPostRefusal.NAK.name)
-            return
-        }
-        if (reply) {
-            metrics.onAutoReplySent()
-            log("lora tx auto-reply to ${meshNodeLabel((replyTo.meshtasticNode ?: MeshtasticProto.BROADCAST).toLong())} ${message.size}B")
-        } else {
-            metrics.onPublicPostSent()
-            log("lora tx public ${message.size}B")
-        }
-    }
 
     /**
      * Sends one fragment and says what became of its frame ([FragmentOutcome]): taken, still owed (requeued for a busy
@@ -2239,22 +2048,6 @@ internal class LoraMeshTransport(
         }
     }
 
-    /**
-     * What [sendMessage] did with its frame. Three ways, not a Boolean, because a frame put back on the queue is not one
-     * the board refused: a Meshtastic room post or auto-reply caught by a board drop was counted refused, then sent when
-     * it aired after the reconnect (#307).
-     */
-    private enum class FragmentOutcome {
-        /** The board took the fragment (or may have, a compact DM's timeout): booked, the cursor moved. */
-        SENT,
-
-        /** Still owed: requeued at its cursor for a busy board or a session that ended, or a compact DM held for a missing key. */
-        OWED,
-
-        /** Ended: a NAK, a broadcast's timeout or another give-up. Abandoned unless a fragment already flew. */
-        ENDED,
-    }
-
     /** The handle of a send the board refused at once, or null for a result that refused nothing. */
     private fun refusedHandle(result: SendResult): UInt? =
         when (result) {
@@ -2331,176 +2124,45 @@ internal class LoraMeshTransport(
     // --- inbound ---
 
     /**
-     * One packet off the board. The dispatch is still Meshtastic's — the compact-DM tag on the private port, the portnum
-     * split, the bound-slot filter, the retired tag — read off the packet's Meshtastic record; Stage 1c.0 moves it behind
-     * the kind's hooks. What it hands on is the neutral packet.
+     * One packet off the board, dispatched by the kind ([BoardKindHooks.route], Stage 1c.0): a compact DM is opened
+     * ([onDirectPacket]) and its board heard only once delivered; every other packet is a hearing first ([noteHeard]),
+     * then a Knit frame on the bound slot, a burned tag (counted `loraRetiredCtl`, never `UNKNOWN_TAG`, ADR
+     * 2026-10.rp3s — the radio is still counted: a board in range is a board in range), or the kind's own traffic.
      */
     private fun onLoraPacket(packet: BoardPacket) {
-        val raw = packet.meshtastic ?: return
         val bound = currentConfig?.channelIndex
-        // A compact DM addressed to us (ADR 2026-10.x9fa), ahead of the bound-channel filter: it may report on index 0.
-        // Its board is heard only once it has been delivered (onDirectPacket); every other packet is a hearing now.
-        val compact = raw.portnum == MeshtasticProto.PORT_PRIVATE_APP && packet.payload.firstOrNull() == LORA_DIRECT_TAG
-        if (compact) {
-            onDirectPacket(packet, raw, bound)
-            return
-        }
-        noteHeard(packet)
-        if (raw.portnum == MeshtasticProto.PORT_NODEINFO) onNodeInfoHeard(raw)
-        if (packet.payload.isEmpty()) return
-        // Slot 0 is the Meshtastic room's channel, mirrored as the user configured it. The room reads only
-        // chat, so only `TEXT_MESSAGE_APP` turns off here; everything else on the slot falls through to the
-        // Knit path, which keeps its own portnum filter. Decided off the portnum rather than off the bound
-        // index, because the index defaults to 0 on a board that never ran Knit's setup and such a board
-        // still has a primary to mirror — the one shape with nothing to mirror (Knit itself at slot 0, the
-        // debug bridge's lab binding) is refused inside, off the channel table.
-        // A text addressed to the board rather than to the channel is a Meshtastic user's DM — which nothing
-        // on this phone reads (ADR 2026-09.emd7 marks the board unmonitored to say exactly that), so the one
-        // thing to do with it is tell the sender. Taken ahead of the room's branch on the portnum and the
-        // address alone, never the channel index: on 2.5+ firmware a DM is PKI-encrypted and reported on
-        // index 0 whatever slot the sender used, and an older board reports the slot it decoded on.
-        if (raw.portnum == MeshtasticProto.PORT_TEXT_MESSAGE) {
-            onTextPacket(raw)
-            return
-        }
-        // Outbound is pinned to the bound channel; inbound was not, so a board carrying a second channel with
-        // Knit traffic on it used to ingest both. Ignore anything off the channel this plane is bound to.
-        if (raw.portnum != MeshtasticProto.PORT_PRIVATE_APP || (bound != null && packet.channel != bound)) return
-        noteBoard(packet)
-        // An older build's gateway still airs its OFFERs (tag 0x10, burned in `FastFrameCodec`'s registry). Dropped
-        // here under a counter of their own, so `UNKNOWN_TAG` keeps meaning a tag nobody ever assigned
-        // (ADR 2026-10.rp3s). The radio is still counted above: a board in range is a board in range.
-        if (packet.payload[0] == RETIRED_CTL_TAG) {
-            metrics.onLoraRetiredCtl()
-            return
-        }
-        onFramePacket(packet)
-    }
-
-    /**
-     * A `TEXT_MESSAGE_APP` packet: a Meshtastic user's DM to our board (answered once), or a chat on slot 0 (the
-     * Meshtastic room). A text anywhere else is not ours to read.
-     */
-    private fun onTextPacket(packet: ReceivedPacket) {
-        if (packet.to != MeshtasticProto.BROADCAST) {
-            onDirectMessage(packet)
-            return
-        }
-        if (packet.channelIndex == PublicChannelPolicy.PRIMARY_INDEX) {
-            // The room is switched off, or hidden because the board is on a dedicated RF slot (ADR 067):
-            // this packet has nowhere to go. Dropped here rather than later so the whole cost of a post the
-            // user asked not to see — the judge, the signature verify, the contact lookup, the moderator, the
-            // row and its notification — is never paid. Counted by reason, so `…debug.LORA` can still tell
-            // "the channel is quiet" from "the channel is busy and Knit is ignoring it".
-            val closed =
-                when {
-                    currentConfig?.room == false -> MESH_POST_ROOM_OFF
-
-                    // A post on a pinned board's slot 0 is another pinned board's, never a public one, and
-                    // would land in a thread with no row and ring a notification for it.
-                    pace.airtime.dedicated() -> MESH_POST_DEDICATED
-
-                    else -> null
-                }
-            if (closed != null) metrics.onMeshPostRefused(closed) else onPrimaryPacket(packet)
-        }
-    }
-
-    /**
-     * One chat packet off the board's **primary** channel — what the Meshtastic room mirrors. [PublicChannelPolicy]
-     * decides whether it is a post; a refusal is counted and dropped, and an accepted post is delivered into
-     * this phone's room and nowhere else. Every board reads its own slot 0: there is no election and no
-     * minting, because nothing about a heard post leaves the phone.
-     *
-     * One rule that is easy to get wrong here: **[noteBoard] is not called.** `boardsHeard` means "radios
-     * that have sent a *Knit* frame", which is what makes "heard nobody" the ordinary state of a solo user
-     * and is why the preset-mismatch notice cannot be gated on evidence. Counting stock neighbours here would
-     * quietly change all of that.
-     */
-    private fun onPrimaryPacket(packet: ReceivedPacket) {
-        metrics.onMeshPostHeard()
-        val ready = board.state.value.meshtasticReady ?: return
-        val verdict =
-            PublicChannelPolicy.judge(
-                packet = packet,
-                channels = ready.channels,
-                radio = ready.radio,
-                name = link.nodes.value[packet.from]?.longName,
-                // Our own board's transmissions are never read back in: the outbound half puts this phone's
-                // posts on this channel, and they are already in the room as our own rows.
-                ownNode = ready.board.myNodeNum,
-            )
-        when (verdict) {
-            is PublicChannelPolicy.Verdict.Refused -> {
-                metrics.onMeshPostRefused(verdict.reason.name)
+        val route = hooks.route(packet, bound)
+        when (route) {
+            PacketRoute.DROPPED -> {
+                return
             }
 
-            is PublicChannelPolicy.Verdict.Post -> {
-                metrics.onMeshPostIngested(verdict.post.viaMqtt)
-                log(
-                    "lora public post from ${meshNodeLabel(packet.from.toLong())} " +
-                        "${verdict.post.body.length}ch viaMqtt=${verdict.post.viaMqtt} " +
-                        "signed=${verdict.post.signature != null} boardVerified=${verdict.post.boardVerified}",
-                )
-                scope.launch { onPublicPost(verdict.post) }
+            PacketRoute.DIRECT -> {
+                onDirectPacket(packet, bound)
+                return
+            }
+
+            else -> {
+                noteHeard(packet)
             }
         }
-    }
-
-    /**
-     * One text addressed to the board — a Meshtastic user's DM, answered once with [DmAutoReplyPolicy.TEXT].
-     *
-     * The guards are all here rather than at the write, so each one can be counted and named, the same shape
-     * as [postToPublicChannel] and for the same reason. Two are the room's own: a board on a **dedicated**
-     * RF slot (ADR 067) has no Meshtastic neighbours to answer, and a board whose slot 0 is the Knit channel
-     * has no primary to answer on. One is this path's alone: the board must be **set up for Knit**
-     * ([boundSlotIsKnit]), because the setup's confirmation sheet is where the user agreed to the board
-     * saying it is unmonitored (ADR 2026-09.emd7) — a paired stock board that never ran it stays as quiet
-     * as a stock board. Then the policy's own caps, and last the window's half ceiling (ADR 2026-10.ug4a), asked
-     * inside the policy before it stamps the sender — so a reply the window will not carry is counted now rather than
-     * left to look sent, and uses up nobody's one answer.
-     *
-     * The reply rides the shared pacer as a [Destination.Reply] frame, priced as the PKI unicast it is
-     * ([OutboundFrame.price]): unsigned, +12 B — or, on a ham-mode board, channel-encrypted and signed by the firmware's
-     * rule (#243).
-     */
-    private fun onDirectMessage(packet: ReceivedPacket) {
-        metrics.onAutoReplyHeard()
-        val refusal = autoReplyRefusal(packet) ?: return
-        metrics.onAutoReplyRefused(refusal)
-        log("lora dm from ${meshNodeLabel(packet.from.toLong())}: auto-reply refused $refusal")
-    }
-
-    /** The gate that stopped the reply to [packet], by name — or null once the reply is queued. */
-    private fun autoReplyRefusal(packet: ReceivedPacket): String? {
-        val ready = board.state.value.meshtasticReady ?: return AutoReplyRefusal.NOT_READY.name
-        // The once-a-day memory is not back yet: answering now could answer, again, a sender the last process already did.
-        // Refused unstamped. This copy is not answered — the board's to-phone queue gives a packet up once the phone has
-        // read it, so it is not delivered again — but the sender's next DM is judged against the memory.
-        if (!restored.value) return AutoReplyRefusal.NOT_READY.name
-        if (pace.airtime.dedicated()) return AutoReplyRefusal.DEDICATED.name
-        if (PublicChannelPolicy.isKnitPrimary(ready.channels)) return AutoReplyRefusal.KNIT_ON_PRIMARY.name
-        // `boundSlotIsKnit` reads an empty table as "don't suppress"; this is a consented transmission, so the
-        // unknown reads the other way, like the setup's own guard.
-        val bound = currentConfig?.channelIndex
-        if (bound == null || ready.channels.isEmpty() || !boundSlotIsKnit(ready.channels, bound)) return AutoReplyRefusal.NOT_SET_UP.name
-        // The text is fixed, so its size is known before the sender is judged: a reply too long for this board (never, in
-        // practice) is refused without a stamp.
-        val message = DmAutoReplyPolicy.TEXT.encodeToByteArray()
-        if (message.size > maxPayload) return AutoReplyRefusal.TOO_LARGE.name
-        // Priced as what flies, the price its queued frame will book (OutboundFrame.price): a PKI unicast, unsigned and
-        // +12 B, on any board not in ham mode.
-        val price = pace.airtime.price(AirSlot.PRIMARY, PacketKind.DATA_UNICAST, MeshtasticProto.PORT_TEXT_MESSAGE)
-        val carried = { pace.airtime.admits(Ceiling.HALF, listOf(message.size), clock(), price) }
-        val reply =
-            when (val verdict = autoReply.judge(packet, ownNode = ready.board.myNodeNum, carried = carried)) {
-                is DmAutoReplyPolicy.Verdict.Refused -> return verdict.reason.name
-                is DmAutoReplyPolicy.Verdict.Reply -> verdict
+        when (route) {
+            PacketRoute.KIND -> {
+                hooks.onKindPacket(packet)
             }
-        log("lora dm from ${meshNodeLabel(packet.from.toLong())}: auto-reply queued")
-        enqueue(listOf(reply.text.encodeToByteArray()), "autoreply", Ceiling.HALF, Destination.Reply, to = BoardAddr(reply.to))
-        stateWake.trySend(Unit) // the sender is stamped now, not at the write: persist it
-        return null
+
+            PacketRoute.KNIT -> {
+                noteBoard(packet)
+                onFramePacket(packet)
+            }
+
+            PacketRoute.RETIRED -> {
+                noteBoard(packet)
+                metrics.onLoraRetiredCtl()
+            }
+
+            else -> {}
+        }
     }
 
     /** One inbound mesh frame off the air: reassemble, decode, dedup, and hand it to the router. */
@@ -2629,54 +2291,10 @@ internal class LoraMeshTransport(
             // The pacer parks itself while the link is down, so the queue it kept across the outage only
             // moves again if the session-up wakes it.
             wake.trySend(Unit)
-            state.meshtasticReady?.let(::onMeshtasticReady)
+            // The kind's half: how its board prices a packet, the `lora ready` line, the binding (Stage 1c.4).
+            hooks.onReady(state)
         }
         publishStatus()
-    }
-
-    /**
-     * The Meshtastic half of a session coming up (Stage 1c.4 moves it behind the hooks): the radio and how the board
-     * signs, for the ledger, the `lora ready` line, and the binding the profile advertises.
-     */
-    private fun onMeshtasticReady(state: LinkState.Ready) {
-        pace.airtime.onRadioConfig(state.radio)
-        // What the firmware signs, and so what the budget charges and the codec pads past (#243): the version, the
-        // build's `has_xeddsa`, the policy it streamed (none: unknown, priced as signing), ham mode, and AEAD on the
-        // two slots we write to.
-        val bound = currentConfig?.channelIndex
-        pace.airtime.onBoard(
-            SigningFacts(
-                firmware = state.board.firmwareVersion,
-                hasXeddsa = state.board.hasXeddsa,
-                policy = state.signaturePolicy,
-                licensed = state.board.licensed,
-            ),
-            primaryAead = state.channels.any { it.index == PublicChannelPolicy.PRIMARY_INDEX && it.useAead },
-            knitAead = bound != null && state.channels.any { it.index == bound && it.useAead },
-        )
-        val air = pace.airtime.snapshot(clock())
-        log(
-            "lora ready board=${state.board.myNodeNum} mtu=${state.mtu} maxPayload=$maxPayload " +
-                "radio=${state.radio?.region}/${state.radio?.modemPreset} " +
-                "fw=${state.board.firmwareVersion} signing=${air.signing} policy=${state.signaturePolicy} " +
-                "knitSignedUpTo=${air.knitSignedUpTo} roomSignedUpTo=${air.roomSignedUpTo} licensed=${state.board.licensed}",
-        )
-        scope.launch { onBoardBound(BoardBinding(state.board.myNodeNum, boundKey(state.board))) }
-    }
-
-    /**
-     * The key the profile advertises for [board] (`ProfileContent.loraKey`): its own `User.public_key` when it is 32 bytes
-     * and its CRC32 is the board's node number — the binding firmware 2.8 makes at keygen (`NodeDB::createNewIdentity`)
-     * and the one a contact's phone checks before it writes the key to its own board (`LoraContactPolicy`, ADR
-     * 2026-10.aajj). Whether the board signs does not enter into it (#243): the key is what lets a contact's board
-     * PKI-encrypt a compact DM to ours, and a contact's phone reads an unsigned post as unsigned whatever key it holds.
-     * Null on a pre-2.8 board (a MAC-derived number), on a board with no key yet (keygen waits for a region) and on a
-     * malformed key.
-     */
-    private fun boundKey(board: BoardInfo): String? {
-        val b64 = board.owner?.publicKey ?: return null
-        val key = LoraContactPolicy.profileKey(b64) ?: return null
-        return b64.takeIf { LoraContactPolicy.crc32(key) == board.myNodeNum }
     }
 
     /**
@@ -2780,8 +2398,6 @@ internal class LoraMeshTransport(
         const val REACHABLE_LINGER_MS = 45 * 60_000L
         const val LINGER_SWEEP_MS = 60_000L
 
-        const val NEVER = Long.MIN_VALUE
-
         // Limiters that outlive the process (LoraPlaneState).
 
         /**
@@ -2793,9 +2409,6 @@ internal class LoraMeshTransport(
 
         /** How long a spend waits for its neighbours before the snapshot is written. */
         const val STATE_SAVE_DEBOUNCE_MS = 2_000L
-
-        /** The most answered DM senders carried across a restart — [DmAutoReplyPolicy.MAX_SENDERS], all of them. */
-        const val STATE_AUTO_REPLY_CAP = DmAutoReplyPolicy.MAX_SENDERS
 
         /**
          * How many frames the fan-out admits before our own id is read (ADR 2026-10.rp3s): enough for what a user types
@@ -2873,19 +2486,6 @@ private object NoSender
  */
 private fun LoraDirectPolicy.Reach.keepsResendsOff(): Boolean =
     this == LoraDirectPolicy.Reach.REFUSED || this == LoraDirectPolicy.Reach.NO_KEY
-
-/**
- * Why a slot-0 chat packet was dropped before [PublicChannelPolicy] ever saw it: the user switched the
- * Meshtastic room off. A refusal name rather than a counter of its own, beside `BLOCKED_CONTACT`, because it
- * belongs in the same "heard on the primary and not delivered" tally the rest of the reasons share.
- */
-internal const val MESH_POST_ROOM_OFF = "ROOM_OFF"
-
-/**
- * Its sibling for a board pinned to a dedicated RF slot (ADR 067): the room is hidden there, so a slot-0 chat
- * packet has nowhere to go and is dropped at the same point.
- */
-internal const val MESH_POST_DEDICATED = "DEDICATED"
 
 /**
  * What a board reports about itself when its session comes up, for the profile to advertise: its node number and its
