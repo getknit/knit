@@ -118,6 +118,16 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   and the unflown ones refunded on its ack (ADR 2026-10.x9fa) — counted from the elapsed time, or from
   `PacketOutcome.flown` when the link reports it (MeshCore, ADR 2026-11.gsqu §2), which a give-up's refund reads too.
   The ledger is not persisted and nothing seeds it (ADR 2026-10.ug4a): a restart starts the window empty.
+  Since ADR 2026-11.gsqu's Stage 5a-1 amendment every booking is priced through the **kind's hook** — `BoardTraits.price`
+  by `AirPurpose` (`OutboundFrame.purpose`), `BoardTraits.phyBytes`, `BoardTraits.airMs` over `LoraAirtime.formulaMs` —
+  with the kind's `fallbackRadio` / `fallbackDutyPercent`; Meshtastic's hook is the replaced code (`LoraAirtimeKindParityTest`,
+  `PacketPrice.purpose` null). A third ceiling, `Ceiling.FLOOD` (`FLOOD_CEILING` 0.15, `floodCeilingMs`), counts **flood
+  bookings only** (a booking carries its ceiling) under the one total; the room's ceiling is `BoardTraits.roomCeiling`
+  (Meshtastic `FULL`). `NEVER` is a frame over **its own** ceiling on an empty window, and the pacer drops it
+  (`LoraPacePolicy.drainNever`, only once `LoraAirtime.dutyKnown`; counted `loraAirNever`, logged `lora air never`) instead
+  of waking on its idle tick.
+  `admitBest`'s holder rule rests on one-packet room posts; a two-part MeshCore post can be passed by a later one (room
+  order inverts, accepted in gsqu).
   <!-- doc-lint: allow AirBucket — the buckets ADR 2026-10.ug4a removed, named as history -->
 - **When touching the shared-band brake — `LoraPacePolicy.onBandReading` / `braked` / `forgetBand` /
   `BUSY_BAND_PERCENT` / `BRAKE_FRESH_MS`, `OutboundFrame.braked` / `heldForBand`, `BoardAir` (`atMs`),
@@ -289,7 +299,6 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   off the transport). `TransportStatus.boardKind` (`BoardKindSource`) keys a LoRa child in the field log and in
   `transportRows`, which shows the bound kind's row alone. `FieldEvent.Lora*` / `Radio` write `board` only where it is not
   Meshtastic (`BoardKind.fieldTag`); streams are `BoardKind.fieldStream`. The `onLora*` counters stay unkeyed.
-  <!-- doc-lint: allow FLOOD — Ceiling.FLOOD is proposed by ADR 2026-11.gsqu and not built yet -->
   On a MeshCore board only people's room posts and reactions flood, plus our own profile right before our first
   flooded post. Floods are scoped to the board's region when one is set, and booked as every repeater's airtime under
   `AirBucket.PUBLIC` (the ledger is one total since ADR 2026-10.ug4a; MeshCore's `GET_STATS` fills the same
@@ -344,6 +353,26 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   The Android half (Stage 3c, `mesh/bluetooth/meshcore/MeshcoreGatt` over the shared `BoardGatt`) is routed in
   `bluetooth.md`; a dial whose own subscribe failed the bond is terminal (`NusDialResult.BondRefused`), as a first write's; after a close
   under an op that started unbonded the bond is read settled (`BondSettle`, ≤ 2 s), never a `BONDING` the disconnect beat.
+
+- **Before touching MeshCore's price, band or law — `MeshcoreTraits` (`phyBytes`, `airMs`, `preambleSymbolsAt`, `FIXED_MS`,
+  `pathReturnPlaintext`, `dutyPolicy`, `maxFlights`, `deadlineMs`), `LoraBand` (`holding`, `dutyPercent`,
+  `STRICTEST_PERCENT`), `MeshcoreDutyLaw`, `MeshcoreAirRing`'s uptime reset, `MeshcoreRefusal.classOf`, `SessionOp`,
+  `MeshcoreSession.WRITE_TOO_LONG` / `CommandRefused` / `MeshcoreCounters.commandsRefused`:** READ ADR 2026-11.gsqu's Stage
+  5a-1 amendment (and the maintainer's Stage 5 decisions above it), then ADR 2026-10.ug4a, then "MeshCore's price, band and
+  law" in `lora-bridge.md`. Pure, JVM-tested, wired by nothing until Stage 5a-2. A MeshCore packet is priced by purpose off
+  the firmware's own framing — 4 B of transport codes on a scoped **flood** only, never a zero-hop DM or an ack; AES to 16
+  — at the formula with the firmware's preamble (32 symbols at SF ≤ 8) plus 17 ms, never Meshtastic's signing facts or
+  LongFast. **The law is Knit's on this kind** (its firmware has a 50 % token bucket and no region): the duty comes off the
+  frequency and bandwidth (`LoraBand`: the whole channel inside a row, the strictest holding row, else 0.1 %, never
+  `FALLBACK_PERCENT`; EU edges to check against EN 300 220), and `MeshcoreDutyLaw` holds every Knit frame while the board's
+  trailing-hour `tx_air` (every client, acks, repeats) reaches it — on the board's uptime clock, its ring the state to
+  persist, a new boot dropping it, and with no hour-old baseline the counter since boot read as spent, so a restart never
+  hands out a fresh hour, nor a board reboot (the old boot's hour and the unseen stretch to the reboot carried as a pre-boot term on the wall
+  clock). Each EU
+  duty assumes its row's power limit; the board's power is the user's. On a 0.1 % or unmatched band the plane is
+  effectively dead, by design. Two flights (8 ack codes / 3 airings); a deadline never under `MAX_FLIGHT_MS`. A send its call
+  deadline caught unstarted is `Busy`, never `Timeout`; the deadline and the actor's refusal each claim in one atomic step
+  (`SessionOp`). A write over `MAX_NOTIFY` or refused as too long refuses that one command, never the session.
 
 ## Adding an entry
 

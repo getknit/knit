@@ -2293,6 +2293,76 @@ class LoraMeshTransportTest {
             }
         }
 
+    /**
+     * ADR 2026-11.gsqu's Stage 5a-1 amendment: a frame over its own ceiling on an empty window ([LoraAirtime.Refusal.NEVER])
+     * is dropped and counted, never left queued for the pacer to wake on its 1-s idle tick and ask about again.
+     */
+    @Test
+    fun aRoomPostNoWindowAdmitsIsDroppedCountedAndThePacerStaysParked() =
+        runTest {
+            // A window so short its allowance is under one packet: a room post is over its ceiling however empty it is.
+            val pace = LoraPacePolicy(minGapMs = 0, airtime = LoraAirtime(windowMs = 1_000))
+            var reads = 0
+            val a =
+                rig(FakeMeshtasticAir(), 1u, "alice", backgroundScope, config = MutableStateFlow(LoraConfig("AA:1", 1)), pace = pace) {
+                    reads++
+                    testScheduler.currentTime
+                }
+            a.transport.start()
+            runCurrent()
+            // A board that reported its radio: the duty is known, so a NEVER frame is dropped rather than skipped.
+            a.link.readyProvisioned(radio = LoraRadioConfig(true, ModemPreset.LONG_FAST, LoraRegion.US, 3, false))
+            runCurrent()
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate in ten", sentAt = a.now()))
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertTrue("nothing aired", a.link.sent.isEmpty())
+            assertEquals("counted as a duty drop", 1L, a.metrics.lora().loraAirNever)
+            assertEquals("never read as a post too long for the room", 0L, a.metrics.lora().loraRoomTooLong)
+            assertEquals("nor as a frame too big for the plane", 0L, a.metrics.lora().loraTooBig)
+            assertEquals("dropped, not left queued", 0, pace.pending)
+            val atRest = reads
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertTrue("parked over a quiet minute (${reads - atRest} clock reads)", reads - atRest < PARKED_READS_PER_MINUTE)
+            a.transport.stop()
+        }
+
+    /**
+     * A frame that reads NEVER only under MeshCore's 0.1 % fallback (no duty reported yet) stays queued and airs once the
+     * duty lands (ADR 2026-11.gsqu's Stage 5a-1 amendment). The rig is Meshtastic's — the transport cannot take
+     * `MeshcoreTraits` before Stage 5a-2 wires it — so the MeshCore half is the ledger alone, injected through the pace,
+     * and the duty is set as 5a-2's hook will set it, on the ledger.
+     */
+    @Test
+    fun aFrameNeverOnlyUnderTheFallbackStaysQueuedAndAirsOnceTheDutyLands() =
+        runTest {
+            val airtime = LoraAirtime(traits = app.getknit.knit.mesh.lora.meshcore.MeshcoreTraits)
+            val pace = LoraPacePolicy(minGapMs = 0, airtime = airtime)
+            val a = rig(FakeMeshtasticAir(), 1u, "alice", backgroundScope, pace = pace) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            assertFalse("no duty reported: the 0.1 % fallback", airtime.dutyKnown())
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate in ten", sentAt = a.now()))
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertTrue("nothing aired under the fallback", a.link.sent.isEmpty())
+            assertEquals("skipped, not dropped", 1, pace.pending)
+            assertEquals(0L, a.metrics.lora().loraAirNever)
+
+            airtime.onRadio(
+                RadioParams(8, 62_500, 5),
+                app.getknit.knit.mesh.lora.meshcore.MeshcoreTraits
+                    .dutyPolicy(869_618, 62_500),
+            )
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals("the band carries it once its duty is known", 1, a.link.sent.size)
+            assertEquals(0, pace.pending)
+            assertEquals(0L, a.metrics.lora().loraAirNever)
+            a.transport.stop()
+        }
+
     private fun TestScope.pacerStaysParked(
         a: Rig,
         pace: LoraPacePolicy,
@@ -2477,6 +2547,9 @@ class LoraMeshTransportTest {
     private companion object {
         /** Far more clock reads than a loop that suspends between passes can make; a spin blows past it at once. */
         const val SPIN_CAP = 5_000
+
+        /** A pacer parked on its wake reads the clock only for the minute's sweeps, far under one read per idle tick. */
+        const val PARKED_READS_PER_MINUTE = 40
 
         /** A minute of idling costs a wake per [LoraMeshTransport.IDLE_TICK_MS] at worst, times a read or two. */
         const val IDLE_WAKES_PER_MINUTE = 200

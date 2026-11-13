@@ -245,7 +245,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `role`/`pocketLinks`/`pocketSightings`/`gatewaysHeard`, and the bridge counters (`loraOfferSent`/`loraOfferReceived`/
   `loraBridged`/`loraBridgeRefused`/`loraPassive`/`loraProfileRefanSkipped`) are gone; new are `loraReprobed`,
   `loraRoomTooLong`, `loraRetiredCtl` (an older build's OFFER heard and dropped), `loraPreIdRefused` and
-  `loraBoardHoldersFailed` (the board-holder source failed). Since ADR 2026-10.ug4a the `airtime` object is one ledger:
+  `loraBoardHoldersFailed` (the board-holder source failed), and `loraAirNever` (a queued frame its own ceiling refuses on
+  an empty window, dropped once the duty is known: ADR 2026-11.gsqu's Stage 5a-1 amendment). Since ADR 2026-10.ug4a the `airtime` object is one ledger:
   `usedMs` against `allowanceMs` (empty after a restart: the ledger is not persisted), `publicCeilingMs` (how far the
   Meshtastic room and the auto-reply may take the total), `braked` and `boardAirAgeMs` (the shared-band brake and its
   reading's age), beside the board's `boardAirUtilTxPercent` / `boardChannelUtilPercent`; the bucket keys (`liveMs`,

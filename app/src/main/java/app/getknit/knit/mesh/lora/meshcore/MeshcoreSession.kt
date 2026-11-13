@@ -29,7 +29,6 @@ import app.getknit.knit.mesh.lora.SendPurpose
 import app.getknit.knit.mesh.lora.SendResult
 import app.getknit.knit.mesh.power.ElapsedWait
 import app.getknit.knit.mesh.runRound
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -54,7 +53,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.random.Random
 
@@ -193,13 +191,15 @@ internal class MeshcoreSession(
         payload: ByteArray,
         purpose: SendPurpose,
     ): BoardSend {
-        // The handle is taken before the post, so a send whose deadline passed before it started still answers under the
-        // id its outcomes would carry — the core and the session share one id whatever happens.
+        // The handle is taken before the post, so every outcome of a started send carries the id the core holds. A send
+        // whose deadline passed before the actor started it never ran: it is Busy, so the core requeues it (a Timeout would
+        // read as "likely aired" and await an answer for a DM that never left). Timeout stays for a started attempt whose
+        // SENT never came.
         val handle = nextHandle()
         val result =
             call(
                 { SendResult.NotReady(linkStateOf(_state.value)) },
-                { SendResult.Timeout(handle) },
+                { SendResult.Busy },
             ) { c -> doSend(c, payload, purpose, handle) }
         return BoardSend(result, preSend = 0L)
     }
@@ -288,11 +288,13 @@ internal class MeshcoreSession(
         op: suspend (Conn) -> T,
     ): T {
         if (_state.value !is BoardState.Ready) return notReady()
-        val reply = CompletableDeferred<T>()
-        val cmd = Cmd.Op(op, reply, notReady)
+        val cmd = Cmd.Op(SessionOp<Conn, T>(op, notReady))
         if (!post(cmd)) return notReady()
+        val reply = cmd.op.reply
         val inTime = withTimeoutOrNull(deadlineMs) { reply.await().let { true } } ?: false
-        if (!inTime && cmd.claimForTimeout()) reply.complete(timedOut())
+        // Claimed and answered in one step: the actor's `refuse` skips an op its deadline took, so it can never answer
+        // notReady between the claim and the timeout's answer.
+        if (!inTime) cmd.op.claimForTimeout(timedOut)
         return reply.await()
     }
 
@@ -309,9 +311,9 @@ internal class MeshcoreSession(
         }
     }
 
-    /** Answers [cmd] as not served, if nothing has answered it yet. */
+    /** Answers [cmd] as not served, if nothing has answered it yet and its deadline did not take it. */
     private fun refuse(cmd: Cmd) {
-        if (cmd is Cmd.Op<*>) cmd.refuse()
+        if (cmd is Cmd.Op<*>) cmd.op.refuse()
     }
 
     // --- the reconnect loop (one coroutine per start), MeshtasticSession's ---
@@ -515,9 +517,13 @@ internal class MeshcoreSession(
     ) {
         try {
             when (cmd) {
-                is Cmd.Op<*> -> cmd.run(c)
+                is Cmd.Op<*> -> cmd.op.run(c)
                 Cmd.Tick -> onTick(c)
             }
+        } catch (_: CommandRefused) {
+            // One command the link would not carry: refused alone, the session goes on (a send answers TooLarge itself).
+            counters.commandsRefused.incrementAndGet()
+            log("meshcore command refused: over the link's write size")
         } finally {
             refuse(cmd)
         }
@@ -662,19 +668,35 @@ internal class MeshcoreSession(
 
     // --- the request machinery ---
 
-    /** Writes [bytes]; any failure ends the session ([classify]). The first write waits out a pairing. */
+    /**
+     * Writes [bytes]; any failure ends the session ([classify]) but one: a frame longer than the link carries in one write
+     * ([MeshcoreProto.MAX_NOTIFY], the `mtu − 3` of the lowest MTU a link opens at, or the channel's own `STATUS_TOO_LONG`)
+     * is a refusal of that one command ([CommandRefused]), never a reconnect — a redial would refuse it again, and every
+     * reconnect's back-off would starve the rest. The first write waits out a pairing.
+     */
     private suspend fun write(
         c: Conn,
         bytes: ByteArray,
     ) {
-        // The pinned allowlist, asked at the one place bytes leave (binding rule "contacts" 5): never a key, a PIN, the radio.
-        if (!commandAllowed(bytes)) throw EndSession(SessionEnd("$REASON_REFUSED_COMMAND ${bytes.firstOrNull()}"))
+        checkWritable(bytes)
         val unbonded = dialer.bondState(c.address) != BondState.BONDED
         val timeout = if (unbonded && !c.authenticated) BONDING_TIMEOUT_MS else WRITE_TIMEOUT_MS
-        when (val r = c.channel.write(bytes, timeout)) {
-            is GattResult.Ok -> c.authenticated = true
+        val r = c.channel.write(bytes, timeout)
+        when {
+            r is GattResult.Ok -> c.authenticated = true
+            r is GattResult.Failed && r.status == WRITE_TOO_LONG -> throw CommandRefused()
             else -> throw EndSession(classify(c.address, r, unbonded) ?: SessionEnd("$REASON_WRITE $r"))
         }
+    }
+
+    /**
+     * Asked of every frame before it is written. The pinned allowlist, at the one place bytes leave (binding rule
+     * "contacts" 5): never a key, a PIN, the radio — a frame outside it ends the session. Then the size: a frame over
+     * [MeshcoreProto.MAX_NOTIFY] is refused alone ([CommandRefused]).
+     */
+    private fun checkWritable(bytes: ByteArray) {
+        if (!commandAllowed(bytes)) throw EndSession(SessionEnd("$REASON_REFUSED_COMMAND ${bytes.firstOrNull()}"))
+        if (bytes.size > MeshcoreProto.MAX_NOTIFY) throw CommandRefused()
     }
 
     /**
@@ -1039,7 +1061,7 @@ internal class MeshcoreSession(
             onBattery(core.batteryMv)
         }
         ask<McFrame.StatsRadio>(c, MeshcoreProto.getStats(MeshcoreProto.STATS_RADIO))?.let { radio ->
-            airRing.onSample(now(), radio.txAirSecs, radio.rxAirSecs)?.let {
+            airRing.onSample(now(), radio.txAirSecs, radio.rxAirSecs, core?.uptimeSecs)?.let {
                 _boardAir.value = BoardAir(it.channelUtilPercent, it.airUtilTxPercent, atMs = now())
             }
         }
@@ -1089,11 +1111,29 @@ internal class MeshcoreSession(
         handle: UInt,
     ): SendResult {
         val result =
-            when (purpose) {
-                is SendPurpose.KnitFrame -> sendRoom(c, payload, purpose.channel, handle)
-                is SendPurpose.DirectDm -> (purpose.to as? BoardAddr.MeshCore)?.let { sendDirect(c, payload, it, handle) } ?: unsupported()
-                SendPurpose.PublicPost -> sendPublic(c, payload, handle)
-                is SendPurpose.AutoReply, is SendPurpose.Admin -> unsupported()
+            try {
+                when (purpose) {
+                    is SendPurpose.KnitFrame -> {
+                        sendRoom(c, payload, purpose.channel, handle)
+                    }
+
+                    is SendPurpose.DirectDm -> {
+                        (purpose.to as? BoardAddr.MeshCore)?.let { sendDirect(c, payload, it, handle) }
+                            ?: unsupported()
+                    }
+
+                    SendPurpose.PublicPost -> {
+                        sendPublic(c, payload, handle)
+                    }
+
+                    is SendPurpose.AutoReply, is SendPurpose.Admin -> {
+                        unsupported()
+                    }
+                }
+            } catch (_: CommandRefused) {
+                // The link would not carry this one write: the frame is too large for it, and only it is refused.
+                counters.commandsRefused.incrementAndGet()
+                SendResult.TooLarge
             }
         busy = flights.isNotEmpty() || headroomPolicy.holding || lastQueue > 0 || result is SendResult.Queued
         poke.trySend(Unit)
@@ -1123,10 +1163,25 @@ internal class MeshcoreSession(
         }
         if (slotReading?.knit != true) return SendResult.Rejected(0u, MeshcoreRefusal.SLOT_NOT_KNIT)
         val judged = writeJudged(c, bytes)
-        return when (judged.answer) {
-            Answer.OK -> queued(handle)
-            Answer.ERR -> onSendErr(handle, judged.errCode, notFoundIsBusy = false)
-            Answer.NONE -> SendResult.Timeout(handle)
+        return when {
+            judged.answer == Answer.OK -> {
+                queued(handle)
+            }
+
+            // `SEND_CHANNEL_DATA`'s NOT_FOUND is a slot index the board no longer has (`MyMesh.cpp:1225`), never a missing
+            // contact: the slot is refused, and read again before the next post.
+            judged.answer == Answer.ERR && judged.errCode == MeshcoreProto.ERR_NOT_FOUND -> {
+                slotReading = null
+                SendResult.Rejected(handle, MeshcoreRefusal.SLOT_NOT_KNIT)
+            }
+
+            judged.answer == Answer.ERR -> {
+                onSendErr(handle, judged.errCode, notFoundIsBusy = false)
+            }
+
+            else -> {
+                SendResult.Timeout(handle)
+            }
         }
     }
 
@@ -1299,7 +1354,14 @@ internal class MeshcoreSession(
         flight: Flight,
     ) {
         flight.repinNeeded = false
-        when (attempt(c, flight)) {
+        val result =
+            try {
+                attempt(c, flight)
+            } catch (_: CommandRefused) {
+                counters.commandsRefused.incrementAndGet()
+                SendResult.TooLarge
+            }
+        when (result) {
             is SendResult.Queued, is SendResult.Timeout -> Unit
             SendResult.Busy -> flight.deferredSince = flight.deferredSince ?: now()
             else -> endFlight(flight, unreachable = true)
@@ -1806,27 +1868,16 @@ internal class MeshcoreSession(
         val end: SessionEnd,
     ) : Exception(end.reason)
 
+    /**
+     * One command the link will not carry in one write ([write]): refused alone, never the session's end. Caught where the
+     * command's op answers ([doSend], [retry], [serve]).
+     */
+    private class CommandRefused : Exception("over the link's write size")
+
     private sealed interface Cmd {
         class Op<T>(
-            private val op: suspend (Conn) -> T,
-            private val reply: CompletableDeferred<T>,
-            private val notReady: () -> T,
-        ) : Cmd {
-            /** Set once, by whichever comes first: the actor starting the op, or its caller's deadline. */
-            private val claimed = AtomicBoolean(false)
-
-            suspend fun run(c: Conn) {
-                if (!claimed.compareAndSet(false, true)) return // its caller's deadline won: never started late
-                reply.complete(op(c))
-            }
-
-            /** True when the deadline wins and the op will never start; false when it already has. */
-            fun claimForTimeout(): Boolean = claimed.compareAndSet(false, true)
-
-            fun refuse() {
-                reply.complete(notReady())
-            }
-        }
+            val op: SessionOp<Conn, T>,
+        ) : Cmd
 
         data object Tick : Cmd
     }
@@ -1857,6 +1908,13 @@ internal class MeshcoreSession(
 
         /** How many attempts a compact DM gets: 0..2 (ADR 2026-11.gsqu §2). */
         const val ATTEMPTS = 3
+
+        /**
+         * The channel's status for a write over `mtu − 3`, refused before the stack could make it a long write
+         * (`NusLinkPolicy.STATUS_TOO_LONG` in `mesh/bluetooth/meshcore/`, which this pure package cannot import; a test
+         * pins the two equal).
+         */
+        const val WRITE_TOO_LONG = -3
 
         private const val NO_DEDICATED_SLOT = "a MeshCore board has no dedicated slot: Knit never moves its radio"
         private const val RESTORE_NEEDS_RECORD = "a MeshCore restore needs the record its setup returned"

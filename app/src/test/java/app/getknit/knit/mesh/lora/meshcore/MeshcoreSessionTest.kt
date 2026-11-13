@@ -1039,8 +1039,13 @@ class MeshcoreSessionTest {
             assertEquals("the core and the session share one id", (result as SendResult.Queued).id, acked.id)
         }
 
+    /**
+     * A send the actor never started by its call deadline is `Busy` (Stage 5a-1's carry-forward must-fix), so the core
+     * requeues it: a `Timeout` would read as "likely aired" and wait out a DM that never left. `Timeout` is kept for a
+     * started attempt whose `SENT` never came.
+     */
     @Test
-    fun aSendNotStartedByItsDeadlineAnswersUnderItsOwnHandleAndNeverRuns() =
+    fun aSendNotStartedByItsDeadlineIsBusyAndNeverRuns() =
         runTest {
             val r = rig(callDeadlineMs = 2_000)
             up(r)
@@ -1048,10 +1053,65 @@ class MeshcoreSessionTest {
             val setup = async { r.session.setup() }
             runCurrent() // the setup holds the actor, reading slots slowly
             val result = r.dm()
-            assertTrue("$result", result is SendResult.Timeout && result.id != 0u)
+            assertEquals("never started: the core requeues it", SendResult.Busy, result)
             assertTrue(setup.await() is MeshcoreSetupResult.Done)
             runCurrent()
             assertTrue("never started late", r.sendTexts().isEmpty())
+            assertTrue("no flight was opened for it", r.outcomes.isEmpty())
+        }
+
+    /**
+     * A write the GATT client refuses as over `mtu − 3` refuses that one command (Stage 5a-1's carry-forward must-fix):
+     * the send answers `TooLarge`, the session stays Ready and nothing is redialled — before, it ended the session into the
+     * back-off loop.
+     */
+    @Test
+    fun aWriteTooLongForTheLinkRefusesThatCommandAloneAndTheSessionStaysUp() =
+        runTest {
+            val r = rig()
+            up(r)
+            val dials = r.dialer.modes.size
+            r.ch.writeResult = { f ->
+                if (f[0].toInt() ==
+                    MeshcoreProto.CMD_SEND_TXT_MSG
+                ) {
+                    GattResult.Failed(MeshcoreSession.WRITE_TOO_LONG)
+                } else {
+                    GattResult.Ok(Unit)
+                }
+            }
+            assertEquals(SendResult.TooLarge, r.dm())
+            assertEquals(
+                1L,
+                r.session.counters.commandsRefused
+                    .get(),
+            )
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertTrue("still Ready", r.session.state.value is BoardState.Ready)
+            assertEquals("nothing redialled", dials, r.dialer.modes.size)
+            r.ch.writeResult = { GattResult.Ok(Unit) }
+            assertTrue("the next send goes", r.dm() is SendResult.Queued)
+        }
+
+    /**
+     * `SEND_CHANNEL_DATA`'s `NOT_FOUND` is a slot index the board no longer has, never a missing contact: a room post
+     * refused so reads `SLOT_NOT_KNIT` (classed `OTHER`, never `OWN_NO_KEY`), and the slot is read again before the next.
+     */
+    @Test
+    fun aRoomPostsNotFoundIsTheSlotNeverAContact() =
+        runTest {
+            val r = rig()
+            up(r)
+            r.ch.swallow = { f ->
+                (f[0].toInt() == MeshcoreProto.CMD_SEND_CHANNEL_DATA).also {
+                    if (it) r.ch.inject(byteArrayOf(MeshcoreProto.RESP_ERR.toByte(), MeshcoreProto.ERR_NOT_FOUND.toByte()))
+                }
+            }
+            val result = r.session.send(ByteArray(40) { 1 }, SendPurpose.KnitFrame(1)).result
+            assertTrue("$result", result is SendResult.Rejected && result.res == MeshcoreRefusal.SLOT_NOT_KNIT)
+            assertEquals(RefusalClass.OTHER, MeshcoreRefusal.classOf(result))
+            assertNull("read again before the next post", r.session.slotReading())
         }
 
     @Test

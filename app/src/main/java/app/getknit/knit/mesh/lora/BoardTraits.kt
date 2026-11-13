@@ -70,11 +70,60 @@ internal interface BoardTraits {
     /** The payload of our board's ACK of a compact DM to us, booked when the board sent one. */
     val ackPayloadBytes: Int
 
-    /** The header and framing around a payload on the air, for the time-on-air formula. */
+    /**
+     * The header and framing around a payload on the air, for the time-on-air formula. Meshtastic's [phyBytes] adds it to
+     * every packet; a kind whose framing depends on the packet's purpose ([MeshcoreTraits]) states its room flood's here
+     * and prices each purpose in [phyBytes].
+     */
     val packetOverheadBytes: Int
 
-    /** The preamble and sync word, in symbols, for the time-on-air formula. */
+    /**
+     * The preamble and sync word, in symbols, for the time-on-air formula ([airMs]). A kind whose preamble depends on the
+     * spreading factor states its value at the shortest spreading factors and reads its own rule in [airMs].
+     */
     val preambleSymbols: Double
+
+    /**
+     * The kind's price hook (ADR 2026-11.gsqu's 2026-11-13 Stage 5a-1 amendment): what a packet for [purpose] costs past
+     * its payload on this board, as the ledger prices it. Meshtastic reads the board's signing snapshot — [facts] and
+     * whether slot 0 ([primaryAead]) and the bound Knit slot ([knitAead]) are AEAD — through `LoraAirtime.price`, exactly
+     * as `OutboundFrame.price` always did; a kind that never signs ignores them and carries [purpose] on the price, which
+     * its own [phyBytes] reads.
+     */
+    fun price(
+        purpose: AirPurpose,
+        facts: SigningFacts,
+        primaryAead: Boolean,
+        knitAead: Boolean,
+    ): PacketPrice
+
+    /** The bytes a packet with a [payloadBytes] payload at [price] puts on the air, every header, pad and signature in. */
+    fun phyBytes(
+        payloadBytes: Int,
+        price: PacketPrice,
+    ): Int
+
+    /** The kind's airtime term: milliseconds [phyBytes] occupy the medium at [radio] (never under 1). */
+    fun airMs(
+        phyBytes: Int,
+        radio: RadioParams,
+    ): Long
+
+    /** The modulation the ledger prices at before the board reports one: the kind's own shipping default. */
+    val fallbackRadio: RadioParams
+
+    /**
+     * The duty cycle the allowance reads before the board reports its band. Meshtastic: `LoraAirtime.FALLBACK_PERCENT`,
+     * below every region's limit; a kind whose law Knit alone enforces takes the strictest duty of any band it could be
+     * on ([LoraBand.STRICTEST_PERCENT]), never a fallback that could be over the law.
+     */
+    val fallbackDutyPercent: Double
+
+    /**
+     * The [Ceiling] an own room post is admitted under: Meshtastic's [Ceiling.FULL], as the core always queued it; a kind
+     * whose room floods every repeater takes [Ceiling.FLOOD] (ADR 2026-11.gsqu §4).
+     */
+    val roomCeiling: Ceiling
 
     /** The pacer's shortest gap between two packets — the factory default of `LoraPacePolicy`, never an injected one. */
     val minGapMs: Long
@@ -128,6 +177,31 @@ internal enum class RefusalClass {
 
     /** Anything else: neither paced nor held. */
     OTHER,
+}
+
+/**
+ * What a packet is on the air, for a kind's price hook ([BoardTraits.price], [BoardTraits.phyBytes]): its framing turns on
+ * this on MeshCore (a flood carries transport codes, a zero-hop DM and an ack never do), and on Meshtastic it names the
+ * slot, the packet class and the port `LoraAirtime.price` reads.
+ */
+internal enum class AirPurpose {
+    /** An own Knit room post: a broadcast on the bound slot (Meshtastic), a scoped `GRP_DATA` flood (MeshCore). */
+    ROOM_FLOOD,
+
+    /** A compact DM, its ✓✓ or a reaction: a PKI data unicast (Meshtastic), a zero-hop contact text DM (MeshCore). */
+    DIRECT_DM,
+
+    /** Our board's ACK of a compact DM to us. */
+    ACK,
+
+    /** Our board's flooded PATH return answering a flooded DM to us (MeshCore only; never on Meshtastic). */
+    PATH_RETURN,
+
+    /** A post on the board's public channel, slot 0: a broadcast (Meshtastic), a scoped `GRP_TXT` flood (MeshCore). */
+    PUBLIC_POST,
+
+    /** The DM auto-reply (Meshtastic only): a data unicast on slot 0. */
+    REPLY,
 }
 
 /**
@@ -204,6 +278,70 @@ internal object MeshtasticTraits : BoardTraits {
     override val preambleSymbols: Double get() = LoraAirtime.PREAMBLE_SYMBOLS
     override val minGapMs: Long get() = LoraPacePolicy.MIN_GAP_MS
     override val roomPartLimit: Int get() = ROOM_PART_LIMIT
+    override val fallbackRadio: RadioParams get() = FALLBACK_RADIO
+    override val fallbackDutyPercent: Double get() = LoraAirtime.FALLBACK_PERCENT
+    override val roomCeiling: Ceiling get() = Ceiling.FULL
+
+    /**
+     * Each purpose as the slot, the packet class and the port `OutboundFrame.price` always read (#243): a room post a
+     * broadcast on the bound slot's private port, a compact DM a data unicast there (which 2.8 PKI-encrypts), a public
+     * post a text broadcast on slot 0, the auto-reply a text unicast there, our board's ACK a routing unicast. A PATH
+     * return is no Meshtastic packet; it reads as the room post's broadcast, the expensive answer, and nothing asks it.
+     * Pinned against the code it replaced by `LoraAirtimeKindParityTest`.
+     */
+    override fun price(
+        purpose: AirPurpose,
+        facts: SigningFacts,
+        primaryAead: Boolean,
+        knitAead: Boolean,
+    ): PacketPrice {
+        val (slot, kind, port) =
+            when (purpose) {
+                AirPurpose.ROOM_FLOOD, AirPurpose.PATH_RETURN -> {
+                    Triple(
+                        AirSlot.KNIT,
+                        PacketKind.BROADCAST,
+                        MeshtasticProto.PORT_PRIVATE_APP,
+                    )
+                }
+
+                AirPurpose.DIRECT_DM -> {
+                    Triple(AirSlot.KNIT, PacketKind.DATA_UNICAST, MeshtasticProto.PORT_PRIVATE_APP)
+                }
+
+                AirPurpose.ACK -> {
+                    Triple(AirSlot.KNIT, PacketKind.ROUTING_UNICAST, MeshtasticProto.PORT_ROUTING)
+                }
+
+                AirPurpose.PUBLIC_POST -> {
+                    Triple(AirSlot.PRIMARY, PacketKind.BROADCAST, MeshtasticProto.PORT_TEXT_MESSAGE)
+                }
+
+                AirPurpose.REPLY -> {
+                    Triple(AirSlot.PRIMARY, PacketKind.DATA_UNICAST, MeshtasticProto.PORT_TEXT_MESSAGE)
+                }
+            }
+        return LoraAirtime.price(facts, aead = if (slot == AirSlot.PRIMARY) primaryAead else knitAead, kind, port)
+    }
+
+    /**
+     * The payload, the bytes its encryption adds, [packetOverheadBytes] of header and framing, and the 2.8 signature when
+     * the payload is at or under the price's cliff — the firmware's own `signedDataFits`, a cliff rather than a ramp: a
+     * 165-byte payload costs 66 bytes more than a 166-byte one (ADR 2026-09.mhs5).
+     */
+    override fun phyBytes(
+        payloadBytes: Int,
+        price: PacketPrice,
+    ): Int {
+        val signature = if (payloadBytes <= price.signedUpTo) MeshtasticProto.XEDDSA_SIGNATURE_FIELD else 0
+        return payloadBytes + price.extraBytes + packetOverheadBytes + signature
+    }
+
+    /** The LoRa formula (Semtech AN1200.13) with the firmware's 16-symbol preamble and its sync word ([preambleSymbols]). */
+    override fun airMs(
+        phyBytes: Int,
+        radio: RadioParams,
+    ): Long = LoraAirtime.formulaMs(phyBytes, radio, preambleSymbols)
 
     /**
      * An RSSI (the NodeDB replay at every handshake has none), not an MQTT uplink, and an `rx_time`, when present, within
@@ -269,6 +407,9 @@ internal object MeshtasticTraits : BoardTraits {
 
     /** An own room post rides in one packet (ADR 2026-10.rp3s). */
     const val ROOM_PART_LIMIT = 1
+
+    /** What the formula prices before a board has reported its modulation: LongFast, the shipping default. */
+    private val FALLBACK_RADIO: RadioParams = radioParams(ModemPreset.LONG_FAST)
 
     private const val FULL_PERCENT = 100.0
 

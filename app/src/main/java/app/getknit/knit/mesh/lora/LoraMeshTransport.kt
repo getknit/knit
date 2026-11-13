@@ -778,6 +778,9 @@ internal class LoraMeshTransport(
             enqueue(
                 parts,
                 "$label:${env.type}",
+                // The kind's room ceiling (ADR 2026-11.gsqu §4): the whole allowance on Meshtastic, as ever; the flood
+                // ceiling on a kind whose room floods every repeater.
+                ceiling = traits.roomCeiling,
                 // The fan-out's gates are answered about the mesh as it is *now*; the frame may not fly for a whole
                 // window. Carried so [staleReason] can ask them again on the way out.
                 gate = RideGate(freshUntil = freshUntil, authorId = env.senderId),
@@ -1890,6 +1893,7 @@ internal class LoraMeshTransport(
                     // wake's holds.
                     repeat(pace.lastAirtimeHolds) { metrics.onLoraAirtimeHeld() }
                     repeat(pace.lastBandBrakes) { metrics.onLoraBandBraked() }
+                    abandonNever()
                 }
             if (frame == null) {
                 waitForNextSend()
@@ -2097,11 +2101,12 @@ internal class LoraMeshTransport(
         // cliff; a unicast — a compact DM and the auto-reply alike — unsigned and with the PKC overhead the firmware adds
         // to every PKI unicast (ADR 2026-10.x9fa's PKI amendment). Read once, so the flight's airing is the booked one.
         val price = frame.price(pace.airtime)
+        // Under the ceiling it was admitted at, so a flood counts toward the floods' share ([Ceiling.FLOOD]).
         if (send == null) {
-            pace.airtime.record(message.size, now, price)
+            pace.airtime.record(message.size, now, price, frame.ceiling)
         } else {
             // The airings the frame carries, the number its admission asked (OutboundFrame.admissionSizes).
-            repeat(send.airings) { pace.airtime.record(message.size, now, price) }
+            repeat(send.airings) { pace.airtime.record(message.size, now, price, frame.ceiling) }
         }
         frame.onPartSent()
         send?.let { launchFlight(frame, it, handle, message, price, now, userSeq) }
@@ -2142,6 +2147,20 @@ internal class LoraMeshTransport(
     /** [abandon]s whatever the pacer dropped unsent since the last look. */
     private fun abandonShed() {
         pace.drainShed().forEach(::abandon)
+    }
+
+    /**
+     * [abandon]s and counts every frame the pacer dropped because no window would admit it under its own ceiling
+     * ([LoraAirtime.Refusal.NEVER], ADR 2026-11.gsqu's Stage 5a-1 amendment), under a counter of its own (`loraAirNever`):
+     * a duty drop, never read as an over-long frame (`loraRoomTooLong`, `loraTooBig`). Dropped rather than left queued, so
+     * the pacer never wakes on its idle tick to ask about it again.
+     */
+    private fun abandonNever() {
+        for (frame in pace.drainNever()) {
+            metrics.onLoraAirNever()
+            log("lora air never ${frame.label} parts=${frame.messages.size}: over its ceiling of an empty window")
+            abandon(frame)
+        }
     }
 
     // --- inbound ---

@@ -15,7 +15,7 @@ budget, and ADR 044's buckets (`AirBucket`, with the `PUBLIC` share ADR 2026-10.
 dedicated-slot unlock, ADR 044's allowance and its 2026-10-04 holder amendment (narrowed below), and ADR 054's
 15-minute window.
 
-**Amended by ADR 2026-11.gsqu (2026-11-12):** a third ceiling, `Ceiling.FLOOD` (0.15 of the allowance, judged on the total like `HALF`), for a MeshCore board's floods; one ledger per board, since each board is its own radio.
+**Amended by ADR 2026-11.gsqu (2026-11-12):** a third ceiling, `Ceiling.FLOOD` (0.15 of the allowance), for a MeshCore board's floods; one ledger per board, since each board is its own radio. Its Stage 5a-1 amendment (2026-11-13): `FLOOD` counts flood bookings alone under the one total; `NEVER` is judged against a frame's own ceiling and the pacer drops such a frame; and on a MeshCore board "the law is the firmware's" does not hold — its firmware enforces no region, so the band's duty (`LoraBand`) bounds the allowance and `MeshcoreDutyLaw` checks the board's own trailing-hour `tx_air`.
 
 **Context:** after ADR 2026-10.rp3s and ADR 2026-10.x9fa the board airs only its user's own frames: one-packet room
 posts, compact one-packet DMs with their ✓✓ and reactions, the Meshtastic room's posts and the DM auto-reply. The

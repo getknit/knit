@@ -1924,6 +1924,8 @@ class DebugBridgeReceiver :
             .put("loraReprobed", snap.lora.loraReprobed)
             // An own room post kept off the air because it needs more than one packet (ADR 2026-10.rp3s).
             .put("loraRoomTooLong", snap.lora.loraRoomTooLong)
+            // A queued frame its own ceiling refuses on an empty window, once the duty is known: dropped (gsqu, Stage 5a-1).
+            .put("loraAirNever", snap.lora.loraAirNever)
             // An older build's OFFER (tag 0x10) heard and dropped: an old build's board is in range.
             .put("loraRetiredCtl", snap.lora.loraRetiredCtl)
             // Fanned before our own id was read and past the few then admitted (ADR 2026-10.rp3s): a stalling id read.

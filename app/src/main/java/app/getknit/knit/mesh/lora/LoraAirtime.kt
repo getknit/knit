@@ -20,6 +20,14 @@ internal enum class Ceiling {
      * `DmAutoReplyPolicy.FLOOR_MS`) bind long before in practice.
      */
     HALF,
+
+    /**
+     * [LoraAirtime.FLOOD_CEILING] (0.15) of it, judged against what the window's **flood** bookings spent (ADR 2026-11.gsqu
+     * §4 and its Stage 5 decisions): a MeshCore board's own room posts, which every repeater re-airs once. The total still
+     * caps everything, so a flood also needs the window's room; but a DM and its ✓✓, booked for every airing at send, never
+     * eat the floods' share. Nothing on Meshtastic is admitted under it.
+     */
+    FLOOD,
 }
 
 /**
@@ -39,13 +47,15 @@ internal interface PacketCost {
 }
 
 /**
- * One packet booked against the rolling window: when it went out and what it cost. The cost is carried rather than
- * re-derived from a size, because [LoraAirtime.refund] matches a booking on the two together. In memory only since ADR
- * 2026-10.ug4a: the ledger is no longer persisted.
+ * One packet booked against the rolling window: when it went out, what it cost, and the [Ceiling] it was admitted under,
+ * which is what [Ceiling.FLOOD] counts ([LoraAirtime.refusal]). The cost is carried rather than re-derived from a size,
+ * because [LoraAirtime.refund] matches a booking on when and how much. In memory only since ADR 2026-10.ug4a: the
+ * ledger is no longer persisted.
  */
 private data class Booking(
     val atMs: Long,
     val ms: Long,
+    val ceiling: Ceiling = Ceiling.FULL,
 )
 
 /** A read-only view of the governor for the settings row, the field log and the `…debug.LORA` dump. */
@@ -59,6 +69,10 @@ internal data class AirtimeSnapshot(
     val allowanceMs: Long,
     /** How far into [allowanceMs] the Meshtastic room and the DM auto-reply may take the total ([Ceiling.HALF]). */
     val publicCeilingMs: Long = 0L,
+    /** How much of [allowanceMs] the window's flood bookings may spend ([Ceiling.FLOOD]: a MeshCore board's room posts). */
+    val floodCeilingMs: Long = 0L,
+    /** What the window's flood bookings spent, measured against [floodCeilingMs]. */
+    val floodUsedMs: Long = 0L,
     /** Whether the board is on a dedicated RF slot, and so out from under the politeness ceiling (ADR 067). */
     val dedicated: Boolean = false,
     /**
@@ -106,13 +120,20 @@ internal enum class PacketKind {
 /**
  * What the firmware does to one packet past the payload we hand it, for the ledger: the payload size at or under which
  * it attaches a 66-byte signature ([signedUpTo], [LoraAirtime.UNSIGNED] for never), the bytes its encryption adds
- * ([extraBytes]: a PKI unicast's or an AEAD channel's 12), and the largest payload that still fits ([cap]).
+ * ([extraBytes]: a PKI unicast's or an AEAD channel's 12), and the largest payload that still fits ([cap]). A kind whose
+ * framing turns on what the packet is (MeshCore) carries that too ([purpose], read by its [BoardTraits.phyBytes]); a
+ * Meshtastic price leaves it null, its cost being the three numbers above (ADR 2026-11.gsqu's Stage 5a-1 amendment).
  */
 internal data class PacketPrice(
     val signedUpTo: Int,
     val extraBytes: Int,
     val cap: Int,
+    val purpose: AirPurpose? = null,
 ) {
+    /** The three numbers as they always read, and the purpose only where a kind set one (the parity golden reads this). */
+    override fun toString(): String =
+        "PacketPrice(signedUpTo=$signedUpTo, extraBytes=$extraBytes, cap=$cap" + purpose?.let { ", purpose=$it" }.orEmpty() + ")"
+
     companion object {
         /** No signature, no extra bytes: the price of a packet on a board that signs nothing, on a plain channel. */
         val UNSIGNED = PacketPrice(LoraAirtime.UNSIGNED, 0, MeshtasticProto.MAX_PAYLOAD)
@@ -162,6 +183,10 @@ internal data class SigningFacts(
  * re-probes, whose backoff is persisted, and in a 100 %-duty region a restart resets politeness by at most one
  * allowance. The board's own `air_util_tx` is not a seed for it: an hour of everything the radio sent, relays
  * included, it over-books a client on a busy mesh by most of an allowance and under-books a recent burst.
+ * **Not on MeshCore**: its firmware has only a 50 % token bucket and knows no region (`Dispatcher::updateTxBudget`, spike
+ * Q4), so there the law is Knit's alone — the allowance reads the band's duty ([LoraBand], never above it) and
+ * `MeshcoreDutyLaw` checks the board's own trailing-hour `tx_air`, which outlives an app restart (ADR 2026-11.gsqu's
+ * Stage 5a-1 amendment). The ledger itself stays unpersisted there too: the law check is what a restart cannot reset.
  *
  * One thing the packet we hand the board is not: what leaves it. Firmware **2.8 signs the broadcasts it
  * originates** — tag 2.8.1 always, a build with upstream `34cb8d582` (2.8.2) only under a `BALANCED` or `STRICT`
@@ -190,16 +215,24 @@ internal class LoraAirtime(
     private val safety: Double = SAFETY,
     private val politeCeilingPercent: Double = POLITE_CEILING_PERCENT,
     private val publicCeiling: Double = PUBLIC_CEILING,
+    private val floodCeiling: Double = FLOOD_CEILING,
     /**
      * Whether a dedicated RF slot lifts the politeness ceiling. On in the transport; false by default so the
      * class can be tested in both states.
      */
     private val dedicatedUnlocksDuty: Boolean = false,
-    /** The board kind's airtime framing and contention slot ([BoardTraits.packetOverheadBytes], [BoardTraits.slotTimeMs]). */
+    /**
+     * The board kind's price hook and contention slot ([BoardTraits.price], [BoardTraits.phyBytes], [BoardTraits.airMs],
+     * [BoardTraits.slotTimeMs]) and its fallbacks before a board reports ([BoardTraits.fallbackRadio],
+     * [BoardTraits.fallbackDutyPercent]).
+     */
     private val traits: BoardTraits = BoardTraits.MESHTASTIC,
 ) : PacketCost {
     private val samples = ArrayDeque<Booking>()
     private var spentMs = 0L
+
+    /** What the window's [Ceiling.FLOOD] bookings spent: a part of [spentMs], counted apart for the flood ceiling. */
+    private var floodSpentMs = 0L
 
     /** The board's radio settings, or null until the handshake reports them. */
     var radio: LoraRadioConfig? = null
@@ -261,13 +294,24 @@ internal class LoraAirtime(
         this.knitAead = knitAead
     }
 
-    /** What a [kind] packet on [portnum] written to [slot] costs past its payload, by the snapshot [onBoard] took. */
+    /**
+     * What a [kind] packet on [portnum] written to [slot] costs past its payload, by the snapshot [onBoard] took. A
+     * Meshtastic board's terms: the Meshtastic hooks ask it for what only they send (our board's ACK on the slot the DM came
+     * in on, the NodeInfo after a `35`); everything the core books goes through [price] by [AirPurpose], the kind's hook.
+     */
     @Synchronized
     fun price(
         slot: AirSlot,
         kind: PacketKind,
         portnum: Int,
     ): PacketPrice = price(facts, aead = if (slot == AirSlot.PRIMARY) primaryAead else knitAead, kind, portnum)
+
+    /**
+     * What a packet for [purpose] costs past its payload on this board: the kind's price hook ([BoardTraits.price]) over the
+     * snapshot [onBoard] took — which only a kind that signs reads (ADR 2026-11.gsqu's Stage 5a-1 amendment).
+     */
+    @Synchronized
+    fun price(purpose: AirPurpose): PacketPrice = traits.price(purpose, facts, primaryAead, knitAead)
 
     /**
      * Milliseconds this packet will occupy the medium, from the LoRa time-on-air formula (Semtech AN1200.13)
@@ -288,31 +332,22 @@ internal class LoraAirtime(
     fun timeOnAirMs(
         payloadBytes: Int,
         signedUpTo: Int,
-    ): Long = airMs(payloadBytes, 0, signedUpTo)
+    ): Long = airMs(payloadBytes, PacketPrice(signedUpTo, 0, MeshtasticProto.MAX_PAYLOAD))
 
-    /** [timeOnAirMs] at [price]: the signature when [payloadBytes] is at or under its cliff, and its extra bytes. */
+    /**
+     * [timeOnAirMs] at [price]: the kind's own bytes on the air for it ([BoardTraits.phyBytes] — on Meshtastic the signature
+     * when [payloadBytes] is at or under its cliff, and its extra bytes) at the kind's airtime term ([BoardTraits.airMs]).
+     */
     @Synchronized
     fun timeOnAirMs(
         payloadBytes: Int,
         price: PacketPrice,
-    ): Long = airMs(payloadBytes, price.extraBytes, price.signedUpTo)
+    ): Long = airMs(payloadBytes, price)
 
     private fun airMs(
         payloadBytes: Int,
-        extraBytes: Int,
-        signedUpTo: Int,
-    ): Long {
-        val radio = params ?: FALLBACK_RADIO
-        val sf = radio.spreadFactor
-        val symbolMs = radio.symbolMs
-        // Low-data-rate optimize: the firmware enables it once a symbol exceeds 16 ms, which costs 2 bits/symbol.
-        val de = if (symbolMs > LDO_THRESHOLD_MS) 1 else 0
-        val phyBytes = payloadBytes + extraBytes + traits.packetOverheadBytes + signatureBytes(payloadBytes, signedUpTo)
-        val numerator = (BITS_PER_BYTE * phyBytes - 4 * sf + PAYLOAD_CONST + CRC_BITS).toDouble()
-        val denominator = (4 * (sf - 2 * de)).toDouble()
-        val payloadSymbols = PAYLOAD_SYMBOL_BASE + maxOf(0.0, ceil(numerator / denominator) * radio.codingRate)
-        return ((traits.preambleSymbols + payloadSymbols) * symbolMs).toLong().coerceAtLeast(1)
-    }
+        price: PacketPrice,
+    ): Long = traits.airMs(traits.phyBytes(payloadBytes, price), params ?: traits.fallbackRadio)
 
     /**
      * The firmware's contention slot at this board's modulation — Meshtastic's `RadioInterface::computeSlotTimeMsec`
@@ -320,21 +355,13 @@ internal class LoraAirtime(
      * (`LoraDirectPolicy.retransmitMs`, ADR 2026-10.x9fa).
      */
     @Synchronized
-    fun slotTimeMs(): Double = traits.slotTimeMs(params ?: FALLBACK_RADIO)
+    fun slotTimeMs(): Double = traits.slotTimeMs(params ?: traits.fallbackRadio)
 
     /**
-     * The signature the board will bolt onto this packet, or 0. Mirrors the firmware's own `signedDataFits`
-     * gate: it signs what still fits signed and sends the rest as it always did, so this is a *cliff* rather
-     * than a ramp — a 165-byte payload costs 66 bytes more than a 166-byte one. Whether the board signs at all is
-     * in the cliff: [UNSIGNED] for a packet it never signs ([price]).
+     * The price of an own room post by the current snapshot — a Knit broadcast on the bound slot on Meshtastic, a scoped
+     * flood on MeshCore: what a caller that names no price is charged.
      */
-    private fun signatureBytes(
-        payloadBytes: Int,
-        signedUpTo: Int,
-    ): Int = if (payloadBytes <= signedUpTo) MeshtasticProto.XEDDSA_SIGNATURE_FIELD else 0
-
-    /** The price of a Knit broadcast on the bound slot, by the current snapshot. */
-    private fun knitBroadcast(): PacketPrice = price(AirSlot.KNIT, PacketKind.BROADCAST, MeshtasticProto.PORT_PRIVATE_APP)
+    private fun knitBroadcast(): PacketPrice = price(AirPurpose.ROOM_FLOOD)
 
     /**
      * The size to grow a [payloadBytes] packet to so the firmware will **not** sign it, or [payloadBytes]
@@ -369,7 +396,7 @@ internal class LoraAirtime(
     /** The window's one allowance, in milliseconds of air — the lower of the two ceilings that still apply (see the class doc). */
     @Synchronized
     fun allowanceMs(): Long {
-        val cfg = duty ?: return (windowMs * FALLBACK_PERCENT / PERCENT * safety).toLong()
+        val cfg = duty ?: return (windowMs * traits.fallbackDutyPercent / PERCENT * safety).toLong()
         // Law. The user set the firmware's own duty-cycle override: they have taken the regulatory call, so
         // the regional cap stops applying to us too ([MeshtasticTraits.dutyPolicy] reads it as 100 %).
         val regional = cfg.dutyCyclePercent
@@ -378,6 +405,14 @@ internal class LoraAirtime(
         return (windowMs * min(regional, polite) / PERCENT * safety).toLong()
     }
 
+    /**
+     * Whether a board has reported the duty the allowance reads ([onRadio]). Until it has, the allowance is the kind's
+     * fallback ([BoardTraits.fallbackDutyPercent]: 0.1 % on MeshCore), and a frame it refuses as [Refusal.NEVER] may fit
+     * once the real duty lands — so the pacer drops nothing for NEVER before this is true.
+     */
+    @Synchronized
+    fun dutyKnown(): Boolean = duty != null
+
     /** Whether the budget above is running under the dedicated-slot rules; diagnostics, the settings row and the brake. */
     @Synchronized
     fun dedicated(): Boolean = dedicatedUnlocksDuty && duty?.dedicatedSlot == true
@@ -385,6 +420,18 @@ internal class LoraAirtime(
     /** How far into [allowanceMs] a [Ceiling.HALF] frame may take the window's total. */
     @Synchronized
     fun publicCeilingMs(): Long = (allowanceMs() * publicCeiling).toLong()
+
+    /** How much of [allowanceMs] the window's [Ceiling.FLOOD] bookings may spend. */
+    @Synchronized
+    fun floodCeilingMs(): Long = (allowanceMs() * floodCeiling).toLong()
+
+    /** How far [ceiling] lets a frame go: the most it may cost on an empty window, against what its own ceiling counts. */
+    private fun ceilingMs(ceiling: Ceiling): Long =
+        when (ceiling) {
+            Ceiling.FULL -> allowanceMs()
+            Ceiling.HALF -> publicCeilingMs()
+            Ceiling.FLOOD -> floodCeilingMs()
+        }
 
     /** What the window has spent at [now], every frame of ours together. */
     @Synchronized
@@ -411,7 +458,10 @@ internal class LoraAirtime(
      * Why [admits] refuses a frame, or null when it fits. The pacer needs the reason, not just the verdict: a direct
      * frame the [Refusal.TOTAL] refuses holds every frame ranked below it until it has gone ([LoraPacePolicy]), while a
      * frame refused on its [Refusal.CEILING] must never hold anything, or a busy Meshtastic room would freeze the
-     * pocket's own chat — the one thing the ceiling exists to prevent.
+     * pocket's own chat — the one thing the ceiling exists to prevent. A frame its own ceiling would refuse on an empty
+     * window is [Refusal.NEVER], whichever ceiling: on a 1 % band a two-part MeshCore post costs more than the flood
+     * ceiling of the whole allowance, and waiting on it would wake the pacer for a whole window per post (ADR 2026-11.gsqu's
+     * Stage 5a-1 amendment). On [Ceiling.FULL] that is the whole allowance, as it always was.
      */
     @Synchronized
     fun refusal(
@@ -427,14 +477,18 @@ internal class LoraAirtime(
         // A `when` rather than a ladder of early returns only because there are several answers; the order
         // is the same and load-bearing.
         return when {
-            // No window, however empty, would ever admit it: it must never be waited for.
-            cost > total -> Refusal.NEVER
+            // No window, however empty, would ever admit it under its own ceiling: it must never be waited for.
+            cost > ceilingMs(ceiling) -> Refusal.NEVER
 
             spentMs + cost > total -> Refusal.TOTAL
 
             // The foreign audience's ceiling is on the window's total, its own cost included: it cannot take the
             // window past half, however little of it the room itself has spent.
             ceiling == Ceiling.HALF && spentMs + cost > publicCeilingMs() -> Refusal.CEILING
+
+            // The flood ceiling counts floods alone: DMs booked for every airing never take the room's share, and a
+            // flood still needs the total's room above.
+            ceiling == Ceiling.FLOOD && floodSpentMs + cost > floodCeilingMs() -> Refusal.CEILING
 
             else -> null
         }
@@ -445,10 +499,16 @@ internal class LoraAirtime(
         /** The window's total is spent: the frame fits once enough of the window rolls off. */
         TOTAL,
 
-        /** A [Ceiling.HALF] frame would take the total past [publicCeilingMs]. Never holds anything behind it. */
+        /**
+         * A [Ceiling.HALF] frame would take the total past [publicCeilingMs], or a [Ceiling.FLOOD] frame the window's
+         * floods past [floodCeilingMs]. Never holds anything behind it.
+         */
         CEILING,
 
-        /** Larger than the whole allowance: no window will ever admit it, so nothing may wait on it. */
+        /**
+         * Larger than its own ceiling of an empty window — the whole allowance for [Ceiling.FULL]: no window will ever
+         * admit it, so nothing may wait on it. The pacer drops it ([LoraPacePolicy.drainNever]).
+         */
         NEVER,
     }
 
@@ -472,6 +532,7 @@ internal class LoraAirtime(
             if (booking.atMs == atMs && booking.ms == ms) {
                 it.remove()
                 spentMs -= ms
+                if (booking.ceiling == Ceiling.FLOOD) floodSpentMs -= ms
                 left--
             }
         }
@@ -479,7 +540,8 @@ internal class LoraAirtime(
     }
 
     /**
-     * Books [payloadBytes] of air at [price] — a Knit broadcast on the bound slot unless the caller says. Called once the
+     * Books [payloadBytes] of air at [price] — a Knit broadcast on the bound slot unless the caller says — under the
+     * [ceiling] its frame was admitted at, so a [Ceiling.FLOOD] booking counts toward the floods' share. Called once the
      * board has actually accepted the write.
      */
     @Synchronized
@@ -487,11 +549,13 @@ internal class LoraAirtime(
         payloadBytes: Int,
         now: Long,
         price: PacketPrice? = null,
+        ceiling: Ceiling = Ceiling.FULL,
     ) {
         prune(now)
         val ms = timeOnAirMs(payloadBytes, price ?: knitBroadcast())
-        samples.addLast(Booking(now, ms))
+        samples.addLast(Booking(now, ms, ceiling))
         spentMs += ms
+        if (ceiling == Ceiling.FLOOD) floodSpentMs += ms
     }
 
     /**
@@ -512,13 +576,16 @@ internal class LoraAirtime(
         return AirtimeSnapshot(
             preset = cfg?.modemPreset ?: ModemPreset.LONG_FAST,
             region = cfg?.region ?: LoraRegion.UNSET,
-            known = cfg != null,
+            // The modulation, not the Meshtastic config: a MeshCore board reports one through [onRadio] alone.
+            known = params != null,
             usedMs = spentMs,
             allowanceMs = allowanceMs(),
             publicCeilingMs = publicCeilingMs(),
+            floodCeilingMs = floodCeilingMs(),
+            floodUsedMs = floodSpentMs,
             dedicated = dedicated(),
             knitSignedUpTo = knitBroadcast().signedUpTo,
-            roomSignedUpTo = price(AirSlot.PRIMARY, PacketKind.BROADCAST, MeshtasticProto.PORT_TEXT_MESSAGE).signedUpTo,
+            roomSignedUpTo = price(AirPurpose.PUBLIC_POST).signedUpTo,
         )
     }
 
@@ -529,6 +596,7 @@ internal class LoraAirtime(
             if (now - oldest.atMs < windowMs) return
             samples.removeFirst()
             spentMs -= oldest.ms
+            if (oldest.ceiling == Ceiling.FLOOD) floodSpentMs -= oldest.ms
         }
     }
 
@@ -684,6 +752,14 @@ internal class LoraAirtime(
         const val PUBLIC_CEILING = 0.5
 
         /**
+         * How much of the allowance a MeshCore board's floods may spend, counted over flood bookings alone ([Ceiling.FLOOD],
+         * ADR 2026-11.gsqu §4 and the maintainer's Stage 5 decisions). Each repeater re-airs a flooded packet once, so a
+         * repeater's Knit load is our flooded airtime: about 0.75 % duty at a 45 s window. `HALF` was the obvious
+         * translation and let 22.5 s of floods through, 3.3 times jend's cap.
+         */
+        const val FLOOD_CEILING = 0.15
+
+        /**
          * The cap Knit applies even where the law does not. Most regions run at 100 % duty, but a phone that
          * transmits a third of every hour on a shared community band is a bad neighbour, and the Meshtastic
          * firmware itself warns above 10 % channel utilization.
@@ -699,8 +775,24 @@ internal class LoraAirtime(
         /** Meshtastic header + protobuf/crypto framing around our `Data.payload` ([BoardTraits.packetOverheadBytes]). */
         const val PACKET_OVERHEAD_BYTES = 24
 
-        /** What the formula prices before a board has reported its modulation: LongFast, the shipping default. */
-        private val FALLBACK_RADIO: RadioParams = MeshtasticTraits.radioParams(ModemPreset.LONG_FAST)
+        /**
+         * The LoRa time-on-air formula (Semtech AN1200.13), explicit header and CRC on, for [phyBytes] on the air at [radio]
+         * behind [preambleSymbols] of preamble and sync word: what each kind's [BoardTraits.airMs] builds on. Low-data-rate
+         * optimisation is on once a symbol exceeds 16 ms (both firmwares' rule), costing 2 bits a symbol. Never under 1 ms.
+         */
+        fun formulaMs(
+            phyBytes: Int,
+            radio: RadioParams,
+            preambleSymbols: Double,
+        ): Long {
+            val sf = radio.spreadFactor
+            val symbolMs = radio.symbolMs
+            val de = if (symbolMs > LDO_THRESHOLD_MS) 1 else 0
+            val numerator = (BITS_PER_BYTE * phyBytes - 4 * sf + PAYLOAD_CONST + CRC_BITS).toDouble()
+            val denominator = (4 * (sf - 2 * de)).toDouble()
+            val payloadSymbols = PAYLOAD_SYMBOL_BASE + maxOf(0.0, ceil(numerator / denominator) * radio.codingRate)
+            return ((preambleSymbols + payloadSymbols) * symbolMs).toLong().coerceAtLeast(1)
+        }
 
         private const val PERCENT = 100.0
         private const val LDO_THRESHOLD_MS = 16.0

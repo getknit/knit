@@ -302,6 +302,18 @@ DM is admitted against every airing
 the firmware may give it (`OutboundFrame.admissionSizes`, ADR 2026-10.x9fa): one airing would fit a nearly spent window
 where its retries would not.
 
+**By purpose, through the kind (ADR 2026-11.gsqu's Stage 5a-1 amendment).** A frame names what it is on the air
+(`OutboundFrame.purpose`, an `AirPurpose`: room flood, compact DM, public post, reply; the hooks' ACK; MeshCore's PATH
+return) and the ledger prices it through the kind's hook — `BoardTraits.price` for the price, `phyBytes` for its bytes on
+the air, `airMs` for the time. Meshtastic's hook is the code it replaced, mapping each purpose to the slot, packet class
+and port `LoraAirtime.price` reads, `LoraAirtime.formulaMs` at 24 B of framing and a 20.25-symbol preamble
+(`LoraAirtimeKindParityTest` against a verbatim copy, beside `LoraAirtimeParityTest`'s golden). A third ceiling,
+`Ceiling.FLOOD` (`FLOOD_CEILING`, 0.15), counts the window's **flood bookings** alone (a `Booking` carries the ceiling it was
+admitted under; `record` takes it): a MeshCore board's room posts (`BoardTraits.roomCeiling`; Meshtastic's stays `FULL`).
+A frame its **own** ceiling refuses on an empty window is `NEVER`, and once the board's duty is known
+(`LoraAirtime.dutyKnown`; before, it is only skipped) the pacer drops it (`LoraPacePolicy.drainNever`) — counted
+`loraAirNever`, logged `lora air never <label>` — rather than leave it queued for the 1-s idle tick to ask about again. On `FULL` that is the whole allowance, as it always was.
+
 **The shared-band brake (ADR 2026-10.ug4a).** While the board reports its channel utilisation at or over 40 %
 (`BUSY_BAND_PERCENT`, the firmware's `max_channel_util_percent`, compared `>=`) on a reading at most 5 minutes old
 (`BRAKE_FRESH_MS`), off a dedicated slot, the pacer skips Knit room posts (`OutboundFrame.braked`: `ROOM` on the bound
@@ -1005,7 +1017,9 @@ and dropped; every frame handler is guarded, so a bad frame never ends the actor
   queue, `SerialBLEInterface.cpp`, is picked up there). Lossy by design: a lost reply is gone (Q3). A round reads at most
 16 replies, then the loop serves one waiting command (the inbox is also selected first), so a busy band never starves a
 send or a retry; every `call` has a deadline on the wait for the actor to start it, never on a started op, which always
-returns its own result (a send's handle is taken before it is posted). Drained packets wait for their one collector,
+returns its own result (a send's handle is taken before it is posted). A send its deadline caught unstarted is `Busy`,
+which the core requeues; `Timeout` is a started attempt whose `SENT` never came. The deadline claims and answers in one
+step and the actor's refusal skips what it claimed (`SessionOp`). Drained packets wait for their one collector,
 which subscribes before `start`, in a 1,024-packet backlog that drops its oldest past that (`packetsDropped`). The first `NO_MORE` of
   a connection makes what follows `MeshcorePacket.live`; before it is the offline queue replayed, whose frames were
   composed at reception and may be V1 (7, 8) if no client had asked for v3. Nothing drained is discarded: the user's own
@@ -1014,7 +1028,8 @@ which subscribes before `start`, in a 1,024-packet backlog that drops its oldest
   emitted unconflated. `TABLE_FULL` holds headroom at 0 until a poll shows the queue fell or `sent` rose
   (`MeshcoreHeadroom`; the 16-packet pool is shared with received packets), or a poll reads an empty queue, or two polls
 have held it. RADIO stats feed `BoardAir` over a ≥ 60 s ring
-  (`MeshcoreAirRing`). CORE uptime going backwards is a reboot: the ack table is dropped.
+  (`MeshcoreAirRing`, which also restarts on the same poll's CORE uptime going backwards). CORE uptime going backwards
+  is a reboot: the ack table is dropped.
 - **A compact DM** is `SEND_TXT_MSG`, `TXT_TYPE_PLAIN`, text `COBS(seal)` ≤ 157 B (seal ≤ 156), written only after a
   zero-hop pin that read back in this connection (`MeshcorePins`; a read-modify-write of the 144-B record, skipped when it
   already reads 0). No key for the prefix, or a pin that fails, is refused unwritten (`MeshcoreRefusal.NO_RECORD` /
@@ -1037,6 +1052,7 @@ have held it. RADIO stats feed `BoardAir` over a ≥ 60 s ring
   the keys are never touched; the encoder cannot even write them (`MeshcoreProto.ENCODED_COMMANDS`, pinned).
 - **Room posts** are `SEND_CHANNEL_DATA` on the bound slot, flooded, `data_type` `0xFFFF` (`DATA_TYPE_DEV`) until
   MeshCore registers Knit's; the slot is re-read when its last read is over 60 s old and refused when it is not Knit's.
+  Its `NOT_FOUND` is a slot the board no longer has (`SLOT_NOT_KNIT`, the reading dropped), never a contact.
   A reading never outlives its connection: it is cleared at every handshake and session end, and set only for a slot
   read as Knit's.
   A Public post's text is refused past `160 − (name + 2)` bytes, where the firmware would trim it and answer OK.
@@ -1048,7 +1064,8 @@ have held it. RADIO stats feed `BoardAir` over a ≥ 60 s ring
   no framing byte), a 176-B MTU floor (`NusLinkPolicy.MIN_MTU`, the firmware's `MAX_FRAME_SIZE` and an ESP32 board's
   cap, so a notify carries at most 173 B), its own arbiter tag `meshcore-dial`, and the `MeshcoreGatt` log tag. The dial
   subscribes to TX before it opens. A write longer than `mtu − 3` is refused (`STATUS_TOO_LONG`), never sent as a long
-  write; every write is `WRITE_TYPE_DEFAULT`. Notifies land in a `NusInbox`: an unlimited channel bounded at 1,024 frames
+  write, and the session reads that as a refusal of the one command (`CommandRefused`: a send answers `TooLarge`,
+  `commandsRefused`), never a session end; it refuses anything over `MAX_NOTIFY` itself first, which no encoder emits; every write is `WRITE_TYPE_DEFAULT`. Notifies land in a `NusInbox`: an unlimited channel bounded at 1,024 frames
   or 256 KiB held, past which the connection ends under `STATUS_OVERFLOW` (counted in `inboxOverflows`), nothing
   dropped. Pairing (`ESP_LE_AUTH_REQ_SC_MITM_BOND`, static passkey 123456 or the board's screen; Q8's random-PIN trap)
   is the system's, at the first protected op: on an ESP32 the session's first RX write, under `BONDING_TIMEOUT_MS`; if a
@@ -1056,6 +1073,29 @@ have held it. RADIO stats feed `BoardAir` over a ≥ 60 s ring
   the same way — a bond refused, or a link closed with the board still unbonded (read settled, `BondSettle`), is
   `NusDialResult.BondRefused`, terminal. No bond receiver (the bond is polled),
   and an unbonded board is never dialled in the background. Nothing constructs it before Stage 5.
+
+### MeshCore's price, band and law (ADR 2026-11.gsqu's Stage 5a-1 amendment)
+
+Pure and JVM-tested; Stage 5a-2 wires them. `MeshcoreTraits` prices by purpose what `companion-v1.18.0` puts on the air:
+header, the 4 B of transport codes on a scoped **flood** only (a room post, a public post, a PATH return; never a
+zero-hop DM or an ack), path length, the hashes, the 2-B MAC, and the plaintext zero-padded to the 16-B AES block (a room
+post's 3-B data header, a text's 5-B timestamp and flags, a DM's COBS byte). The time is the LoRa formula at the
+firmware's own preamble — 32 symbols at SF ≤ 8, 16 above (`RadioLibWrappers.h:56`) — which is all of Q5's gap (633.3 ms
+for 181 B at SF7 / BW 62.5 against 633 ± 17 measured), plus `FIXED_MS` (17, the measurement's sigma) per packet. It
+never carries Meshtastic's signing facts, falls back to the companion's build default (869.618 MHz, BW 62.5, SF8), and
+sizes the compact DM at 3 airings, 2 flights (the board's 8 ack codes over 3) and a deadline above
+`MeshcoreSession.MAX_FLIGHT_MS`.
+
+The firmware enforces no regional duty (a 50 % token bucket, Q4), so `LoraBand` gives the duty from the frequency and
+bandwidth (the whole channel inside a row; the strictest row it is in; `STRICTEST_PERCENT`, 0.1 %, when none holds it,
+and before any band is known), the allowance reads it, and `MeshcoreDutyLaw` holds every Knit frame while the board's
+own trailing-hour `tx_air` — every client's sends, our acks and PATH returns, any repeats — reaches it. The law's clock
+is the board's uptime, so it survives an app restart (its ring is the state to persist), not a board reboot (a sample
+whose uptime or counter fell, or whose boot time moved, starts it again, the old boot's hour and the unseen stretch up to the
+reboot carried on the wall clock as a pre-boot term for an hour); with no baseline an hour old it bounds the hour
+from the counter since boot, so a restart never hands out a fresh hour. The brake (`MeshcoreAirRing`) is Δ(`rx_air` +
+`tx_air`) over ≥ 60 s at 40 %. Each EU duty assumes its row's power limit (25 mW, 500 mW at 869.4–869.65), the board's power being
+the user's; on a 0.1 % or unmatched band the plane is effectively dead, by design; `rx_air` counts only packets the firmware parsed, and a client-repeat board inflates both.
 
 ## Board setup (once, Meshtastic CLI or app)
 

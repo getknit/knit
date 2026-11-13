@@ -401,8 +401,8 @@ round is capped at 16 replies and the inbox is served first, with a deadline on 
 until collected; the encoder's allowlist is asked again at the one write; COBS decodes canonical input only.
 
 Second review, applied: a call's deadline bounds only the wait for the actor to start it — a started op always returns
-its own result (a send's handle is taken before it is posted, so even a timeout answers under the id its outcomes carry;
-a setup keeps its record); the drained-packet backlog is 1,024, oldest dropped and counted, and the core subscribes before
+its own result (a send's handle is taken before it is posted, so every outcome of a started send carries the id the core
+holds; a send its deadline caught unstarted is `Busy` since Stage 5a-1, below; a setup keeps its record); the drained-packet backlog is 1,024, oldest dropped and counted, and the core subscribes before
 `start`; every `ERR` up to a content-matched request's barrier is judged together, more than one with no success being
 ambiguous (no answer, never a refusal). **A known limit:** a barrier ends at the first `CURR_TIME`, and another client's
 `GET_DEVICE_TIME` answer cannot be told from ours — it carries only the board's clock. One that lands first ends our
@@ -599,3 +599,128 @@ and five design calls. The maintainer decided them on 2026-11-13.
     fixed per-packet term rather than × 1.06.
   - **Hearing** only from a verified, fresh Knit frame (an opened seal, or a channel post's verified author at zero hops),
     never from a sender prefix or a non-Knit DM; the trait splits into `live` and `heardZeroHop`.
+
+## Amendment 2026-11-13 — Stage 5a-1: pricing, the band's law, the flood ceiling and the session fixes (draft)
+
+Built under the Stage 5 design passes (lora-reviewer findings 1, 2, 3, 9, 10 and 12) and the maintainer's Stage 5
+decisions above. Pure and JVM-tested; no MeshCore child is wired (`BUILT_BOARD_KINDS` and DI are unchanged).
+
+- **A kind price hook.** The ledger priced every booking with Meshtastic's rules: a MeshCore packet would have been
+  charged the 66-B XEdDSA signature (`SigningFacts()` reads as signing) and a compact DM the PKI overhead. `BoardTraits`
+  now prices: `price(AirPurpose, …)`, `phyBytes(payload, price)` and `airMs(phy, radio)`, with the kind's fallback radio
+  and duty and its room ceiling. `OutboundFrame.price` asks `LoraAirtime.price(OutboundFrame.purpose)`, and every booking
+  goes through `phyBytes` and `airMs`. Meshtastic's hook is the code it replaced: each purpose maps to the slot, packet
+  class and port it always read, at 24 B of framing and a 20.25-symbol preamble. `LoraAirtimeKindParityTest` holds a
+  verbatim copy of the replaced code and checks every frame shape, payload size, `ModemPreset`, signing era and AEAD
+  pairing against it; `LoraAirtimeParityTest`'s golden is unchanged. `PacketPrice` gained a `purpose`, null on Meshtastic,
+  and its text reads as before.
+- **MeshCore's price** (`MeshcoreTraits`, `companion-v1.18.0`). Every packet has a header byte, then the 4 B of transport
+  codes on a scoped flood only, then the path length. The payload follows:
+  - a room post is the channel hash, the MAC, and AES over the 3-B data header and the payload;
+  - a zero-hop DM is the two hashes, the MAC, and AES over the timestamp, the flags and the COBS text;
+  - an ack is the code;
+  - a PATH return is a flooded datagram over its path plaintext.
+
+  AES pads to 16 with no extra block on a multiple of 16. MeshCore never takes Meshtastic's signing facts, and before any
+  report it prices at the companion's build default (869.618 MHz, BW 62.5, SF8), not at LongFast.
+- **The airtime term: the preamble, not a ratio.** (`FIXED_MS` is the 60-send measurement's uncertainty at 181 B, not a
+  bound.) The firmware's preamble is 32 symbols at SF ≤ 8 and 16 above
+  (`RadioLibWrappers.h:56`). Q5's 181-B packet at SF7 is then 633.3 ms by the formula, against 633 ± 17 ms measured; the
+  first cut's 600 ms used a 16-symbol preamble. So the decided "fixed per-packet term rather than × 1.06" prices the
+  formula at that preamble plus 17 ms per packet, the measurement's sigma, not 33 ms on top of a wrong formula. A
+  constant 33 ms would have under-priced SF8 by 33 ms a packet and over-priced SF ≥ 9. **Owed:** a small-packet bench
+  point (a 6-B ack and a 40-B DM, Δ`tx_air` over 60 sends at SF7 and SF8).
+- **The compact DM's numbers.** `maxFlights` is 2: the board's 8 ack codes are attempts, three to a flight. Other
+  clients' codes are the session's `Busy` to answer. `deadlineMs` is `MeshcoreSession.MAX_FLIGHT_MS` plus the 10-s answer
+  slack, whatever the airtime: the session clamps each `est_timeout` to 60 s, so its own cap always ends a flight first.
+- **The band's law is Knit's on this kind.** MeshCore's firmware has a 50 % token bucket and no region (Q4), so ug4a's
+  "the law is the firmware's `DUTY_CYCLE_LIMIT`" does not hold here.
+  - `LoraBand` reads the duty off the frequency and bandwidth: ERC 70-03 Annex 1's EU 863–870 sub-bands, 433.05–434.79,
+    US 902–928 and ANZ 915–928. Every EU edge and Annex 1 label is to check against EN 300 220. The EU 10 % rows (869.4–869.65
+    and 433) and the US and ANZ rows are confirmed by `LoraRegion`. MeshCore's own presets (869.618, 869.525, 910.525,
+    916.575, 917.375 MHz) all land in a row.
+  - The whole channel must sit inside a row, and the strictest holding row wins. A channel no row holds, a band before it
+    is known, and the Asia-Pacific presets the table lacks all read `STRICTEST_PERCENT` (0.1 %), never `FALLBACK_PERCENT`.
+  - Each EU duty assumes its row's power limit (25 mW e.r.p. for the 1 % and 0.1 % rows, 500 mW for 869.4–869.65, 10 mW
+    at 433), to check against EN 300 220 with the rest. The board's power is the user's call, never Knit's (ADR 045).
+  - **Cost, by design:** on a real 0.1 % sub-band, or a frequency the table does not hold (any Asia-Pacific preset today),
+    the allowance is 0.45 s a window. No room post fits the flood ceiling and no three-airing DM fits the total, so the
+    plane is effectively dead there until a row with a source is added.
+  - `MeshcoreTraits.dutyPolicy` feeds the allowance, so a window never allows more than the band's duty; the worst
+    straddling hour is 5/8 of it.
+- **The law check** (`MeshcoreDutyLaw`) holds every Knit frame while the board's own trailing-hour `tx_air` reaches the
+  band's duty. That counter covers every client, our acks and PATH returns, and repeats.
+  - Its clock is the board's uptime. A sample whose uptime or counter went backwards, or whose boot time (wall − uptime)
+    moved by more than 2 minutes, starts a new boot.
+  - **What persists:** the ledger stays unpersisted, as ug4a left it. The law's ring of `(uptime, tx_air, boot)` samples is
+    the state Stage 5a-2 persists in `meshcore_plane_state`. It survives an app restart, because the board's counter does,
+    and is dropped at the first sample of another boot, because a reboot zeroes the counter.
+  - **A board reboot never hands out a fresh hour either.** On a new boot a pre-boot term is carried on the wall clock
+    (the samples already carry their boot time) and added to every bound until an hour after the new boot (or after the
+    last sample, if that is later). It is the old
+    boot's trailing-hour bound at our last sample of it, plus the seconds from that sample to the reboot, at most an
+    hour: the radio may have sent all of them while the app was away (other clients, acks, repeats), since the counter
+    rises no faster than the clock. A restored ring from a boot the board has since left becomes the same term. It is
+    persisted with the ring.
+  - With no baseline an hour old, it bounds the hour from what the board can have done: since boot (`tx_air` itself), or
+    from a sample inside the hour plus at most the seconds before it. So a process with nothing restored reads the whole
+    counter, up to an hour of it, as possibly spent. A restart can cost a hold of up to an hour on a 1 % band; it never
+    hands out a fresh window.
+- **`Ceiling.FLOOD`** is 0.15 of the allowance, counted over flood bookings alone. A `Booking` carries the ceiling it was
+  admitted under, and `record` takes it. DMs booked for every airing at send never eat the room's share, and the total
+  still caps every flood. The room's ceiling is a trait: Meshtastic `FULL`, as the core always queued its posts, and
+  MeshCore `FLOOD`.
+- **`NEVER` is judged against a frame's own ceiling** on an empty window. On a 1 % band a two-part post fits the
+  allowance and never the 0.675-s flood ceiling. Before, it read `CEILING`, and the pacer woke on its 1-s idle tick for
+  the post's whole life.
+  - The pacer now drops a `NEVER` frame (`drainNever`), **once the board's duty is known** (`LoraAirtime.dutyKnown`): under
+    MeshCore's 0.1 % fallback a post or a DM the real band carries reads `NEVER`, and is skipped, not dropped, until the
+    duty lands. The core abandons a dropped frame, counts it under its own `loraAirNever` (never `loraRoomTooLong` or
+    `loraTooBig`, whose meanings stand) and logs `lora air never <label>`.
+  - **On Meshtastic this changes two corner cases:**
+    - A `FULL` frame larger than the whole allowance is dropped and counted, where before it waited out class shedding
+      under the idle tick.
+    - A `HALF` frame larger than half the allowance is `NEVER` rather than `CEILING`. The Meshtastic hooks ask
+      `admits(HALF)` before queuing, so it is never queued unless the allowance shrank after it was.
+- **The holder rule's cost.** `admitBest` lets only a `DIRECT` frame refused on the total hold what ranks behind it. That
+  rested on "every room post is one packet", which a two-part MeshCore post breaks.
+  - A two-part post refused on the total or its flood ceiling is skipped while a later one-part post goes past it. Room
+    order can invert.
+  - In a window that hands back a packet's worth at a time, the two-part post may age out at `FRESH_MS`.
+  - Accepted: a room post that held would let one long post freeze the room, and DMs still dequeue first.
+- **The brake ring** (`MeshcoreAirRing`) also restarts when the same poll's CORE uptime goes backwards, which the counters
+  alone can hide. Its reading is what 5a-2 hands `onBandReading`.
+- **The refusal classifier, by context.** The session reads the firmware's codes by command before they reach
+  `MeshcoreRefusal.classOf`:
+  - `TABLE_FULL` is no free packet, so `Busy`. On a DM it is also an over-long text, which the encoder never writes.
+  - `NOT_FOUND` on a DM is no contact, so `OWN_NO_KEY`.
+  - `NOT_FOUND` on a Public post's channel text is no free packet, so `Busy`.
+  - `NOT_FOUND` on a room post's channel data is a slot the board no longer has. It was `Rejected(NOT_FOUND)` and read as
+    `OWN_NO_KEY`, harmless today because only a DM acts on that class. It is now `SLOT_NOT_KNIT` (`OTHER`), and the slot is
+    read again.
+  - `ILLEGAL_ARG` is `TooLarge`; everything else is `OTHER`. MeshCore answers no `PACE`, `DEST_REFUSED` or
+    `PEER_LACKS_KEY`.
+- **The session must-fixes** (the Stage 3 carry-forward):
+  - A send its call deadline caught before the actor started it is `Busy`, so the core requeues it. A `Timeout` would read
+    as "likely aired". `Timeout` stays for a started attempt whose `SENT` never came.
+  - The deadline's claim and its answer are one step (`SessionOp`), and the actor's refusal claims in the same atomic step
+    and skips what the deadline took. Before, `serve`'s `finally` could answer `notReady` between the claim and the timeout,
+    and a check-then-act refusal still could; a two-thread stress test pins it.
+  - A write over `MAX_NOTIFY`, or one the GATT client refuses as over `mtu − 3` (`STATUS_TOO_LONG`, pinned equal to the
+    session's `WRITE_TOO_LONG`), refuses that one command: a send answers `TooLarge`, counted `commandsRefused`. It used to
+    end the session into the back-off loop. A test checks every encoder's longest output against `MAX_NOTIFY` and the
+    pinned command set.
+
+Owed to Stage 5a-2:
+
+- feed `MeshcoreTraits.dutyPolicy` and `RadioParams` into `LoraAirtime.onRadio` **before** the session reports Ready, so
+  the pacer never runs a Ready plane on the 0.1 % fallback. `LoraAirtime`'s duty is never cleared, so a later board
+  session reads the previous board's duty until its own `onRadio`: harmless while `onRadio` precedes Ready;
+- poll `MeshcoreDutyLaw` from the session's CORE and RADIO stats, persist its ring, and hold the pacer on its verdict;
+- hand `MeshcoreAirRing`'s reading to `onBandReading`;
+- book the acks and PATH returns by purpose;
+- construct the MeshCore plane with `MeshcoreTraits`;
+- add `floodCeilingMs` / `floodUsedMs` to the face (finding 11);
+- decide with Stage 6 how a Public post is admitted: on MeshCore `PUBLIC_POST` is priced as a flood but admitted under
+  `HALF`, so Public posts do not count toward the 0.15 flood share.
+

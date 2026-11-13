@@ -713,6 +713,7 @@ class MeshMetrics {
     private val loraDmReceived = AtomicLong()
     private val loraReprobed = AtomicLong()
     private val loraRoomTooLong = AtomicLong()
+    private val loraAirNever = AtomicLong()
     private val loraRetiredCtl = AtomicLong()
     private val loraPreIdRefused = AtomicLong()
     private val loraBoardHoldersFailed = AtomicLong()
@@ -1899,6 +1900,16 @@ class MeshMetrics {
     }
 
     /**
+     * A queued frame the pacer dropped because its own ceiling refuses it on an empty window, once the board's duty is
+     * known (`LoraAirtime.Refusal.NEVER`, ADR 2026-11.gsqu's Stage 5a-1 amendment): on a MeshCore 1 % band a two-part room
+     * post over the flood ceiling, on a 0.1 % or unknown band nearly anything. A duty drop, apart from `loraRoomTooLong`
+     * (a post needing two packets on Meshtastic) and `loraTooBig` (past the plane's three packets).
+     */
+    fun onLoraAirNever() {
+        loraAirNever.incrementAndGet()
+    }
+
+    /**
      * An older build's gossip OFFER (first byte `0x10`) heard and dropped (ADR 2026-10.rp3s): the bridge is gone,
      * and counting it apart keeps `UNKNOWN_TAG` meaning a tag nobody assigned. Climbing says an old build's board
      * is still in range.
@@ -2292,6 +2303,7 @@ class MeshMetrics {
             loraDmReceived = loraDmReceived.get(),
             loraReprobed = loraReprobed.get(),
             loraRoomTooLong = loraRoomTooLong.get(),
+            loraAirNever = loraAirNever.get(),
             loraRetiredCtl = loraRetiredCtl.get(),
             loraPreIdRefused = loraPreIdRefused.get(),
             loraBoardHoldersFailed = loraBoardHoldersFailed.get(),
@@ -2646,6 +2658,7 @@ class MeshMetrics {
             val loraDmReceived: Long = 0,
             val loraReprobed: Long = 0,
             val loraRoomTooLong: Long = 0,
+            val loraAirNever: Long = 0,
             val loraRetiredCtl: Long = 0,
             val loraPreIdRefused: Long = 0,
             val loraBoardHoldersFailed: Long = 0,

@@ -153,6 +153,22 @@ internal class LoraPacePolicy(
         return shed.toList().also { shed.clear() }
     }
 
+    // Frames [take] dropped because no window would ever admit them under their own ceiling ([LoraAirtime.Refusal.NEVER]),
+    // kept apart from [shed] so the transport counts them as what they are, not as a full queue's drop.
+    private val never = ArrayList<OutboundFrame>()
+
+    /**
+     * Takes the frames [take] dropped since the last call because their own ceiling refuses them on an empty window
+     * ([LoraAirtime.Refusal.NEVER]): the caller abandons and counts each. Left queued, such a frame would only age out
+     * through class shedding while every pacer wake asked about it again — on a 1 % band, a two-part MeshCore post under
+     * the flood ceiling, the 1-s idle tick for a whole window (ADR 2026-11.gsqu's Stage 5a-1 amendment).
+     */
+    @Synchronized
+    fun drainNever(): List<OutboundFrame> {
+        if (never.isEmpty()) return emptyList()
+        return never.toList().also { never.clear() }
+    }
+
     /**
      * The frame [take] handed out and the pacer has not yet heard the end of ([done] or [requeue]). Off the
      * queue while its first fragment is written, it must still count as queued to [hasQueued], or a resend
@@ -268,8 +284,8 @@ internal class LoraPacePolicy(
      *
      * A frame the airtime budget refuses is **skipped, not dropped** — it stays queued for a later window while a
      * frame that fits goes now. Without the skip, one refused Meshtastic-room post would block everything behind it
-     * until the window recovered. A frame that never gets a window eventually ages out through the ordinary class
-     * shedding instead. The one exception: nothing is skipped *past* a direct frame the window's total refused, or the
+     * until the window recovered. A frame no window would ever admit under its own ceiling is dropped instead
+     * ([drainNever]). The one exception: nothing is skipped *past* a direct frame the window's total refused, or the
      * smaller frames behind it would take the air it is waiting for, one packet's worth at a time, for as long as they
      * keep coming ([admitBest]). A room post the brake holds is skipped the same way and holds nothing.
      */
@@ -284,9 +300,9 @@ internal class LoraPacePolicy(
         val best = admitBest(now)
         if (best < 0) {
             // Nothing may go: defer to the soonest the answer changes by itself. Air returning, for frames the window
-            // refused — null there (an empty ledger, so the frame is simply bigger than the whole allowance) leaves the
-            // caller's own floor to pace the retry, and that frame ages out through class shedding. The reading going
-            // stale, for room posts the brake holds — a new reading ends it sooner, through [onBandReading].
+            // refused — never null with one refused, since an empty ledger refuses only a frame no window admits, and
+            // [admitBest] has dropped those ([drainNever]). The reading going stale, for room posts the brake holds — a
+            // new reading ends it sooner, through [onBandReading].
             airtimeBlockedUntil = if (lastAirtimeRefusals > 0) airtime.nextReleaseAt(now) ?: 0L else 0L
             brakeBlockedUntil = if (lastBraked > 0) bandReadAt + brakeFreshMs + 1 else 0L
             return null
@@ -312,7 +328,9 @@ internal class LoraPacePolicy(
     /**
      * The index of the frame to send, or -1 when nothing may go: the budget refuses everything not braked, the brake
      * holds the rest, or everything it would admit ranks behind a direct frame the window's total is holding. Records
-     * [lastAirtimeRefusals], [lastAirtimeHolds] and [lastBandBrakes] on the way past.
+     * [lastAirtimeRefusals], [lastAirtimeHolds] and [lastBandBrakes] on the way past, and first — once the board's duty is
+     * known ([LoraAirtime.dutyKnown]) — drops every frame no window would admit under its own ceiling
+     * ([LoraAirtime.Refusal.NEVER], handed out by [drainNever]); before then such a frame is skipped like any refused one.
      *
      * A refused frame is skipped rather than blocking the queue (ADR 044), but not past a direct frame the **total**
      * refused: air comes back as the window rolls, a packet's worth at a time, and a one-packet room post fits each
@@ -322,19 +340,33 @@ internal class LoraPacePolicy(
      * and only on [LoraAirtime.Refusal.TOTAL] (ADR 2026-10.ug4a): a Meshtastic-room post refused on its
      * [LoraAirtime.Refusal.CEILING] must never hold Knit traffic (the ceiling exists so the foreign room cannot crowd
      * it), one no window would admit must never be waited for, and a room post the brake holds is waiting for the
-     * band, not for air. Narrowing the holder to direct frames is safe because every room post is one packet: no room
-     * post can be starved by smaller ones the way a larger DM was.
+     * band, not for air.
+     *
+     * Narrowing the holder to direct frames rests on **every room post being one packet**, so no room post is starved by
+     * smaller ones the way a larger DM was. That holds on Meshtastic and not on MeshCore, whose own posts take up to two
+     * packets (ADR 2026-11.gsqu §4): there a two-part post the total or its flood ceiling refuses is skipped while a later
+     * one-part post that fits goes past it, so **room order can invert** and, in a window that keeps handing back one
+     * packet's worth at a time, the two-part post may wait until it ages out at `FRESH_MS`. Accepted as the cost of the
+     * flood ceiling (recorded in gsqu's Stage 5a-1 amendment): a room post that holds would let one long post freeze the
+     * room behind it, and DMs still dequeue first.
      */
     private fun admitBest(now: Long): Int {
         val braking = braked(now)
-        val brakedAt = BooleanArray(queue.size) { braking && queue[it].braked }
+        var brakedAt = BooleanArray(queue.size) { braking && queue[it].braked }
         // What is still owed, not the whole frame: a resumed frame's earlier fragments are already on the air and
         // already booked, so charging admission for them again would refuse a frame that fits. A braked frame is not
         // asked at all: it is not waiting for air, and its refusal must neither hold nor count as one.
-        val refusals =
+        var refusals =
             queue.mapIndexed { i, frame ->
                 if (brakedAt[i]) null else airtime.refusal(frame.ceiling, frame.admissionSizes(), now, frame.price(airtime))
             }
+        // Only once the board's duty is known: under the kind's fallback (MeshCore's 0.1 %) a post or a DM the real band
+        // carries reads NEVER, and is skipped until the duty lands rather than dropped.
+        if (airtime.dutyKnown() && refusals.any { it == LoraAirtime.Refusal.NEVER }) {
+            val keep = dropNever(refusals)
+            brakedAt = BooleanArray(keep.size) { brakedAt[keep[it]] }
+            refusals = keep.map { refusals[it] }
+        }
         val best = bestAdmitted(refusals, brakedAt)
         val holder = holderOf(refusals)
         // Everything admissible ranks behind the holder when the best of it does: it all waits with the holder.
@@ -368,6 +400,17 @@ internal class LoraPacePolicy(
         lastBandBrakes = bandHolds
         lastBraked = braked
         return if (blocked) -1 else best
+    }
+
+    /**
+     * Moves every frame [refusals] reads [LoraAirtime.Refusal.NEVER] off the queue into [never] — dropped, not skipped: no
+     * window ever admits it, so leaving it queued only re-asks it on every wake — and returns the indices of the rest, in
+     * the order they stood.
+     */
+    private fun dropNever(refusals: List<LoraAirtime.Refusal?>): List<Int> {
+        val keep = refusals.indices.filter { refusals[it] != LoraAirtime.Refusal.NEVER }
+        for (i in refusals.indices.reversed()) if (refusals[i] == LoraAirtime.Refusal.NEVER) never += queue.removeAt(i)
+        return keep
     }
 
     /**
@@ -734,12 +777,21 @@ internal class OutboundFrame(
      * that is not in ham mode (ADR 2026-10.x9fa's PKI amendment), channel-encrypted and signed by the firmware's rule on
      * one that is (ADR 2026-10.aajj).
      */
-    fun price(airtime: LoraAirtime): PacketPrice =
-        airtime.price(
-            slot = if (destination == Destination.Knit) AirSlot.KNIT else AirSlot.PRIMARY,
-            kind = if (direct != null || destination == Destination.Reply) PacketKind.DATA_UNICAST else PacketKind.BROADCAST,
-            portnum = if (destination == Destination.Knit) MeshtasticProto.PORT_PRIVATE_APP else MeshtasticProto.PORT_TEXT_MESSAGE,
-        )
+    fun price(airtime: LoraAirtime): PacketPrice = airtime.price(purpose)
+
+    /**
+     * What this frame is on the air, for the kind's price hook ([BoardTraits.price], ADR 2026-11.gsqu's Stage 5a-1
+     * amendment): on the bound slot a compact DM or a room post; on slot 0 a public post, or else a unicast (the
+     * auto-reply). The same (slot, packet class, port) the Meshtastic price always read, pinned by
+     * `LoraAirtimeKindParityTest`.
+     */
+    val purpose: AirPurpose
+        get() =
+            when {
+                destination == Destination.Knit -> if (direct != null) AirPurpose.DIRECT_DM else AirPurpose.ROOM_FLOOD
+                destination == Destination.Public && direct == null -> AirPurpose.PUBLIC_POST
+                else -> AirPurpose.REPLY
+            }
 
     /**
      * What the pacer admits this frame against, at [price]: what is still owed, and for a compact DM that one packet

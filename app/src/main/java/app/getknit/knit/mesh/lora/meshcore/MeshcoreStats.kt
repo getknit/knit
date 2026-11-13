@@ -93,9 +93,12 @@ internal class MeshcoreHeadroom(
 /**
  * The band around the board from RADIO stats (ADR 2026-11.gsqu §6): channel utilisation is Δ(`rx_air` + `tx_air`) over a
  * sample ring of at least [spanMs], and our own airtime Δ`tx_air`. The counters are whole seconds, so a 1 s poll reads
- * 0, 100 or 200 %; the 60-s ring keeps the error within ±3.3 points at the brake's 40 %. A counter or clock that goes
- * backwards (a reboot) restarts the ring. `rx_air` is the firmware's estimate over the packets it parsed — no noise, no CRC
- * errors — and a board with client repeat on inflates both figures (the ADR's cost section).
+ * 0, 100 or 200 %; the 60-s ring keeps the error within ±3.3 points at the brake's 40 %. A counter, the clock or the
+ * board's uptime going backwards (a reboot) restarts the ring. `rx_air` is the firmware's estimate over the packets it
+ * parsed — no noise, no CRC errors — and a board with client repeat on inflates both figures (the ADR's cost section).
+ *
+ * A [Reading]'s [Reading.channelUtilPercent] is what Stage 5a-2 hands `LoraPacePolicy.onBandReading` (the brake at its
+ * `BUSY_BAND_PERCENT`, 40 %, compared `>=`), timed on the poll that produced it.
  *
  * Pure, and every entry point `@Synchronized`.
  */
@@ -106,13 +109,15 @@ internal class MeshcoreAirRing(
         val atMs: Long,
         val txSecs: Long,
         val rxSecs: Long,
+        val uptimeSecs: Long?,
     ) {
-        /** Whether a reading at [nowMs] went backwards from this one, in time or in either counter: a reboot. */
+        /** Whether a reading at [nowMs] went backwards from this one, in time, in either counter or in uptime: a reboot. */
         fun after(
             nowMs: Long,
             tx: Long,
             rx: Long,
-        ): Boolean = nowMs <= atMs || tx < txSecs || rx < rxSecs
+            uptime: Long?,
+        ): Boolean = nowMs <= atMs || tx < txSecs || rx < rxSecs || (uptime != null && uptimeSecs != null && uptime < uptimeSecs)
     }
 
     /** What one reading yields: both percentages over the ring. */
@@ -123,16 +128,20 @@ internal class MeshcoreAirRing(
 
     private val ring = ArrayDeque<Sample>()
 
-    /** One RADIO stats sample at [nowMs]; a reading once the ring spans [spanMs], else null. */
+    /**
+     * One RADIO stats sample at [nowMs], with the CORE stats' [uptimeSecs] of the same poll when it was read; a reading
+     * once the ring spans [spanMs], else null.
+     */
     @Synchronized
     fun onSample(
         nowMs: Long,
         txAirSecs: Long,
         rxAirSecs: Long,
+        uptimeSecs: Long? = null,
     ): Reading? {
         val last = ring.lastOrNull()
-        if (last != null && last.after(nowMs, txAirSecs, rxAirSecs)) ring.clear()
-        ring.addLast(Sample(nowMs, txAirSecs, rxAirSecs))
+        if (last != null && last.after(nowMs, txAirSecs, rxAirSecs, uptimeSecs)) ring.clear()
+        ring.addLast(Sample(nowMs, txAirSecs, rxAirSecs, uptimeSecs))
         // Keep exactly one sample at or past the span's start: it is the baseline the reading is taken over.
         while (ring.size > 2 && ring[1].atMs <= nowMs - spanMs) ring.removeFirst()
         val base = ring.first()

@@ -245,7 +245,23 @@ internal sealed interface ContactRead {
 
 /**
  * The refusals a MeshCore send answers with ([SendResult.Rejected.res]) beside the firmware's own `ERR` codes, and what
- * each means to the plane. Stage 5's `MeshcoreTraits.refusalOf` reads [classOf].
+ * each means to the plane. [MeshcoreTraits.refusalOf] reads [classOf].
+ *
+ * **The firmware's codes are read by context in the session, before they reach here** (ADR 2026-11.gsqu §3 and §4,
+ * `MyMesh.cpp:1132-1236` at `companion-v1.18.0`), so the one code a context changes never arrives ambiguous:
+ * - `TABLE_FULL` is no free packet on every send (`composeMsgPacket` / `sendGroupData` returned nothing) — and on a DM
+ *   also a text over `MAX_TEXT_LEN`, which the encoder never writes (it refuses past 157 B) — so it is
+ *   [SendResult.Busy], never a refusal;
+ * - `NOT_FOUND` on a DM is no contact for the prefix: [RefusalClass.OWN_NO_KEY], and the session unverifies the pin;
+ * - `NOT_FOUND` on a channel **text** (the Public post) is also no free packet (`sendGroupMessage` failing answers it):
+ *   [SendResult.Busy];
+ * - `NOT_FOUND` on channel **data** (a room post) is a slot the board no longer has: [SLOT_NOT_KNIT], the slot read
+ *   again before the next post;
+ * - `ILLEGAL_ARG` is a payload past the board's limit or the reserved data type: [SendResult.TooLarge];
+ * - `UNSUPPORTED_CMD`, `BAD_STATE`, `FILE_IO` and every own code but the two below: [RefusalClass.OTHER].
+ *
+ * The firmware refuses nothing for duty (no [RefusalClass.PACE]) and reports no destination's refusal (no
+ * [RefusalClass.DEST_REFUSED] or [RefusalClass.PEER_LACKS_KEY]): a DM a far board drops is silence.
  */
 internal object MeshcoreRefusal {
     /** A DM to a board whose key no contact plumbing taught the session: nothing to address it by. */
@@ -333,4 +349,7 @@ internal class MeshcoreCounters {
 
     /** A drained message pushed out of the full packets backlog before its collector read it. */
     val packetsDropped = AtomicLong()
+
+    /** A command the link would not carry in one write, refused alone rather than ending the session. */
+    val commandsRefused = AtomicLong()
 }
