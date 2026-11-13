@@ -31,8 +31,8 @@ document:
 - Knit's message chime now plays on phones that had Knit before 2.11.0, and mentions and the "open to chat"
   alert get chimes of their own. Your notification settings carry over, except hiding on the lock screen and
   Priority conversations, which you'll need to set again.
-- The chat list shows a thin scroll bar at the side while you scroll, so you can tell how far down a long list
-  you are. It fades a moment after you stop.
+- The chat list and your chats show a thin scroll bar at the side while you scroll, so you can tell where you
+  are in a long list or conversation. It fades a moment after you stop.
 
 ### Changed
 

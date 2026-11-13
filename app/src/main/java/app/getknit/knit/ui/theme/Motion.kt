@@ -65,8 +65,11 @@ val LocalReduceMotion = staticCompositionLocalOf { false }
 object KnitMotion {
     /** Something moves or changes size. */
     @Composable
-    fun <T> spatial(): FiniteAnimationSpec<T> =
-        if (LocalReduceMotion.current) snap() else spring(dampingRatio = SPATIAL_DAMPING, stiffness = SPATIAL_DEFAULT_STIFFNESS)
+    fun <T> spatial(): FiniteAnimationSpec<T> = spatialFor(LocalReduceMotion.current)
+
+    /** [spatial] for a caller outside composition; see [effectsFor]. */
+    fun <T> spatialFor(reduceMotion: Boolean): FiniteAnimationSpec<T> =
+        if (reduceMotion) snap() else spring(dampingRatio = SPATIAL_DAMPING, stiffness = SPATIAL_DEFAULT_STIFFNESS)
 
     /** Something small moves — a glyph, a badge — where the default spec would read as sluggish. */
     @Composable

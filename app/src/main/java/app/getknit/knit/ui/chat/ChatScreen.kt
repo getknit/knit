@@ -271,6 +271,7 @@ import app.getknit.knit.ui.components.noAutofillMenu
 import app.getknit.knit.ui.components.peerBadge
 import app.getknit.knit.ui.components.skeletonBlockColor
 import app.getknit.knit.ui.components.skeletonPulseAlpha
+import app.getknit.knit.ui.components.verticalScrollIndicator
 import app.getknit.knit.ui.icons.KnitIcons
 import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.launchOrSay
@@ -1779,7 +1780,7 @@ internal fun ChatScreenContent(
                         Box(modifier = Modifier.fillMaxSize()) {
                             LazyColumn(
                                 state = listState,
-                                modifier = Modifier.fillMaxSize().testTag("chat_thread"),
+                                modifier = Modifier.fillMaxSize().testTag("chat_thread").verticalScrollIndicator(listState),
                                 contentPadding = PaddingValues(12.dp),
                                 // Bottom-anchored so the thread opens on the newest message with no scroll; the data is
                                 // reversed to match, making index 0 the newest row, drawn at the bottom. Arrangement.Bottom
