@@ -75,8 +75,14 @@ object KnitMotion {
 
     /** Something fades or recolours in place. */
     @Composable
-    fun <T> effects(): FiniteAnimationSpec<T> =
-        if (LocalReduceMotion.current) snap() else spring(dampingRatio = EFFECTS_DAMPING, stiffness = EFFECTS_DEFAULT_STIFFNESS)
+    fun <T> effects(): FiniteAnimationSpec<T> = effectsFor(LocalReduceMotion.current)
+
+    /**
+     * [effects] for a caller outside composition — a `Modifier.Node` animating on its own coroutine — which
+     * reads [LocalReduceMotion] itself (`currentValueOf`) and passes it in.
+     */
+    fun <T> effectsFor(reduceMotion: Boolean): FiniteAnimationSpec<T> =
+        if (reduceMotion) snap() else spring(dampingRatio = EFFECTS_DAMPING, stiffness = EFFECTS_DEFAULT_STIFFNESS)
 
     /** A fade that must not be noticed — icon swaps, press states. */
     @Composable

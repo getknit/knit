@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -106,6 +107,7 @@ import app.getknit.knit.ui.components.RoomAvatar
 import app.getknit.knit.ui.components.peerBadge
 import app.getknit.knit.ui.components.skeletonBlockColor
 import app.getknit.knit.ui.components.skeletonPulseAlpha
+import app.getknit.knit.ui.components.verticalScrollIndicator
 import app.getknit.knit.ui.icons.KnitIcons
 import app.getknit.knit.ui.invite.ShareKnitDialog
 import app.getknit.knit.ui.invite.ShareStorageException
@@ -450,8 +452,11 @@ internal fun ChatListScreenContent(
                 if (loading) {
                     ChatListSkeleton(modifier = Modifier.fillMaxSize())
                 } else {
+                    // Where LazyColumn's own default would have remembered it, hoisted only so the thumb can read it.
+                    val listState = rememberLazyListState()
                     LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
+                        state = listState,
+                        modifier = Modifier.fillMaxSize().verticalScrollIndicator(listState),
                         contentPadding = PaddingValues(vertical = 4.dp),
                     ) {
                         // At the top, where a long list cannot bury it; never beside the getting-started card,
