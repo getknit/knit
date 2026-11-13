@@ -1245,13 +1245,16 @@ internal class LoraMeshTransport(
     /**
      * Gives back the airings an answered send was booked for and did not need: all but the first and the retries that
      * had flown by [now], counted at the shortest gap so the refund errs small. Of the airings the frame carried
-     * ([DirectSend.airings]), the ones its send booked.
+     * ([DirectSend.airings]), the ones its send booked. A link that counted its own airings says so ([reported], ADR
+     * 2026-11.gsqu §2: a MeshCore session runs its attempts itself), and that count is the one refunded against, never
+     * more than were booked.
      */
     private fun refundUnflown(
         flight: LoraDirectPolicy.Flight,
         now: Long,
+        reported: Int? = null,
     ) {
-        val flown = 1 + traits.retriesBefore(now - flight.sentAt, flight.retransmitMs)
+        val flown = reported?.coerceIn(0, flight.send.airings) ?: (1 + traits.retriesBefore(now - flight.sentAt, flight.retransmitMs))
         val back = pace.airtime.refund(flight.sentAt, flight.airMs, flight.send.airings - flown)
         if (back > 0) {
             pace.onAirReturned()
@@ -1387,7 +1390,7 @@ internal class LoraMeshTransport(
         val peer = send.peerId
         when (outcome) {
             is PacketOutcome.Acked -> {
-                refundUnflown(flight, now)
+                refundUnflown(flight, now, outcome.flown)
                 metrics.onLoraDirectAcked()
                 direct.onAcked(peer, now)
                 // Their board took a PKI packet under the key ours holds: should ours lose it again, it may be taught once more.
@@ -1411,7 +1414,9 @@ internal class LoraMeshTransport(
             }
 
             is PacketOutcome.Unreachable, is PacketOutcome.NoOutcome -> {
-                // Every airing stays booked, as it was at send: the firmware flew them all, or may have.
+                // Every airing stays booked, as it was at send: the firmware flew them all, or may have. Only a link that
+                // counted them (`flown`) gets the unflown ones back; the deadline's own no-outcome never carries a count.
+                outcome.flown?.let { refundUnflown(flight, now, it) }
                 if (outcome is PacketOutcome.Unreachable) metrics.onLoraDirectUnreachable() else metrics.onLoraDirectNoOutcome()
                 direct.onUnreachable(peer, now)
                 reprobe.onFailed(peer, now)

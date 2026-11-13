@@ -114,7 +114,8 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   2.8.2 only under `BALANCED`/`STRICT` and never on AEAD, an unknown policy or version reads as signing; a data unicast
   — a compact DM, the auto-reply — is a PKI unicast, unsigned and +12 B, unless the board is in ham mode. A compact DM
   is admitted against every airing the firmware may give it (`LoraDirectPolicy.AIRINGS`), every airing booked at send
-  and the unflown ones refunded on its ack (ADR 2026-10.x9fa).
+  and the unflown ones refunded on its ack (ADR 2026-10.x9fa) — counted from the elapsed time, or from
+  `PacketOutcome.flown` when the link reports it (MeshCore, ADR 2026-11.gsqu §2), which a give-up's refund reads too.
   The ledger is not persisted and nothing seeds it (ADR 2026-10.ug4a): a restart starts the window empty.
   <!-- doc-lint: allow AirBucket — the buckets ADR 2026-10.ug4a removed, named as history -->
 - **When touching the shared-band brake — `LoraPacePolicy.onBandReading` / `braked` / `forgetBand` /
@@ -294,6 +295,24 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   set plugs in. Every transmission carries a byte that varies per send, because MeshCore drops byte-identical packets
   network-wide. The Meshtastic plane's ADRs above do not carry over: no signing cliff, no `hop_limit`, no
   `BoardQuiet`.
+
+- **Before touching the MeshCore client — `MeshcoreSession`, `MeshcoreProto` (`McFrame`, `McReject`, `ContactRecord`,
+  `expectedAck`, `ENCODED_COMMANDS`, `KNIT_DATA_TYPE`, `MIN_FIRMWARE_VERSION_CODE`), `Cobs`, `MeshcoreDialer` /
+  `NusChannel` / `NusEvent` / `NusDialResult`, `MeshcoreAckTable`, `MeshcorePins`, `MeshcoreHeadroom`, `MeshcoreAirRing`,
+  `MeshcoreDetail`, `MeshcorePacket`, `MeshcoreAir`, `MeshcoreSetupRecord` / `MeshcoreSetupResult` /
+  `MeshcoreRestoreResult`, `ContactWrite` / `ContactRead`, `MeshcoreRefusal`, `MeshcoreNames`, `MeshcoreCounters`,
+  `MeshcoreLinkState`, or `PacketOutcome.flown`:** READ ADR 2026-11.gsqu (§2–§6 and its Stage 3 amendment, which carries
+  the 2026-11-13 design passes' binding rules), then "The MeshCore client" in `lora-bridge.md`. The board answers every
+  connected client: drained data (7, 8, 16, 17, 27) is never matched to a request and never discarded; `SENT` is ours only
+  by the ack code the phone computes, `SEND_CONFIRMED` only by our table, a bare `OK` / `ERR` is followed by a barrier on
+  a timeout and every relied-on write is read back. A DM is written only after a zero-hop pin read back in this
+  connection; its attempts 0..2 keep the timestamp and change `attempt`; its outcome carries the exact count that flew
+  (`flown`), which the core's refund reads instead of the elapsed-time guess (Meshtastic leaves it null). The ack table is
+  the board's circular eight, filled by every client. Teaching writes only into a confirmed free slot; setup reads first,
+  writes `[38, 1]`, auto-add off, `Knit abcd` and the channel, each read back; restore touches only what still reads as
+  Knit's. The encoder's command set is pinned (`MeshcoreProtoTest`): never a key export or import, a PIN, the radio, a raw
+  packet or the CLI. Room posts ride `DATA_TYPE_DEV` until registered, and a release build may not ship on it. Pinned
+  against the real firmware's frames (`src/test/resources/meshcore/`) and, through `MeshcoreFakeVsSimTest`, the fake.
 
 ## Adding an entry
 

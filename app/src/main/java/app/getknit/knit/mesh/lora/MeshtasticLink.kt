@@ -486,9 +486,17 @@ internal sealed interface SendResult {
 /**
  * What became of a packet after [MeshtasticLink.send] returned, by its handle [id] (ADR 2026-10.x9fa). The board-neutral
  * minimum a direct DM needs, so a MeshCore board can report the same four answers.
+ *
+ * [flown] is how many airings of a direct send actually left the board, when the link knows it (ADR 2026-11.gsqu §2): a
+ * MeshCore session runs its own attempts and reports their exact count, so the core refunds the rest. Null — every
+ * Meshtastic outcome, and every outcome the core makes itself — means the link does not know, and the core infers the
+ * count from the elapsed time and the firmware's retransmit gap as it always did.
  */
 internal sealed interface PacketOutcome {
     val id: UInt
+
+    /** The airings that flew, when the link counted them; null to infer them from the elapsed time. */
+    val flown: Int? get() = null
 
     /**
      * An acknowledgement for a direct send. [byDestination] true is the destination's own board answering: the packet
@@ -503,11 +511,13 @@ internal sealed interface PacketOutcome {
         override val id: UInt,
         val byDestination: Boolean,
         val proof: AckProof = AckProof.ABSENT,
+        override val flown: Int? = null,
     ) : PacketOutcome
 
     /** The firmware retried a direct send and gave up (`MAX_RETRANSMIT`, `NO_RESPONSE`): nothing answered. */
     data class Unreachable(
         override val id: UInt,
+        override val flown: Int? = null,
     ) : PacketOutcome
 
     /**
@@ -523,6 +533,7 @@ internal sealed interface PacketOutcome {
     /** The link stopped waiting on a direct send with no answer at all. The transport keeps a deadline of its own too. */
     data class NoOutcome(
         override val id: UInt,
+        override val flown: Int? = null,
     ) : PacketOutcome
 }
 

@@ -1208,6 +1208,54 @@ class LoraDirectTransportTest {
         }
 
     @Test
+    fun anAckThatCountsItsAiringsRefundsExactlyTheOnesThatDidNotFly() =
+        runTest {
+            // ADR 2026-11.gsqu §2: a link that runs its own attempts (MeshCore) reports how many flew; the refund reads that
+            // count, never the elapsed-time guess, whatever time has passed.
+            val air = FakeMeshtasticAir().apply { silent = { _, _ -> true } }
+            val (a, _) = pair(air)
+            a.dm("bob", "f1")
+            settle(1_000)
+            val size =
+                a.link.sent
+                    .single()
+                    .size
+            a.link.emitOutcome(PacketOutcome.Acked(a.link.sentIds.single(), byDestination = true, flown = 2))
+            settle(1_000)
+            assertEquals(
+                2 * priced(size),
+                a.pace.airtime
+                    .snapshot(testScheduler.currentTime)
+                    .usedMs,
+            )
+            assertEquals(1, a.transport.status.value.direct.reachable)
+        }
+
+    @Test
+    fun aGiveUpThatCountsItsAiringsRefundsTheUnflownAndIsStillAGiveUp() =
+        runTest {
+            val air = FakeMeshtasticAir().apply { silent = { _, _ -> true } }
+            val (a, _) = pair(air)
+            a.dm("bob", "f1")
+            settle(1_000)
+            val size =
+                a.link.sent
+                    .single()
+                    .size
+            val handle = a.link.sentIds.single()
+            a.link.emitOutcome(PacketOutcome.Unreachable(handle, flown = 1))
+            settle(1_000)
+            assertEquals(
+                "a flood cancelled the rest: one airing flew, the others come back",
+                priced(size),
+                a.pace.airtime
+                    .snapshot(testScheduler.currentTime)
+                    .usedMs,
+            )
+            assertEquals("still a give-up", 1L, a.lora.loraDirectUnreachable)
+        }
+
+    @Test
     fun aSendInFlightHoldsItsRetriesAgainstTheWindowUntilItsAckRefundsThem() =
         runTest {
             val air = FakeMeshtasticAir()

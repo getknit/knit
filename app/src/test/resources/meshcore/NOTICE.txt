@@ -1,0 +1,28 @@
+Golden frames for MeshcoreProtoTest and MeshcoreFakeVsSimTest.
+
+Each *.frames.jsonl line is one companion-protocol frame, app to radio ("tx") or radio to app ("rx"), as the
+unmodified MeshCore companion firmware at tag companion-v1.18.0 produced it, driven frame by frame in a simulator on
+2026-11-13 (~/source/meshcore-spike/FINDINGS.md, Q11-Q15; run r1). Copied unedited from that run's frames files. The
+keys in them are the simulator's throwaway identities.
+
+The frame bytes are the output of MeshCore, which is MIT-licensed:
+
+  MIT License
+
+  Copyright (c) 2025 Scott Powell / rippleradios.com
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+  documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
+  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit
+  persons to whom the Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
+  Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+  WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+  COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Nothing from the simulator itself (which carries no licence) is copied here: the airings its events files record are
+written into MeshcoreFakeVsSimTest as expectations, each with the file it was read from.

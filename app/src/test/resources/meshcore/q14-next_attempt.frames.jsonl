@@ -1,0 +1,34 @@
+{"node": "alice", "dir": "tx", "ms": 100, "hex": "1603", "code": 22}
+{"node": "alice", "dir": "rx", "ms": 104454, "hex": "0d0e320400000000323032342d30312d3031000053696d756c61746f720000000000000000000000000000000000000000000000000000000000000073696d2d76312e30205b66775f64656661756c000000", "code": 13, "len": 82}
+{"node": "alice", "dir": "tx", "ms": 120, "hex": "01000000000000006b6e69742d62656e6368", "code": 1}
+{"node": "alice", "dir": "rx", "ms": 104474, "hex": "050114143f165555ee6c4a7bbcacdaaec4877355cc4c7d487dda4259122f2aff52f539c900000000000000000000000038f60d0090d003000a05616c696365", "code": 5, "len": 63, "name": "SELF_INFO", "pub": "3f165555ee6c"}
+{"node": "alice", "dir": "tx", "ms": 140, "hex": "2601", "code": 38}
+{"node": "alice", "dir": "rx", "ms": 104494, "hex": "00", "code": 0, "len": 1, "name": "OK"}
+{"node": "bob", "dir": "tx", "ms": 160, "hex": "1603", "code": 22}
+{"node": "bob", "dir": "rx", "ms": 2633, "hex": "0d0e320400000000323032342d30312d3031000053696d756c61746f720000000000000000000000000000000000000000000000000000000000000073696d2d76312e30205b66775f64656661756c000000", "code": 13, "len": 82}
+{"node": "bob", "dir": "tx", "ms": 180, "hex": "01000000000000006b6e69742d62656e6368", "code": 1}
+{"node": "bob", "dir": "rx", "ms": 2653, "hex": "0501141430b77518520eb8de600297b2a2306ca7a1e534fc13a58a87f7f8f1c1cc41ee8d00000000000000000000000038f60d0090d003000a05626f62", "code": 5, "len": 61, "name": "SELF_INFO", "pub": "30b77518520e"}
+{"node": "bob", "dir": "tx", "ms": 200, "hex": "2601", "code": 38}
+{"node": "bob", "dir": "rx", "ms": 2673, "hex": "00", "code": 0, "len": 1, "name": "OK"}
+{"node": "alice", "dir": "tx", "ms": 3220, "hex": "0930b77518520eb8de600297b2a2306ca7a1e534fc13a58a87f7f8f1c1cc41ee8d010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004b6e69742062626262000000000000000000000000000000000000000000000000000000", "code": 9}
+{"node": "alice", "dir": "rx", "ms": 107574, "hex": "00", "code": 0, "len": 1, "name": "OK"}
+{"node": "bob", "dir": "tx", "ms": 3240, "hex": "093f165555ee6c4a7bbcacdaaec4877355cc4c7d487dda4259122f2aff52f539c9010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004b6e69742061616161000000000000000000000000000000000000000000000000000000", "code": 9}
+{"node": "bob", "dir": "rx", "ms": 5713, "hex": "00", "code": 0, "len": 1, "name": "OK"}
+{"node": "alice", "dir": "tx", "ms": 3260, "hex": "020000103db16a30b77518520e72657472792070726f6265", "code": 2}
+{"node": "alice", "dir": "rx", "ms": 107614, "hex": "0600113bf77930060000", "code": 6, "len": 10, "name": "SENT", "flood": 0, "expected_ack": "113bf779", "est_timeout_ms": 1584}
+{"node": "alice", "dir": "rx", "ms": 108032, "hex": "8820b00e00113bf7798f75", "code": 136, "len": 11}
+{"node": "alice", "dir": "rx", "ms": 108032, "hex": "82113bf779a2010000", "code": 130, "len": 9, "name": "SEND_CONFIRMED", "ack": "113bf779", "trip_ms": 418}
+{"node": "bob", "dir": "rx", "ms": 5863, "hex": "8820b00a00303f1b9371145763995c2d75a26c62f0e2c85778", "code": 136, "len": 25}
+{"node": "bob", "dir": "rx", "ms": 5863, "hex": "83", "code": 131, "len": 1, "name": "MSG_WAITING"}
+{"node": "alice", "dir": "tx", "ms": 7280, "hex": "020001103db16a30b77518520e72657472792070726f6265", "code": 2}
+{"node": "alice", "dir": "rx", "ms": 111634, "hex": "060010abae9230060000", "code": 6, "len": 10, "name": "SENT", "flood": 0, "expected_ack": "10abae92", "est_timeout_ms": 1584}
+{"node": "alice", "dir": "rx", "ms": 112052, "hex": "8820b00e0010abae928ff8", "code": 136, "len": 11}
+{"node": "alice", "dir": "rx", "ms": 112052, "hex": "8210abae92a2010000", "code": 130, "len": 9, "name": "SEND_CONFIRMED", "ack": "10abae92", "trip_ms": 418}
+{"node": "bob", "dir": "rx", "ms": 9883, "hex": "8820b00a00303fb495618eb701a3ff1dc35001623b50200560", "code": 136, "len": 25}
+{"node": "bob", "dir": "rx", "ms": 9883, "hex": "83", "code": 131, "len": 1, "name": "MSG_WAITING"}
+{"node": "bob", "dir": "tx", "ms": 13300, "hex": "0a", "code": 10}
+{"node": "bob", "dir": "rx", "ms": 15773, "hex": "102000003f165555ee6cff00103db16a72657472792070726f6265", "code": 16, "len": 27, "name": "CONTACT_MSG_RECV_V3", "snr": 8.0, "prefix": "3f165555ee6c", "path_len": 255, "txt_type": 0, "ts": 1790000400, "text_len": 11}
+{"node": "bob", "dir": "tx", "ms": 13320, "hex": "0a", "code": 10}
+{"node": "bob", "dir": "rx", "ms": 15793, "hex": "102000003f165555ee6cff00103db16a72657472792070726f6265", "code": 16, "len": 27, "name": "CONTACT_MSG_RECV_V3", "snr": 8.0, "prefix": "3f165555ee6c", "path_len": 255, "txt_type": 0, "ts": 1790000400, "text_len": 11}
+{"node": "bob", "dir": "tx", "ms": 13340, "hex": "0a", "code": 10}
+{"node": "bob", "dir": "rx", "ms": 15813, "hex": "0a", "code": 10, "len": 1, "name": "NO_MORE"}

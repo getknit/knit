@@ -343,3 +343,68 @@ release-visible key, line, row and bridge key is what it was.
   is counts and own-board state only: no contact key or name, no snapshot, no board key.
 - **Dropped from the plan.** A per-dialer `BleConnectArbiter` tag: `MeshtasticGatt` already holds its own, and the
   MeshCore dialer picks its own in Stage 3.
+
+## Amendment 2026-11-13 — Stage 3a/3b: the MeshCore client, under the design passes' binding rules (draft)
+
+Stage 3a (`MeshcoreProto`, `Cobs`) and 3b (`MeshcoreSession` and its policies) are built, JVM-tested and reachable from
+nothing until Stage 5. The lora-, bluetooth- and security-reviewer design passes of 2026-11-13 read the firmware and set
+binding rules on the brief; where they move what this ADR said, this amendment records it. The fact under all of them:
+**the board answers every connected client at once** (`MultiSerialInterface`), and the user's own MeshCore app may
+share it.
+
+- **Matching.** Drained data (codes 7, 8, 16, 17, 27) is never matched to a request and never discarded: the firmware
+  pops a message before it replies, so a reply to another client's `SYNC`, or one that lands after our wait, is the only
+  copy. `SENT` is ours only when its `expected_ack` is the code the phone computes (`BaseChatMesh.cpp:462`, checked
+  against all eleven `SENT`s of bench Q11–Q14); `SEND_CONFIRMED` only for a code in our model of the board's table; a
+  bare `OK` / `ERR` gets a barrier (`GET_DEVICE_TIME` → `CURR_TIME`) after a timeout, and every write relied on is read
+  back.
+- **§2, outcomes.** An outcome carries the exact count of airings that flew: `PacketOutcome.flown`, null on Meshtastic
+  (unchanged), read by the core's refund on an ack and on a give-up. The core's own deadline still ends a send with no
+  count, every airing kept booked. The ack table is modelled as the firmware's circular eight, advanced by every client's
+  sends: `Busy` while eight codes are unconfirmed inside their window, a confirmation after `Unreachable` a late `Acked`.
+- **§2, our board's answer.** To a direct DM it is `1 + multi_acks` direct acks; to a flooded one it is one flooded PATH
+  return, which the session reports (`MeshcoreAir.PathReturn`) for the core to book as a flood. A DM replayed from the
+  offline queue was answered while we were away and is booked by nobody.
+- **§3, the pin.** A DM is written only after a pin read back in this connection; a pin that fails is a refusal
+  (`RefusalClass.OWN_NO_KEY`) with nothing written. A `SENT` with the flood flag cancels the attempts not yet sent until a
+  fresh pin reads back. Re-pins are targeted: a `0x81` / `0x8F` re-pins only the key it names, only if Knit taught it, at
+  most once a minute; the full re-assert runs only at Ready, ranked.
+- **§3 and §7, contacts and setup.** Teaching never evicts: a key is added only into a free slot confirmed by count
+  (`GET_CONTACTS` past every `lastmod`, so the board lists none — the one command beyond the brief's list, a read), and
+  the setup also clears `AUTO_ADD_OVERWRITE_OLDEST`, recording and restoring it. Restore re-reads before it acts and
+  leaves anything that is no longer Knit's value.
+- **§4, the data type.** `DATA_TYPE_DEV` (`0xFFFF`, `TxtDataHelpers.h:12`), the firmware's own development value, not
+  `0xFF4B`, until MeshCore's `number_allocations.md` lists Knit's; a test keeps a release build from defaulting the plane
+  on while it is.
+- **The floor.** A board below `FIRMWARE_VER_CODE` 11 (companion v1.15.0, the first tag with commands 54, 62 and 64) never
+  reads Ready.
+- **What leaves the session.** Counts and own-board facts only: no secret, foreign slot name, contact or advert name,
+  position, full key or DM text in a log or an exception; foreign slots kept as (index, empty, is-Knit); `DEVICE_INFO`'s
+  BLE PIN never read.
+- **The fake against the firmware.** `FakeMeshcoreAir` replays the simulator runs of Q11–Q15 command for command and
+  matches the firmware's answers and airings node by node (`MeshcoreFakeVsSimTest`).
+
+Left open for Stage 5: `BoardLink.provision(Restore)` cannot carry a MeshCore record (`ProvisionSpec.previous` is
+Meshtastic's), so the hooks call `MeshcoreSession.restore(record)` directly. The core's deadline for a MeshCore DM
+(`MeshcoreTraits.deadlineMs`) is a backstop the session always beats, never the clock that ends a flight: at least
+3 × (the flood `est_timeout` at the board's preset + 1 s) + 2 × the session's 30-s hold limit + 3 × a pin at its slowest
+(`MeshcoreSession.PIN_WORST_MS`, 26 s: a read, a flash write and a read-back, each able to time out into a 5-s barrier),
+and never below `MeshcoreSession.MAX_FLIGHT_MS`, the session's own cap on a flight's life, past which it
+ends the flight `Unreachable` itself. The session reports only the flood surcharge of a `DirectFlooded` attempt for
+booking: the airing itself was booked at send.
+
+Review of Stage 3a/3b (2026-11-13), applied: an `ERR` beside a content-matched answer is provisional until a barrier
+(our success before its `CURR_TIME` makes it another client's); a room or Public post's bare answer is judged with every
+`OK` / `ERR` seen before a barrier, ambiguity reading as a timeout and never a refusal; a stray `TABLE_FULL` holds the
+headroom, and a hold lifts on an empty queue or after two polls; a slot reading never outlives its connection; a drain
+round is capped at 16 replies and the inbox is served first, with a deadline on every call; drained messages are held
+until collected; the encoder's allowlist is asked again at the one write; COBS decodes canonical input only.
+
+Second review, applied: a call's deadline bounds only the wait for the actor to start it — a started op always returns
+its own result (a send's handle is taken before it is posted, so even a timeout answers under the id its outcomes carry;
+a setup keeps its record); the drained-packet backlog is 1,024, oldest dropped and counted, and the core subscribes before
+`start`; every `ERR` up to a content-matched request's barrier is judged together, more than one with no success being
+ambiguous (no answer, never a refusal). **A known limit:** a barrier ends at the first `CURR_TIME`, and another client's
+`GET_DEVICE_TIME` answer cannot be told from ours — it carries only the board's clock. One that lands first ends our
+barrier early: a late answer of ours is then a stray, counted and dropped, and the request reads as unanswered (a
+timeout, never a refusal).

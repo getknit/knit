@@ -1,0 +1,57 @@
+{"node": "alice", "dir": "tx", "ms": 100, "hex": "1603", "code": 22}
+{"node": "alice", "dir": "rx", "ms": 104454, "hex": "0d0e320400000000323032342d30312d3031000053696d756c61746f720000000000000000000000000000000000000000000000000000000000000073696d2d76312e30205b66775f64656661756c000000", "code": 13, "len": 82}
+{"node": "alice", "dir": "tx", "ms": 120, "hex": "01000000000000006b6e69742d62656e6368", "code": 1}
+{"node": "alice", "dir": "rx", "ms": 104474, "hex": "050114143f165555ee6c4a7bbcacdaaec4877355cc4c7d487dda4259122f2aff52f539c900000000000000000000000038f60d0090d003000a05616c696365", "code": 5, "len": 63, "name": "SELF_INFO", "pub": "3f165555ee6c"}
+{"node": "alice", "dir": "tx", "ms": 140, "hex": "2601", "code": 38}
+{"node": "alice", "dir": "rx", "ms": 104494, "hex": "00", "code": 0, "len": 1, "name": "OK"}
+{"node": "bob", "dir": "tx", "ms": 160, "hex": "1603", "code": 22}
+{"node": "bob", "dir": "rx", "ms": 2633, "hex": "0d0e320400000000323032342d30312d3031000053696d756c61746f720000000000000000000000000000000000000000000000000000000000000073696d2d76312e30205b66775f64656661756c000000", "code": 13, "len": 82}
+{"node": "bob", "dir": "tx", "ms": 180, "hex": "01000000000000006b6e69742d62656e6368", "code": 1}
+{"node": "bob", "dir": "rx", "ms": 2653, "hex": "0501141430b77518520eb8de600297b2a2306ca7a1e534fc13a58a87f7f8f1c1cc41ee8d00000000000000000000000038f60d0090d003000a05626f62", "code": 5, "len": 61, "name": "SELF_INFO", "pub": "30b77518520e"}
+{"node": "bob", "dir": "tx", "ms": 200, "hex": "2601", "code": 38}
+{"node": "bob", "dir": "rx", "ms": 2673, "hex": "00", "code": 0, "len": 1, "name": "OK"}
+{"node": "alice", "dir": "tx", "ms": 3220, "hex": "0930b77518520eb8de600297b2a2306ca7a1e534fc13a58a87f7f8f1c1cc41ee8d010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004b6e69742062626262000000000000000000000000000000000000000000000000000000", "code": 9}
+{"node": "alice", "dir": "rx", "ms": 107574, "hex": "00", "code": 0, "len": 1, "name": "OK"}
+{"node": "bob", "dir": "tx", "ms": 3240, "hex": "093f165555ee6c4a7bbcacdaaec4877355cc4c7d487dda4259122f2aff52f539c9010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004b6e69742061616161000000000000000000000000000000000000000000000000000000", "code": 9}
+{"node": "bob", "dir": "rx", "ms": 5713, "hex": "00", "code": 0, "len": 1, "name": "OK"}
+{"node": "alice", "dir": "tx", "ms": 3260, "hex": "020000e43bb16a30b77518520e0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d", "code": 2}
+{"node": "alice", "dir": "rx", "ms": 107614, "hex": "06006121ab3e3a110000", "code": 6, "len": 10, "name": "SENT", "flood": 0, "expected_ack": "6121ab3e", "est_timeout_ms": 4410}
+{"node": "bob", "dir": "rx", "ms": 6334, "hex": "83", "code": 131, "len": 1, "name": "MSG_WAITING"}
+{"node": "bob", "dir": "tx", "ms": 3880, "hex": "0a", "code": 10}
+{"node": "bob", "dir": "rx", "ms": 6353, "hex": "102000003f165555ee6cff00e43bb16a0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d", "code": 16, "len": 173, "name": "CONTACT_MSG_RECV_V3", "snr": 8.0, "prefix": "3f165555ee6c", "path_len": 255, "txt_type": 0, "ts": 1790000100, "text_len": 157}
+{"node": "bob", "dir": "tx", "ms": 3900, "hex": "0a", "code": 10}
+{"node": "bob", "dir": "rx", "ms": 6373, "hex": "0a", "code": 10, "len": 1, "name": "NO_MORE"}
+{"node": "alice", "dir": "rx", "ms": 108503, "hex": "8820b00e006121ab3e0075", "code": 136, "len": 11}
+{"node": "alice", "dir": "rx", "ms": 108503, "hex": "826121ab3e79030000", "code": 130, "len": 9, "name": "SEND_CONFIRMED", "ack": "6121ab3e", "trip_ms": 889}
+{"node": "alice", "dir": "tx", "ms": 4160, "hex": "020000e53bb16a30b77518520e9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b", "code": 2}
+{"node": "alice", "dir": "rx", "ms": 108514, "hex": "0600e39f24023a110000", "code": 6, "len": 10, "name": "SENT", "flood": 0, "expected_ack": "e39f2402", "est_timeout_ms": 4410}
+{"node": "bob", "dir": "rx", "ms": 7234, "hex": "83", "code": 131, "len": 1, "name": "MSG_WAITING"}
+{"node": "bob", "dir": "tx", "ms": 4780, "hex": "0a", "code": 10}
+{"node": "bob", "dir": "rx", "ms": 7253, "hex": "102000003f165555ee6cff00e53bb16a9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b", "code": 16, "len": 173, "name": "CONTACT_MSG_RECV_V3", "snr": 8.0, "prefix": "3f165555ee6c", "path_len": 255, "txt_type": 0, "ts": 1790000101, "text_len": 157}
+{"node": "bob", "dir": "tx", "ms": 4800, "hex": "0a", "code": 10}
+{"node": "bob", "dir": "rx", "ms": 7273, "hex": "0a", "code": 10, "len": 1, "name": "NO_MORE"}
+{"node": "alice", "dir": "rx", "ms": 109403, "hex": "8820b00e00e39f240200f8", "code": 136, "len": 11}
+{"node": "alice", "dir": "rx", "ms": 109403, "hex": "82e39f240279030000", "code": 130, "len": 9, "name": "SEND_CONFIRMED", "ack": "e39f2402", "trip_ms": 889}
+{"node": "alice", "dir": "tx", "ms": 5060, "hex": "020000e63bb16a30b77518520e0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0", "code": 2}
+{"node": "alice", "dir": "rx", "ms": 109414, "hex": "0600fa61df5a3a110000", "code": 6, "len": 10, "name": "SENT", "flood": 0, "expected_ack": "fa61df5a", "est_timeout_ms": 4410}
+{"node": "bob", "dir": "rx", "ms": 8134, "hex": "83", "code": 131, "len": 1, "name": "MSG_WAITING"}
+{"node": "bob", "dir": "tx", "ms": 5680, "hex": "0a", "code": 10}
+{"node": "bob", "dir": "rx", "ms": 8153, "hex": "102000003f165555ee6cff00e63bb16a0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0", "code": 16, "len": 176, "name": "CONTACT_MSG_RECV_V3", "snr": 8.0, "prefix": "3f165555ee6c", "path_len": 255, "txt_type": 0, "ts": 1790000102, "text_len": 160}
+{"node": "bob", "dir": "tx", "ms": 5700, "hex": "0a", "code": 10}
+{"node": "bob", "dir": "rx", "ms": 8173, "hex": "0a", "code": 10, "len": 1, "name": "NO_MORE"}
+{"node": "alice", "dir": "rx", "ms": 110303, "hex": "8820b00e00fa61df5a00ed", "code": 136, "len": 11}
+{"node": "alice", "dir": "rx", "ms": 110303, "hex": "82fa61df5a79030000", "code": 130, "len": 9, "name": "SEND_CONFIRMED", "ack": "fa61df5a", "trip_ms": 889}
+{"node": "alice", "dir": "tx", "ms": 5960, "hex": "020000e73bb16a30b77518520e0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1", "code": 2}
+{"node": "alice", "dir": "rx", "ms": 110314, "hex": "0103", "code": 1, "len": 2, "err": "TABLE_FULL"}
+{"node": "bob", "dir": "tx", "ms": 13980, "hex": "0a", "code": 10}
+{"node": "bob", "dir": "rx", "ms": 16453, "hex": "0a", "code": 10, "len": 1, "name": "NO_MORE"}
+{"node": "alice", "dir": "tx", "ms": 22000, "hex": "020000e83bb16a30b77518520e0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262700292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d", "code": 2}
+{"node": "alice", "dir": "rx", "ms": 126354, "hex": "0600923ee41a9a080000", "code": 6, "len": 10, "name": "SENT", "flood": 0, "expected_ack": "923ee41a", "est_timeout_ms": 2202}
+{"node": "bob", "dir": "rx", "ms": 24695, "hex": "8820b00a00303fc1f90d9eacc052b354d98bc2b2740e184c4be0c2b08ec628c434e6805c203ab269bcef7e4406e9180503092e35d8f42846f7", "code": 136, "len": 57}
+{"node": "bob", "dir": "rx", "ms": 24695, "hex": "83", "code": 131, "len": 1, "name": "MSG_WAITING"}
+{"node": "bob", "dir": "tx", "ms": 22240, "hex": "0a", "code": 10}
+{"node": "bob", "dir": "rx", "ms": 24713, "hex": "102000003f165555ee6cff00e83bb16a0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324252627", "code": 16, "len": 55, "name": "CONTACT_MSG_RECV_V3", "snr": 8.0, "prefix": "3f165555ee6c", "path_len": 255, "txt_type": 0, "ts": 1790000104, "text_len": 39}
+{"node": "bob", "dir": "tx", "ms": 22260, "hex": "0a", "code": 10}
+{"node": "bob", "dir": "rx", "ms": 24733, "hex": "0a", "code": 10, "len": 1, "name": "NO_MORE"}
+{"node": "alice", "dir": "rx", "ms": 126864, "hex": "8820b00e00923ee41a000c", "code": 136, "len": 11}
+{"node": "alice", "dir": "rx", "ms": 126864, "hex": "82923ee41afe010000", "code": 130, "len": 9, "name": "SEND_CONFIRMED", "ack": "923ee41a", "trip_ms": 510}

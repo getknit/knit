@@ -127,7 +127,7 @@ LoraMeshTransport (pure)      fastFanout/longRangeFanout · LoraFramePolicy (air
        └─ MeshtasticSession   pure actor: want_config handshake · drain-until-empty on FromNum · 180s heartbeat ·
           (pure)              client packet ids ↔ queueStatus/NAK · reconnect-with-backoff (ConnectBackoffPolicy) ·
                               direct-then-background dial (BoardDialPolicy, ADR 2026-09.hp88)
-            └─ MeshtasticGattDialer (seam)   dial() → connect · requestMtu(512, gate ≥263) · discover · resolve chars
+            └─ MeshtasticGattDialer (seam)   dial() → connect · requestMtu(512, floor 128) · discover · resolve chars
                  └─ MeshtasticGatt           the ONLY android.bluetooth importer for the feature (mesh/bluetooth/meshtastic/)
 ```
 
@@ -180,8 +180,9 @@ Golden byte vectors pin every field number; malformed input decodes to null, nev
 
 - Service `6ba1b218-15a8-461f-9fa8-5dcae273eafd`; ToRadio `f75c76d2-…` (write), FromRadio `2c55e69e-…`
   (read; one protobuf per read, 0 bytes = drained), FromNum `ed9da18c-…` (notify, u32 LE counter).
-- Bonding required in PIN modes; the V4's OLED shows a random 6-digit PIN. MTU 512 requested (gate ≥ 263 so
-  the worst-case 259-B `ToRadio{packet}` is one write). ESP32 = **one BLE client** — the Meshtastic app must
+- Bonding required in PIN modes; the V4's OLED shows a random 6-digit PIN. MTU 512 requested; a floor of 128
+  (`MeshtasticGatt.MIN_MTU`) catches a failed negotiation, and the transport sizes each packet to the MTU it got
+  (`MeshtasticBoardLink.payloadCap`), so no write is ever split. ESP32 = **one BLE client** — the Meshtastic app must
   be disconnected from the board. Board **Wi-Fi must be off** (it disables the board's Bluetooth).
 - **The Exchange MTU must not race the bonding handshake** (verified 2026-09-01, Heltec V4 / 2.8 alpha
   `2.8.0.7239fe8`). A bonded board starts SMP the moment the ACL is up, and `connectGatt`'s
@@ -956,6 +957,84 @@ secondary.
 - **Not on hardware yet.** Needs a stock third node DMing a Knit board; the oracle is `…debug.LORA`'s
   `autoReplyHeard` / `autoReplySent` and the reply on the stock node's screen, PKI (the padlock) and once.
   The rig trap: `FakeMeshtasticLink` is node `1u`, so a test DM `from = 0x1u` is `OWN_BOARD`.
+
+## The MeshCore client (ADR 2026-11.gsqu, Stage 3a/3b)
+
+Built and JVM-tested, reachable from nothing yet: Stage 5 wires it behind `MESHCORE_PLANE`. Everything here is against
+the companion firmware at `companion-v1.18.0` (`~/source/meshcore`, `examples/companion_radio/MyMesh.cpp`; the bench
+is `~/source/meshcore-spike/FINDINGS.md`).
+
+```
+MeshcoreSession (pure, a BoardLink)   handshake · drain · polls · sends and their attempts · pins · setup/restore ·
+                                      BoardDialPolicy reconnect, MeshtasticSession's loop
+  ├─ MeshcoreProto + Cobs             the companion frames both ways, total; COBS for the compact DM's text
+  ├─ MeshcoreAckTable · MeshcorePins · MeshcoreHeadroom · MeshcoreAirRing   pure policies, @Synchronized
+  └─ MeshcoreDialer / NusChannel (seam)   one frame per RX write and per TX notify; NusEvent.Frame / Disconnected
+       └─ (Stage 3c) mesh/bluetooth/meshcore/MeshcoreGatt
+```
+
+**The board answers every connected client at once** (`MultiSerialInterface`, bench Q8), and the user's own MeshCore
+app may share it. So drained data — codes 7, 8, 16, 17, 27 — is never matched to a request: it becomes a `BoardPacket`
+whenever it arrives, whoever's `SYNC_NEXT_MESSAGE` drew it, because the firmware pops a message before it replies.
+Answers are matched by content: `SENT` by the ack code the phone computes (`MeshcoreProto.expectedAck`:
+`sha256(timestamp ‖ attempt & 3 ‖ text ‖ our key)[0..4]`, `BaseChatMesh.cpp:462`), `SEND_CONFIRMED` by our own table
+(`MeshcoreAckTable`), `CHANNEL_INFO` by index, `CONTACT` by key, stats by kind. A bare `OK` / `ERR` may be anybody's:
+after a timeout on one a barrier (`GET_DEVICE_TIME` → `CURR_TIME`) drains the strays, every flash write waits at least
+3 s, and every write the plane relies on is read back. Where the success answer has content, an `ERR` is provisional:
+a barrier follows, and our success arriving before its `CURR_TIME` makes the `ERR` another client's (the firmware answers
+in order); two `ERR`s and no success are ambiguous (`ambiguousAnswers`), read as no answer. Another client's `CURR_TIME`
+cannot be told from ours, so one landing first ends a barrier early: a known limit, costing a timeout, never a refusal. A room or Public post's bare answer is judged with every `OK` / `ERR` seen before a barrier written straight
+after it: exactly one is ours, anything else reads as a timeout, never a refusal (`MeshcoreCounters.strayAnswers`); a
+stray `TABLE_FULL` anywhere holds the headroom. The one write refuses any frame outside `ENCODED_COMMANDS`. What nobody waited on is counted (`MeshcoreCounters.unexpected`)
+and dropped; every frame handler is guarded, so a bad frame never ends the actor.
+
+- **Handshake.** `DEVICE_QUERY [22, 3]`, refused below `FIRMWARE_VER_CODE` 11 (companion v1.15.0, the first with
+  commands 54, 62 and 64: `MeshcoreLinkState.FirmwareTooOld`); `APP_START`; every channel slot, keeping only (index,
+  empty, is-Knit); `SET_DEVICE_TIME` forward (an `ERR ILLEGAL_ARG` is the board's clock ahead, benign);
+  `SET_FLOOD_SCOPE_KEY [54, 0]`; the default scope read as a flag; CORE / PACKETS / RADIO stats and the battery
+  (millivolts only). `SELF_INFO`'s radio must be sane (the firmware's own `constrain` bounds) or `Ready.radio` is null.
+- **Drain.** At Ready, on `MSG_WAITING` and on every stats poll (a reply or a push lost to the board's four-frame BLE
+  queue, `SerialBLEInterface.cpp`, is picked up there). Lossy by design: a lost reply is gone (Q3). A round reads at most
+16 replies, then the loop serves one waiting command (the inbox is also selected first), so a busy band never starves a
+send or a retry; every `call` has a deadline on the wait for the actor to start it, never on a started op, which always
+returns its own result (a send's handle is taken before it is posted). Drained packets wait for their one collector,
+which subscribes before `start`, in a 1,024-packet backlog that drops its oldest past that (`packetsDropped`). The first `NO_MORE` of
+  a connection makes what follows `MeshcorePacket.live`; before it is the offline queue replayed, whose frames were
+  composed at reception and may be V1 (7, 8) if no client had asked for v3. Nothing drained is discarded: the user's own
+  DMs, other slots and Public all become packets, typed (`MeshcorePacket.Type`) with the raw `path_len`.
+- **Polls.** CORE `outbound_queue` every 1 s while anything is queued or in flight, 60 s otherwise; every reading is
+  emitted unconflated. `TABLE_FULL` holds headroom at 0 until a poll shows the queue fell or `sent` rose
+  (`MeshcoreHeadroom`; the 16-packet pool is shared with received packets), or a poll reads an empty queue, or two polls
+have held it. RADIO stats feed `BoardAir` over a ≥ 60 s ring
+  (`MeshcoreAirRing`). CORE uptime going backwards is a reboot: the ack table is dropped.
+- **A compact DM** is `SEND_TXT_MSG`, `TXT_TYPE_PLAIN`, text `COBS(seal)` ≤ 157 B (seal ≤ 156), written only after a
+  zero-hop pin that read back in this connection (`MeshcorePins`; a read-modify-write of the 144-B record, skipped when it
+  already reads 0). No key for the prefix, or a pin that fails, is refused unwritten (`MeshcoreRefusal.NO_RECORD` /
+  `UNPINNED`, both `RefusalClass.OWN_NO_KEY`). Attempts 0..2 keep the timestamp and change `attempt` (a same-attempt
+  retry is byte-identical and dropped unanswered, Q14), each after the firmware's `est_timeout` plus 1 s; a confirmation
+  of any attempt ends the flight as `Acked(VALID, flown = n)`, the last timeout `Unreachable(flown = 3)`, a dropped link
+  `NoOutcome(flown)`. A flight never outlives `MeshcoreSession.MAX_FLIGHT_MS`; the core's deadline is a backstop above it. A `SENT` with the flood flag is counted (`directFlooded`), reported as `MeshcoreAir.DirectFlooded`,
+  and no further attempt goes until a fresh pin reads back; a `0x81` for the key during the flight re-pins before the
+  next attempt. The board's 8-code ack table is circular and filled by every client's sends: `Busy` while eight codes are
+  unconfirmed inside their window; a confirmation after `Unreachable` is a late `Acked` under the same handle.
+- **Re-pins.** A `0x81` / `0x8F` for a key Knit taught queues one re-pin (or re-teach) of that key a minute; later pushes
+  only unverify it; a push for any other key is ignored. The full re-assert runs at Ready, in the order Stage 5's
+  `setKnitContacts` ranks, one job per tick under sends and the drain.
+- **Contacts.** `teach` writes a `Knit xxxx` (from the key), favourite, zero-hop contact only into a confirmed free slot
+  (`GET_CONTACTS` past every `lastmod` is the count read), so overwrite-oldest never evicts the user's own; `readContact`,
+  `removeContact`, `resetPath` read back what they did.
+- **Setup and restore** (`MeshcoreSetupRecord`). Reads first; then auto-add (chat and overwrite-oldest off), `[38, 1]`,
+  the `Knit abcd` name and the channel, each read back, the channel last; a failure puts back what it wrote. Restore puts
+  back each value only where the board still shows Knit's, and reports the rest (`leftAsFound`). The radio, the PIN and
+  the keys are never touched; the encoder cannot even write them (`MeshcoreProto.ENCODED_COMMANDS`, pinned).
+- **Room posts** are `SEND_CHANNEL_DATA` on the bound slot, flooded, `data_type` `0xFFFF` (`DATA_TYPE_DEV`) until
+  MeshCore registers Knit's; the slot is re-read when its last read is over 60 s old and refused when it is not Knit's.
+  A reading never outlives its connection: it is cleared at every handshake and session end, and set only for a slot
+  read as Knit's.
+  A Public post's text is refused past `160 − (name + 2)` bytes, where the firmware would trim it and answer OK.
+- **The fake.** `FakeMeshcoreAir` runs the command handler per board and an air of neighbours and repeaters;
+  `MeshcoreFakeVsSimTest` replays the simulator runs of Q11–Q15 into it and checks its answers and airings node by node.
+  Nothing in it models the BLE side (Q8's 173-B notify cut, the four-frame queue) beyond `FakeNusChannel.dropFrame`.
 
 ## Board setup (once, Meshtastic CLI or app)
 
