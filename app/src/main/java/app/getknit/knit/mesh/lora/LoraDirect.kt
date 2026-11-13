@@ -174,9 +174,10 @@ internal interface LoraDirectSink {
 
 /**
  * A compact DM's room on one board kind (ADR 2026-11.gsqu, Stage 1a.4): [plaintextBytes] of v3 compact content in one
- * packet, and the most ids one compact ✓✓ carries there ([tickAcks], derived: [forPlaintext]).
+ * packet, and the most ids one compact ✓✓ carries there ([tickAcks], derived: [forPlaintext]). Public because the UI's
+ * `LoraFacts.directBudget` carries the bound kind's (Stage 2).
  */
-internal data class LoraDirectBudget(
+data class LoraDirectBudget(
     val plaintextBytes: Int,
     val tickAcks: Int,
 ) {

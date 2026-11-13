@@ -4,6 +4,7 @@ import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.MeshtasticLink
 import io.mockk.mockk
@@ -31,7 +32,7 @@ class LoraRadioReachedWiringTest {
             modules(
                 meshModule,
                 module {
-                    single<MeshtasticLink> { mockk(relaxed = true) }
+                    single<MeshtasticLink>(loraPlane(BoardKind.MESHTASTIC)) { mockk(relaxed = true) }
                     single<CoroutineScope> { scope }
                     single { mockk<SettingsStore>(relaxed = true) }
                     single { mockk<Identity>(relaxed = true) }
@@ -49,7 +50,7 @@ class LoraRadioReachedWiringTest {
 
     @Test
     fun theTransportsRadioReachedEdgeReachesTheManager() {
-        val transport = app.koin.get<LoraMeshTransport>()
+        val transport = app.koin.get<LoraMeshTransport>(loraPlane(BoardKind.MESHTASTIC))
         val field = LoraMeshTransport::class.java.getDeclaredField("onRadioReached").apply { isAccessible = true }
 
         @Suppress("UNCHECKED_CAST")

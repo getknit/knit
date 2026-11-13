@@ -34,6 +34,7 @@ import app.getknit.knit.mesh.bluetooth.CodedPhyDiag
 import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.bluetooth.LinkPhy
 import app.getknit.knit.mesh.indirectPeers
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.spool.SpoolStatus
@@ -148,6 +149,8 @@ private data class DiagExtras(
     val spools: List<SpoolStatus>,
     val reachable: Set<String>,
     val loraPlane: LoraPlane,
+    // The bound board kind, whose LoRa row alone the Transports section shows (ADR 2026-11.gsqu, Stage 2).
+    val loraBoard: BoardKind,
     // Raw radio-mesh relay stamps; the linger is applied in [DiagnosticsViewModel.state] with the clock.
     val heardIndirectly: Map<String, RelayedHeard>,
     // What protects each live link, by node and plane; narrowed per row in [DiagnosticsViewModel.state].
@@ -477,7 +480,7 @@ class DiagnosticsViewModel(
             relayStatus.statuses,
             combine(
                 meshManager.reachable,
-                loraFacts.map { it.plane }.distinctUntilChanged(),
+                loraFacts.map { it.plane to it.board }.distinctUntilChanged(),
                 meshManager.heardIndirectly,
                 meshManager.linkSecurity,
             ) { r, l, h, s -> Reach4(r, l, h, s) },
@@ -488,7 +491,8 @@ class DiagnosticsViewModel(
                 peerTransports,
                 spools,
                 reach.reachable.mapTo(mutableSetOf()) { it.nodeId },
-                reach.loraPlane,
+                reach.loraPlane.first,
+                reach.loraPlane.second,
                 reach.heard,
                 reach.links,
             )
@@ -564,7 +568,7 @@ class DiagnosticsViewModel(
                 hiddenKnownCount = hidden.size,
                 hidesInForce = inForce,
                 metrics = extra.metrics,
-                transports = transportRows(extra.statuses, radios, extra.loraPlane),
+                transports = transportRows(extra.statuses, radios, extra.loraPlane, extra.loraBoard),
                 radios = radios,
                 spools = extra.spools,
             )
@@ -614,10 +618,13 @@ class DiagnosticsViewModel(
     }
 }
 
-/** The inner combine's four sources, named: the reach set, the LoRa plane, the relay stamps and the live links. */
+/**
+ * The inner combine's four sources, named: the reach set, the LoRa plane with its bound board kind, the relay stamps and
+ * the live links.
+ */
 private data class Reach4(
     val reachable: Set<Peer>,
-    val loraPlane: LoraPlane,
+    val loraPlane: Pair<LoraPlane, BoardKind>,
     val heard: Map<String, RelayedHeard>,
     val links: Map<String, Map<TransportKind, LinkSecurity>>,
 )

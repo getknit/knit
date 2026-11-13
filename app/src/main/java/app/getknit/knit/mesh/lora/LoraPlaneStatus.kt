@@ -11,9 +11,22 @@ import kotlinx.coroutines.flow.StateFlow
  * chat-header repository is resolved by every open chat), and a ViewModel test hands in a
  * `MutableStateFlow<LoraStatus>` instead of a transport over a fake air.
  */
-internal interface LoraPlaneStatus {
+internal interface LoraPlaneStatus : BoardKindSource {
     /** A snapshot of the plane: link state, bound board, last signal reading, peers heard. */
     val status: StateFlow<LoraStatus>
+
+    /**
+     * Which board kind this plane drives (ADR 2026-11.gsqu, Stage 2). Meshtastic unless the plane says otherwise: the
+     * [Dark] stand-in and the demo plane are Meshtastic's.
+     */
+    override val boardKind: BoardKind get() = BoardKind.MESHTASTIC
+
+    /**
+     * A compact DM's budget on this plane's kind: its `BoardTraits.directBudget`, a constant, so the composer's DM length
+     * hint ([LoraSizeHint.dmBodyBytes]) and `MeshManager`'s inline acks follow the bound board without the UI ever
+     * reaching the transport or building a board session. [LoraDirectBudget.MESHTASTIC] unless the plane says otherwise.
+     */
+    val directBudget: LoraDirectBudget get() = LoraDirectBudget.MESHTASTIC
 
     /**
      * Sets the connected board up for Knit (`LoraMeshTransport.provisionKnitChannel`), or puts it back the

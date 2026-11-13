@@ -5,6 +5,7 @@ import app.getknit.knit.mesh.MeshRound
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.power.PowerState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -280,6 +281,46 @@ class FieldLogTest {
             val ups = log.lines().filter { it.contains("lora_up") }
             assertEquals(listOf(false, true, false), ups.map { it.contains("relink") })
             assertTrue(ups[1], ups[1].contains("\"relink\":95000"))
+        }
+
+    /** ADR 2026-11.gsqu, Stage 2: each board kind's relink counts from its own last down, never another board's. */
+    @Test
+    fun eachBoardKindsRelinkCountsFromItsOwnDown() =
+        runTest {
+            val log = newLog()
+            log.record(FieldEvent.LoraDown(TransportHealth.Degraded, lifeMs = 60_000))
+            now += 10_000
+            log.record(FieldEvent.LoraDown(TransportHealth.Degraded, lifeMs = 60_000, board = BoardKind.MESHCORE))
+            now += 5_000
+            log.record(FieldEvent.LoraUp(dialMs = 1_000, tries = 0, mtu = 512, board = BoardKind.MESHCORE))
+            now += 20_000
+            log.record(FieldEvent.LoraUp(dialMs = 1_000, tries = 0, mtu = 512))
+
+            val ups = log.lines().filter { it.contains("lora_up") }
+            assertTrue(ups[0], ups[0].contains("\"relink\":5000") && ups[0].contains("\"board\":\"MESHCORE\""))
+            assertTrue(ups[1], ups[1].contains("\"relink\":35000") && !ups[1].contains("board"))
+        }
+
+    /** Two LoRa children share TransportKind.LoRa: each keeps its own radio line, and Meshtastic's names no board. */
+    @Test
+    fun twoLoraChildrenKeepTheirOwnRadioLines() =
+        runTest {
+            val meshtastic = TransportStatus(TransportKind.LoRa, TransportHealth.Healthy, 0, 0, boardKind = BoardKind.MESHTASTIC)
+            val meshcore = meshtastic.copy(boardKind = BoardKind.MESHCORE)
+            statuses.value = listOf(meshtastic, meshcore)
+            val log = newLog()
+            log.start(backgroundScope, statuses)
+            runCurrent()
+            // Re-published with a change the radio line ignores (nearby only): no new line for either. Keyed by radio
+            // alone, each child would compare against the other's status and log again; a StateFlow drops an equal list,
+            // so the second publish must differ to reach the collector at all.
+            statuses.value = listOf(meshtastic.copy(nearby = 5), meshcore.copy(nearby = 5))
+            runCurrent()
+
+            val radios = log.lines().filter { it.contains("\"e\":\"radio\"") }
+            assertEquals(2, radios.size)
+            assertEquals(1, radios.count { it.contains("\"board\":\"MESHCORE\"") })
+            assertEquals(1, radios.count { !it.contains("board") })
         }
 
     @Test

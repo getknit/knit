@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.mesh.lora.BoardKindSource
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -188,7 +189,16 @@ class CompositeMeshTransport(
                         child.radioContended,
                         child.initiatorHeld,
                     ) { linked, nearby, health, contended, held ->
-                        TransportStatus(child.kind, health, linked.size, nearby.size, contended, held)
+                        TransportStatus(
+                            child.kind,
+                            health,
+                            linked.size,
+                            nearby.size,
+                            contended,
+                            held,
+                            // A LoRa child's board kind (ADR 2026-11.gsqu, Stage 2): every kind shares TransportKind.LoRa.
+                            boardKind = (child as? BoardKindSource)?.boardKind,
+                        )
                     }.combine(child.switchedOff) { status, off -> status.copy(switchedOff = off) }
                         .combine(child.dormant) { status, dormant -> status.copy(dormant = dormant) }
                         .combine(child.advertBlinded) { status, blinded -> status.copy(blindedAdvert = blinded) }

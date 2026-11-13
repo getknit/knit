@@ -32,6 +32,7 @@ import app.getknit.knit.linkpreview.LinkPreviewService
 import app.getknit.knit.location.LocationSource
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.RadioSupport
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraStatusRepository
 import app.getknit.knit.mesh.power.LowPowerSource
 import app.getknit.knit.transfer.TransferManager
@@ -271,7 +272,8 @@ val uiModule =
                 directLinks = DIRECT_LINKS_WIRED,
             )
         }
-        viewModel { LoraRadioViewModel(get(), get(), get(), get()) }
+        // The radio screen drives the Meshtastic board, the one kind it knows (ADR 2026-11.gsqu, Stage 2).
+        viewModel { LoraRadioViewModel(get(), get(loraPlane(BoardKind.MESHTASTIC)), get(), get()) }
         // What MainActivity opens on a worker before KnitApp composes — exactly what KnitApp's first composition
         // reads (ReviewPrompter → the database, MeshController → the identity keys), so those become cache hits —
         // and the Try again screen when the Keystore refuses (ADR 2026-10.47rw). SEED_DEMO builds skip the

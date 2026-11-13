@@ -31,7 +31,10 @@ lines.
   upload path, ever. `FieldWriter` has
   no string field (a peer or a relay is a salted pseudonym), so redaction holds by construction; never add one. A new event
   is a golden line in `FieldEventSchemaTest`, a row in the doc and a kind in `scripts/fieldlog.py`; a sampler
-  runs on the log's tick and only reads.
+  runs on the log's tick and only reads. Each LoRa board kind (`BoardKind`, ADR 2026-11.gsqu Stage 2) has its own
+  stream (`fieldStream`: `lora` stays Meshtastic's), its own relink and its own `radio` line (`TransportStatus.boardKind`);
+  a line names its kind (`board`, `BoardKind.fieldTag`) only where it is not Meshtastic, so Meshtastic's lines stay
+  byte-identical, and a kind's lines carry counts and own-radio facts only, nothing derived from a key, node or contact.
 - **When building or touching the developer view** — the message inspector at the foot of Message details, the mesh
   HUD over every screen, `BuildConfig.DEV_VIEW` / `-PdevView=`, its `di/` constant or the `debug_dev_view` switch:
   READ ADR 2026-10.s7wg (Proposed). It reads only what this phone already holds, and shows an absent fact as `—`,

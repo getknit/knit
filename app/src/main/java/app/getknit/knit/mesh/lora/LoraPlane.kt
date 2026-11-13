@@ -83,6 +83,18 @@ data class LoraFacts(
      * strict case, and the handshake brings the real answer.
      */
     val roomSignedUpTo: Int = PublicPostPolicy.MAX_SIGNED_TEXT_BYTES,
+    /**
+     * Which board kind these facts are about (ADR 2026-11.gsqu, Stage 2). On `LoraStatusRepository.facts`, the aggregate,
+     * it is the bound kind's (v1 binds one board), and [BoardKind.MESHTASTIC] with none bound: what Diagnostics keeps the
+     * LoRa row of.
+     */
+    val board: BoardKind = BoardKind.MESHTASTIC,
+    /**
+     * A compact DM's budget on [board]: its `BoardTraits.directBudget`, a constant carried here so the composer's DM hint
+     * ([LoraSizeHint.dmBodyBytes]) follows the bound board without the UI reaching the transport. Meshtastic's (168 B, so
+     * a 160-B body) on the dark and demo planes and with no board bound.
+     */
+    val directBudget: LoraDirectBudget = LoraDirectBudget.MESHTASTIC,
 )
 
 /**

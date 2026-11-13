@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.flow.Flow
@@ -72,6 +73,8 @@ enum class LinkSecurity { SEALED, PROVEN, LEGACY }
  * 2026-10.d44b). [dormant] is its [MeshTransport.dormant]: the plane is up but detached because no phone that could use
  * it is near (GitHub #44) — idle, not off, and its health says nothing worse for it. [blindedAdvert] is its
  * [MeshTransport.advertBlinded]: the advert on air carries a rotating tag rather than the node id (ADR 2026-11.xp6d).
+ * [boardKind] is a LoRa child's board kind (ADR 2026-11.gsqu, Stage 2), null for every other radio: every board kind is
+ * its own child under the one [TransportKind.LoRa], so the field log and Diagnostics key a LoRa line by both.
  */
 data class TransportStatus(
     val kind: TransportKind,
@@ -83,6 +86,7 @@ data class TransportStatus(
     val switchedOff: Boolean = false,
     val dormant: Boolean = false,
     val blindedAdvert: Boolean = false,
+    val boardKind: BoardKind? = null,
 )
 
 /** Shared "never contended" default for [MeshTransport.radioContended], so a transport without the signal

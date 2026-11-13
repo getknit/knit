@@ -3,6 +3,7 @@ package app.getknit.knit.fieldlog
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.power.LowPowerPosture
 import app.getknit.knit.mesh.power.PowerState
 import kotlinx.coroutines.CoroutineDispatcher
@@ -98,11 +99,18 @@ class FieldLog(
     /** When each peer last lost its Bluetooth link, for [FieldEvent.BtUp.relinkMs]. */
     private val downAt = ConcurrentHashMap<String, Long>()
 
-    /** When the LoRa board's ready link last ended, for [FieldEvent.LoraUp.relinkMs]; null while it is up. */
-    @Volatile private var loraDownAt: Long? = null
+    /**
+     * When each LoRa board kind's ready link last ended, for [FieldEvent.LoraUp.relinkMs], by the line's own board
+     * (ADR 2026-11.gsqu, Stage 2): one board's outage is never another's relink. Absent while it is up; Meshtastic's lines
+     * carry no board, and are keyed as [BoardKind.MESHTASTIC].
+     */
+    private val loraDownAt = ConcurrentHashMap<Enum<*>, Long>()
 
-    /** Each radio's last status this session, for the change test and the counters' sample. */
-    private val radios = ConcurrentHashMap<TransportKind, TransportStatus>()
+    /**
+     * Each radio's last status this session, for the change test and the counters' sample: by radio and, for a LoRa child,
+     * its board kind, so two LoRa children never overwrite each other's line (ADR 2026-11.gsqu, Stage 2).
+     */
+    private val radios = ConcurrentHashMap<Pair<TransportKind, BoardKind?>, TransportStatus>()
 
     @Volatile private var countersAt = 0L
     private var countersBefore: Map<String, Long> = emptyMap()
@@ -166,18 +174,18 @@ class FieldLog(
             }
         }
 
-    /** [relink]'s LoRa half: the board is one link, so one time of its last down is all it needs. */
+    /** [relink]'s LoRa half: each board is one link, so one time of its last down per board kind is all it needs. */
     private fun loraRelink(
         at: Long,
         event: FieldEvent,
     ): FieldEvent =
         when (event) {
             is FieldEvent.LoraDown -> {
-                event.also { loraDownAt = at }
+                event.also { loraDownAt[event.board ?: BoardKind.MESHTASTIC] = at }
             }
 
             is FieldEvent.LoraUp -> {
-                loraDownAt?.let { event.copy(relinkMs = at - it) }.also { loraDownAt = null } ?: event
+                loraDownAt.remove(event.board ?: BoardKind.MESHTASTIC)?.let { event.copy(relinkMs = at - it) } ?: event
             }
 
             else -> {
@@ -244,7 +252,7 @@ class FieldLog(
         session.launch { enabled.collect { on = it } }
         // A board link the last session left down ended with that session (a `mesh_off` closes it): its outage is not
         // this session's, so the first `lora_up` carries no relink.
-        loraDownAt = null
+        loraDownAt.clear()
         record(FieldEvent.MeshOn(versionCode))
         session.launch { power.distinctUntilChanged().collect { record(it.toEvent()) } }
         lowPower?.let { posture ->
@@ -276,7 +284,7 @@ class FieldLog(
         radios.clear()
         statuses.collect { now ->
             now.forEach { status ->
-                val was = radios.put(status.kind, status)
+                val was = radios.put(status.kind to status.boardKind, status)
                 // Nearby is smoothed and moves all the time; it rides the other changes and the counters' sample.
                 if (was == null || was.copy(nearby = status.nearby) != status) record(status.toEvent())
             }
@@ -311,6 +319,7 @@ class FieldLog(
             nearby = nearby,
             contended = contended,
             initiatorHeld = initiatorHeld,
+            board = boardKind?.fieldTag,
         )
 
     companion object {

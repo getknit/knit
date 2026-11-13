@@ -6,6 +6,7 @@ import app.getknit.knit.mesh.PlaneSupport
 import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraPlane
 
 /**
@@ -37,8 +38,10 @@ sealed interface TransportRow {
 }
 
 /**
- * Bluetooth, Wi-Fi Aware, LoRa, then anything else. Every live status is kept; a phone radio with no status
- * is filled in as [TransportRow.Absent] only when [radios] says it cannot exist — a plane the verdict calls
+ * Bluetooth, Wi-Fi Aware, LoRa, then anything else. Every live status is kept but a LoRa child of another board kind
+ * than [loraBoard], the bound one (`LoraFacts.board`, ADR 2026-11.gsqu Stage 2): every kind is its own child under
+ * the one [TransportKind.LoRa], and v1 binds one board, so the section shows that board's row alone. A phone radio
+ * with no status is filled in as [TransportRow.Absent] only when [radios] says it cannot exist — a plane the verdict calls
  * supported but the composite has no entry for (the demo transport's single `Other` entry, a mesh not yet
  * started) gets no row rather than a wrong one. LoRa is never synthesized: a build without the plane has no
  * row, as before.
@@ -47,9 +50,10 @@ fun transportRows(
     statuses: List<TransportStatus>,
     radios: RadioSupport,
     lora: LoraPlane,
+    loraBoard: BoardKind = BoardKind.MESHTASTIC,
 ): List<TransportRow> {
     val live =
-        statuses.map { status ->
+        statuses.filter { it.boardKind == null || it.boardKind == loraBoard }.map { status ->
             TransportRow.Live(status, lora = lora.takeIf { status.kind == TransportKind.LoRa })
         }
     val present = statuses.mapTo(mutableSetOf()) { it.kind }

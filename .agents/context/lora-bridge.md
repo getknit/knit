@@ -161,6 +161,16 @@ the session-up pricing and binding are `onReady`; a missing key is `teachKey` (`
 and releasing the frame), `onDelivered` and `bookKeyReply`, and the setup is `provision`. The core keeps every branch
 order: a handled missing key, the ended send, the 35, the destination's refusal.
 
+**Per-kind scaffolding (ADR 2026-11.gsqu, Stage 2).** A plane instance is addressed by its `BoardKind`: each per-kind
+Koin single carries `loraPlane(kind)`, and the composite takes one LoRa child per `BUILT_BOARD_KINDS` (Meshtastic's
+alone). `MeshManager` reaches the compact-DM sink through `LoraDirectRouter.sinkFor(peerId)`, once per offer: the bound
+kind's plane, Meshtastic's with none bound, never a board map — the map stays the plane's own gate. Each instance keeps
+its limiters under its own key (`lora_plane_state`, `meshcore_plane_state`), reports `boardKind` on its
+`TransportStatus` (every kind is `TransportKind.LoRa`), and writes its own field-log stream (`lora` is Meshtastic's; a
+non-Meshtastic line carries `board`). `LoraStatusRepository` hands the UI the bound kind's `LoraFacts`, with that
+kind's compact budget (`directBudget`) so the composer never reaches a transport. A board is bound through
+`BoardBindPolicy`, which clears the other kind's identity and keeps the shared switches and its setup record.
+
 `MeshtasticProto` + `ProtoIo` are a hand-rolled protobuf codec (zero new deps): `ToRadio{want_config_id,
 heartbeat, disconnect, packet{Data{portnum=PRIVATE_APP 256, payload}}}` out; `FromRadio{my_info,
 config_complete_id, packet, queueStatus, rebooted, channel, metadata}` in; `Routing.error_reason` NAKs.

@@ -70,9 +70,11 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.SessionTransactor
 import app.getknit.knit.mesh.link.LinkClaims
 import app.getknit.knit.mesh.lora.BoardDirectory
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.DirectDm
 import app.getknit.knit.mesh.lora.LoraConfig
 import app.getknit.knit.mesh.lora.LoraDirectInbox
+import app.getknit.knit.mesh.lora.LoraDirectRouter
 import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraMeshTransport
@@ -123,6 +125,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -196,10 +199,15 @@ val meshModule =
                 tap = if (DEV_VIEW_WIRED) get<EventConsole>() else FieldTap.NONE,
             ).also { log ->
                 if (BuildConfig.LORA_PLANE) {
-                    // Resolved at each sample, never here: the plane's status is built from the transport, which this precedes.
-                    log.sampler("lora") { get<LoraPlaneStatus>().status.value.fieldSample() }
-                    // Its link edges, resolved at each session's start, on the board session's clock: a retry's due time is on it.
-                    log.follower("lora") { loraFieldEdges(get<LoraPlaneStatus>().status, SystemClock::elapsedRealtime) }
+                    // One stream per built board kind, named for the kind (`lora` is Meshtastic's, ADR 2026-11.gsqu Stage 2).
+                    BUILT_BOARD_KINDS.forEach { board ->
+                        // Resolved at each sample, never here: the plane's status is built from the transport, which this precedes.
+                        log.sampler(board.fieldStream) { get<LoraPlaneStatus>(loraPlane(board)).status.value.fieldSample(board) }
+                        // Its link edges, resolved at each session's start, on the board session's clock: a retry's due time is on it.
+                        log.follower(board.fieldStream) {
+                            loraFieldEdges(get<LoraPlaneStatus>(loraPlane(board)).status, board, SystemClock::elapsedRealtime)
+                        }
+                    }
                 }
                 // The Internet route every spool line reads against, followed for each mesh session.
                 log.follower("net") { netEdges(get<InternetGate>()) }
@@ -340,9 +348,10 @@ val meshModule =
                             // shows the plane stopped for it.
                             add(SwitchableTransport(nan, awareOff, get(), { msg -> Log.i("WifiAwareTransport", msg) }))
                         }
-                        // The LoRa (Meshtastic) plane rides LAST — lowest send-preference, fast-plane only.
-                        // Gated on the flag; the classes stay in the APK but are never resolved when off.
-                        if (BuildConfig.LORA_PLANE) add(get<LoraMeshTransport>())
+                        // The LoRa planes ride LAST — lowest send-preference, fast-plane only: one child per built board kind
+                        // (ADR 2026-11.gsqu, Stage 2; Meshtastic's alone until Stage 5). Gated on the flag; the classes stay
+                        // in the APK but are never resolved when off.
+                        if (BuildConfig.LORA_PLANE) BUILT_BOARD_KINDS.forEach { board -> add(get<LoraMeshTransport>(loraPlane(board))) }
                         // A contact's direct Internet links ride after every radio (ADR 2026-10.a5yj): the lowest
                         // preference, so a peer a radio also links is served by the radio, and in this place the plane
                         // is told which peers a radio links (suppressDataPath) while LoRa's election never sees it.
@@ -393,8 +402,9 @@ val meshModule =
         // The LoRa (Meshtastic-over-BLE) plane. The GATT dialer is the only android.bluetooth importer for
         // the feature; the session is pure over it, and the transport is a fast-plane-only composite child.
         // All lazy — resolved only when BuildConfig.LORA_PLANE adds the child, so release never instantiates them.
+        // Each per-kind definition carries its kind's qualifier (`loraPlane`, ADR 2026-11.gsqu Stage 2).
         single<MeshtasticGattDialer> { MeshtasticGatt(androidContext(), get()) }
-        single<MeshtasticLink> {
+        single<MeshtasticLink>(loraPlane(BoardKind.MESHTASTIC)) {
             MeshtasticSession(
                 dialer = get(),
                 scope = get(),
@@ -405,21 +415,29 @@ val meshModule =
         // Demo builds fake the bonded list (no adapter on an emulator); production reads the real one.
         single<BoardDirectory> { demoBoardDirectoryOrNull() ?: BondedBoardDirectory(androidContext()) }
         single<MeshPostSink> { get<MeshManager>() }
-        // Where MeshManager offers the compact copy of a DM it sealed (ADR 2026-10.x9fa). Bound to the LoRa transport;
-        // a caller resolves it late (a lambda), since the transport and the manager construct each other.
-        single<LoraDirectSink> { get<LoraMeshTransport>() }
+        // Where MeshManager offers the compact copy of a DM it sealed (ADR 2026-10.x9fa), per kind: bound to that kind's
+        // transport, and resolved late (a lambda) by the router, since the transport and the manager construct each other.
+        single<LoraDirectSink>(loraPlane(BoardKind.MESHTASTIC)) { get<LoraMeshTransport>(loraPlane(BoardKind.MESHTASTIC)) }
+        // Which kind's sink a compact DM goes through (ADR 2026-11.gsqu, Stage 2): the bound kind's, Meshtastic's with none
+        // bound; never the board map. What MeshManager binds.
+        single {
+            LoraDirectRouter(
+                planes = BUILT_BOARD_KINDS.associateWith { board -> { get<LoraDirectSink>(loraPlane(board)) } },
+                boundKind = { get<SettingsStore>().boundBoardKind.first() },
+            )
+        }
         // The Meshtastic room's outbound half. Bound to the LoRa transport, and reached from MeshManager
         // through a lambda for the same reason MeshPostSink is reached from the transport through one: the
         // two ends construct each other, so exactly one of the two edges has to resolve late.
-        single<PublicChannelSink> { get<LoraMeshTransport>() }
+        single<PublicChannelSink>(loraPlane(BoardKind.MESHTASTIC)) { get<LoraMeshTransport>(loraPlane(BoardKind.MESHTASTIC)) }
         // The compact DM's pair seal (ADR 2026-10.x9fa): the transport seals and opens with it, and MeshManager keeps its
         // pair index on the peer table. Lazy like the rest of the plane, so a build without it never derives a pair.
         single { LoraDirectSeal(ownDhPrivate = get<IdentityKeyStore>()::dhIdentityPrivate) }
-        single {
+        single(loraPlane(BoardKind.MESHTASTIC)) {
             val settings = get<SettingsStore>()
             LoraMeshTransport(
                 selfId = { get<Identity>().nodeId() },
-                link = get(),
+                link = get(loraPlane(BoardKind.MESHTASTIC)),
                 // The two per-plane switches are folded first so the whole config stays inside `combine`'s
                 // typed five-flow arity — the same fold ChatListViewModel/ChatViewModel make for the same reason.
                 config =
@@ -458,7 +476,13 @@ val meshModule =
                 onPublicPost = { post -> get<MeshPostSink>().onPublicPostHeard(post) },
                 // The bound board's node number and its CRC-bound key, persisted so the profile can advertise them
                 // (ProfileContent.loraNode / loraKey) in one write — one profile republish, not two.
-                onBoardBound = { board -> settings.setLoraBoard(board.nodeNum.toLong(), board.key) },
+                // Only while this plane's board is still the bound one, compared inside the settings edit: a handshake that
+                // finishes after an unbind or a cross-kind bind writes nothing back. None configured, nothing written.
+                onBoardBound = { board ->
+                    get<LoraMeshTransport>(loraPlane(BoardKind.MESHTASTIC)).configuredAddress?.let { dialled ->
+                        settings.setLoraBoard(board.nodeNum.toLong(), board.key, dialled = dialled)
+                    }
+                },
                 // The destination's board acked one of our compact DMs: the chat's "reached their LoRa radio" (ADR 040's
                 // 2026-10-31 amendment). Runs on the plane's outcome collector; the manager's side is one lock-free update.
                 onRadioReached = { frameId, late -> get<MeshManager>().onLoraRadioReached(frameId, late) },
@@ -467,7 +491,7 @@ val meshModule =
                 // The re-probe's backoff and the auto-reply's memory, kept across process death: without them every launch
                 // re-probes each silent board at the base gap and answers a replayed Meshtastic DM again. The airtime
                 // ledger is not kept (ADR 2026-10.ug4a).
-                state = LoraPlaneStateStore(settings),
+                state = LoraPlaneStateStore(settings, BoardKind.MESHTASTIC),
                 clock = SystemClock::elapsedRealtime,
                 wallClock = System::currentTimeMillis,
                 // This process's start on the wall clock, not this single's: an own room post written before it is a
@@ -543,7 +567,7 @@ val meshModule =
                 // Whether this phone's network is metered: a fast-only blob want asks over a contact's direct link only
                 // from an unmetered one (ADR 2026-10.js2p, a5yj).
                 blobMetered = get<InternetGate>()::isMetered,
-                publicChannel = { body -> get<PublicChannelSink>().postToPublicChannel(body) },
+                publicChannel = { body -> get<PublicChannelSink>(loraPlane(BoardKind.MESHTASTIC)).postToPublicChannel(body) },
                 onTransferSignal = { sender, payload, sentAt -> get<TransferManager>().onSignal(sender, payload, sentAt) },
                 // Voice calls (experimental, `CALLS_WIRED` — di/CallWiring): resolved late like the transfer hook, and
                 // never allowed to throw into the inbound path (rules/mesh.md). Nothing in a build that wires no calls.
@@ -593,7 +617,9 @@ val meshModule =
             ).also { manager ->
                 // The compact LoRa DM (ADR 2026-10.x9fa), where the build carries the plane: the transport is reached at
                 // call time, the seam the two constructions need one late edge for. Unbound, the profile never claims it.
-                if (BuildConfig.LORA_PLANE) manager.bindLoraDirect(sink = { get<LoraDirectSink>() }, seal = get())
+                if (BuildConfig.LORA_PLANE) {
+                    manager.bindLoraDirect(sinkFor = { peerId -> get<LoraDirectRouter>().sinkFor(peerId) }, seal = get())
+                }
             }
         }
         // UI ViewModels, MeshService, and the notification/debug entry points bind this narrow facade (not
@@ -655,11 +681,13 @@ val meshModule =
         // board session in release. Its facts feed the header glyph, the DM notice and the composer hint.
         // A demo build reports a connected, Knit-provisioned board without dialling one (see DemoWiring);
         // otherwise the transport itself when the build ships the plane, and a dark stand-in when it doesn't.
-        single<LoraPlaneStatus> {
+        // One per board kind (ADR 2026-11.gsqu, Stage 2), under the kind's qualifier; the demo plane stands in for Meshtastic's.
+        single<LoraPlaneStatus>(loraPlane(BoardKind.MESHTASTIC)) {
             demoLoraPlaneOrNull()
-                ?: if (BuildConfig.LORA_PLANE) get<LoraMeshTransport>() else LoraPlaneStatus.Dark
+                ?: if (BuildConfig.LORA_PLANE) get<LoraMeshTransport>(loraPlane(BoardKind.MESHTASTIC)) else LoraPlaneStatus.Dark
         }
-        single { LoraStatusRepository(get(), get()) }
+        // The aggregate every screen reads, over each built kind's face: the bound kind's facts, and each kind's apart.
+        single { LoraStatusRepository(get(), BUILT_BOARD_KINDS.associateWith { board -> get<LoraPlaneStatus>(loraPlane(board)) }) }
         // The Wear OS status service (prototype, `BuildConfig.WEAR_STATUS`): defined only while lit, so a dark
         // build has nothing for `MeshService` to resolve — its `getOrNull` is the one seam. It reads the same
         // repositories the header does, and nothing it serves is framed onto the mesh. It serves only while the

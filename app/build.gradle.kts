@@ -128,6 +128,12 @@ val internetPlane = (project.findProperty("internetPlane") as? String)?.toBoolea
 // a board has to be paired and set up before a single frame leaves over the radio.
 val loraPlane = (project.findProperty("loraPlane") as? String)?.toBoolean()
 
+// The MeshCore board plane (ADR 2026-11.gsqu): a second LoRa plane instance over the same core, one per board kind. ON in
+// debug, OFF in a shipped artifact until the board trials pass, overridable with `-PmeshcorePlane=true|false`, and never
+// on without the LoRa plane. Read once, as `di/BUILT_BOARD_KINDS`, where Stage 5 adds the MeshCore child; until then it
+// builds nothing. Not a code strip, and the defaults live in source so F-Droid's -P-free rebuild stays identical.
+val meshcorePlane = (project.findProperty("meshcorePlane") as? String)?.toBoolean()
+
 // The commons (a private relay's group chat, ADR 2026-09.wx8e, spec §7.4) — the same kind of visibility
 // switch: introduced at 2.11.0, so ON in every build (the ADR's 2026-11-08 amendment) and OFF in the slim APK,
 // overridable with `-Pcommons=true|false`. It gates the store the mesh and the relay editor are handed
@@ -407,6 +413,8 @@ android {
         // the screen, and opens no socket until someone says so.
         buildConfigField("boolean", "INTERNET_PLANE", (internetPlane ?: true).toString())
         buildConfigField("boolean", "LORA_PLANE", (loraPlane ?: true).toString())
+        // The MeshCore plane is ON in debug so a lab build carries it once it exists; see `meshcorePlane` above.
+        buildConfigField("boolean", "MESHCORE_PLANE", ((meshcorePlane ?: true) && (loraPlane ?: true)).toString())
         // The commons is ON here so the unit suite and the lab run the real thing; see `commons` above.
         buildConfigField("boolean", "COMMONS", (commons ?: true).toString())
         // The developer view is ON here, so a debug build can show it once its switch is on; see `devView` above.
@@ -529,6 +537,8 @@ android {
             // visible and reachable, switched off, and inert until the user pairs a Meshtastic board.
             buildConfigField("boolean", "INTERNET_PLANE", (internetPlane ?: true).toString())
             buildConfigField("boolean", "LORA_PLANE", (loraPlane ?: true).toString())
+            // The MeshCore plane stays OFF in a shipped artifact until its board trials pass (ADR 2026-11.gsqu).
+            buildConfigField("boolean", "MESHCORE_PLANE", ((meshcorePlane ?: false) && (loraPlane ?: true)).toString())
             // The commons is introduced at 2.11.0: on in a shipped artifact, off in the slim APK.
             // Staging and nonMinifiedRelease inherit this through initWith.
             buildConfigField("boolean", "COMMONS", (commons ?: true).toString())

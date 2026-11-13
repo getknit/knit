@@ -34,6 +34,8 @@ internal class MeshtasticHooks(
     /** The bound board's node number and key, reported each time its session comes up ([BoardBinding]). */
     private val onBoardBound: suspend (BoardBinding) -> Unit,
 ) : BoardKindHooks {
+    override val kind: BoardKind get() = BoardKind.MESHTASTIC
+
     // When this phone last put a post on the foreign public channel, for the per-phone floor. Monotonic
     // (`clock`), so it survives a wall-clock jump; NEVER so the first post of a session is never held.
     private val lastPublicPostAt = AtomicLong(NEVER)

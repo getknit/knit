@@ -1,11 +1,14 @@
 package app.getknit.knit.data.settings
 
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraPlaneSnapshot
 import app.getknit.knit.mesh.lora.LoraPlaneState
 import kotlinx.serialization.json.Json
 
 /**
- * The LoRa plane's [LoraPlaneState] over the settings DataStore: one JSON blob under one key.
+ * One LoRa plane instance's [LoraPlaneState] over the settings DataStore: one JSON blob under one key per instance, its
+ * [kind]'s (ADR 2026-11.gsqu, Stage 2) — `lora_plane_state` for Meshtastic byte for byte, `meshcore_plane_state` for
+ * MeshCore, so two children never write one blob and clobber each other's re-probe backoff.
  *
  * DataStore rather than the encrypted database because none of it is user content — it is which Meshtastic nodes the
  * auto-reply has answered and when the re-probe is next due, the same class of thing as the board binding beside it.
@@ -18,14 +21,15 @@ import kotlinx.serialization.json.Json
  */
 internal class LoraPlaneStateStore(
     private val settings: SettingsStore,
+    private val kind: BoardKind = BoardKind.MESHTASTIC,
 ) : LoraPlaneState {
     override suspend fun load(): LoraPlaneSnapshot? =
-        settings.loraPlaneState()?.let { blob ->
+        settings.planeState(kind)?.let { blob ->
             runCatching { json.decodeFromString<LoraPlaneSnapshot>(blob) }.getOrNull()
         }
 
     override suspend fun save(snapshot: LoraPlaneSnapshot) {
-        settings.setLoraPlaneState(json.encodeToString(snapshot))
+        settings.setPlaneState(kind, json.encodeToString(snapshot))
     }
 
     private companion object {

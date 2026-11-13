@@ -112,12 +112,32 @@ object SettingsKeys {
     const val BADGE_SEALED_VERSION = "badge_sealed_version"
     const val BADGE_PUBLISHED = "badge_published"
 
+    // A MeshCore board's peers of the `lora_*` keys, which stay Meshtastic's (ADR 2026-11.gsqu, Stage 2): declared ahead
+    // of the plane that reads them (Stage 5). The board's 32-byte PUBLIC key only ([MESHCORE_BOARD_PUBKEY]) — never from a
+    // key export, never logged, never on the debug bridge. No key holds the board's contacts, neither those that were on
+    // it before nor the ones Knit added: DataStore is plaintext, so Stage 5 keeps both in a SQLCipher table. The switches
+    // `lora_enabled` and `lora_dm_enabled` stay shared by both kinds.
+    const val MESHCORE_DEVICE_ADDRESS = "meshcore_device_address"
+    const val MESHCORE_DEVICE_NAME = "meshcore_device_name"
+    const val MESHCORE_BOARD_PUBKEY = "meshcore_board_pubkey"
+    const val MESHCORE_SETUP_PREFIX = "meshcore_setup_"
+    const val MESHCORE_SETUP_ADDRESS = "meshcore_setup_address"
+    const val MESHCORE_PRIOR_PREFIX = "meshcore_prior_"
+    const val MESHCORE_PLANE_STATE = "meshcore_plane_state"
+    const val MESHCORE_ROOM_ENABLED = "meshcore_room_enabled"
+    const val MESHCORE_POST_CONSENTED = "meshcore_post_consented"
+
     /**
      * Keys a backup never carries: state about *this phone's* radios and ROM (the Aware give-up and
      * initiator-hold journals, the model poison-pill latch), and the paired LoRa board's address, names and
      * pre-setup values — the BLE bond is per phone, so the user pairs the board again and those come back
      * with it. The board's node number and key stay: they ride the profile and are worth keeping. Matched
-     * as prefixes against the key name. The clone watch's two stamps (`clone_seen_at`, `clone_dismissed_at`)
+     * as prefixes against the key name. Each board kind has its own (ADR 2026-11.gsqu, Stage 2), split the same
+     * way and named key by key, never one bare `meshcore_` prefix: a MeshCore board's address, name, setup record
+     * (`meshcore_setup_…`), prior settings (`meshcore_prior_…`) and plane state stay, as their `lora_` peers do,
+     * while its public key (`meshcore_board_pubkey`), its Public-channel switch (`meshcore_room_enabled`) and its
+     * post consent (`meshcore_post_consented`) ride, as `lora_board_key`, `lora_room_enabled` and
+     * `meshtastic_post_consented` do. The clone watch's two stamps (`clone_seen_at`, `clone_dismissed_at`)
      * are about this phone too: a backup taken while its banner showed must not plant it on the next one, and
      * so is the mesh pause deadline (`mesh_pause_until`): a backup taken mid-pause must not pause the other phone.
      * Debug-build diagnostic knobs (`debug_`, e.g. the Bluetooth link cap) are about this phone's test run. A spool
@@ -146,6 +166,11 @@ object SettingsKeys {
             "lora_setup_address",
             "lora_prior_",
             "lora_plane_state",
+            MESHCORE_DEVICE_ADDRESS,
+            MESHCORE_DEVICE_NAME,
+            MESHCORE_SETUP_PREFIX,
+            MESHCORE_PRIOR_PREFIX,
+            MESHCORE_PLANE_STATE,
             "debug_",
             "spool_ticket",
             "spool_key_state",

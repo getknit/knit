@@ -154,6 +154,9 @@ internal class BoardSend(
  */
 @Suppress("TooManyFunctions") // one seam per kind: every Meshtastic-only behaviour the core calls, grouped by stage
 internal interface BoardKindHooks {
+    /** Which kind's behaviour this is (Stage 2): the same kind as the plane's traits, which the plane checks at construction. */
+    val kind: BoardKind
+
     /**
      * [status] with the board's half filled in from [state]: the link state the settings row and the field log render
      * (`LoraFieldLog`), and the board's own number. Called under the core's status lock (ADR 2026-10.a239's 2026-10-18

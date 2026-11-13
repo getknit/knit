@@ -7,8 +7,13 @@ import kotlin.math.roundToInt
  * The field log's LoRa sample (ADR 2026-10.a239): nothing while no board's link is ready, else one
  * [FieldEvent.Lora]. Lives beside [LinkState], which the field log cannot name, and leaves the board's identity out.
  * The board's own battery and duty-cycle readings ride beside Knit's airtime estimate, the percentages as tenths.
+ * [board] is the plane instance's kind (ADR 2026-11.gsqu, Stage 2), written only where it is not Meshtastic
+ * ([BoardKind.fieldTag]), so Meshtastic's line is the one it always was.
+ *
+ * The rule for every kind's line, MeshCore's from Stage 5 included (`docs/FIELD_LOG.md`): counts and the own radio's
+ * facts only. No number here may be derived from a key, a node, a contact or a contact snapshot.
  */
-internal fun LoraStatus.fieldSample(): List<FieldEvent> {
+internal fun LoraStatus.fieldSample(board: BoardKind = BoardKind.MESHTASTIC): List<FieldEvent> {
     if (state !is LinkState.Ready) return emptyList()
     return listOf(
         FieldEvent.Lora(
@@ -26,6 +31,7 @@ internal fun LoraStatus.fieldSample(): List<FieldEvent> {
             powered = battery?.powered,
             channelUtilTenths = boardAir?.channelUtilPercent?.let { (it * TENTHS).roundToInt() },
             airUtilTxTenths = boardAir?.airUtilTxPercent?.let { (it * TENTHS).roundToInt() },
+            board = board.fieldTag,
         ),
     )
 }

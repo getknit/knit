@@ -115,14 +115,17 @@ internal enum class LoraLinkEnd {
  *
  * [clock] must be the session's own monotonic base (`SystemClock.elapsedRealtime` in the app, as `MeshModule` hands
  * [MeshtasticSession]), because a [LinkState.Disconnected]'s `retryAtMs` is on it and `lora_fail`'s wait is read
- * against it; the dial and life times use it too.
+ * against it; the dial and life times use it too. [board] is the plane instance's kind (ADR 2026-11.gsqu, Stage 2),
+ * stamped on every edge where it is not Meshtastic ([BoardKind.fieldTag]): one follower per kind, and each line says
+ * whose board it was, never which board.
  */
 internal fun loraFieldEdges(
     status: Flow<LoraStatus>,
+    board: BoardKind = BoardKind.MESHTASTIC,
     clock: () -> Long,
 ): Flow<FieldEvent> =
     flow {
-        val follower = LoraFieldLog(clock)
+        val follower = LoraFieldLog(board, clock)
         status.collect { snapshot -> follower.next(snapshot).forEach { emit(it) } }
     }
 
@@ -149,8 +152,12 @@ internal fun loraFieldEdges(
  * handshaking then disconnected — a `lora_fail` with no up or down. Nothing here can recover it.
  */
 internal class LoraFieldLog(
+    board: BoardKind = BoardKind.MESHTASTIC,
     private val clock: () -> Long,
 ) {
+    /** What each line carries for its board: nothing for Meshtastic, whose lines predate the kind. */
+    private val boardTag: BoardKind? = board.fieldTag
+
     private var first = true
     private var previous: LinkState? = null
 
@@ -194,7 +201,7 @@ internal class LoraFieldLog(
 
             up != null -> {
                 val (reason, code) = LoraLinkEnd.of(state)
-                edges += FieldEvent.LoraDown(reason = reason, lifeMs = now - up, status = code)
+                edges += FieldEvent.LoraDown(reason = reason, lifeMs = now - up, status = code, board = boardTag)
                 upAt = null
                 tries = 0
                 attemptAt = null
@@ -222,6 +229,7 @@ internal class LoraFieldLog(
                 dedicatedSlot = radio?.dedicatedSlot,
                 hopLimit = radio?.hopLimit,
                 xeddsa = state.board.hasXeddsa,
+                board = boardTag,
             )
         upAt = now
         tries = 0
@@ -272,6 +280,6 @@ internal class LoraFieldLog(
         tries++
         // The attempt is over: a snapshot conflated away must not let the next up's dial run from this one's start.
         attemptAt = null
-        return FieldEvent.LoraFail(reason = reason, streak = position, status = code, waitMs = waitMs)
+        return FieldEvent.LoraFail(reason = reason, streak = position, status = code, waitMs = waitMs, board = boardTag)
     }
 }

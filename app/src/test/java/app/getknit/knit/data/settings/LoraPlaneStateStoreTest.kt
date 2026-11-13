@@ -1,6 +1,7 @@
 package app.getknit.knit.data.settings
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraPlaneSnapshot
 import app.getknit.knit.mesh.lora.ReprobeStamp
 import app.getknit.knit.mesh.lora.SeenStamp
@@ -51,6 +52,19 @@ class LoraPlaneStateStoreTest {
 
             // A fresh store over the same settings: what is read back is what the DataStore holds, not a cached copy.
             assertEquals(snapshot, LoraPlaneStateStore(settings).load())
+        }
+
+    /** One blob per plane instance (ADR 2026-11.gsqu, Stage 2): a second kind's save never clobbers Meshtastic's backoff. */
+    @Test
+    fun eachKindKeepsItsOwnSnapshot() =
+        runTest {
+            val settings = newSettings()
+            LoraPlaneStateStore(settings).save(snapshot)
+            val other = snapshot.copy(reprobes = emptyList())
+            LoraPlaneStateStore(settings, BoardKind.MESHCORE).save(other)
+
+            assertEquals(snapshot, LoraPlaneStateStore(settings, BoardKind.MESHTASTIC).load())
+            assertEquals(other, LoraPlaneStateStore(settings, BoardKind.MESHCORE).load())
         }
 
     @Test

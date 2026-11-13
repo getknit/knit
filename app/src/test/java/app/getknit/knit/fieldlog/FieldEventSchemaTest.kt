@@ -18,6 +18,7 @@ import app.getknit.knit.mesh.inet.LinkNet
 import app.getknit.knit.mesh.inet.LinkOutcome
 import app.getknit.knit.mesh.inet.LinkPath
 import app.getknit.knit.mesh.inet.LinkSession
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraLinkEnd
 import app.getknit.knit.mesh.lora.LoraRegion
 import app.getknit.knit.mesh.lora.ModemPreset
@@ -416,6 +417,35 @@ class FieldEventSchemaTest {
         assertEquals(
             """{"t":42,"e":"lora_fail","reason":"DIAL_TIMEOUT","streak":3,"wait":20000}""",
             line(FieldEvent.LoraFail(LoraLinkEnd.DIAL_TIMEOUT, streak = 3, waitMs = 20_000)),
+        )
+    }
+
+    /**
+     * ADR 2026-11.gsqu, Stage 2: a Meshtastic line names no board (the lines above stay byte-identical), and another kind's
+     * names its kind at the end, never an identity.
+     */
+    @Test
+    fun aMeshcoreLoraLineNamesItsKindAndNothingElse() {
+        assertEquals(
+            """{"t":42,"e":"lora_up","tries":0,"mtu":23,"board":"MESHCORE"}""",
+            line(FieldEvent.LoraUp(dialMs = null, tries = 0, mtu = 23, board = BoardKind.MESHCORE)),
+        )
+        assertEquals(
+            """{"t":42,"e":"lora_down","reason":"GATT_DROP","life":1,"board":"MESHCORE"}""",
+            line(FieldEvent.LoraDown(LoraLinkEnd.GATT_DROP, lifeMs = 1, board = BoardKind.MESHCORE)),
+        )
+        assertEquals(
+            """{"t":42,"e":"lora_fail","reason":"DIAL_TIMEOUT","streak":1,"board":"MESHCORE"}""",
+            line(FieldEvent.LoraFail(LoraLinkEnd.DIAL_TIMEOUT, streak = 1, board = BoardKind.MESHCORE)),
+        )
+        assertEquals(
+            """{"t":42,"e":"lora","queued":0,"heard":0,"boards":0,"board":"MESHCORE"}""",
+            line(FieldEvent.Lora(null, null, 0, 0, 0, null, null, board = BoardKind.MESHCORE)),
+        )
+        assertEquals(
+            """{"t":42,"e":"radio","radio":"LoRa","health":"Healthy","linked":0,"nearby":0,"contended":false,"held":false,""" +
+                """"board":"MESHCORE"}""",
+            line(FieldEvent.Radio(TransportKind.LoRa, TransportHealth.Healthy, 0, 0, false, false, board = BoardKind.MESHCORE)),
         )
     }
 

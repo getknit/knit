@@ -104,6 +104,8 @@ sealed interface FieldEvent {
     /**
      * One radio's status changed: health, live links, or a flag. [nearby] rides along but does not by itself
      * make an event (it is smoothed and moves constantly); [FieldLog] samples it with the counters instead.
+     * [board] is a LoRa child's board kind (`BoardKind.fieldTag`, ADR 2026-11.gsqu): null, and so not written, for the
+     * phone radios and for Meshtastic, whose line predates it.
      */
     data class Radio(
         val radio: Enum<*>,
@@ -112,6 +114,7 @@ sealed interface FieldEvent {
         val nearby: Int,
         val contended: Boolean,
         val initiatorHeld: Boolean,
+        val board: Enum<*>? = null,
     ) : FieldEvent {
         override val kind get() = "radio"
 
@@ -122,6 +125,7 @@ sealed interface FieldEvent {
             out.num("nearby", nearby.toLong())
             out.flag("contended", contended)
             out.flag("held", initiatorHeld)
+            board?.let { out.enum("board", it) }
         }
     }
 
@@ -458,7 +462,8 @@ sealed interface FieldEvent {
      * the peers a spool covers; and what the board says of itself: its free queue slots, its battery, and its own
      * duty-cycle readings (channel use and its own transmit share, in tenths of a percent). Never the board's name,
      * address or node number. The gateway role and the election's inputs (`role`, `gateways`, `pocket`, `sighted`)
-     * left with the pocket bridge (ADR 2026-10.rp3s).
+     * left with the pocket bridge (ADR 2026-10.rp3s). [board] is the board kind (`BoardKind.fieldTag`, ADR
+     * 2026-11.gsqu): null, and so not written, for Meshtastic, whose lines predate it.
      */
     @Suppress("LongParameterList") // one field per column of the line; a holder would only rename the list
     data class Lora(
@@ -475,6 +480,7 @@ sealed interface FieldEvent {
         val powered: Boolean? = null,
         val channelUtilTenths: Int? = null,
         val airUtilTxTenths: Int? = null,
+        val board: Enum<*>? = null,
     ) : FieldEvent {
         override val kind get() = "lora"
 
@@ -493,6 +499,7 @@ sealed interface FieldEvent {
             powered?.let { out.flag("powered", it) }
             channelUtilTenths?.let { out.num("chUtil10", it.toLong()) }
             airUtilTxTenths?.let { out.num("airTx10", it.toLong()) }
+            board?.let { out.enum("board", it) }
         }
     }
 
@@ -502,7 +509,9 @@ sealed interface FieldEvent {
      * up or down; the GATT [mtu]; and the board's radio as its config reported it — `LoraRegion`, `ModemPreset` (only
      * when it uses one), whether it is pinned to a slot of its own, its hop limit — and whether its firmware signs for
      * us (XEdDSA), each null where the board did not say. [relinkMs], filled by [FieldLog] like
-     * [BtUp.relinkMs], is the time without a ready link since the last [LoraDown] in this log.
+     * [BtUp.relinkMs], is the time without a ready link since the last [LoraDown] of the same [board] in this log.
+     * [board] is the board kind (`BoardKind.fieldTag`, ADR 2026-11.gsqu): null, and so not written, for Meshtastic,
+     * whose lines predate it.
      */
     @Suppress("LongParameterList") // one field per column of the line; a holder would only rename the list
     data class LoraUp(
@@ -515,6 +524,7 @@ sealed interface FieldEvent {
         val hopLimit: Int? = null,
         val xeddsa: Boolean? = null,
         val relinkMs: Long? = null,
+        val board: Enum<*>? = null,
     ) : FieldEvent {
         override val kind get() = "lora_up"
 
@@ -528,17 +538,20 @@ sealed interface FieldEvent {
             hopLimit?.let { out.num("hops", it.toLong()) }
             xeddsa?.let { out.flag("xeddsa", it) }
             relinkMs?.let { out.num("relink", it) }
+            board?.let { out.enum("board", it) }
         }
     }
 
     /**
      * The LoRa board's ready link ended after [lifeMs]: [reason] is the plane's own classification of why, [status]
-     * the GATT status it carried, where it carried one.
+     * the GATT status it carried, where it carried one. [board] is the board kind (`BoardKind.fieldTag`, ADR
+     * 2026-11.gsqu): null, and so not written, for Meshtastic, whose lines predate it.
      */
     data class LoraDown(
         val reason: Enum<*>,
         val lifeMs: Long,
         val status: Int? = null,
+        val board: Enum<*>? = null,
     ) : FieldEvent {
         override val kind get() = "lora_down"
 
@@ -546,18 +559,22 @@ sealed interface FieldEvent {
             out.enum("reason", reason)
             status?.let { out.num("status", it.toLong()) }
             out.num("life", lifeMs)
+            board?.let { out.enum("board", it) }
         }
     }
 
     /**
      * An attempt at the LoRa board's link ended before it was ready: [reason] and [status] as in [LoraDown], [streak]
      * the attempts failed in a row, this one included, and [waitMs] the backoff before the next, where one was set.
+     * [board] is the board kind (`BoardKind.fieldTag`, ADR 2026-11.gsqu): null, and so not written, for Meshtastic,
+     * whose lines predate it.
      */
     data class LoraFail(
         val reason: Enum<*>,
         val streak: Int,
         val status: Int? = null,
         val waitMs: Long? = null,
+        val board: Enum<*>? = null,
     ) : FieldEvent {
         override val kind get() = "lora_fail"
 
@@ -566,6 +583,7 @@ sealed interface FieldEvent {
             status?.let { out.num("status", it.toLong()) }
             out.num("streak", streak.toLong())
             waitMs?.let { out.num("wait", it) }
+            board?.let { out.enum("board", it) }
         }
     }
 

@@ -211,10 +211,22 @@ internal class LoraMeshTransport(
         }
 
     /** What only the board kind does (Stage 1b and 1c): made here, per instance, with the kind's own state inside. */
-    private val hooks: BoardKindHooks = MeshtasticHooks(link, board, core, scope, metrics, clock, log, onPublicPost, onBoardBound)
+    private val hooks: BoardKindHooks =
+        MeshtasticHooks(link, board, core, scope, metrics, clock, log, onPublicPost, onBoardBound).also {
+            check(it.kind == traits.kind) { "hooks for ${it.kind} over ${traits.kind} traits" }
+        }
 
-    /** A compact DM's budget on this kind ([LoraDirectSink.budgetFor]): fixed, so any coroutine reads it. */
-    private val directBudget: LoraDirectBudget = traits.directBudget()
+    /**
+     * Which board kind this plane instance drives (ADR 2026-11.gsqu, Stage 2): its traits' kind. What the composite keys
+     * this child's status by and the DI qualifies it with — never [kind], which is the radio family every kind shares.
+     */
+    override val boardKind: BoardKind get() = traits.kind
+
+    /**
+     * A compact DM's budget on this kind ([LoraDirectSink.budgetFor]): fixed, so any coroutine reads it, and the UI reads
+     * it through [LoraPlaneStatus.directBudget] without asking the board anything.
+     */
+    override val directBudget: LoraDirectBudget = traits.directBudget()
 
     private val _status = MutableStateFlow(LoraStatus())
 
@@ -301,6 +313,12 @@ internal class LoraMeshTransport(
 
     @Volatile
     private var currentConfig: LoraConfig? = null
+
+    /**
+     * The board address this plane is configured for now, or null with none: what `di/MeshModule`'s `onBoardBound` hands
+     * `SettingsStore.setLoraBoard` as the dialled address, so a late handshake after an unbind writes nothing back.
+     */
+    val configuredAddress: String? get() = currentConfig?.address
 
     /** The last [boardMap], or null until it has reported: a peer missing from it is not sent to, for now. */
     @Volatile

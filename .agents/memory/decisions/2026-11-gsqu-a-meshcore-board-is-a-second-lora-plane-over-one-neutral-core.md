@@ -149,7 +149,10 @@ It would also wake every Knit phone in range.
 
   A `RESP_SENT` that reports a flood is counted as a breach (`meshcoreDirectFlooded`).
 - **What Knit removes.** Only the contacts it added. A contact that already existed for that key is snapshotted and
-  put back on Restore.
+  put back on Restore. Both the snapshot and the list of contacts Knit added live in a SQLCipher table, never in
+  DataStore, which is plaintext: the snapshot keeps only what puts a contact back (key, type, flags, name, `out_path`),
+  never `adv_lat`, `adv_lon` or `last_advert`; the rows are cleared on unbind, on a cross-kind bind and on sign-out; and
+  a removed or blocked Knit contact's key leaves the added list once the board drops it (ADR 2026-09.adgd).
 - **Errors.** `ERR NOT_FOUND` on a send writes the contact and sends once more. Misleading error codes are read by
   context: an over-long text returns `TABLE_FULL`.
 
@@ -301,3 +304,42 @@ So, as built:
   `KeyWrite`).
 - **A slot no kind can vouch for is refused.** `checkSlot` returns null when the kind cannot read the slot, and the core
   refuses the frame.
+
+## Amendment 2026-11-13 — Stage 2: every per-kind surface addresses a plane by `BoardKind` (draft)
+
+Stage 2 makes room for a second plane instance without building one. Meshtastic's is still the only plane; every
+release-visible key, line, row and bridge key is what it was.
+
+- **The kind.** `BoardKind { MESHTASTIC, MESHCORE }`, carried by `BoardTraits.kind` and `BoardKindHooks.kind` (the
+  transport checks they agree) and reported as `boardKind`, never `kind`, which stays `MeshTransport.kind`.
+  `BuildConfig.MESHCORE_PLANE` (`-PmeshcorePlane`, on in debug, off in release, never without `LORA_PLANE`) is read
+  only by the guard in `di/BUILT_BOARD_KINDS`, where Stage 5 adds the child.
+- **Koin.** Every per-kind single (the link, the transport, its `LoraDirectSink`, its `PublicChannelSink`, its
+  `LoraPlaneStatus`) carries `loraPlane(kind)`; the composite takes one LoRa child per built kind.
+- **The DM router.** `MeshManager` binds `LoraDirectRouter.sinkFor(peerId)`, asked once per offer with the recipient.
+  v1's rule: the **bound** kind's plane (the kind whose address is set), Meshtastic's with none bound, and nothing when
+  the bound kind has no plane in this build. It never reads the board map or a holder, so a DM offered before the map
+  reports still reaches the plane's own `directHolder` and re-probe. No arrival kind on the inbound side: under one
+  bound board it would be a second routing rule that could disagree with `sinkFor` (ADR 2026-09.zkma); it waits for
+  the two-board router.
+- **Settings.** The `lora_*` keys stay Meshtastic's with no migration; MeshCore's are their `meshcore_*` peers
+  (`BoardKeys`), and `lora_enabled` / `lora_dm_enabled` stay shared. A backup leaves out the address, name, setup
+  record, priors and plane state of each kind and carries its board key, room switch and post consent, named key by
+  key, never one bare `meshcore_` prefix. Binding a kind (`BoardBindPolicy`, every writer of an address) clears the
+  other kind's identity (address, name, reported node / key) in the same edit, never the shared switches, and keeps
+  the other kind's setup record and priors so that board can still be restored (ADR 045).
+- **Plane state.** One blob per instance: `lora_plane_state` byte for byte, `meshcore_plane_state` for MeshCore.
+- **Status.** `LoraStatusRepository` takes each kind's `LoraPlaneStatus`, emits each kind's `LoraFacts` and, as the
+  aggregate, the bound kind's. `LoraFacts.directBudget` carries the kind's constant compact budget, so the composer's
+  DM hint follows the bound board without reaching the transport (Meshtastic: 168 B, a 160-B body).
+  `TransportStatus.boardKind` keys a LoRa child, since every kind shares `TransportKind.LoRa`; Diagnostics shows the
+  bound kind's row alone and the field log keeps one `radio` line per child.
+- **Field log.** `FieldEvent.Lora*` and `Radio` carry `board`, written only where it is not Meshtastic; each kind has
+  its own sampler and follower name (`lora` stays Meshtastic's) and its own relink. A kind's lines carry counts and
+  own-radio facts only, nothing derived from a key, a node, a contact or the snapshot (`docs/FIELD_LOG.md`).
+- **Left unkeyed.** `MeshMetrics`' `onLora*` counters and the field log's counters sample, the debug bridge's `LORA`
+  (Meshtastic's instance only) and `peerTransports` / `linkSecurityByKind`: one board is bound at a time, and per-kind
+  diagnostics are deferred with both boards at once. What Stage 5 adds to the bridge and `AppUsbControlApi` for MeshCore
+  is counts and own-board state only: no contact key or name, no snapshot, no board key.
+- **Dropped from the plan.** A per-dialer `BleConnectArbiter` tag: `MeshtasticGatt` already holds its own, and the
+  MeshCore dialer picks its own in Stage 3.

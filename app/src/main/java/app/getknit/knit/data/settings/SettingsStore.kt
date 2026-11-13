@@ -13,11 +13,13 @@ import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.emoji.RecentReactions
 import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.bluetooth.PromotionConfig
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.spool.SpoolTicketJournal
 import app.getknit.knit.mesh.spool.StoredSpoolTicket
 import app.getknit.knit.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
@@ -516,6 +518,33 @@ class SettingsStore(
     /** The bonded Meshtastic board's MAC address the LoRa plane binds to, or null if none is chosen. */
     val loraDeviceAddress: Flow<String?> = dataStore.data.map { it[KEY_LORA_ADDRESS] }
 
+    /**
+     * The bonded MeshCore board's address (ADR 2026-11.gsqu, Stage 2), the peer of [loraDeviceAddress]. Nothing writes it
+     * but [bindBoard], and no plane reads it until Stage 5 builds the MeshCore one.
+     */
+    val meshcoreDeviceAddress: Flow<String?> = dataStore.data.map { it[BoardKeys.MESHCORE.address] }
+
+    /**
+     * Whether a MeshCore board's Public channel is mirrored here (ADR 2026-11.gsqu §7), the peer of [loraRoomEnabled]:
+     * default on, gated on `BuildConfig.LORA_PLANE` the same way. Read only for a MeshCore plane, which Stage 5 builds.
+     */
+    val meshcoreRoomEnabled: Flow<Boolean> =
+        dataStore.data.map { BuildConfig.LORA_PLANE && (it[KEY_MESHCORE_ROOM_ENABLED] ?: true) }
+
+    /**
+     * The bound board kind (ADR 2026-11.gsqu, Stage 2: v1 binds one board at a time): the kind whose device address is
+     * set ([BoardKind.boundOf]), or null with none. What `LoraDirectRouter` sends a compact DM through and the status
+     * aggregate reports; never a board map or a holder.
+     */
+    val boundBoardKind: Flow<BoardKind?> =
+        dataStore.data
+            .map { prefs ->
+                BoardKind.boundOf(
+                    meshtasticBound = prefs[BoardKeys.MESHTASTIC.address] != null,
+                    meshcoreBound = prefs[BoardKeys.MESHCORE.address] != null,
+                )
+            }.distinctUntilChanged()
+
     /** The chosen board's display name, for the settings row (the picker records it alongside the address). */
     val loraDeviceName: Flow<String?> = dataStore.data.map { it[KEY_LORA_NAME] }
 
@@ -623,7 +652,14 @@ class SettingsStore(
      * suspend read and not a flow: a snapshot arriving mid-session would be this process's own write coming
      * back round.
      */
-    suspend fun loraPlaneState(): String? = dataStore.data.first()[KEY_LORA_PLANE_STATE]
+    suspend fun loraPlaneState(): String? = planeState(BoardKind.MESHTASTIC)
+
+    /**
+     * [kind]'s plane limiters, as [loraPlaneState] reads Meshtastic's: one blob per plane instance (ADR 2026-11.gsqu,
+     * Stage 2), `lora_plane_state` for Meshtastic byte for byte and `meshcore_plane_state` for MeshCore, so two children
+     * never clobber each other's re-probe backoff.
+     */
+    suspend fun planeState(kind: BoardKind): String? = dataStore.data.first()[BoardKeys.of(kind).planeState]
 
     /**
      * The board set up for Knit (ADR 045) and the housekeeping intervals it had *before* — so restoring puts
@@ -883,28 +919,45 @@ class SettingsStore(
 
     suspend fun setLoraRoomEnabled(value: Boolean) = dataStore.edit { it[KEY_LORA_ROOM_ENABLED] = value }
 
-    /** Records the chosen board's address + name in one write so the row can never show a name without an address. */
+    /**
+     * Records the chosen Meshtastic board's address + name in one write so the row can never show a name without an
+     * address: [bindBoard] for [BoardKind.MESHTASTIC].
+     */
     suspend fun setLoraDevice(
         address: String,
         name: String,
-    ) = dataStore.edit {
-        it[KEY_LORA_ADDRESS] = address
-        it[KEY_LORA_NAME] = name
-        // A different board has a different node number and key; forget the old ones until the new board
-        // reports in, rather than advertise a board this phone no longer holds.
-        it.remove(KEY_LORA_NODE)
-        it.remove(KEY_LORA_KEY)
-    }
+    ) = bindBoard(BoardKind.MESHTASTIC, address, name)
+
+    /**
+     * Binds a board of [kind] in one edit ([BoardBindPolicy], ADR 2026-11.gsqu Stage 2). A different board has a different
+     * node number and key, so this kind's last report is forgotten until the new board reports in, rather than advertise
+     * a board this phone no longer holds; and v1 binds one board at a time, so the other kind's identity goes in the same
+     * edit, while the shared switches and the other kind's setup record stay.
+     */
+    suspend fun bindBoard(
+        kind: BoardKind,
+        address: String,
+        name: String,
+    ) = dataStore.edit { BoardBindPolicy.bind(it, kind, address, name) }
 
     /**
      * The bound board reported its node number and, when the number is the key's CRC32, its key ([loraBoard]). One edit
      * on purpose: the profile republishes on every change to either, so writing them separately would flood
      * it twice for one board.
+     *
+     * [dialled] is the address the reporting session's plane was configured for. Given, the write lands only while
+     * `lora_device_address` still equals it, checked inside the same edit: a session whose handshake finishes after the
+     * board was forgotten ([clearLoraDevice]), replaced, or unbound by a cross-kind bind ([BoardBindPolicy]) must not
+     * write the old board's node and key back, or the signed profile re-advertises `loraNode` / `loraKey` and
+     * `CAP_LORA_DIRECT` for a board this phone no longer reads. Null writes unconditionally: the lab's boards, whose
+     * plane is configured without a settings binding. Stage 5's MeshCore pubkey writer takes the same rule.
      */
     suspend fun setLoraBoard(
         node: Long,
         key: String?,
+        dialled: String? = null,
     ) = dataStore.edit {
+        if (dialled != null && it[KEY_LORA_ADDRESS] != dialled) return@edit
         it[KEY_LORA_NODE] = node
         if (key != null) it[KEY_LORA_KEY] = key else it.remove(KEY_LORA_KEY)
     }
@@ -992,7 +1045,13 @@ class SettingsStore(
     suspend fun setDebugBlePhyMode(mode: CodedPhyMode) = dataStore.edit { it[KEY_DEBUG_BLE_PHY_MODE] = mode.wire }
 
     /** Records the LoRa plane's limiters; see [loraPlaneState]. */
-    suspend fun setLoraPlaneState(json: String) = dataStore.edit { it[KEY_LORA_PLANE_STATE] = json }
+    suspend fun setLoraPlaneState(json: String) = setPlaneState(BoardKind.MESHTASTIC, json)
+
+    /** Records [kind]'s plane limiters; see [planeState]. */
+    suspend fun setPlaneState(
+        kind: BoardKind,
+        json: String,
+    ) = dataStore.edit { it[BoardKeys.of(kind).planeState] = json }
 
     /** Records a board as set up for Knit, along with the intervals a restore must put back. */
     suspend fun setLoraBoardSetup(board: KnitBoardSetup) =
@@ -1264,8 +1323,8 @@ class SettingsStore(
         val KEY_DIRECT_LINKS = booleanPreferencesKey("direct_links_enabled")
         val KEY_LORA_DM_ENABLED = booleanPreferencesKey("lora_dm_enabled")
         val KEY_LORA_ROOM_ENABLED = booleanPreferencesKey("lora_room_enabled")
-        val KEY_LORA_ADDRESS = stringPreferencesKey("lora_device_address")
-        val KEY_LORA_NAME = stringPreferencesKey("lora_device_name")
+        val KEY_LORA_ADDRESS = BoardKeys.MESHTASTIC.address
+        val KEY_LORA_NAME = BoardKeys.MESHTASTIC.name
         val KEY_LORA_CHANNEL = intPreferencesKey("lora_channel_index")
         val KEY_DEBUG_BLE_LINK_CAP = intPreferencesKey("debug_ble_link_cap")
         val KEY_DEBUG_BLE_PHY_MODE = stringPreferencesKey("debug_ble_phy_mode")
@@ -1277,8 +1336,8 @@ class SettingsStore(
         val KEY_DEBUG_DIRECT_CALLS_OFF = booleanPreferencesKey("debug_direct_calls_off")
         val KEY_DEBUG_WALKIE_CLIPS = booleanPreferencesKey("debug_walkie_clips")
         val KEY_DEBUG_DEV_VIEW = booleanPreferencesKey("debug_dev_view")
-        val KEY_LORA_NODE = longPreferencesKey("lora_board_node")
-        val KEY_LORA_KEY = stringPreferencesKey("lora_board_key")
+        val KEY_LORA_NODE = BoardKeys.LORA_NODE
+        val KEY_LORA_KEY = BoardKeys.LORA_KEY
         val KEY_LORA_SETUP_ADDRESS = stringPreferencesKey("lora_setup_address")
         val KEY_LORA_PRIOR_NODE_INFO = intPreferencesKey("lora_prior_node_info_secs")
         val KEY_LORA_PRIOR_POSITION = intPreferencesKey("lora_prior_position_secs")
@@ -1288,7 +1347,7 @@ class SettingsStore(
         val KEY_LORA_PRIOR_CHANNEL_NUM = intPreferencesKey("lora_prior_channel_num")
         val KEY_LORA_PRIOR_LONG_NAME = stringPreferencesKey("lora_prior_long_name")
         val KEY_LORA_PRIOR_SHORT_NAME = stringPreferencesKey("lora_prior_short_name")
-        val KEY_LORA_PLANE_STATE = stringPreferencesKey("lora_plane_state")
+        val KEY_MESHCORE_ROOM_ENABLED = booleanPreferencesKey(SettingsKeys.MESHCORE_ROOM_ENABLED)
         val KEY_RECENT_REACTIONS = stringPreferencesKey("recent_reactions")
     }
 }

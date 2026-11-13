@@ -61,10 +61,12 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.lora.BoardAddr
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.DirectKind
 import app.getknit.knit.mesh.lora.LoraBoardHolder
 import app.getknit.knit.mesh.lora.LoraContactPolicy
 import app.getknit.knit.mesh.lora.LoraDirectBudget
+import app.getknit.knit.mesh.lora.LoraDirectRouter
 import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.protocol.BlobReqContent
@@ -1845,6 +1847,55 @@ class MeshManagerTest {
         manager.bindLoraDirect(sink = { sink }, seal = LoraDirectSeal(ownDhPrivate = { ByteArray(32) { 1 } }, clock = { clockNow }))
         return sink
     }
+
+    /**
+     * ADR 2026-11.gsqu, Stage 2: the manager binds the router and asks it once per offer, with the recipient, so the
+     * budget and the offer read one sink (the crypto design pass's rule). That the router reads no board map is a
+     * property of its constructor, which takes none.
+     */
+    @Test
+    fun theRouterIsAskedOncePerOfferWithTheRecipient() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val sink = BudgetedSink(listOf(LoraDirectBudget(168, 9)))
+            val asked = CopyOnWriteArrayList<String>()
+            val router = LoraDirectRouter(mapOf(BoardKind.MESHTASTIC to { sink }), boundKind = { null })
+            rig.manager.bindLoraDirect(
+                sinkFor = { peerId -> router.sinkFor(peerId).also { asked += peerId } },
+                seal = LoraDirectSeal(ownDhPrivate = { ByteArray(32) { 1 } }, clock = { rig.clockNow }),
+            )
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+
+            assertTrue(rig.manager.sendChat("before the map", recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+
+            val offer = sink.offers.single()
+            assertEquals(rig.bob.nodeId, offer.recipientId)
+            assertEquals(DirectKind.MESSAGE, offer.kind)
+            assertEquals("resolved once, for the recipient", listOf(rig.bob.nodeId), asked)
+        }
+
+    /** A bound kind with no plane in this build offers nothing compact; the signed copy still goes. */
+    @Test
+    fun aBoundKindWithNoPlaneOffersNothingCompact() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val sink = BudgetedSink(listOf(LoraDirectBudget(168, 9)))
+            val router = LoraDirectRouter(mapOf(BoardKind.MESHTASTIC to { sink }), boundKind = { BoardKind.MESHCORE })
+            rig.manager.bindLoraDirect(
+                sinkFor = router::sinkFor,
+                seal = LoraDirectSeal(ownDhPrivate = { ByteArray(32) { 1 } }, clock = { rig.clockNow }),
+            )
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+
+            assertTrue(rig.manager.sendChat("no plane", recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+
+            assertTrue(sink.offers.isEmpty())
+            assertEquals(1, rig.sentChatFrames().size)
+        }
 
     /** Nothing compact toward a group, toward a peer without the capability, or from a manager no plane is bound to. */
     @Test

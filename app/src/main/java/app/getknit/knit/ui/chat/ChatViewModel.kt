@@ -96,6 +96,7 @@ import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.b64d
+import app.getknit.knit.mesh.lora.LoraDirectBudget
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.lora.LoraSizeHint
@@ -579,6 +580,8 @@ data class ChatUiState(
     val loraReach: LoraReach = LoraReach.Silent,
     // Whether (and in which form) a draft here rides LoRa — sizes the composer's length hint. See [loraCarryFor].
     val loraCarry: LoraCarry = LoraCarry.None,
+    // The bound board kind's compact-DM budget (`LoraFacts.directBudget`), which sizes the DM half of that hint.
+    val loraDirectBudget: LoraDirectBudget = LoraDirectBudget.MESHTASTIC,
     // Whether the Meshtastic room's composer may post from this device, and if not why ([publicPostGateFor]).
     // [PublicPostGate.Open] everywhere else, and as the seed — a send that beats the first emission is judged
     // by the board's own outcome rather than by a stale gate.
@@ -1891,6 +1894,7 @@ class ChatViewModel(
                         }
                     },
                 loraCarry = loraCarryFor(conversationId, isGroup, mesh.lora.facts),
+                loraDirectBudget = mesh.lora.facts.directBudget,
                 publicPostGate = publicPostGateFor(conversationId, mesh.lora.facts),
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom, isLoading = true))

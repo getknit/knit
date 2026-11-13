@@ -252,4 +252,71 @@ class LoraStatusRepositoryTest {
             status.value = LoraStatus(state = ready, airtime = air.copy(roomSignedUpTo = 154))
             assertEquals("2.8.1 on an AEAD slot 0", 154, repo.facts.first().roomSignedUpTo)
         }
+
+    /** Each kind's facts say whose they are and carry its compact budget, a constant of its plane (ADR 2026-11.gsqu). */
+    @Test
+    fun `the facts carry the kind and its compact budget off the plane, never the transport`() =
+        runTest {
+            val facts = repo.facts.first()
+            assertEquals(BoardKind.MESHTASTIC, facts.board)
+            assertEquals(LoraDirectBudget.MESHTASTIC, facts.directBudget)
+            assertEquals(mapOf(BoardKind.MESHTASTIC to facts), repo.perKind.first())
+        }
+
+    /**
+     * Two planes (Stage 5's shape): the aggregate is the bound kind's facts, Meshtastic's with none bound, and each kind's
+     * facts read its own binding and its own plane.
+     */
+    @Test
+    fun `with two planes the aggregate is the bound kind's`() =
+        runTest {
+            val bound = MutableStateFlow<BoardKind?>(null)
+            val meshcoreAddress = MutableStateFlow<String?>(null)
+            val twoKinds =
+                mockk<SettingsStore> {
+                    every { loraEnabled } returns enabled
+                    every { loraDeviceAddress } returns address
+                    every { loraDmEnabled } returns dms
+                    every { loraRoomEnabled } returns room
+                    every { meshcoreDeviceAddress } returns meshcoreAddress
+                    every { meshcoreRoomEnabled } returns MutableStateFlow(true)
+                    every { boundBoardKind } returns bound
+                }
+            val meshcoreStatus = MutableStateFlow(LoraStatus(state = ready))
+            val meshcoreBudget = LoraDirectBudget.forPlaintext(105)
+            val meshcore =
+                object : LoraPlaneStatus {
+                    override val status: StateFlow<LoraStatus> = meshcoreStatus
+                    override val boardKind = BoardKind.MESHCORE
+                    override val directBudget = meshcoreBudget
+
+                    override suspend fun provisionKnitChannel(
+                        mode: ProvisionMode,
+                        previous: BoardSettings?,
+                    ): ProvisionResult = ProvisionResult.NotReady(LinkState.Idle)
+                }
+            val both = LoraStatusRepository(twoKinds, mapOf(BoardKind.MESHTASTIC to lora, BoardKind.MESHCORE to meshcore))
+
+            // Meshtastic bound (its address is set, the bound kind reads it), and nothing bound at all, read Meshtastic's.
+            bound.value = BoardKind.MESHTASTIC
+            assertEquals(BoardKind.MESHTASTIC, both.facts.first().board)
+            bound.value = null
+            assertEquals(LoraFacts(LoraPlane.Down, dms = true), both.facts.first())
+
+            // A MeshCore bind: its address set, Meshtastic's cleared in the same edit.
+            address.value = null
+            meshcoreAddress.value = "BB:BB"
+            bound.value = BoardKind.MESHCORE
+            val facts = both.facts.first()
+            assertEquals(BoardKind.MESHCORE, facts.board)
+            assertEquals(LoraPlane.Live, facts.plane)
+            assertEquals(meshcoreBudget, facts.directBudget)
+            assertEquals(
+                LoraPlane.Off,
+                both.perKind
+                    .first()
+                    .getValue(BoardKind.MESHTASTIC)
+                    .plane,
+            )
+        }
 }

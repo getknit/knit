@@ -127,6 +127,9 @@ class KoinGraphVerifyTest {
                 CoroutineDispatcher::class,
                 // OutsideUris' authority set, read off the installed manifest by `OutsideUris.of` (#284).
                 Set::class,
+                // The LoRa planes by board kind (ADR 2026-11.gsqu, Stage 2): LoraDirectRouter's sinks and LoraStatusRepository's
+                // faces, built in their definitions from each kind's qualified single.
+                Map::class,
             )
     }
 }

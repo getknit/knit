@@ -267,6 +267,20 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `LoraDirectSink.budgetFor` (`LoraDirectBudget`, `compactTickAcks`) and `compactCopyOf` gives shed LoRa-held acks back to
   the coalescer. Every Meshtastic number stays the constant it was, pinned by `LoraAirtimeParityTest` and
   `BoardTraitsTest`; a trait sets a factory default, never an injected value.
+  Stage 2 (built, gsqu's 2026-11-13 Stage 2 amendment): every per-kind surface addresses a plane by `BoardKind`
+  (`BoardTraits.kind`, `BoardKindHooks.kind`, the transport's `boardKind`, never `kind`). Koin qualifies each per-kind
+  single with `loraPlane(kind)` and the composite takes one child per `BUILT_BOARD_KINDS` (Meshtastic's alone;
+  `BuildConfig.MESHCORE_PLANE` is read only by that list's guard). `MeshManager` binds `LoraDirectRouter.sinkFor`, asked
+  once per offer: the **bound** kind's plane (`SettingsStore.boundBoardKind`, `BoardKind.boundOf`), Meshtastic's with
+  none, never the board map or a holder, and no arrival kind on the inbound side. Settings keys per kind are
+  `BoardKeys` (the `lora_*` keys stay Meshtastic's; `meshcore_*` declared in `SettingsKeys`, no board contacts in
+  DataStore); a bind goes through `BoardBindPolicy` (`SettingsStore.bindBoard`): the other kind's identity cleared,
+  `lora_enabled` / `lora_dm_enabled` and the other kind's setup record kept. `LoraPlaneStateStore` takes its kind's key.
+  `LoraStatusRepository` emits `perKind` and the bound kind's `facts`, carrying `LoraFacts.board` and
+  `LoraFacts.directBudget` (`LoraPlaneStatus.directBudget`, read by `LoraSizeHint.dmBodyBytes` and `loraBudgetFor`, never
+  off the transport). `TransportStatus.boardKind` (`BoardKindSource`) keys a LoRa child in the field log and in
+  `transportRows`, which shows the bound kind's row alone. `FieldEvent.Lora*` / `Radio` write `board` only where it is not
+  Meshtastic (`BoardKind.fieldTag`); streams are `BoardKind.fieldStream`. The `onLora*` counters stay unkeyed.
   <!-- doc-lint: allow FLOOD — Ceiling.FLOOD is proposed by ADR 2026-11.gsqu and not built yet -->
   On a MeshCore board only people's room posts and reactions flood, plus our own profile right before our first
   flooded post. Floods are scoped to the board's region when one is set, and booked as every repeater's airtime under

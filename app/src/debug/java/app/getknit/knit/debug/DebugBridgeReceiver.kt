@@ -90,6 +90,7 @@ import app.getknit.knit.demo.DemoCalls
 import app.getknit.knit.di.LIVE_CALLS_WIRED
 import app.getknit.knit.di.WALKIE_WIRED
 import app.getknit.knit.di.demoGoRequested
+import app.getknit.knit.di.loraPlane
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.ForwardStore
@@ -124,6 +125,7 @@ import app.getknit.knit.mesh.inet.DirectLinkTransport
 import app.getknit.knit.mesh.inet.DirectLinks
 import app.getknit.knit.mesh.link.FeedWindow
 import app.getknit.knit.mesh.link.LinkFraming
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.BoardOwner
 import app.getknit.knit.mesh.lora.BoardSettings
 import app.getknit.knit.mesh.lora.ProvisionMode
@@ -494,8 +496,13 @@ class DebugBridgeReceiver :
     private val exits: ProcessExitReasons by inject()
     private val notifier: Notifier by inject()
     private val scope: CoroutineScope by inject()
-    private val lora: app.getknit.knit.mesh.lora.LoraMeshTransport by inject()
-    private val loraLink: app.getknit.knit.mesh.lora.MeshtasticLink by inject()
+
+    // The `LORA` / `LORAPROV` / `LORATX` actions read the Meshtastic plane instance only (ADR 2026-11.gsqu, Stage 2). This
+    // receiver is exported with no permission on a debug build, and MESHCORE_PLANE is debug-only (precedent: #23), so what
+    // Stage 5 adds here for MeshCore is counts and the own board's state only: no contact key or name, no contact
+    // snapshot, no board key.
+    private val lora: app.getknit.knit.mesh.lora.LoraMeshTransport by inject(loraPlane(BoardKind.MESHTASTIC))
+    private val loraLink: app.getknit.knit.mesh.lora.MeshtasticLink by inject(loraPlane(BoardKind.MESHTASTIC))
     private val transfers: TransferManager by inject()
     private val backupWriter: app.getknit.knit.data.backup.BackupWriter by inject()
     private val restoreStager: app.getknit.knit.data.backup.RestoreStager by inject()
@@ -2673,7 +2680,8 @@ class DebugBridgeReceiver :
 
     /**
      * Configures and inspects the LoRa (Meshtastic) plane — the only way to drive it on a locked lab
-     * device. `--es address <MAC>` + `--es name <n>` binds a bonded board, `--ei channel <idx>` sets the
+     * device. `--es address <MAC>` + `--es name <n>` binds a bonded Meshtastic board (`SettingsStore.setLoraDevice`, so
+     * the cross-kind bind's `BoardBindPolicy` applies here as on the radio screen), `--ei channel <idx>` sets the
      * channel index, `--ez on <true|false>` flips the switch, `--ez dms <true|false>` the private-messages
      * switch (ADR 039) and `--ez room <true|false>` the Meshtastic room (ADR 2026-09.26q3, on by default —
      * off, slot 0 is dropped where it lands, so `meshPostRefusedByReason.ROOM_OFF` climbs and

@@ -1750,7 +1750,12 @@ internal fun ChatScreenContent(
                             videoEncoding = videoEncoding,
                             onCancelVideo = onCancelVideo,
                             loraBudget =
-                                loraBudgetFor(state.loraCarry, replying = replyingTo != null, attached = pendingAttachment != null)
+                                loraBudgetFor(
+                                    state.loraCarry,
+                                    replying = replyingTo != null,
+                                    attached = pendingAttachment != null,
+                                    direct = state.loraDirectBudget,
+                                )
                                     // A staged position rides the body, so its bytes come off the same budget.
                                     ?.let { if (stagedLocation != null) (it - GeoUri.RESERVE_BYTES).coerceAtLeast(0) else it },
                             loraHint = loraHintFor(state.loraCarry),

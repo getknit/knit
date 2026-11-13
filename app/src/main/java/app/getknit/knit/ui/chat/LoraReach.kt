@@ -5,6 +5,7 @@ import app.getknit.knit.R
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.relay.RelayReach
 import app.getknit.knit.mesh.TransportKind
+import app.getknit.knit.mesh.lora.LoraDirectBudget
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.lora.LoraSizeHint
@@ -195,19 +196,24 @@ fun loraCarryFor(
     }
 
 /**
- * The composer's body budget in bytes for [carry], or null when the draft would not ride LoRa at all. Zero means no
- * draft of this shape rides, whatever its length: a post or a DM with a reply or an attachment, since both budgets are
- * one packet (ADR 2026-10.rp3s, ADR 2026-10.x9fa) and either reserve is larger than that.
+ * The composer's body budget in bytes for [carry] on a board whose compact DM holds [direct], or null when the draft would
+ * not ride LoRa at all. Zero means no draft of this shape rides, whatever its length: a post or a DM with a reply or an
+ * attachment, since both budgets are one packet (ADR 2026-10.rp3s, ADR 2026-10.x9fa) and either reserve is larger than
+ * that.
  */
 fun loraBudgetFor(
     carry: LoraCarry,
     replying: Boolean,
     attached: Boolean,
+    direct: LoraDirectBudget = LoraDirectBudget.MESHTASTIC,
 ): Int? =
     when (carry) {
         LoraCarry.None -> null
+
         LoraCarry.Room -> LoraSizeHint.budget(LoraSizeHint.ROOM_BODY_BYTES, replying, attached)
-        LoraCarry.Dm -> LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying, attached)
+
+        // The bound kind's compact budget (`LoraFacts.directBudget`, ADR 2026-11.gsqu Stage 2): Meshtastic's 160-B body.
+        LoraCarry.Dm -> LoraSizeHint.budget(LoraSizeHint.dmBodyBytes(direct), replying, attached)
     }
 
 /**

@@ -108,6 +108,13 @@ only as a `lora_fail` (HANDSHAKE or GATT_DROP) with no `lora_up` or `lora_down`.
 link never came up. A mesh stop rarely writes the board's `lora_down`, because the session that follows the status ends
 as the plane stops: a `mesh_off` closes an open LoRa link, and the next session's first `lora_up` carries no `relink`.
 
+Each board kind is its own LoRa plane with its own stream (ADR 2026-11.gsqu). A Meshtastic line is written exactly as
+before; any other kind's `lora`, `lora_up`, `lora_down`, `lora_fail` and LoRa `radio` lines add `board` (MESHCORE), and
+a `relink` counts from the last `lora_down` of the same board. The sampler and follower names are constants per kind
+(`lora` stays Meshtastic's, `meshcore` is MeshCore's). The rule for every kind's lines, MeshCore's included: counts and
+the own radio's facts only. No number may be derived from a key, a node, a contact or the board's contact snapshot,
+and none names the board, its address or its node number, as `lora` never has.
+
 The call lines exist only in a build with calls (`-Pcalls=true`, ADR 2026-10.swvp). They carry no call id, SDP,
 candidate address, TURN credential or caption: types, counts and times only.
 

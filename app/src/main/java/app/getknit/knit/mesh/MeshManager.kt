@@ -516,12 +516,14 @@ class MeshManager(
     private var sessionScope: CoroutineScope? = null
 
     /**
-     * Where the compact LoRa copy of a DM, a DM reaction or a ✓✓ we just sealed is offered (ADR 2026-10.x9fa) — the LoRa
-     * transport's [LoraDirectSink], resolved at call time because the transport and this manager construct each other.
-     * Null in a build without the plane and in every rig that binds none ([bindLoraDirect]).
+     * Where the compact LoRa copy of a DM, a DM reaction or a ✓✓ we just sealed for a peer is offered (ADR 2026-10.x9fa) —
+     * the plane `LoraDirectRouter` answers for that peer (ADR 2026-11.gsqu, Stage 2: the bound kind's), resolved at call
+     * time because the transport and this manager construct each other, and **once** per offer: the budget and the offer
+     * read the one sink it answered, so nothing sized for one board goes to another. Null in a build without the plane
+     * and in every rig that binds none ([bindLoraDirect]).
      */
     @Volatile
-    private var loraDirectSink: () -> LoraDirectSink? = { null }
+    private var loraDirectSink: suspend (peerId: String) -> LoraDirectSink? = { null }
 
     /** The pair seal the plane seals and opens compact DMs with; its index is kept off the peer table ([watchLoraPairs]). */
     @Volatile
@@ -535,8 +537,17 @@ class MeshManager(
     internal fun bindLoraDirect(
         sink: () -> LoraDirectSink?,
         seal: LoraDirectSeal,
+    ) = bindLoraDirect(sinkFor = { _ -> sink() }, seal = seal)
+
+    /**
+     * [bindLoraDirect] with a per-peer sink (ADR 2026-11.gsqu, Stage 2): `di/MeshModule` binds `LoraDirectRouter.sinkFor`,
+     * which answers the bound board kind's plane. Asked once per offer, with the recipient.
+     */
+    internal fun bindLoraDirect(
+        sinkFor: suspend (peerId: String) -> LoraDirectSink?,
+        seal: LoraDirectSeal,
     ) {
-        loraDirectSink = sink
+        loraDirectSink = sinkFor
         loraSeal = seal
     }
 
@@ -3779,7 +3790,7 @@ class MeshManager(
         // 2026-10.t2h6), both counted at the named layout's two-byte key: the larger of the two seal forms, so a fallback
         // to v2 never overflows.
         // The recipient's own compact budget (ADR 2026-11.gsqu, Stage 1a.4): Meshtastic's 168 B, so the 160-B body budget.
-        val plaintext = loraDirectSink()?.budgetFor(recipientId)?.plaintextBytes ?: LORA_DIRECT_PLAINTEXT_BYTES
+        val plaintext = loraDirectSink(recipientId)?.budgetFor(recipientId)?.plaintextBytes ?: LORA_DIRECT_PLAINTEXT_BYTES
         val room =
             LoraSizeHint.budget(plaintext - DM_BODY_MARGIN_BYTES, replying, attached) - LoraSizeHint.utf8Length(text) -
                 StyleSpans.wireCost(styles, StyleKey.NAMED) - declared.wireCost(named = true)
@@ -6721,7 +6732,7 @@ class MeshManager(
         kind: DirectKind,
         loraHeld: List<String> = emptyList(),
     ) {
-        val sink = loraDirectSink() ?: return
+        val sink = loraDirectSink(recipientId) ?: return
         offerLoraDirect(sink, sink.budgetFor(recipientId), recipientId, frameId, sentAt, content, kind, loraHeld)
     }
 
@@ -6767,7 +6778,7 @@ class MeshManager(
         ids: List<String>,
     ) {
         // One sink and one budget for every chunk (ADR 2026-11.gsqu, Stage 1a.4): the ticks are cut to that board's count.
-        val sink = loraDirectSink() ?: return
+        val sink = loraDirectSink(authorId) ?: return
         val budget = sink.budgetFor(authorId)
         // The read marks among [ids] (ADR 2026-11.z6jw), told or not; null toward an author who reads no mask. Each chunk
         // carries its own mask over its own list as built, as wide as with none of it read: never a packet of its own, never

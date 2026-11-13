@@ -92,6 +92,9 @@ internal class AppUsbControlApi :
     private val groups: GroupRepository by inject()
     private val reactions: ReactionRepository by inject()
     private val commons: CommonsRepository by inject()
+
+    // The aggregate: the bound board kind's facts (ADR 2026-11.gsqu, Stage 2). What Stage 5 adds here for a MeshCore
+    // board is counts and the own board's state only: no contact key or name, no contact snapshot, no board key.
     private val lora: LoraStatusRepository by inject()
     private val directContacts: DirectContacts by inject()
     private val notifier: Notifier by inject()

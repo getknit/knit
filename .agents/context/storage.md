@@ -53,7 +53,10 @@ lines.
   verified in full before `READY` (both readers on the other side fail destructively), applied by the
   relaunched process before Koin, and finished on the first mesh start by one session reset per peer whose
   session was wiped (DM peers and every group's other members, ADR 2026-09.qerd). A restore is a **move** —
-  the mesh has no clone tolerance — and the copy says so. The database copy goes
+  the mesh has no clone tolerance — and the copy says so. A board kind's keys (`BoardKeys`, ADR 2026-11.gsqu
+  Stage 2) split the way their `lora_` peers do, named key by key and never one bare `meshcore_` prefix; no DataStore
+  key holds a board's contacts (plaintext), and a cross-kind bind (`BoardBindPolicy`) clears only the other kind's
+  identity. The database copy goes
   through a raw single-connection driver on purpose (`ATTACH` is read-only to SQLite and lands on a pool
   reader; the SQLCipher layer rewrites `BEGIN` to `EXCLUSIVE`) — don't move it onto the Room connection.
 - **When touching `dm_scope_anchors` (`data/scopeanchor/`, DB v34), `DmScopeAnchorDao`, `mesh/spool/DmScopeAnchors`,

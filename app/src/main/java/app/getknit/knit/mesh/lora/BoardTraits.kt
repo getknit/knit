@@ -19,6 +19,9 @@ import kotlin.math.pow
  * overrides a value a caller injected (`LoraMeshTransport`'s `pace`).
  */
 internal interface BoardTraits {
+    /** Which kind these are (Stage 2): what the plane reports as its `boardKind`. */
+    val kind: BoardKind
+
     /** The payload cap before the board has said what it takes (Meshtastic: [LoraMeshTransport.PRE_READY_PAYLOAD]). */
     val floorPayload: Int
 
@@ -161,6 +164,8 @@ internal data class DutyPolicy(
  * modem preset and region become [RadioParams] and [DutyPolicy], and the one refusal classifier.
  */
 internal object MeshtasticTraits : BoardTraits {
+    override val kind: BoardKind get() = BoardKind.MESHTASTIC
+
     override val floorPayload: Int get() = LoraMeshTransport.PRE_READY_PAYLOAD
     override val maxPayload: Int get() = MeshtasticProto.MAX_PAYLOAD
 

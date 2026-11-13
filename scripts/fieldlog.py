@@ -48,7 +48,7 @@ KINDS: dict[str, set[str] | None] = {
     "mesh_off": set(),
     "power": {"screen", "charging", "low"},
     "battery": {"usage", "exempt", "bucket"},
-    "radio": {"radio", "health", "linked", "nearby", "contended", "held"},
+    "radio": {"radio", "health", "linked", "nearby", "contended", "held", "board"},
     "counters": None,
     "bt_up": {"peer", "dialed", "dial", "sighted", "links", "relink"},
     "bt_down": {"peer", "reason", "life", "links", "phy", "rssi"},
@@ -71,11 +71,12 @@ KINDS: dict[str, set[str] | None] = {
     # still checks.
     "lora": {
         "snr10", "rssi", "queued", "heard", "boards", "airUsed", "airBudget", "covered", "free", "battery", "powered",
-        "chUtil10", "airTx10", "role", "gateways", "pocket", "sighted",
+        "chUtil10", "airTx10", "role", "gateways", "pocket", "sighted", "board",
     },
-    "lora_up": {"dial", "tries", "mtu", "region", "preset", "slot", "hops", "xeddsa", "relink"},
-    "lora_down": {"reason", "status", "life"},
-    "lora_fail": {"reason", "status", "streak", "wait"},
+    # `board` is a non-Meshtastic board kind (ADR 2026-11.gsqu); a Meshtastic line never writes it.
+    "lora_up": {"dial", "tries", "mtu", "region", "preset", "slot", "hops", "xeddsa", "relink", "board"},
+    "lora_down": {"reason", "status", "life", "board"},
+    "lora_fail": {"reason", "status", "streak", "wait", "board"},
     "lora_role": {"role", "pocket", "gateways"},  # retired with the bridge (ADR 2026-10.rp3s); older builds only
     "net": {"route", "restricted"},
     "spool_up": {"relay", "hello", "fails", "pow", "attach", "ent", "turn", "cast"},

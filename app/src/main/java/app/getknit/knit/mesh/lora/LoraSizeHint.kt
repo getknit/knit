@@ -34,6 +34,14 @@ object LoraSizeHint {
      */
     const val DM_BODY_BYTES = 160
 
+    /**
+     * The DM body budget on a board whose compact DM holds [budget] (ADR 2026-11.gsqu, Stage 2): its plaintext less the
+     * same margin [DM_BODY_BYTES] keeps under Meshtastic's 168 B, so Meshtastic still reads 160. The bound kind's budget
+     * rides `LoraFacts.directBudget`; never read off a transport.
+     */
+    fun dmBodyBytes(budget: LoraDirectBudget): Int =
+        (budget.plaintextBytes - (LoraDirectBudget.MESHTASTIC.plaintextBytes - DM_BODY_BYTES)).coerceAtLeast(0)
+
     /** What a quoted reply costs beside the body (`ReplyRef`: message id, author id, name, 120-char snippet). */
     const val REPLY_RESERVE_BYTES = 260
 

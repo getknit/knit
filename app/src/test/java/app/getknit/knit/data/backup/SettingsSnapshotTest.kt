@@ -88,6 +88,40 @@ class SettingsSnapshotTest {
             assertTrue(restored[booleanPreferencesKey(SettingsKeys.RESTORE_PENDING)]!!)
         }
 
+    /** The backup split: this phone's binding, setup record and limiters stay; the key and the person's choices ride. */
+    @Test
+    fun meshcoresKeysSplitAcrossABackupAsTheirLoraPeersDo() {
+        for (stays in listOf(
+            "meshcore_device_address",
+            "meshcore_device_name",
+            "meshcore_setup_address",
+            "meshcore_setup_anything",
+            "meshcore_prior_channel",
+            "meshcore_plane_state",
+            "lora_device_address",
+            "lora_device_name",
+            "lora_setup_address",
+            "lora_prior_long_name",
+            "lora_plane_state",
+        )) {
+            assertTrue("$stays would ride a backup", SettingsSnapshot.isTransient(stays))
+        }
+        for (rides in listOf(
+            "meshcore_board_pubkey",
+            "meshcore_room_enabled",
+            "meshcore_post_consented",
+            "lora_board_key",
+            "lora_board_node",
+            "lora_room_enabled",
+            "meshtastic_post_consented",
+            "lora_enabled",
+            "lora_dm_enabled",
+        )) {
+            assertFalse("$rides would not ride a backup", SettingsSnapshot.isTransient(rides))
+        }
+        assertFalse("never one bare meshcore_ prefix", SettingsKeys.TRANSIENT_PREFIXES.contains("meshcore_"))
+    }
+
     /** GitHub #44: whether this phone's Wi-Fi can spare Wi-Fi Aware's airtime is about this phone, and so is its move. */
     @Test
     fun dropsTheWifiAwareSwitchAndItsMove() =

@@ -6,6 +6,7 @@ import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraPlane
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -120,6 +121,21 @@ class TransportRowsTest {
         assertEquals(
             R.string.diagnostics_status_unavailable_hint_no_radios,
             unavailableHintFor(RadioSupport(PlaneSupport.NoHardware, PlaneSupport.NoHardware)),
+        )
+    }
+
+    /** ADR 2026-11.gsqu, Stage 2: two LoRa children share TransportKind.LoRa, and the section shows the bound kind's alone. */
+    @Test
+    fun onlyTheBoundBoardKindsLoraRowIsShown() {
+        val meshtastic = lora.copy(boardKind = BoardKind.MESHTASTIC)
+        val meshcore = lora.copy(boardKind = BoardKind.MESHCORE)
+        assertEquals(
+            listOf(TransportRow.Live(ble), TransportRow.Live(meshtastic, LoraPlane.Down)),
+            transportRows(listOf(ble, meshtastic, meshcore), RadioSupport.ALL, LoraPlane.Down),
+        )
+        assertEquals(
+            listOf(TransportRow.Live(ble), TransportRow.Live(meshcore, LoraPlane.Live)),
+            transportRows(listOf(ble, meshtastic, meshcore), RadioSupport.ALL, LoraPlane.Live, BoardKind.MESHCORE),
         )
     }
 }
