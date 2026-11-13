@@ -42,16 +42,17 @@ import app.getknit.knit.ui.preview.KnitPreview
  */
 object BadgeVisuals {
     /**
-     * [badge]'s artwork for a mark [markSize] across, drawn in its own colours (C-7-4). The supporter badge is the
-     * Yarnworld logo, and below [SMALL_MARK] its simplified form: the full logo's stitching and islands blur there.
+     * [badge]'s artwork, drawn in its own colours (C-7-4). The supporter badge is the Yarnworld logo, and where
+     * [simplified] its reduced form: inside the profile pill's ring the full logo's stitching and islands blur. A name's
+     * mark is never simplified, so it reads as the same logo at every size.
      */
     @DrawableRes
     fun iconFor(
         badge: String,
-        markSize: Dp,
+        simplified: Boolean,
     ): Int? =
         when (badge) {
-            Badges.SUPPORTER -> if (markSize < SMALL_MARK) R.drawable.ic_badge_supporter_small else R.drawable.ic_badge_supporter
+            Badges.SUPPORTER -> if (simplified) R.drawable.ic_badge_supporter_small else R.drawable.ic_badge_supporter
             else -> null
         }
 
@@ -94,7 +95,7 @@ fun BadgeMark(
     onClick: (() -> Unit)? = null,
 ) {
     val size = markSize(avatarSize)
-    val icon = BadgeVisuals.iconFor(badge, size) ?: return
+    val icon = BadgeVisuals.iconFor(badge, simplified = size < SMALL_MARK) ?: return
     val label = BadgeVisuals.markLabelFor(badge)?.let { stringResource(it) }
     Box(
         modifier =
@@ -124,7 +125,7 @@ fun BadgeMark(
 
 /**
  * The mark a badge puts after a person's name ([PeerNameText]'s `badge`, docs/SUPPORTER_BADGE.md C-7-1): the badge's
- * artwork, untinted, about as tall as the name's [textStyle] so it grows with the font scale. No surface ring: beside
+ * artwork, untinted, at four fifths of the name's [textStyle] size so it grows with the font scale. No surface ring: beside
  * text there is no photo to part it from. Never a tap target on its own (the profile's pill is the one that opens the
  * sheet), and it carries the start gap itself, so an id with no artwork leaves no stray space after the name.
  */
@@ -135,7 +136,7 @@ fun NameBadgeMark(
     modifier: Modifier = Modifier,
 ) {
     val size = nameMarkSize(textStyle)
-    val icon = BadgeVisuals.iconFor(badge, size) ?: return
+    val icon = BadgeVisuals.iconFor(badge, simplified = false) ?: return
     val label = BadgeVisuals.markLabelFor(badge)?.let { stringResource(it) }
     // A logo in its own colours, never a tinted glyph: no theme or wallpaper recolours it (C-7-4).
     Image(
@@ -146,12 +147,18 @@ fun NameBadgeMark(
     )
 }
 
-/** The name mark's diameter: the name's font size in dp (font scale included), never under 14 dp nor over 28 dp. */
+/**
+ * The name mark's diameter: four fifths of the name's font size in dp (font scale included), never under 14 dp nor over
+ * 28 dp. A full-size disc stood taller than the name's capitals; at this share it matches the 18 dp icons beside the DM
+ * header's 22 sp name, the size Material gives an icon set inline with text.
+ */
 @Composable
 private fun nameMarkSize(textStyle: TextStyle): Dp {
     val fontSize = textStyle.fontSize.takeIf { it.isSpecified } ?: MaterialTheme.typography.bodyLarge.fontSize
-    return with(LocalDensity.current) { fontSize.toDp() }.coerceIn(MIN_MARK, MAX_MARK)
+    return (with(LocalDensity.current) { fontSize.toDp() } * NAME_MARK_FRACTION).coerceIn(MIN_MARK, MAX_MARK)
 }
+
+private const val NAME_MARK_FRACTION = 0.8f
 
 private val NAME_MARK_GAP = 4.dp
 
@@ -161,7 +168,7 @@ internal fun markSize(avatarSize: Dp): Dp = (avatarSize * MARK_FRACTION).coerceI
 private const val MARK_FRACTION = 0.36f
 private val MIN_MARK = 14.dp
 
-// A mark narrower than this draws the badge's simplified artwork: the profile pill, and a name set smaller than 16 sp.
+// A ringed mark narrower than this draws the badge's simplified artwork: the profile pill's.
 private val SMALL_MARK = 16.dp
 private val MAX_MARK = 28.dp
 private val RING = 1.5.dp

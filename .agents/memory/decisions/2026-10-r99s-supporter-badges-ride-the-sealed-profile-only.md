@@ -82,3 +82,9 @@ The name's mark is about the name's font size (14–28 dp, font scale included),
 and it is never a tap target: the profile's Supporter pill opens the sheet. It sits outside the name's `Text`, so a long
 name ellipsizes and the mark stays. The chat list row's spoken summary names it, since the row clears its children's
 semantics. `Avatar` no longer takes a badge.
+
+**Amended 2026-11-13 (the mark sits at inline-icon size):** the name's mark is four fifths of the name's font size
+(still 14–28 dp). At the full size it stood taller than the name's capitals and above the 18 dp lock and shield beside
+the DM header's 22 sp name; it now matches them. A name's mark draws the full logo at every size, a list name's 14 dp
+included, because the reduced form beside a name read as a different symbol; only the profile pill's ringed mark
+draws `ic_badge_supporter_small`, now redrawn closer to the logo: a thin edge, three islands, three swirls.

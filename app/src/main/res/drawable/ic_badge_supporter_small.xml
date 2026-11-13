@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   The supporter badge where its mark is very small (docs/SUPPORTER_BADGE.md C-7-4): the Yarnworld logo reduced to
-  what survives at 14 dp, drawn untinted in the logo's own colours. Its blue ball, slate edge and one dark swirl; one
-  green island; the island's stitched spiral as four arcs, since a vector drawable has no dash pattern.
+  what survives at 14 dp, drawn untinted in the logo's own colours. Its blue ball and thin slate edge; three dark
+  swirls; its three green islands where the logo has them; two stitched spirals as short arcs, since a vector drawable
+  has no dash pattern. Drawn on the profile's Supporter pill only: a name's mark is the full logo at every size.
 
-  Above that size the mark is ic_badge_supporter (drawable-nodpi), the full logo rendered from its SVG.
+  Elsewhere the mark is ic_badge_supporter (drawable-nodpi), the full logo rendered from its SVG.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
@@ -13,22 +14,43 @@
     android:viewportHeight="24">
   <path
       android:fillColor="#FF71A4D8"
-      android:pathData="M12,1.2a10.8,10.8 0,1 1,0 21.6a10.8,10.8 0,1 1,0 -21.6Z" />
+      android:pathData="M12,0.6a11.4,11.4 0,1 1,0 22.8a11.4,11.4 0,1 1,0 -22.8Z" />
   <path
       android:strokeColor="#FF454551"
-      android:strokeWidth="1.3"
+      android:strokeWidth="0.9"
       android:strokeLineCap="round"
-      android:pathData="M3.2,9.4C6.6,5.6 12.8,4.6 17.6,8.4" />
+      android:pathData="M0.9,10.4C2.6,15.6 9.8,16.8 12.9,12.2C14.5,9.8 14.3,5 12.6,1.3" />
   <path
-      android:fillColor="#FF68EA8C"
-      android:pathData="M14.8,9.6a5.4,5.4 0,1 1,0 10.8a5.4,5.4 0,1 1,0 -10.8Z" />
+      android:strokeColor="#FF454551"
+      android:strokeWidth="0.9"
+      android:strokeLineCap="round"
+      android:pathData="M2.2,17.2C6.4,19.6 11.6,19.8 14.6,18.2" />
+  <path
+      android:strokeColor="#FF454551"
+      android:strokeWidth="0.9"
+      android:strokeLineCap="round"
+      android:pathData="M4.8,21.0C8.6,22.6 13.4,22.4 16.6,20.6" />
   <path
       android:strokeColor="#FFFFFFFF"
-      android:strokeWidth="1.3"
+      android:strokeWidth="0.9"
       android:strokeLineCap="round"
-      android:pathData="M14.565,12.31A2.7,2.7 0,0 1,16.868 13.264M17.49,14.765A2.7,2.7 0,0 1,16.536 17.068M15.035,17.69A2.7,2.7 0,0 1,12.732 16.736M12.11,15.235A2.7,2.7 0,0 1,13.065 12.932" />
+      android:pathData="M5.14,4.36A2.4,2.4 0,0 1,7.74 3.26M9.30,4.44A2.4,2.4 0,0 1,8.95 7.24M7.16,8.00A2.4,2.4 0,0 1,4.90 6.30" />
+  <path
+      android:fillColor="#FF68EA8C"
+      android:pathData="M15.9,1.9a3,3 0,1 1,0 6a3,3 0,1 1,0 -6Z" />
+  <path
+      android:fillColor="#FF68EA8C"
+      android:pathData="M9.1,7.9a2.3,2.3 0,1 1,0 4.6a2.3,2.3 0,1 1,0 -4.6Z" />
+  <path
+      android:fillColor="#FF68EA8C"
+      android:pathData="M17.2,11.2a4.7,4.7 0,1 1,0 9.4a4.7,4.7 0,1 1,0 -9.4Z" />
+  <path
+      android:strokeColor="#FFFFFFFF"
+      android:strokeWidth="0.9"
+      android:strokeLineCap="round"
+      android:pathData="M16.42,13.63A2.4,2.4 0,0 1,18.58 13.94M19.47,15.12A2.4,2.4 0,0 1,19.16 17.28M17.98,18.17A2.4,2.4 0,0 1,15.82 17.86M14.93,16.68A2.4,2.4 0,0 1,15.24 14.52" />
   <path
       android:strokeColor="#FF454551"
-      android:strokeWidth="2.2"
-      android:pathData="M12,1.2a10.8,10.8 0,1 1,0 21.6a10.8,10.8 0,1 1,0 -21.6Z" />
+      android:strokeWidth="0.8"
+      android:pathData="M12,0.6a11.4,11.4 0,1 1,0 22.8a11.4,11.4 0,1 1,0 -22.8Z" />
 </vector>

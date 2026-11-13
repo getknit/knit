@@ -146,10 +146,10 @@ not a wire change.
   Knit." The mark after a name is not a tap target.
 - **C-7-3** Copy: no link, no price, no product name, no "Get" / "Upgrade" / "Become" / "Donate", and no call to action
   shown to anyone who holds no badge. The badge says the person supports Knit, not what they bought.
-- **C-7-4** The supporter mark is the Knit Anywhere logo (Yarnworld) in its own colours, never tinted. After a name
-  it is about the name's font size (14–28 dp) and has no ring; on the pill and in the sheet it sits inside a ring of
-  the surface colour. A mark under 16 dp draws its simplified form (`ic_badge_supporter_small`); larger ones draw the
-  full logo (`ic_badge_supporter`).
+- **C-7-4** The supporter mark is the Knit Anywhere logo (Yarnworld) in its own colours, never tinted. After a name it
+  is four fifths of the name's font size (14–28 dp), has no ring and always draws the full logo (`ic_badge_supporter`).
+  On the pill and in the sheet it sits inside a ring of the surface colour; a ringed mark under 16 dp (the pill's) draws
+  the simplified form (`ic_badge_supporter_small`).
 - **C-7-5** A display name can end in a glyph that looks like the mark (🧶, or another yarn or globe symbol), and names
   are not screened for one, because blocking a single emoji would leave every other lookalike open. The mark after a
   name is therefore a hint. The authoritative sign is the profile's Supporter pill and the sheet it opens, which appear

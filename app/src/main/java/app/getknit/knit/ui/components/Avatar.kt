@@ -6,9 +6,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -132,38 +132,37 @@ fun Avatar(
 }
 
 /**
- * The presence dot, centred on the circle's edge at the lower end (45°), which keeps it inside the avatar's square at
- * every size: the dot is never wider than 0.29 of the avatar. Positive green in a ring of the surface colour, so it
- * parts from a photo or a tint alike. `offset` follows the layout direction, so in a right-to-left layout it sits at
- * the lower left, the lower end there. [description] is null when the tappable circle already says it.
+ * The presence dot in the avatar square's lower-end corner, where it straddles the circle's edge at every size: a
+ * positive green core about a quarter of the avatar across, in a ring of the surface colour drawn outside the core, so
+ * the ring parts it from a photo or a tint without eating the green. [Alignment.BottomEnd] follows the layout
+ * direction, so in a right-to-left layout it sits at the lower left, the lower end there. [description] is null when
+ * the tappable circle already says it.
  */
 @Composable
-private fun PresenceDot(
+private fun BoxScope.PresenceDot(
     avatarSize: Dp,
     description: String?,
 ) {
-    val dot = (avatarSize * DOT_FRACTION).coerceIn(MIN_DOT, MAX_DOT)
-    val centre = avatarSize * DOT_CENTRE
+    val core = (avatarSize * DOT_FRACTION).coerceIn(MIN_DOT, MAX_DOT)
+    val ring = (core * DOT_RING_FRACTION).coerceIn(MIN_DOT_RING, MAX_DOT_RING)
     Box(
         modifier =
             Modifier
-                .offset(x = centre - dot / 2, y = centre - dot / 2)
-                .size(dot)
+                .align(Alignment.BottomEnd)
+                .size(core + ring * 2)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.surface)
-                .padding((dot * DOT_RING_FRACTION).coerceIn(MIN_DOT_RING, MAX_DOT_RING))
+                .padding(ring)
                 .clip(CircleShape)
                 .background(MaterialTheme.knitColors.positive)
                 .then(if (description != null) Modifier.semantics { contentDescription = description } else Modifier),
     )
 }
 
-private const val DOT_FRACTION = 0.26f
-
-// The circle's edge at 45°, from the avatar's top-left corner: half the diameter plus the radius over √2.
-private const val DOT_CENTRE = 0.8536f
-private const val DOT_RING_FRACTION = 0.16f
-private val MIN_DOT = 10.dp
+// The green core's share of the avatar's diameter, and its bounds: 9 dp on the DM header's 36 dp avatar, 16 dp at most.
+private const val DOT_FRACTION = 0.25f
+private const val DOT_RING_FRACTION = 0.2f
+private val MIN_DOT = 9.dp
 private val MAX_DOT = 16.dp
 private val MIN_DOT_RING = 2.dp
 private val MAX_DOT_RING = 3.dp
