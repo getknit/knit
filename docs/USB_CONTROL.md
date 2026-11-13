@@ -1,6 +1,6 @@
 # USB control protocol v1
 
-> **Experimental, debug builds only** (`exp/usb-control`). The host client is `knit-cli` (a separate repository). The
+> **Experimental, debug builds only** (`usbcontrol/`). The host client is `knit-cli` (a separate repository). The
 > server is off until the debug bridge's `USBCTL --es op enable` switches it on, and then it serves only a computer
 > paired with the phone, over sealed frames. Nothing here ships in a release build, and nothing here is a
 > compatibility promise yet. Changes stay additive where they can: a client ignores fields and events it does not know.
