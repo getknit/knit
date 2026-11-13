@@ -921,7 +921,7 @@
     <string name="settings_watch_subtitle_off">Вимкнено. Увімкніть, щоб бачити mesh-мережу на годиннику Wear OS, сполученому з цим телефоном.</string>
     <string name="profile_details_message">Написати</string>
     <string name="profile_details_call">Подзвонити</string>
-    <string name="profile_details_online">У мережі</string>
+    <string name="profile_details_nearby">Поруч</string>
     <string name="profile_details_indirect">Доступно опосередковано</string>
     <string name="profile_details_via_relay">Доступно на великій відстані</string>
     <string name="profile_details_offline">Не в мережі</string>

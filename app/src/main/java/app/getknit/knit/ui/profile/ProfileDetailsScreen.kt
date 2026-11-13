@@ -561,7 +561,7 @@ private fun PeerHeader(
                 label =
                     stringResource(
                         when (state.reach) {
-                            Reach.Direct -> R.string.profile_details_online
+                            Reach.Direct -> R.string.profile_details_nearby
                             Reach.Indirect -> R.string.profile_details_indirect
                             Reach.LongRange -> R.string.profile_details_via_relay
                             Reach.Known -> R.string.profile_details_offline

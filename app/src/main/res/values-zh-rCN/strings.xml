@@ -879,7 +879,7 @@
     <string name="settings_watch_subtitle_off">已关闭。开启后，可在与这部手机配对的 Wear OS 手表上查看 Mesh 网络。</string>
     <string name="profile_details_message">发消息</string>
     <string name="profile_details_call">通话</string>
-    <string name="profile_details_online">在线</string>
+    <string name="profile_details_nearby">附近</string>
     <string name="profile_details_indirect">可间接联系</string>
     <string name="profile_details_via_relay">可远程联系</string>
     <string name="profile_details_offline">离线</string>

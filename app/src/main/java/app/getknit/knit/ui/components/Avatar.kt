@@ -74,7 +74,7 @@ import java.text.BreakIterator
  * owns the evidence, and every caller passes the same one, [app.getknit.knit.mesh.MeshController.neighbors]
  * (a short-range radio sees the peer's own radio, `Reach.Direct`), the binary dot ADR 2026-09.2ajk keeps for
  * lists. The state is spoken too: on the circle's own node when the avatar is tappable, so the button reads
- * "…, Online", else on the dot, for the row around it to merge. A supporter badge is not drawn here: its mark
+ * "…, Nearby", else on the dot, for the row around it to merge. A supporter badge is not drawn here: its mark
  * follows the person's name ([PeerNameText]'s `badge`, docs/SUPPORTER_BADGE.md §7).
  */
 @Composable
@@ -112,7 +112,7 @@ fun Avatar(
                 .then(press)
                 .size(size),
     ) {
-        val onlineLabel = if (online) stringResource(R.string.profile_details_online) else null
+        val onlineLabel = if (online) stringResource(R.string.profile_details_nearby) else null
         AvatarCircle(
             avatarHash,
             name,

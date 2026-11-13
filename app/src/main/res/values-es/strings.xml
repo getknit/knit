@@ -907,7 +907,7 @@
     <string name="settings_watch_subtitle_off">Desactivado. Actívalo para ver la mesh en un reloj Wear OS vinculado a este teléfono.</string>
     <string name="profile_details_message">Mensaje</string>
     <string name="profile_details_call">Llamar</string>
-    <string name="profile_details_online">En línea</string>
+    <string name="profile_details_nearby">Cerca</string>
     <string name="profile_details_indirect">Accesible indirectamente</string>
     <string name="profile_details_via_relay">Accesible a larga distancia</string>
     <string name="profile_details_offline">Sin conexión</string>

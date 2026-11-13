@@ -1096,7 +1096,7 @@
     <!-- Profile details (another peer) -->
     <string name="profile_details_message">Message</string>
     <string name="profile_details_call">Call</string>
-    <string name="profile_details_online">Online</string>
+    <string name="profile_details_nearby">Nearby</string>
     <string name="profile_details_indirect">Reachable indirectly</string>
     <string name="profile_details_via_relay">Reachable long-range</string>
     <string name="profile_details_offline">Offline</string>

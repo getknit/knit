@@ -893,7 +893,7 @@
     <string name="settings_watch_subtitle_off">Aus. Schalte es ein, um das Mesh auf einer mit diesem Smartphone gekoppelten Wear-OS-Uhr zu sehen.</string>
     <string name="profile_details_message">Nachricht</string>
     <string name="profile_details_call">Anrufen</string>
-    <string name="profile_details_online">Online</string>
+    <string name="profile_details_nearby">In der Nähe</string>
     <string name="profile_details_indirect">Indirekt erreichbar</string>
     <string name="profile_details_via_relay">Aus der Ferne erreichbar</string>
     <string name="profile_details_offline">Offline</string>

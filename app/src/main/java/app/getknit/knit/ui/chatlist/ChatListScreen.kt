@@ -645,7 +645,7 @@ internal fun ConversationListItem(
     val badge = if (row.isRoom || row.isGroup) null else peerBadge(row.id)
     val spokenBadge = badge?.let { BadgeVisuals.markLabelFor(it) }?.let { stringResource(it) }
     // The avatar's dot, said here for the same reason: the row's summary is all a screen reader hears of it.
-    val spokenOnline = if (online) stringResource(R.string.profile_details_online) else null
+    val spokenOnline = if (online) stringResource(R.string.profile_details_nearby) else null
     val rowDescription =
         listOfNotNull(row.title, spokenBadge, spokenOnline, spokenMark, preview, spokenTime, spokenStatus, spokenUnread)
             .joinToString(", ")

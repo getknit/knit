@@ -130,7 +130,7 @@ class ProfileDetailsScreenContentTest {
     @Test
     fun aNearbyPeerReadsOnline() {
         setContent()
-        compose.onNodeWithText(context.getString(R.string.profile_details_online)).assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.profile_details_nearby)).assertIsDisplayed()
     }
 
     /** The alias is always shown on a profile — it is how a person says which Ada they are (ADR 058). */
