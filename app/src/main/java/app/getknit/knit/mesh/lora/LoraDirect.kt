@@ -154,7 +154,13 @@ internal class DirectDm(
  * `originateSigned`, never instead of it: the signed copy still goes to custody, the spool and the links. The transport
  * implements it and decides, on its own gates, whether one packet goes on the air.
  */
-internal interface LoraDirectSink {
+internal interface LoraDirectSink : BoardKindSource {
+    /**
+     * Which board kind this sink's plane drives (Stage 5a-2): `MeshManager` gates an offer on that kind's door claim
+     * (`LoraDoorClaim`). Meshtastic unless the sink says otherwise.
+     */
+    override val boardKind: BoardKind get() = BoardKind.MESHTASTIC
+
     fun offer(
         recipientId: String,
         frameId: String,

@@ -6982,7 +6982,7 @@ class MeshManager(
     ) {
         if (clock() - sentAt >= LORA_DIRECT_SEND_WINDOW_MS) return
         val peer = peers.find(recipientId) ?: return
-        if ((peer.capabilities ?: 0L) and Protocol.CAP_LORA_DIRECT == 0L) return
+        if (!LoraDoorClaim.claims(sink.boardKind, peer)) return
         val copy = compactCopyOf(content, budget.plaintextBytes, loraHeld) ?: return
         // A peer pinned a moment ago is in the seal's index before the peer table's flow comes round.
         peer.pubKey?.let { PublicKeyBundle.decode(it) }?.let { loraSeal?.learn(recipientId, it.dhPublicKey()) }

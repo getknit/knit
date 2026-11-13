@@ -139,6 +139,9 @@ internal object MeshcoreProto {
     /** `TXT_TYPE_PLAIN` (`TxtDataHelpers.h:6`): the one contact text type the receiving board acks. */
     const val TXT_TYPE_PLAIN = 0
 
+    /** `TXT_TYPE_SIGNED_PLAIN` (`TxtDataHelpers.h:8`): acked too, under a 4-B code where a plain text's is 6 B. */
+    const val TXT_TYPE_SIGNED_PLAIN = 2
+
     /** `ADV_TYPE_CHAT`: a companion, what Knit teaches every contact as. */
     const val ADV_TYPE_CHAT = 1
 

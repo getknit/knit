@@ -47,6 +47,13 @@ internal sealed interface NusDialResult {
 
     data object Timeout : NusDialResult
 
+    /**
+     * Discovery succeeded and the board has no NUS service with both characteristics: other firmware behind the address, or a
+     * GATT cache from before a reflash — Meshtastic's `DialResult.ServiceAbsent`. A second reading in a row is terminal
+     * (ADR 2026-11.gsqu's Stage 5a-2 amendment): no redial fixes either cause.
+     */
+    data object ServiceAbsent : NusDialResult
+
     data object AdapterOff : NusDialResult
 
     data object NoHardware : NusDialResult

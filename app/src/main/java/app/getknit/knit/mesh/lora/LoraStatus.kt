@@ -54,4 +54,14 @@ internal data class LoraStatus(
      * refused, how many sends wait on an answer and how many offers are parked behind one. About radios, never people.
      */
     val direct: DirectReachCounts = DirectReachCounts(),
+    /**
+     * The peers whose boards [direct] counts as reachable (Stage 5a-2): what a MeshCore DM notice reads
+     * (`LoraFacts.directReach`). Node ids of pinned peers, never a board's address or key; on screen only as a reach state.
+     */
+    val directReachable: Set<String> = emptySet(),
+    /**
+     * Whether the band's law holds every frame now (MeshCore's `MeshcoreDutyLaw`, `LoraPacePolicy.lawHeld`; never on
+     * Meshtastic, where the law is the firmware's): the plane is silent until the board's trailing hour falls under its duty.
+     */
+    val lawHeld: Boolean = false,
 )

@@ -123,10 +123,9 @@ internal class MeshcoreGatt(
 
             !channel.link.discover() -> NusDialResult.Failed(status = -1, phase = "service")
 
-            // NUS is a generic service: a board without it, or without both characteristics, is not a companion. Not
-            // terminal here — nothing dials a board the picker did not name MeshCore, and Stage 5 decides what a wrong
-            // one ends in.
-            !channel.resolveCharacteristics() -> NusDialResult.Failed(status = -1, phase = "service")
+            // NUS is a generic service: a board without it, or without both characteristics, is not a companion. The
+            // session backs off once and ends terminal on a second reading in a row (Stage 5a-2).
+            !channel.resolveCharacteristics() -> NusDialResult.ServiceAbsent
 
             else -> subscribeAndOpen(address, channel, mtu, hold)
         }

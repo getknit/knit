@@ -20,7 +20,7 @@ import app.getknit.knit.mesh.lora.SigningFacts
  * A MeshCore companion's numbers for the board-neutral core (ADR 2026-11.gsqu §1, built in its Stage 5a-1 amendment): the
  * price hook by purpose, the airtime term, the band's duty, the compact DM's airings, flights and backstop, and the
  * refusal classifier. Stateless, like [BoardTraits.MESHTASTIC]: constants and pure functions of their arguments, read under
- * the pacer's and the ledger's monitors. Nothing constructs a plane with it until Stage 5a-2.
+ * the pacer's and the ledger's monitors. The MeshCore plane is built with it in debug builds since Stage 5a-2 (`meshcorePlane`).
  *
  * **Price.** What the firmware puts on the air for each purpose, at `companion-v1.18.0` (`Packet::writeTo`,
  * `Mesh::createGroupDatagram` / `createDatagram` / `createAck` / `createPathReturn`, `Utils::encryptThenMAC`): a header
@@ -36,6 +36,7 @@ import app.getknit.knit.mesh.lora.SigningFacts
  * 633 ± 17 ms measured. So the excess was the preamble, not a ratio, and a fixed per-packet term stands in only for the
  * measurement's own uncertainty ([FIXED_MS]). A small-packet bench point is still owed.
  */
+@Suppress("TooManyFunctions") // the BoardTraits seam, and the few pure prices only this kind's hooks ask
 internal object MeshcoreTraits : BoardTraits {
     override val kind: BoardKind get() = BoardKind.MESHCORE
 
@@ -89,8 +90,8 @@ internal object MeshcoreTraits : BoardTraits {
     /** No CAD slot enters MeshCore's retry gap; one symbol, for a caller that asks. */
     override fun slotTimeMs(radio: RadioParams): Double = radio.symbolMs
 
-    /** A multi-ack's payload, the larger of the two forms our board acks with (`createMultiAck`: a count byte and the code). */
-    override val ackPayloadBytes: Int get() = MULTI_ACK_BYTES
+    /** A plain text's multi-ack, the largest form our board acks with (`createMultiAck`: a count byte and the 6-B code). */
+    override val ackPayloadBytes: Int get() = PLAIN_ACK_BYTES + 1
 
     /** The room flood's framing outside its AES block: header, transport codes, path length, channel hash and MAC. */
     override val packetOverheadBytes: Int get() = HEADER_BYTES + TRANSPORT_CODES_BYTES + PATH_LEN_BYTES + HASH_BYTES + MAC_BYTES
@@ -101,8 +102,12 @@ internal object MeshcoreTraits : BoardTraits {
     /** The session paces itself off `GET_STATS` (§6): no gap of the pacer's own. */
     override val minGapMs: Long get() = 0L
 
-    /** Two elided packets carry about 200 B of text (§4). */
-    override val roomPartLimit: Int get() = ROOM_PART_LIMIT
+    /**
+     * One packet until Stage 5c (ADR 2026-11.gsqu's Stage 5a-2 amendment): two elided packets carry about 200 B of text
+     * (§4, [ROOM_PART_LIMIT]), but a two-part post on the public Knit key needs 5c's reassembler (fragment ids seeded per
+     * process, candidates per part, capacity by airtime) before one may air or be read.
+     */
+    override val roomPartLimit: Int get() = STAGED_ROOM_PART_LIMIT
 
     /**
      * The companion's build default (`platformio.ini` `[arduino_base]`: 869.618 MHz, BW 62.5 kHz, SF8; CR 4/5, `MyMesh.h`):
@@ -117,17 +122,36 @@ internal object MeshcoreTraits : BoardTraits {
     override val roomCeiling: Ceiling get() = Ceiling.FLOOD
 
     /**
-     * Whether [packet] is a live zero-hop reception: drained after this connection's first `NO_MORE` and channel data at
-     * `path_len` 0 (§5). Never a contact text — its sender is a 6-byte prefix, a claim (the Stage 5 decisions) — and never
-     * a replay. Stage 5a-2 splits this into `live` and `heardZeroHop` and keys a hearing on a verified Knit frame only.
+     * Drained after this connection's first `NO_MORE` (§5): anything earlier is the board's offline queue replayed, heard
+     * while the phone was away. Any path: what the cover's lift reads (#294).
      */
-    override fun heardLive(
+    override fun live(
         packet: BoardPacket,
         nowWallMs: Long,
-    ): Boolean {
+    ): Boolean = (packet.kind as? MeshcorePacket)?.live == true
+
+    /**
+     * A live drain that came straight from the radio that aired it (§5, Q15, the Stage 5 decisions):
+     * - channel data or text at `path_len != 0xFF && (path_len & 0x3F) == 0` — a flood heard before any repeater re-aired
+     *   it; `0xFF` reads direct through a repeater too, so it is not one;
+     * - a contact DM at `0xFF` (direct): it cannot prove zero hops by itself, so the pin both phones hold on their own
+     *   boards is trusted (§3); a flood at zero hops counts, and one with hops does not.
+     *
+     * Never a replay ([live]). Never keyed on the DM's sender prefix: the core keys a hearing on an opened seal or a
+     * verified author alone ([hearsSender]).
+     */
+    override fun heardZeroHop(packet: BoardPacket): Boolean {
         val mc = packet.kind as? MeshcorePacket ?: return false
-        return mc.live && mc.type == MeshcorePacket.Type.CHANNEL_DATA && !mc.direct && (mc.pathLen and MeshcoreProto.PATH_HOPS_MASK) == 0
+        if (!mc.live) return false
+        val zeroHops = !mc.direct && (mc.pathLen and MeshcoreProto.PATH_HOPS_MASK) == 0
+        return when (mc.type) {
+            MeshcorePacket.Type.CHANNEL_DATA, MeshcorePacket.Type.CHANNEL_TEXT -> zeroHops
+            MeshcorePacket.Type.CONTACT_TEXT -> mc.direct || zeroHops
+        }
     }
+
+    /** A sender prefix is a claim and channel data names no sender (the Stage 5 decisions): never a hearing's key. */
+    override val hearsSender: Boolean get() = false
 
     /** MeshCore reports no refusal after a send: a confirmation, a timeout or the session's own give-up. */
     override fun refusalOf(outcome: PacketOutcome.Refused): RefusalClass = RefusalClass.OTHER
@@ -148,7 +172,8 @@ internal object MeshcoreTraits : BoardTraits {
      *   its length byte and the payload;
      * - a zero-hop DM (`TXT_MSG`, direct): header, path length, the two hashes, MAC, and AES over the timestamp, the
      *   flags byte and the COBS form of the payload — no transport codes;
-     * - an ack: header, path length and the [payloadBytes]-byte ack (4, or 5 for a multi-ack) — no AES, no transport codes;
+     * - an ack: header, path length and the [payloadBytes]-byte ack (6 plain, 4 signed, one more for a multi-ack) — no AES,
+     *   no transport codes (a flooded ack is priced by [ackPhyBytes]);
      * - a PATH return, flooded: header, transport codes, path length, the two hashes, MAC, and AES over [payloadBytes] of
      *   path plaintext ([pathReturnPlaintext]);
      * - a public post (`GRP_TXT` on slot 0, flooded): as a room flood, over the timestamp and flags before the text.
@@ -190,10 +215,58 @@ internal object MeshcoreTraits : BoardTraits {
         (if (spreadFactor <= SHORT_PREAMBLE_MAX_SF) SHORT_SF_PREAMBLE else LONG_SF_PREAMBLE) + SYNC_SYMBOLS
 
     /**
-     * The plaintext of our board's PATH return answering a flood that came over [hops] one-byte path hashes
-     * (`createPathReturn`): the path length byte, the path, the extra type and the 4-B ack it carries.
+     * The plaintext of our board's PATH return answering a flood that arrived with [pathLen] (`createPathReturn`,
+     * `Mesh.cpp:448-486` at `companion-v1.18.0`): the path length byte, `count × ((path_len >> 6) + 1)` path bytes (the hash
+     * size rides in the top two bits), the extra type and the ack it carries — 6 B for a plain text, 4 for a signed one
+     * ([ackBytes]). Lora-reviewer N6 on Stage 5a-2.
      */
-    fun pathReturnPlaintext(hops: Int): Int = PATH_LEN_BYTES + hops * HASH_BYTES + 1 + ACK_BYTES
+    fun pathReturnPlaintext(
+        pathLen: Int,
+        txtType: Int,
+    ): Int {
+        val count = pathLen and MeshcoreProto.PATH_HOPS_MASK
+        val hashSize = (pathLen shr HASH_SIZE_SHIFT) + 1
+        return PATH_LEN_BYTES + count * hashSize + 1 + ackBytes(txtType)
+    }
+
+    /**
+     * The ack code our board answers a [txtType] text with (`BaseChatMesh.cpp:244-256`): `sendAckTo(from, ack_hash, 6)` for a
+     * plain one, 4 B for a signed-plain one.
+     */
+    fun ackBytes(txtType: Int): Int = if (txtType == MeshcoreProto.TXT_TYPE_SIGNED_PLAIN) SIGNED_ACK_BYTES else PLAIN_ACK_BYTES
+
+    /**
+     * The ack payloads our board airs for a direct contact DM along a known path (`sendAckTo`, `BaseChatMesh.cpp:43-57`): at
+     * most **one** multi-ack (a count byte and the code) when `getExtraAckTransmitCount()` is above 0, whatever [multiAcks]
+     * says (the firmware stores it unclamped, `MyMesh.cpp:1498`), then the plain ack.
+     */
+    fun boardAckPayloads(
+        multiAcks: Int,
+        txtType: Int,
+    ): List<Int> {
+        val ack = ackBytes(txtType)
+        return (if (multiAcks > 0) listOf(ack + 1) else emptyList()) + ack
+    }
+
+    /**
+     * The bytes on the air of one ack of [payloadBytes]: direct along a known path (header and path length, the path empty
+     * for a zero-hop contact), or [flooded] when our board's record of the sender has no path (`sendFloodScoped`: the
+     * transport codes too, and no multi-ack beside it).
+     */
+    fun ackPhyBytes(
+        payloadBytes: Int,
+        flooded: Boolean,
+    ): Int = (if (flooded) FLOOD_HEAD else DIRECT_HEAD) + payloadBytes
+
+    /**
+     * The bytes on the air of a contact text DM whose COBS text is [cobsTextBytes], as our board airs it: zero-hop direct, or
+     * [flooded] — the same packet with a scoped flood's 4 B of transport codes (`sendFloodScoped`). What a `DirectFlooded`
+     * surcharge is the difference of: the airing itself was booked at send, direct.
+     */
+    fun contactTextPhyBytes(
+        cobsTextBytes: Int,
+        flooded: Boolean,
+    ): Int = (if (flooded) FLOOD_HEAD else DIRECT_HEAD) + 2 * HASH_BYTES + MAC_BYTES + aesPadded(TEXT_HEADER + cobsTextBytes)
 
     /**
      * The duty a board on [freqKhz] at [bandwidthHz] transmits under: its band's ([LoraBand]), never more, and never a
@@ -205,8 +278,11 @@ internal object MeshcoreTraits : BoardTraits {
         bandwidthHz: Int,
     ): DutyPolicy = DutyPolicy(LoraBand.dutyPercent(freqKhz * HZ_PER_KHZ, bandwidthHz.toLong()), dedicatedSlot = false)
 
-    /** Own room posts in up to two elided packets (§4). */
+    /** Own room posts in up to two elided packets (§4): [roomPartLimit] from Stage 5c. */
     const val ROOM_PART_LIMIT = 2
+
+    /** What [roomPartLimit] answers until Stage 5c: one packet, as on Meshtastic. */
+    const val STAGED_ROOM_PART_LIMIT = 1
 
     /**
      * The per-packet term on top of the formula: the uncertainty of Q5's 60-send measurement at 181 B (±17 ms), for the
@@ -222,8 +298,9 @@ internal object MeshcoreTraits : BoardTraits {
     private const val PATH_LEN_BYTES = 1
     private const val HASH_BYTES = 1
     private const val MAC_BYTES = 2
-    private const val ACK_BYTES = 4
-    private const val MULTI_ACK_BYTES = 5
+    private const val PLAIN_ACK_BYTES = 6
+    private const val SIGNED_ACK_BYTES = 4
+    private const val HASH_SIZE_SHIFT = 6
 
     /** A flood's bytes before its payload: header, transport codes, path length (and no path as our board airs it). */
     private const val FLOOD_HEAD = HEADER_BYTES + TRANSPORT_CODES_BYTES + PATH_LEN_BYTES

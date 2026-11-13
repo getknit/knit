@@ -153,6 +153,20 @@ class MeshcoreSessionTest {
         }
 
     @Test
+    fun theReadyCarriesTheAddressItsSessionDialled() =
+        runTest {
+            // The `dialled` race (ADR 2026-11.gsqu's Stage 5a-2 amendment): the board's key is written under this address.
+            val r = rig()
+            up(r)
+            assertEquals("AA:BB", (r.ready.detail as MeshcoreDetail).dialled)
+            r.session.start("CC:DD")
+            runCurrent()
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals("a rebind's Ready names the new address", "CC:DD", (r.ready.detail as MeshcoreDetail).dialled)
+        }
+
+    @Test
     fun aBoardWhoseClockIsAheadRefusesTheTimeAndIsStillReady() =
         runTest {
             val r = rig()
@@ -1170,5 +1184,40 @@ class MeshcoreSessionTest {
                 r.session.counters.ambiguousAnswers
                     .get(),
             )
+        }
+
+    // --- the reconnect loop's dials (Stage 5a-2's bluetooth review) ---
+
+    @Test
+    fun anUnbondedBoardNeverPresentGetsItsDirectDialsThenOnlyTheHourlyNetNeverABackgroundStandIn() =
+        runTest {
+            val r = rig()
+            r.dialer.bond = app.getknit.knit.mesh.lora.BondState.NONE
+            r.dialer.dialResult = { NusDialResult.Timeout }
+            r.session.start("AA:BB")
+            runCurrent()
+            val hours = 3
+            advanceTimeBy(hours * app.getknit.knit.mesh.lora.BoardDialPolicy.DIRECT_NET_MS)
+            runCurrent()
+            assertTrue(
+                "never a background dial of an unbonded board",
+                r.dialer.modes.all { it == app.getknit.knit.mesh.lora.DialMode.Direct },
+            )
+            val attempts = app.getknit.knit.mesh.lora.BoardDialPolicy.DIRECT_ATTEMPTS
+            assertTrue("${r.dialer.modes.size} dials: at most the first three and one an hour", r.dialer.modes.size <= attempts + hours + 1)
+            assertTrue("the hourly net kept dialling (${r.dialer.modes.size})", r.dialer.modes.size >= attempts + hours - 1)
+        }
+
+    @Test
+    fun aBoardWithoutTheNusServiceTwiceInARowEndsTerminal() =
+        runTest {
+            val r = rig()
+            r.dialer.dialResult = { NusDialResult.ServiceAbsent }
+            r.session.start("AA:BB")
+            runCurrent()
+            advanceTimeBy(600_000)
+            runCurrent()
+            assertEquals("backed off once, then terminal", 2, r.dialer.modes.size)
+            assertEquals(MeshcoreLinkState.StaleBond("AA:BB"), r.session.state.value.detail)
         }
 }

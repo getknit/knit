@@ -3,6 +3,7 @@ package app.getknit.knit.mesh.lora.meshcore
 import app.getknit.knit.mesh.lora.AirPurpose
 import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.BoardPacket
+import app.getknit.knit.mesh.lora.BoardTraits
 import app.getknit.knit.mesh.lora.Ceiling
 import app.getknit.knit.mesh.lora.LoraAirtime
 import app.getknit.knit.mesh.lora.LoraBand
@@ -51,22 +52,33 @@ class MeshcoreTraitsTest {
         assertEquals("5 + 1 + 11 = 17: two blocks", 6 + 32, phy(AirPurpose.DIRECT_DM, 11))
         assertEquals("the largest seal: COBS 157 B in 160 of AES", 6 + 176, phy(AirPurpose.DIRECT_DM, MeshcoreProto.DIRECT_SEAL_CAP))
         assertEquals("an ack: header, path length and the code", 2 + 4, phy(AirPurpose.ACK, 4))
-        assertEquals("a multi-ack's five", 2 + MeshcoreTraits.ackPayloadBytes, phy(AirPurpose.ACK, MeshcoreTraits.ackPayloadBytes))
+        assertEquals("a plain text's multi-ack: its count and 6-B code", 2 + 7, phy(AirPurpose.ACK, MeshcoreTraits.ackPayloadBytes))
+        // At most one multi-ack whatever `multi_acks` reads, then the ack: 6 B for a plain text, 4 for a signed one.
+        assertEquals(listOf(7, 6), MeshcoreTraits.boardAckPayloads(3, MeshcoreProto.TXT_TYPE_PLAIN))
+        assertEquals(listOf(5, 4), MeshcoreTraits.boardAckPayloads(1, MeshcoreProto.TXT_TYPE_SIGNED_PLAIN))
+        assertEquals(listOf(6), MeshcoreTraits.boardAckPayloads(0, MeshcoreProto.TXT_TYPE_PLAIN))
+        assertEquals("a flooded ack carries the transport codes", 1 + 4 + 1 + 6, MeshcoreTraits.ackPhyBytes(6, flooded = true))
+        assertEquals(2 + 6, MeshcoreTraits.ackPhyBytes(6, flooded = false))
         // A public post and a room flood share the flood's head; a DM's is the 2-B direct head, its 4 codes never added.
         assertEquals(1 + 4 + 1 + 1 + 2, MeshcoreTraits.packetOverheadBytes)
     }
 
     @Test
     fun aPathReturnFloodsAndAPublicPostToo() {
-        // createPathReturn at zero hops: path length + extra type + the 4-B ack = 6 B of plaintext, one block.
-        assertEquals(6, MeshcoreTraits.pathReturnPlaintext(0))
-        assertEquals(1 + 4 + 1 + 2 + 2 + 16, phy(AirPurpose.PATH_RETURN, MeshcoreTraits.pathReturnPlaintext(0)))
+        val signed = MeshcoreProto.TXT_TYPE_SIGNED_PLAIN
+        val plain = MeshcoreProto.TXT_TYPE_PLAIN
+        // createPathReturn at zero hops: path length + extra type + the 4-B signed ack = 6 B of plaintext, one block.
+        assertEquals(6, MeshcoreTraits.pathReturnPlaintext(0, signed))
+        assertEquals("a plain text's 6-B ack", 8, MeshcoreTraits.pathReturnPlaintext(0, plain))
+        assertEquals(1 + 4 + 1 + 2 + 2 + 16, phy(AirPurpose.PATH_RETURN, MeshcoreTraits.pathReturnPlaintext(0, signed)))
         assertEquals(
             "ten more hashes: still one block",
             1 + 4 + 1 + 2 + 2 + 16,
-            phy(AirPurpose.PATH_RETURN, MeshcoreTraits.pathReturnPlaintext(10)),
+            phy(AirPurpose.PATH_RETURN, MeshcoreTraits.pathReturnPlaintext(10, signed)),
         )
-        assertEquals("eleven: two", 1 + 4 + 1 + 2 + 2 + 32, phy(AirPurpose.PATH_RETURN, MeshcoreTraits.pathReturnPlaintext(11)))
+        assertEquals("eleven: two", 1 + 4 + 1 + 2 + 2 + 32, phy(AirPurpose.PATH_RETURN, MeshcoreTraits.pathReturnPlaintext(11, signed)))
+        // The hash size rides path_len's top bits: three 2-byte hashes are six path bytes.
+        assertEquals(1 + 6 + 1 + 6, MeshcoreTraits.pathReturnPlaintext((1 shl 6) or 3, plain))
         assertEquals("GRP_TXT: timestamp + flags + text, flooded", 9 + 16, phy(AirPurpose.PUBLIC_POST, 11))
     }
 
@@ -122,7 +134,9 @@ class MeshcoreTraitsTest {
         assertEquals("eight attempts are two whole flights of three", 2, traits.maxFlights)
         assertEquals(MeshcoreAckTable.EXPECTED_ACK_TABLE_SIZE / traits.airings, traits.maxFlights)
         assertEquals(Ceiling.FLOOD, traits.roomCeiling)
-        assertEquals(2, traits.roomPartLimit)
+        // Two elided packets from Stage 5c; one until its reassembler can take a two-part post on the public key.
+        assertEquals(2, MeshcoreTraits.ROOM_PART_LIMIT)
+        assertEquals(1, traits.roomPartLimit)
         assertEquals(0L, traits.minGapMs)
         assertEquals(MeshcoreProto.DIRECT_SEAL_CAP, traits.directPayloadCap(255))
         assertEquals(MeshcoreProto.CHANNEL_DATA_CAP, traits.floorPayload)
@@ -135,7 +149,7 @@ class MeshcoreTraitsTest {
     }
 
     @Test
-    fun aHearingIsALiveZeroHopChannelPostAndNeverAContactText() {
+    fun aHearingIsALiveZeroHopReceptionAndNeverKeyedOnTheSender() {
         fun packet(
             type: MeshcorePacket.Type,
             pathLen: Int,
@@ -155,7 +169,17 @@ class MeshcoreTraitsTest {
         assertFalse("through a repeater", traits.heardLive(packet(MeshcorePacket.Type.CHANNEL_DATA, 1), 0))
         assertFalse("0xFF reads direct through a repeater too", traits.heardLive(packet(MeshcorePacket.Type.CHANNEL_DATA, 0xFF), 0))
         assertFalse("the offline queue replayed", traits.heardLive(packet(MeshcorePacket.Type.CHANNEL_DATA, 0, live = false), 0))
-        assertFalse("a sender prefix is a claim", traits.heardLive(packet(MeshcorePacket.Type.CONTACT_TEXT, 0xFF), 0))
+        // Live is any path (the cover's lift, #294); a hearing also needs zero hops.
+        assertTrue(traits.live(packet(MeshcorePacket.Type.CHANNEL_DATA, 2), 0))
+        assertFalse(traits.live(packet(MeshcorePacket.Type.CHANNEL_DATA, 0, live = false), 0))
+        // A direct DM trusts the pin; a flood with hops is no hearing, one at zero hops is.
+        assertTrue(traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 0xFF)))
+        assertTrue(traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 0)))
+        assertFalse(traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 2)))
+        assertFalse(traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 0xFF, live = false)))
+        // Never keyed on the sender: a DM's prefix is a claim, channel data names none (the Stage 5 decisions).
+        assertFalse("a sender prefix is a claim", traits.hearsSender)
+        assertTrue(BoardTraits.MESHTASTIC.hearsSender)
     }
 
     @Test

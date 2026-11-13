@@ -276,6 +276,20 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   <!-- doc-lint: allow loraUnheardHeld — a dump key ADR 2026-10.x9fa removed, named so an old trial log can be read -->
   <!-- doc-lint: allow loraDmProbes — a dump key ADR 2026-10.x9fa removed, named so an old trial log can be read -->
   <!-- doc-lint: allow UNHEARD — a stale-at-send reason ADR 2026-10.x9fa removed, named so an old trial log can be read -->
+  **`--es kind meshcore`** dumps the MeshCore plane instead (ADR 2026-11.gsqu's Stage 5a-2 amendment; debug builds, where
+  `MESHCORE_PLANE` builds one, else `built: false`): counts and the own board's state only — never a key, a prefix, a
+  contact's name, a DM's text or a setup record. `--es address <MAC>` binds a MeshCore board (`BoardBindPolicy`, which keeps
+  no name for it; an address that is not a Bluetooth one is answered `error`), `--ez on` flips the shared plane switch. Keys: `built`, `enabled`, `dms`, `bound`, `state`, `version`
+  (cleaned), `versionCode`, `slot` (the board's Knit slot), `radio`, `multiAcks`, `defaultScope`, `queued`, `queueFree`,
+  `heard` (fresh-frame authors at any hop count, unverified), `boardsHeard` (radios counted by verified pinned zero-hop author:
+  on MeshCore compare it with `meshcoreZeroHopKnitPosts`, not `heard`), `direct`, `airtime` (`known`, `usedMs`, `allowanceMs`,
+  `floodUsedMs`, `floodCeilingMs`, `braked`, the board's two utilisations), `law` (`dutyPercent`, `trailingTxSecs`,
+  `limitSecs`, `holding`, `releaseInSecs`) and `counters` (`meshcoreForeignDms`, `meshcoreForeignPosts`, `meshcorePublicDiscarded`,
+  `meshcoreFragmentsRefused`, `meshcoreAcksBooked`, `meshcorePathReturnsBooked`, `meshcoreAnswersReplayed`,
+  `meshcoreFloodSurcharges`, `meshcoreLawHolds`, `meshcoreZeroHopKnitPosts`, `meshcoreTeachRefused`, and the session's `meshcoreDirectFlooded`,
+  `meshcorePinFailures`, `meshcorePacketsDropped`, `meshcoreCommandsRefused`, `meshcoreUnexpected`, `meshcoreRejected`).
+  The plane logs under `MeshcorePlane` (`lora ready kind=meshcore … inbox=knit-only`, `lora law hold` / `lora law clear`),
+  the session under `MeshcoreSession`.
   `…debug.LORATX --es text <s>`
   sends a raw payload straight to the board (bypassing the frame codec) to confirm the board transmits via
   `meshtastic --noproto`; `--ei hop <n>` sets `MeshPacket.hop_limit` explicitly, which the production path

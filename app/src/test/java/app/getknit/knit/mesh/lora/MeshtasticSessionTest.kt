@@ -73,6 +73,18 @@ class MeshtasticSessionTest {
         }
 
     @Test
+    fun theReadyCarriesTheAddressItsSessionDialled() =
+        runTest {
+            // The `dialled` race (ADR 2026-11.gsqu's Stage 5a-2 amendment): the binding is written under this address.
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+            session.start("AA:BB")
+            runCurrent()
+            assertEquals("AA:BB", (session.state.value as LinkState.Ready).address)
+            session.stop()
+        }
+
+    @Test
     fun aWrongNonceConfigCompleteIsIgnoredUntilTheRightOne() =
         runTest {
             val ch = FakeGattChannel()

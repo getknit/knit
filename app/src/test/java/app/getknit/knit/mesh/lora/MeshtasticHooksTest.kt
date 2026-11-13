@@ -272,6 +272,29 @@ class MeshtasticHooksTest {
         assertEquals("a Ready board names its node", OWN, status.boardNodeNum)
     }
 
+    @Test
+    fun theBindingCarriesTheAddressItsSessionDialled() {
+        // The `dialled` race (ADR 2026-11.gsqu's Stage 5a-2 amendment): the binding names the session's own address, so a
+        // late Ready from board A, after the plane moved to B, is written under A — which the settings edit refuses.
+        val bound = mutableListOf<BoardBinding>()
+        val reporting =
+            MeshtasticHooks(
+                link,
+                MeshtasticBoardLink(link),
+                core,
+                TestScope(UnconfinedTestDispatcher()),
+                MeshMetrics(),
+                clock = { now },
+                log = {},
+                onPublicPost = {},
+                onBoardBound = { bound += it },
+            )
+        link.state.value = ready().copy(address = "AA:AA")
+        reporting.onReady(MeshtasticBoardLink(link).state.value as BoardState.Ready)
+        assertEquals("AA:AA", bound.single().dialled)
+        assertEquals(OWN, bound.single().nodeNum)
+    }
+
     private companion object {
         const val KNIT_SLOT = 1
         const val OWN = 0xA1u

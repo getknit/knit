@@ -62,6 +62,33 @@ internal data class LoraPlaneSnapshot(
      * gate; the store ignores those keys, so its blob still loads.
      */
     val reprobes: List<ReprobeStamp> = emptyList(),
+    /**
+     * MeshCore boards' duty laws (`MeshcoreDutyLaw`, ADR 2026-11.gsqu's Stage 5a-1 and 5a-2 amendments), one per board digest,
+     * the last four boards bound: each the ring of that board's own `(uptime, tx_air)` samples and its pre-boot term, so a
+     * restart or a rebind back keeps the trailing hour's baseline and never hands out a fresh one. Only
+     * `meshcore_plane_state` carries it; an empty list is never written, so Meshtastic's blob is the one it always was.
+     */
+    val meshcoreLaws: List<MeshcoreLawStamp> = emptyList(),
+)
+
+/**
+ * The duty law's persisted ring for one board ([board]: a short digest of the board's public key, never the key — it only
+ * tells this board's ring from another's): its samples and the pre-boot term, all on the board's uptime and the wall clock.
+ */
+@Serializable
+internal data class MeshcoreLawStamp(
+    val board: String,
+    val samples: List<LawSampleStamp> = emptyList(),
+    val preBootTxSecs: Long? = null,
+    val preBootUntilWall: Long? = null,
+)
+
+/** One `(uptime, tx_air)` sample of a board's boot, the boot stamped on the wall clock. */
+@Serializable
+internal data class LawSampleStamp(
+    val uptimeSecs: Long,
+    val txAirSecs: Long,
+    val bootWall: Long,
 )
 
 /** One stamped id that outlives the process — the auto-reply's memory. */

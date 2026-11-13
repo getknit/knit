@@ -277,6 +277,18 @@ internal class LoraAirtime(
     }
 
     /**
+     * Forgets the modulation and the duty a board reported: the kind's fallbacks price and allow again, and [dutyKnown]
+     * reads false. A MeshCore session that comes up with no sane radio or frequency (ADR 2026-11.gsqu's Stage 5a-2
+     * amendment): the previous board's duty must not stand for this one, and a frame the fallback cannot carry is then
+     * skipped, never dropped as [Refusal.NEVER]. Leaves [radio] as it was.
+     */
+    @Synchronized
+    fun forgetRadio() {
+        params = null
+        duty = null
+    }
+
+    /**
      * Records how the bound board signs, off its handshake at `Ready` (#243): [facts] — firmware, `has_xeddsa`, the
      * `packet_signature_policy`, ham mode — and whether slot 0 ([primaryAead]) and the bound Knit slot ([knitAead]) are
      * AEAD channels. Every later [price] reads this one snapshot, so admission and booking cannot disagree. Asked again
@@ -553,6 +565,32 @@ internal class LoraAirtime(
     ) {
         prune(now)
         val ms = timeOnAirMs(payloadBytes, price ?: knitBroadcast())
+        samples.addLast(Booking(now, ms, ceiling))
+        spentMs += ms
+        if (ceiling == Ceiling.FLOOD) floodSpentMs += ms
+    }
+
+    /**
+     * Milliseconds [phyBytes] on the air occupy the medium at the board's modulation ([BoardTraits.airMs]): for a kind that
+     * prices a difference of two airings rather than a packet ([recordMs]).
+     */
+    @Synchronized
+    fun airMsOfPhy(phyBytes: Int): Long = traits.airMs(phyBytes, params ?: traits.fallbackRadio)
+
+    /**
+     * Books [ms] of air at [now] under [ceiling] — air that is no packet of its own: on MeshCore the surcharge of a DM our
+     * board flooded instead of sending direct (ADR 2026-11.gsqu's Stage 5a-2 amendment), whose airing was booked at send.
+     * Not meant for [refund], which matches a compact DM's own airings on when and how much: a surcharge is a few
+     * milliseconds, never an airing's whole cost. Nothing at or under zero.
+     */
+    @Synchronized
+    fun recordMs(
+        ms: Long,
+        now: Long,
+        ceiling: Ceiling = Ceiling.FULL,
+    ) {
+        if (ms <= 0) return
+        prune(now)
         samples.addLast(Booking(now, ms, ceiling))
         spentMs += ms
         if (ceiling == Ceiling.FLOOD) floodSpentMs += ms

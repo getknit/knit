@@ -400,7 +400,7 @@ internal class MeshtasticHooks(
                 "fw=${state.board.firmwareVersion} signing=${air.signing} policy=${state.signaturePolicy} " +
                 "knitSignedUpTo=${air.knitSignedUpTo} roomSignedUpTo=${air.roomSignedUpTo} licensed=${state.board.licensed}",
         )
-        scope.launch { onBoardBound(BoardBinding(state.board.myNodeNum, boundKey(state.board))) }
+        scope.launch { onBoardBound(BoardBinding(state.board.myNodeNum, boundKey(state.board), dialled = state.address)) }
     }
 
     /**
@@ -645,3 +645,24 @@ internal const val MESH_POST_ROOM_OFF = "ROOM_OFF"
  * packet has nowhere to go and is dropped at the same point.
  */
 internal const val MESH_POST_DEDICATED = "DEDICATED"
+
+/**
+ * A Meshtastic board's [BoardPlane] (ADR 2026-11.gsqu, Stage 5a-2): [MeshtasticTraits], [link] through
+ * [MeshtasticBoardLink], and [MeshtasticHooks] over both — exactly what the core built for itself before the kind was
+ * injected.
+ */
+@Suppress("LongParameterList") // the kind's wiring, each one thing the hooks take once
+internal fun meshtasticPlane(
+    link: MeshtasticLink,
+    scope: CoroutineScope,
+    metrics: MeshMetrics,
+    clock: () -> Long,
+    log: (String) -> Unit,
+    onPublicPost: suspend (MeshPost) -> Unit,
+    onBoardBound: suspend (BoardBinding) -> Unit,
+): BoardPlane {
+    val board = MeshtasticBoardLink(link)
+    return BoardPlane(MeshtasticTraits, board) { core ->
+        MeshtasticHooks(link, board, core, scope, metrics, clock, log, onPublicPost, onBoardBound)
+    }
+}

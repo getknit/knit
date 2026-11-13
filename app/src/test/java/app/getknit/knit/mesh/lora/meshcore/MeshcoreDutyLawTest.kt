@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lora.meshcore
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -19,6 +20,21 @@ class MeshcoreDutyLawTest {
         txAirSecs: Long,
         bootWall: Long = boot,
     ) = onSample(bootWall + uptimeSecs * 1_000, uptimeSecs, txAirSecs)
+
+    @Test
+    fun aLivePreBootTermAnswersAloneBeforeAnySampleOfThisBoot() {
+        // A restore that kept only the pre-boot term (no usable ring) is not "nothing known" while that hour is spent.
+        val law = MeshcoreDutyLaw()
+        val until = boot + 3_600_000L
+        law.restore(MeshcoreDutyLaw.State(emptyList(), MeshcoreDutyLaw.PreBoot(txSecs = 100, untilWallMs = until)))
+        val held = law.verdict(1.0, wallNowMs = boot)!!
+        assertTrue(held.holding)
+        assertEquals(3_600L, held.releaseInSecs)
+        assertNotNull("under the duty it still answers", law.verdict(10.0, wallNowMs = boot))
+        assertFalse(law.verdict(10.0, wallNowMs = boot)!!.holding)
+        assertNull("past its deadline, nothing is known", law.verdict(1.0, wallNowMs = until))
+        assertNull("no wall clock, no term", law.verdict(1.0))
+    }
 
     @Test
     fun nothingIsKnownBeforeASample() {

@@ -24,6 +24,21 @@ object LoraSizeHint {
     const val ROOM_BODY_BYTES = 100
 
     /**
+     * [ROOM_BODY_BYTES]'s MeshCore peer (ADR 2026-11.gsqu §4, Stage 5a-2): what one channel-data packet
+     * ([app.getknit.knit.mesh.lora.meshcore.MeshcoreProto.CHANNEL_DATA_CAP], 164 B) holds of incompressible text in the
+     * `0x05` form, with the same few bytes' margin, pinned by `CoordinationPlaneSizeBudgetTest`. The elided `0x06` form and
+     * a second packet (about 57 B and 200 B, gsqu §4) are Stage 5c's, which raises it.
+     */
+    const val MESHCORE_ROOM_BODY_BYTES = 40
+
+    /** The room composer's body budget on a board of [kind] ([ROOM_BODY_BYTES], [MESHCORE_ROOM_BODY_BYTES]). */
+    fun roomBodyBytes(kind: BoardKind): Int =
+        when (kind) {
+            BoardKind.MESHTASTIC -> ROOM_BODY_BYTES
+            BoardKind.MESHCORE -> MESHCORE_ROOM_BODY_BYTES
+        }
+
+    /**
      * A DM's body **and** the inline acks it may carry (`MeshManager.inlineAcksFor` spends what the body leaves, at
      * `INLINE_ACK_BYTES` each), as compact content in one PKI packet at the MTU-255 floor (ADR 2026-10.x9fa and its
      * PKI amendment): 168 B of plaintext, less the v3 layout's field headers, with a few bytes' margin. Measured with

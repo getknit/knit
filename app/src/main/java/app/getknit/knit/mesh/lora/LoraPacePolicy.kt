@@ -218,8 +218,31 @@ internal class LoraPacePolicy(
         maxOf(
             if (lastSentAt == Long.MIN_VALUE) 0L else lastSentAt + minGapMs,
             nakUntil,
+            lawHeldUntil,
             soonestOf(airtimeBlockedUntil, brakeBlockedUntil),
         )
+
+    /**
+     * When the band's law lets the next frame go, or 0 while it holds nothing ([holdForLaw]): a floor on every frame, like
+     * the NAK cool-down, so the pacer sleeps to it and never ticks through it.
+     */
+    private var lawHeldUntil = 0L
+
+    /**
+     * Holds **every** frame until [untilMs] on the caller's clock, or lifts the hold with null (ADR 2026-11.gsqu's Stage
+     * 5a-1 and 5a-2 amendments): a MeshCore board's own trailing-hour `tx_air` reached its band's duty
+     * (`MeshcoreDutyLaw`), which counts every client's sends, our acks and repeats, so no Knit frame may add to it. The
+     * kind sets it on each RADIO-stats sample, at the verdict's `releaseInSecs`; a later sample can lift it sooner or
+     * hold it longer. Nothing on Meshtastic sets it: there the law is the firmware's.
+     */
+    @Synchronized
+    fun holdForLaw(untilMs: Long?) {
+        lawHeldUntil = untilMs ?: 0L
+    }
+
+    /** Whether the band's law holds every frame at [now] ([holdForLaw]): the status row and the MeshCore dump. */
+    @Synchronized
+    fun lawHeld(now: Long): Boolean = now < lawHeldUntil
 
     /** The earlier of two deferrals, 0 meaning "none": a queue holding both kinds moves when the first one lifts. */
     private fun soonestOf(

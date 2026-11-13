@@ -230,6 +230,11 @@ internal sealed interface LinkState {
          * security config — unknown, which `LoraAirtime.price` reads as signing. Never the keys beside it.
          */
         val signaturePolicy: SignaturePolicy? = null,
+        /**
+         * The address the session that published this dialled (ADR 2026-11.gsqu's Stage 5a-2 amendment, the `dialled`
+         * race): what the binding the profile advertises is written under ([BoardBinding.dialled]). Null in a fake's Ready.
+         */
+        val address: String? = null,
     ) : LinkState
 
     data class Disconnected(

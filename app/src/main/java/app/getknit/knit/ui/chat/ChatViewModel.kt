@@ -582,6 +582,8 @@ data class ChatUiState(
     val loraCarry: LoraCarry = LoraCarry.None,
     // The bound board kind's compact-DM budget (`LoraFacts.directBudget`), which sizes the DM half of that hint.
     val loraDirectBudget: LoraDirectBudget = LoraDirectBudget.MESHTASTIC,
+    // The bound board kind's one-packet room body (`LoraFacts.roomBodyBytes`), which sizes the room half of that hint.
+    val loraRoomBudget: Int = LoraSizeHint.ROOM_BODY_BYTES,
     // Whether the Meshtastic room's composer may post from this device, and if not why ([publicPostGateFor]).
     // [PublicPostGate.Open] everywhere else, and as the seed — a send that beats the first emission is judged
     // by the board's own outcome rather than by a stale gate.
@@ -1895,6 +1897,7 @@ class ChatViewModel(
                     },
                 loraCarry = loraCarryFor(conversationId, isGroup, mesh.lora.facts),
                 loraDirectBudget = mesh.lora.facts.directBudget,
+                loraRoomBudget = mesh.lora.facts.roomBodyBytes,
                 publicPostGate = publicPostGateFor(conversationId, mesh.lora.facts),
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom, isLoading = true))

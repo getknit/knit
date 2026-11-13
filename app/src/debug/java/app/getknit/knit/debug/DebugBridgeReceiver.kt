@@ -2691,6 +2691,8 @@ class DebugBridgeReceiver :
      * `state`/`heard`/counters are the field oracle for the two-board range trial.
      */
     private suspend fun handleLora(intent: Intent): JSONObject {
+        // `--es kind meshcore`: the MeshCore plane's own dump (ADR 2026-11.gsqu, Stage 5a-2). The keys below stay Meshtastic's.
+        if (intent.getStringExtra("kind") == "meshcore") return handleMeshcore(intent)
         val address = intent.getStringExtra(EXTRA_ADDRESS)?.takeIf { it.isNotBlank() }
         if (address != null) settings.setLoraDevice(address.trim(), intent.getStringExtra("name")?.trim() ?: address.trim())
         if (intent.hasExtra("channel")) settings.setLoraChannelIndex(intent.getIntExtra("channel", 0))
@@ -2759,6 +2761,109 @@ class DebugBridgeReceiver :
             ).put("counters", metricsJson(metrics.snapshot()))
             // The last `…debug.LORAPROV` (#308): `running`, or `done` with its `result`, `channel` and `endedAtMs`.
             .put("provision", lastProv ?: JSONObject.NULL)
+    }
+
+    /**
+     * The MeshCore plane's dump (`…debug.LORA --es kind meshcore`, ADR 2026-11.gsqu's Stage 5a-2 amendment): **counts and the
+     * own board's state only** — never a key, a prefix, a contact's name, a DM's text or a setup record. `--es address` binds a
+     * MeshCore board (`BoardBindPolicy`, which keeps no name for it), `--ez on` switches the shared plane switch. A build
+     * without the MeshCore plane answers `built: false`.
+     */
+    private suspend fun handleMeshcore(intent: Intent): JSONObject {
+        val address =
+            intent
+                .getStringExtra(EXTRA_ADDRESS)
+                ?.takeIf { it.isNotBlank() }
+                ?.trim()
+                ?.uppercase(Locale.ROOT)
+        if (address != null) {
+            if (!android.bluetooth.BluetoothAdapter.checkBluetoothAddress(address)) return reply("error", "not a Bluetooth address")
+            settings.bindBoard(BoardKind.MESHCORE, address, name = "")
+        }
+        if (intent.hasExtra(EXTRA_ON)) settings.setLoraEnabled(intent.getBooleanExtra(EXTRA_ON, false))
+        val plane = getKoin().getOrNull<app.getknit.knit.mesh.lora.LoraMeshTransport>(loraPlane(BoardKind.MESHCORE))
+        val session = getKoin().getOrNull<app.getknit.knit.mesh.lora.meshcore.MeshcoreSession>(loraPlane(BoardKind.MESHCORE))
+        val result =
+            JSONObject()
+                .put("status", "ok")
+                .put("kind", "meshcore")
+                .put("built", plane != null)
+                .put("enabled", settings.loraEnabled.first())
+                .put("dms", settings.loraDmEnabled.first())
+                .put("bound", settings.meshcoreDeviceAddress.first() != null)
+        if (plane == null || session == null) return result
+        val hooks = plane.kindHooks as? app.getknit.knit.mesh.lora.meshcore.MeshcoreHooks
+        val status = plane.status.value
+        val ready = session.state.value as? app.getknit.knit.mesh.lora.BoardState.Ready
+        val detail = ready?.detail as? app.getknit.knit.mesh.lora.meshcore.MeshcoreDetail
+        val law = hooks?.lawState()
+        val c = hooks?.counters
+        val sc = session.counters
+        return result
+            .put("state", status.state::class.simpleName)
+            // Cleaned before it is shown (`MeshcoreHooks.cleanVersion`): the string the board reports.
+            .put("version", (status.state as? app.getknit.knit.mesh.lora.LinkState.Ready)?.board?.firmwareVersion ?: JSONObject.NULL)
+            .put("versionCode", detail?.versionCode ?: JSONObject.NULL)
+            .put("slot", ready?.channel ?: JSONObject.NULL)
+            .put("radio", ready?.radio?.let { "SF${it.spreadFactor}/BW${it.bandwidthHz}/CR4/${it.codingRate}" } ?: JSONObject.NULL)
+            .put("multiAcks", detail?.multiAcks ?: JSONObject.NULL)
+            .put("defaultScope", detail?.defaultScope ?: JSONObject.NULL)
+            .put("queued", status.queued)
+            .put("queueFree", status.queueFree ?: JSONObject.NULL)
+            .put("heard", status.heard)
+            .put("boardsHeard", status.boardsHeard)
+            .put(
+                "direct",
+                JSONObject()
+                    .put("reachable", status.direct.reachable)
+                    .put("unreachable", status.direct.unreachable)
+                    .put("noKey", status.direct.noKey)
+                    .put("inFlight", status.direct.inFlight)
+                    .put("parked", status.direct.parked),
+            ).put(
+                "airtime",
+                status.airtime?.let { air ->
+                    JSONObject()
+                        .put("known", air.known)
+                        .put("usedMs", air.usedMs)
+                        .put("allowanceMs", air.allowanceMs)
+                        .put("floodUsedMs", air.floodUsedMs)
+                        .put("floodCeilingMs", air.floodCeilingMs)
+                        .put("braked", status.braked)
+                        .put("boardChannelUtilPercent", status.boardAir?.channelUtilPercent?.toDouble() ?: JSONObject.NULL)
+                        .put("boardAirUtilTxPercent", status.boardAir?.airUtilTxPercent?.toDouble() ?: JSONObject.NULL)
+                } ?: JSONObject.NULL,
+            ).put(
+                "law",
+                law?.let {
+                    JSONObject()
+                        .put("dutyPercent", it.dutyPercent)
+                        .put("trailingTxSecs", it.trailingTxSecs ?: JSONObject.NULL)
+                        .put("limitSecs", it.limitSecs ?: JSONObject.NULL)
+                        .put("holding", it.holding)
+                        .put("releaseInSecs", it.releaseInSecs ?: JSONObject.NULL)
+                } ?: JSONObject.NULL,
+            ).put(
+                "counters",
+                JSONObject()
+                    .put("meshcoreForeignDms", c?.foreignDms?.get() ?: 0)
+                    .put("meshcoreForeignPosts", c?.foreignPosts?.get() ?: 0)
+                    .put("meshcorePublicDiscarded", c?.publicDiscarded?.get() ?: 0)
+                    .put("meshcoreFragmentsRefused", c?.fragmentsRefused?.get() ?: 0)
+                    .put("meshcoreAcksBooked", c?.acksBooked?.get() ?: 0)
+                    .put("meshcorePathReturnsBooked", c?.pathReturnsBooked?.get() ?: 0)
+                    .put("meshcoreAnswersReplayed", c?.answersReplayed?.get() ?: 0)
+                    .put("meshcoreFloodSurcharges", c?.floodSurcharges?.get() ?: 0)
+                    .put("meshcoreLawHolds", c?.lawHolds?.get() ?: 0)
+                    .put("meshcoreZeroHopKnitPosts", c?.zeroHopKnitPosts?.get() ?: 0)
+                    .put("meshcoreTeachRefused", c?.teachRefused?.get() ?: 0)
+                    .put("meshcoreDirectFlooded", sc.directFlooded.get())
+                    .put("meshcorePinFailures", sc.pinFailures.get())
+                    .put("meshcorePacketsDropped", sc.packetsDropped.get())
+                    .put("meshcoreCommandsRefused", sc.commandsRefused.get())
+                    .put("meshcoreUnexpected", sc.unexpected.get())
+                    .put("meshcoreRejected", sc.rejected.get()),
+            )
     }
 
     /**

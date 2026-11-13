@@ -393,7 +393,9 @@ internal class MeshtasticSession(
     ): SessionEnd {
         val handshake = handshake(address, channel)
         if (handshake != null) return handshake
-        val ready = LinkState.Ready(requireNotNull(board), channels, mtu, radio, signaturePolicy)
+        // The address this session dialled rides its Ready (Stage 5a-2): a late Ready from a board the user has since
+        // replaced writes its identity under that address alone, never under the newer binding.
+        val ready = LinkState.Ready(requireNotNull(board), channels, mtu, radio, signaturePolicy, address = address)
         // Undelivered covers what closing the box leaves in it, and what a cancelled select took and never handed over.
         val box = Channel<Cmd>(Channel.BUFFERED, onUndeliveredElement = ::refuse)
         // Replaced, never overwritten: a session that ended on a flag read false then true, or a stop() whose finally has

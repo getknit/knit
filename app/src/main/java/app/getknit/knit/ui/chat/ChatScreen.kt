@@ -1755,6 +1755,7 @@ internal fun ChatScreenContent(
                                     replying = replyingTo != null,
                                     attached = pendingAttachment != null,
                                     direct = state.loraDirectBudget,
+                                    room = state.loraRoomBudget,
                                 )
                                     // A staged position rides the body, so its bytes come off the same budget.
                                     ?.let { if (stagedLocation != null) (it - GeoUri.RESERVE_BYTES).coerceAtLeast(0) else it },

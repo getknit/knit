@@ -87,6 +87,9 @@ internal object BoardBindPolicy {
         val own = BoardKeys.of(kind)
         own.reported.forEach { prefs.remove(it) }
         prefs[own.address] = address
-        prefs[own.name] = name
+        // A MeshCore board's BLE name is `MeshCore-` and its advert name, which before Knit's setup renames it is the user's
+        // own — possibly their real name — and DataStore is plaintext (the security design pass, ADR 2026-11.gsqu's Stage 5a-2
+        // amendment). So no name is kept for it until Stage 5b's SQLCipher setup record; a stale one goes.
+        if (kind == BoardKind.MESHCORE) prefs.remove(own.name) else prefs[own.name] = name
     }
 }

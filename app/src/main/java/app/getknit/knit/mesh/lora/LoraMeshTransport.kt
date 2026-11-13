@@ -84,9 +84,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * The board-neutral plane core (ADR 2026-11.gsqu, Stage 1): it reads the board through [BoardLink], a board kind's
  * numbers through [BoardTraits] and everything only the kind does through [BoardKindHooks] — the inbound dispatch, the
  * slot-0 room, the auto-reply and its persisted memory, the send-time slot and AEAD guards, how the board signs, the
- * setup, teaching the board a key and the answer to a destination without ours. Meshtastic is the only kind, so the
- * constructor still takes the [MeshtasticLink], and it is read in one place: where the core builds the board link and
- * the hooks ([MeshtasticBoardLink], [MeshtasticHooks]), which make the kind's own state objects themselves.
+ * setup, teaching the board a key and the answer to a destination without ours. Since Stage 5a-2 the kind is injected
+ * whole ([BoardPlane]: its traits, its link and a factory for its hooks): [meshtasticPlane] builds Meshtastic's, which the
+ * secondary constructor still takes as a [MeshtasticLink], and `meshcorePlane` MeshCore's (ADR 2026-11.gsqu).
  *
  * Large by suppression, as [MeshtasticSession] is: this is the plane's single owner. The pacer loop, the
  * linger sweep and the published status all read and write one set of mutable fields under one scope, so
@@ -95,7 +95,8 @@ import java.util.concurrent.atomic.AtomicInteger
 @Suppress("TooManyFunctions", "LongParameterList", "LargeClass")
 internal class LoraMeshTransport(
     private val selfId: suspend () -> String,
-    link: MeshtasticLink,
+    /** The board kind this plane drives: its traits, its link and its hooks (ADR 2026-11.gsqu, Stage 5a-2). */
+    plane: BoardPlane,
     private val config: Flow<LoraConfig?>,
     /** Seals and opens a compact DM (ADR 2026-10.x9fa); [LoraDirectCrypto.None] seals nothing. */
     private val crypto: LoraDirectCrypto = LoraDirectCrypto.None,
@@ -108,15 +109,6 @@ internal class LoraMeshTransport(
      * peers a compact DM goes to, and the boards the hearing hook listens for. Null means no source, and no DM goes.
      */
     private val boardMap: LoraBoardMap? = null,
-    /** Delivers a post heard on the board's primary channel into the Meshtastic room — [app.getknit.knit.mesh.MeshPostSink]. */
-    onPublicPost: suspend (MeshPost) -> Unit = {},
-    /**
-     * The bound board's node number and key ([BoardBinding]), reported each time its session comes up. What the
-     * profile advertises so a contact's phone can line a heard post up with this one and verify it
-     * (`SettingsStore.loraBoard`); persisted by the caller, so a link drop does not unsay it and only a
-     * different board changes it.
-     */
-    onBoardBound: suspend (BoardBinding) -> Unit = {},
     /**
      * One of our compact DMs ([DirectKind.MESSAGE], by its row id) reached its recipient's **radio**: the destination's
      * own board acked it — its phone may be away, and the board's to-phone queue can still drop it — so the chat shows
@@ -150,16 +142,73 @@ internal class LoraMeshTransport(
     // A board on a dedicated slot lifts the politeness ceiling, the setup's whole point (ADR 067's amendment). The board
     // kind sets the gap of this default only; an injected pace keeps its own (ADR 2026-11.gsqu).
     private val pace: LoraPacePolicy =
-        LoraPacePolicy(minGapMs = BoardTraits.MESHTASTIC.minGapMs, airtime = LoraAirtime(dedicatedUnlocksDuty = true)),
+        LoraPacePolicy(
+            minGapMs = plane.traits.minGapMs,
+            airtime = LoraAirtime(dedicatedUnlocksDuty = true, traits = plane.traits),
+        ),
     /**
      * How often [lingerSweepLoop] re-reads the heard set. The field value always; the mesh-in-a-box lab shortens it,
      * because a scenario that moves the calendar past the linger needs the sweep to notice inside an await.
      */
     private val lingerSweepMs: Long = LINGER_SWEEP_MS,
+    /**
+     * Whether a heard room post's signature verifies against its author's pinned key ([LoraAuthorCheck]): what a kind
+     * whose packets name no trustworthy sender ([BoardTraits.hearsSender] false, MeshCore) keys a hearing on (ADR
+     * 2026-11.gsqu's Stage 5 decisions). [LoraAuthorCheck.None] verifies nothing, so no such hearing counts.
+     */
+    private val authorCheck: LoraAuthorCheck = LoraAuthorCheck.None,
 ) : MeshTransport,
     LoraPlaneStatus,
     PublicChannelSink,
     LoraDirectSink {
+    /**
+     * A Meshtastic plane over [link] (Stage 1 to 5a-1's constructor, kept so every caller and test builds the plane it
+     * always did): [onPublicPost] delivers a post heard on the board's primary channel into the Meshtastic room
+     * ([app.getknit.knit.mesh.MeshPostSink]); [onBoardBound] gets the bound board's node number and key ([BoardBinding])
+     * each time its session comes up — what the profile advertises, persisted by the caller, so a link drop does not unsay
+     * it and only a different board changes it.
+     */
+    constructor(
+        selfId: suspend () -> String,
+        link: MeshtasticLink,
+        config: Flow<LoraConfig?>,
+        crypto: LoraDirectCrypto = LoraDirectCrypto.None,
+        inbox: LoraDirectInbox = LoraDirectInbox.None,
+        source: LoraDirectSource = LoraDirectSource.None,
+        boardMap: LoraBoardMap? = null,
+        onPublicPost: suspend (MeshPost) -> Unit = {},
+        onBoardBound: suspend (BoardBinding) -> Unit = {},
+        onRadioReached: (frameId: String, late: Boolean) -> Unit = { _, _ -> },
+        scope: CoroutineScope,
+        metrics: MeshMetrics,
+        state: LoraPlaneState = LoraPlaneState.None,
+        clock: () -> Long,
+        wallClock: () -> Long = System::currentTimeMillis,
+        processStartWall: Long = wallClock(),
+        log: (String) -> Unit = {},
+        pace: LoraPacePolicy =
+            LoraPacePolicy(minGapMs = BoardTraits.MESHTASTIC.minGapMs, airtime = LoraAirtime(dedicatedUnlocksDuty = true)),
+        lingerSweepMs: Long = LINGER_SWEEP_MS,
+    ) : this(
+        selfId = selfId,
+        plane = meshtasticPlane(link, scope, metrics, clock, log, onPublicPost, onBoardBound),
+        config = config,
+        crypto = crypto,
+        inbox = inbox,
+        source = source,
+        boardMap = boardMap,
+        onRadioReached = onRadioReached,
+        scope = scope,
+        metrics = metrics,
+        state = state,
+        clock = clock,
+        wallClock = wallClock,
+        processStartWall = processStartWall,
+        log = log,
+        pace = pace,
+        lingerSweepMs = lingerSweepMs,
+    )
+
     override val kind = TransportKind.LoRa
     override val hasFastPlane = true
     override val shortRange = false
@@ -178,11 +227,11 @@ internal class LoraMeshTransport(
 
     override val incomingFiles: Flow<ReceivedFile> = emptyFlow() // LoRa carries no files
 
-    /** The board kind's numbers (ADR 2026-11.gsqu, Stage 1a): Meshtastic's, the one kind there is. */
-    private val traits: BoardTraits = BoardTraits.MESHTASTIC
+    /** The board kind's numbers (ADR 2026-11.gsqu, Stage 1a), injected with its link and hooks since Stage 5a-2. */
+    private val traits: BoardTraits = plane.traits
 
-    /** The board as the core reads it: [link] seen through the neutral seam, with no buffering of its own (Stage 1b). */
-    private val board: BoardLink = MeshtasticBoardLink(link)
+    /** The board as the core reads it, the kind's link seen through the neutral seam, with no buffering of its own (Stage 1b). */
+    private val board: BoardLink = plane.board
 
     /**
      * The plane core as the kind's hooks reach it (Stage 1c): read lazily, so the fields it names are set by the time a
@@ -208,13 +257,23 @@ internal class LoraMeshTransport(
             }
 
             override fun onBoardKeyHeard(from: BoardAddr) = this@LoraMeshTransport.onBoardKeyHeard(from)
+
+            override fun holdForLaw(untilMs: Long?) {
+                pace.holdForLaw(untilMs)
+                wake.trySend(Unit)
+                // The face shows a hold (lora-reviewer N7); a lapsed one is seen by the linger sweep's minute republish.
+                publishStatus()
+            }
         }
 
     /** What only the board kind does (Stage 1b and 1c): made here, per instance, with the kind's own state inside. */
     private val hooks: BoardKindHooks =
-        MeshtasticHooks(link, board, core, scope, metrics, clock, log, onPublicPost, onBoardBound).also {
+        plane.hooks(core).also {
             check(it.kind == traits.kind) { "hooks for ${it.kind} over ${traits.kind} traits" }
         }
+
+    /** The kind's hooks, for the debug bridge's per-kind dump (counts and own-board state only). */
+    internal val kindHooks: BoardKindHooks get() = hooks
 
     /**
      * Which board kind this plane instance drives (ADR 2026-11.gsqu, Stage 2): its traits' kind. What the composite keys
@@ -282,7 +341,9 @@ internal class LoraMeshTransport(
     // incomplete fragments — an older build's board that only publishes offers is still a board in range. The value is that
     // radio's last signal reading, so the row reports a link we actually have rather than the last thing the
     // board overheard, and one linger rule ages the reading out with the radio it belongs to.
-    private val boardsHeardAt = ConcurrentHashMap<BoardAddr, RxQuality>()
+    // Keyed on the board's address where the kind vouches for the sender ([BoardTraits.hearsSender]), else on the verified
+    // author of what it aired ([AuthorRadio]): on MeshCore radios are counted by author (ADR 2026-11.gsqu §5).
+    private val boardsHeardAt = ConcurrentHashMap<Any, RxQuality>()
     private val heardPeers = ConcurrentHashMap<String, Peer>()
 
     // Peers a higher-preference plane holds a **live link** to right now (BLE/NAN, via suppressDataPath). The link
@@ -383,6 +444,9 @@ internal class LoraMeshTransport(
         jobs += scope.launch { resolveSelfId() }
         jobs += scope.launch { config.collect(::onConfig) }
         jobs += scope.launch { board.state.collect(::onBoardState) }
+        // The one collector of the board's packets. Launch order gives no ordering on a multi-threaded scope, and none is
+        // relied on: MeshCore's session holds what it drains before anyone collects (a channel of `PACKET_BACKLOG`, oldest
+        // dropped and counted), so a drain that beats this subscription is kept, never lost.
         jobs += scope.launch { board.packets.collect(::onLoraPacket) }
         // Nudge the pacer too: a board that was full is the one state [waitForNextSend] can only wait out on
         // its floor, and this is the event that ends it.
@@ -487,8 +551,10 @@ internal class LoraMeshTransport(
         // Takes the signal readings with it: they belong to radios this session heard, and a stale one used
         // to survive a restart and read as the state of a link that had not been re-established yet.
         boardsHeardAt.clear()
-        // The band reading was about the air around the board that is gone (ADR 2026-10.ug4a).
+        // The band reading was about the air around the board that is gone (ADR 2026-10.ug4a), and so was the band's law
+        // (MeshCore's, ADR 2026-11.gsqu's Stage 5a-2 amendment): the next board's own verdict holds it again.
         pace.forgetBand()
+        pace.holdForLaw(null)
         _reachable.value = emptySet()
         _health.value = TransportHealth.Unavailable
         // The board is gone and with it the route every mark was about (ADR 2026-10.x9fa).
@@ -601,17 +667,20 @@ internal class LoraMeshTransport(
         val nowWall = wallClock()
         val shift = WallShift(now, nowWall)
         val holders = boardHolders
-        return LoraPlaneSnapshot(
-            savedAtWall = nowWall,
-            // The kind's limiters: on Meshtastic the DM auto-reply's once-a-day memory (ADR 2026-09.4n5p).
-            autoReplied = hooks.snapshotState(shift),
-            // And the re-probe's backoff (ADR 2026-10.rp3s): forgotten, every restart would re-probe each silent
-            // recipient at the base gap again. Under the cap, direct board holders first and then the soonest, so a
-            // holder's earned backoff is never the one dropped (ADR 2026-10.ug4a).
-            reprobes =
-                LoraReprobe
-                    .capped(reprobe.stamps(), STATE_REPROBE_CAP, holders?.let { map -> { peer -> map[peer]?.direct == true } })
-                    .map { ReprobeStamp(it.recipientId, shift.toWall(it.dueAt), it.gapMs, it.lastFrameId) },
+        return hooks.extendSnapshot(
+            LoraPlaneSnapshot(
+                savedAtWall = nowWall,
+                // The kind's limiters: on Meshtastic the DM auto-reply's once-a-day memory (ADR 2026-09.4n5p); on MeshCore
+                // its duty law's ring, which [BoardKindHooks.extendSnapshot] adds.
+                autoReplied = hooks.snapshotState(shift),
+                // And the re-probe's backoff (ADR 2026-10.rp3s): forgotten, every restart would re-probe each silent
+                // recipient at the base gap again. Under the cap, direct board holders first and then the soonest, so a
+                // holder's earned backoff is never the one dropped (ADR 2026-10.ug4a).
+                reprobes =
+                    LoraReprobe
+                        .capped(reprobe.stamps(), STATE_REPROBE_CAP, holders?.let { map -> { peer -> map[peer]?.direct == true } })
+                        .map { ReprobeStamp(it.recipientId, shift.toWall(it.dueAt), it.gapMs, it.lastFrameId) },
+            ),
         )
     }
 
@@ -1681,6 +1750,13 @@ internal class LoraMeshTransport(
         // Lifted before delivery, so the ✓✓ the delivery coalesces passes skipCovered. Any authenticated compact frame
         // (a DM, a ✓✓, a reaction), but only a live reception: never off MQTT or out of a replayed queue (#294).
         val lifted = isLive(packet) && liftCover(opened.peerId)
+        // Their board heard by the kind's rule (ADR 2026-11.gsqu §5): on Meshtastic every opened DM, as ever; on MeshCore a
+        // live one at zero hops — `0xFF` trusts the pin, a flood with hops does not count — and fresh, in the room post's
+        // window: the seal opens for a day, and a DM re-aired direct once MeshCore's dedup forgot it is no hearing of a
+        // board that may be gone (the security review's N4). Its radio is counted by the author the seal names, never the
+        // sender prefix.
+        val heard = heardDirect(packet, opened)
+        if (!traits.hearsSender && heard) noteAuthorRadio(opened.peerId, packet)
         scope.launch {
             runCatching { inbox.deliver(opened) }
                 .onSuccess { log("lora direct delivered ${opened.frameId} from ${opened.peerId}") }
@@ -1688,7 +1764,10 @@ internal class LoraMeshTransport(
             // Author-keyed reach, as a fresh room post feeds it: an authenticated DM from them, never their board's ACK.
             val age = wallClock() - opened.sentAtMs
             if (age in -Protocol.MAX_FUTURE_SKEW_MS..LoraFramePolicy.FRESH_MS) noteReachable(Peer(opened.peerId))
-            onBoardHeard(opened.peerId, lifted)
+            when {
+                heard -> onBoardHeard(opened.peerId, lifted)
+                lifted -> catchUp(opened.peerId, why = "lifted")
+            }
         }
     }
 
@@ -1727,9 +1806,12 @@ internal class LoraMeshTransport(
      * Slot-0 traffic from that board counts: it is RF from it all the same.
      */
     private fun noteHeard(packet: BoardPacket) {
+        // A kind whose packets name no sender it vouches for (MeshCore: a DM's prefix is a claim) hears only verified Knit
+        // frames: an opened seal ([onDirectPacket]) or a room post's verified author ([hearAuthor]).
+        if (!traits.hearsSender) return
         val ready = board.state.value as? BoardState.Ready ?: return
         val from = packet.from ?: return
-        if (from == ready.own || !isLive(packet)) return
+        if (from == ready.own || !traits.heardLive(packet, wallClock())) return
         val peer = peerByBoard[from] ?: return
         // Only the edge out of an unreachable mark does anything; a busy contact's every packet must not cost a coroutine.
         if (direct.reachOf(peer, clock()) != LoraDirectPolicy.Reach.UNREACHABLE) return
@@ -1737,12 +1819,12 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * Whether [packet] came to us over the air just now, by the board kind's hearing rule ([BoardTraits.heardLive]): on
-     * Meshtastic an RSSI (the NodeDB replay at every handshake has none), not an MQTT uplink, and an `rx_time`, when
-     * present, within [HEARING_MAX_AGE_MS] (the to-phone queue replayed at reconnect). What the hearing hook and the
-     * cover's lift both read.
+     * Whether [packet] came to us over the air just now, at any hop count, by the board kind's rule ([BoardTraits.live]):
+     * on Meshtastic an RSSI (the NodeDB replay at every handshake has none), not an MQTT uplink, and an `rx_time`, when
+     * present, within [HEARING_MAX_AGE_MS] (the to-phone queue replayed at reconnect); on MeshCore a drain after this
+     * connection's first `NO_MORE`. What the cover's lift reads (#294); a hearing also needs [BoardTraits.heardZeroHop].
      */
-    private fun isLive(packet: BoardPacket): Boolean = traits.heardLive(packet, wallClock())
+    private fun isLive(packet: BoardPacket): Boolean = traits.live(packet, wallClock())
 
     /**
      * A pinned contact's board was heard announcing its key ([PlaneCore.onBoardKeyHeard]; on Meshtastic a `NodeInfo`,
@@ -1956,7 +2038,8 @@ internal class LoraMeshTransport(
                 return
             }
         }
-        val ch = currentConfig?.channelIndex
+        // The bound slot: the user's setting on Meshtastic, the board's own report on MeshCore ([BoardKindHooks.boundSlot]).
+        val ch = hooks.boundSlot(currentConfig?.channelIndex, ready)
         if (ch == null) {
             abandon(frame)
             return
@@ -2172,7 +2255,7 @@ internal class LoraMeshTransport(
      * 2026-10.rp3s — the radio is still counted: a board in range is a board in range), or the kind's own traffic.
      */
     private fun onLoraPacket(packet: BoardPacket) {
-        val bound = currentConfig?.channelIndex
+        val bound = hooks.boundSlot(currentConfig?.channelIndex, board.state.value as? BoardState.Ready)
         val route = hooks.route(packet, bound)
         when (route) {
             PacketRoute.DROPPED -> {
@@ -2229,6 +2312,7 @@ internal class LoraMeshTransport(
         if (isPresenceEvidence(env, wallClock()) && (own == null || packet.from != own)) {
             noteReachable(Peer(env.senderId))
         }
+        if (!traits.hearsSender) hearAuthor(packet, wire, env)
         metrics.onLoraReceived()
         if (fragmented) metrics.onLoraReassembled()
         if (LoraFramePolicy.isDmForm(env)) metrics.onLoraDmReceived()
@@ -2261,11 +2345,71 @@ internal class LoraMeshTransport(
      * the second as the first read as a phantom radio in the field.
      */
     private fun noteBoard(packet: BoardPacket) {
+        // A kind that does not vouch for its packets' sender counts a radio by the verified author it aired ([noteAuthorRadio]).
+        if (!traits.hearsSender) return
         val from = packet.from ?: return // undecoded `from`; counting it would invent a radio
         if (from == ownBoard()) return // our own board's echo
         val heard = RxQuality(packet.rxSnr, packet.rxRssi, clock())
         boardsHeardAt.compute(from) { _, previous -> previous?.refreshedBy(heard) ?: heard }
         publishStatus()
+    }
+
+    /** Whether an opened compact DM hears its board: zero hops by the kind's rule and, where no sender is vouched for, fresh. */
+    private fun heardDirect(
+        packet: BoardPacket,
+        opened: OpenedDirect,
+    ): Boolean = traits.heardZeroHop(packet) && (traits.hearsSender || isFresh(opened.sentAtMs))
+
+    /** Whether a frame stamped [sentAtMs] is fresh enough to be a hearing: `-MAX_FUTURE_SKEW_MS..FRESH_MS` of our clock. */
+    private fun isFresh(sentAtMs: Long): Boolean = wallClock() - sentAtMs in -Protocol.MAX_FUTURE_SKEW_MS..LoraFramePolicy.FRESH_MS
+
+    /**
+     * The radio that aired [packet] counted by [authorId], the Knit frame's verified author: on a kind that names no
+     * sender it vouches for (MeshCore), a radio is counted by author (ADR 2026-11.gsqu §5) — sound only because rp3s makes
+     * the author the board that aired it.
+     */
+    private fun noteAuthorRadio(
+        authorId: String,
+        packet: BoardPacket,
+    ) {
+        val heard = RxQuality(packet.rxSnr, packet.rxRssi, clock())
+        boardsHeardAt.compute(AuthorRadio(authorId)) { _, previous -> previous?.refreshedBy(heard) ?: heard }
+        publishStatus()
+    }
+
+    /**
+     * The hearing hook for a room post off a kind whose packets name no sender (MeshCore: `CHANNEL_DATA_RECV` names none,
+     * ADR 2026-11.gsqu §5), after decode: its author's radio is heard — counted ([noteAuthorRadio]) and, for a pinned
+     * board holder marked unreachable, the edge [onBoardHeard] acts on — only when all of these hold (lora-reviewer
+     * finding 4, the security pass's B6 and replay items, the Stage 5 decisions):
+     * - the post is live and at zero hops by the kind's rule ([BoardTraits.heardLive]);
+     * - its `sentAt` is within `-MAX_FUTURE_SKEW_MS..FRESH_MS` of our clock, so an honest post captured elsewhere and
+     *   re-aired at `path_len 0` later is no hearing;
+     * - its signature verifies against its author's pinned key ([authorCheck]), so nobody on the public Knit key can
+     *   write a hearing for someone else.
+     *
+     * The frame itself goes to the router whatever this says.
+     */
+    private fun hearAuthor(
+        packet: BoardPacket,
+        wire: WireEnvelope,
+        env: RelayEnvelope,
+    ) {
+        if (!traits.heardLive(packet, wallClock()) || !isFresh(env.sentAt)) return
+        val author = env.senderId
+        scope.launch {
+            val verified =
+                runCatching { authorCheck.verified(wire, env) }.getOrElse { e ->
+                    if (e is CancellationException) throw e
+                    log("lora author check failed: ${e.javaClass.simpleName}")
+                    false
+                }
+            if (!verified) return@launch
+            noteAuthorRadio(author, packet)
+            if (boardHolders?.get(author) == null) return@launch
+            if (direct.reachOf(author, clock()) != LoraDirectPolicy.Reach.UNREACHABLE) return@launch
+            onBoardHeard(author)
+        }
     }
 
     /**
@@ -2376,6 +2520,8 @@ internal class LoraMeshTransport(
                         bandReadingAgeMs = pace.bandReadAt()?.let { now - it },
                         internetCovered = covered.size,
                         direct = direct.counts(now),
+                        directReachable = direct.reachablePeers(now),
+                        lawHeld = pace.lawHeld(now),
                     ),
                 )
         }
@@ -2521,6 +2667,11 @@ internal class LoraMeshTransport(
 /** The reassembly key of a fragment whose board could not say who sent it: every such fragment shares one, as before. */
 private object NoSender
 
+/** A radio counted by the verified author of what it aired ([LoraMeshTransport]'s `boardsHeardAt`, MeshCore). */
+private data class AuthorRadio(
+    val authorId: String,
+)
+
 /**
  * Whether a peer's mark keeps the resend after a hearing and the re-probe off the air: their board refused us, or ours
  * holds no key for theirs (ADR 2026-10.aajj). Asking again changes neither until the profile changes, a key is heard or
@@ -2537,4 +2688,11 @@ private fun LoraDirectPolicy.Reach.keepsResendsOff(): Boolean =
 internal data class BoardBinding(
     val nodeNum: UInt,
     val key: String?,
+    /**
+     * The address the reporting session dialled ([LinkState.Ready.address], ADR 2026-11.gsqu's Stage 5a-2 amendment): the
+     * caller writes the binding only while it is still the bound address, so on an A→B rebind A's late Ready never writes
+     * A's node and key under B. Null where the session did not say (a fake's): the caller falls back to the plane's
+     * configured address, as before.
+     */
+    val dialled: String? = null,
 )

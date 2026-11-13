@@ -63,7 +63,11 @@ class BoardBindPolicyTest {
         assertNull(prefs[longPreferencesKey("lora_board_node")])
         assertNull(prefs[stringPreferencesKey("lora_board_key")])
         assertEquals("BB:BB", prefs[BoardKeys.MESHCORE.address])
-        assertEquals("MeshCore board", prefs[BoardKeys.MESHCORE.name])
+        // Before setup renames it a MeshCore board's name is its user's own advert name: none is kept in plaintext until
+        // Stage 5b's SQLCipher record (the security design pass), and nothing is written under `meshcore_setup_*` /
+        // `meshcore_prior_*`.
+        assertNull(prefs[BoardKeys.MESHCORE.name])
+        assertTrue(prefs.asMap().keys.none { it.name.startsWith("meshcore_setup_") || it.name.startsWith("meshcore_prior_") })
         assertEquals("the shared switch is never touched", true, prefs[loraEnabled])
         assertEquals("nor the DM switch", false, prefs[loraDmEnabled])
         assertEquals("the Meshtastic board can still be restored", "AA:AA", prefs[loraSetup])

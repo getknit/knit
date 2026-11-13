@@ -7,7 +7,7 @@ package app.getknit.knit.mesh.lora
  * kind" ([boundOf]) is the one every per-kind surface reads; with none bound it is [MESHTASTIC], today's answer.
  *
  * Only [MESHTASTIC] has a plane in Stage 2. [MESHCORE] is declared so the per-kind surfaces exist before its plane does
- * (Stage 5), and nothing builds it yet. An enum, never an identity: it names a firmware family, never a board, so it may
+ * (Stage 5; built in debug builds since 5a-2). An enum, never an identity: it names a firmware family, never a board, so it may
  * ride a field-log line ([fieldTag]) and a Koin qualifier.
  *
  * Read as `boardKind` on a transport or a status, never `kind`: that name is `MeshTransport.kind`, the radio family
@@ -17,7 +17,7 @@ enum class BoardKind {
     /** A Meshtastic board over BLE: the plane since ADR 038. */
     MESHTASTIC,
 
-    /** A MeshCore companion over BLE (ADR 2026-11.gsqu). No plane is built for it until Stage 5. */
+    /** A MeshCore companion over BLE (ADR 2026-11.gsqu). Its plane is built in debug builds since Stage 5a-2 (`MESHCORE_PLANE`). */
     MESHCORE,
     ;
 

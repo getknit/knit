@@ -114,9 +114,11 @@ class MeshcoreRefusalStage5Test {
         }
 
     /**
-     * The interleaving the must-fix closes, made deterministic with no threads: the actor's refusal runs inside the
-     * deadline's window — after its claim, before its answer — which the `timedOut` lambda is. A refusal that checks the
-     * state and then answers, or claims and answers unconditionally, answers notReady there.
+     * One interleaving the must-fix closes, made deterministic with no threads: the actor's refusal runs inside the
+     * deadline's window — after its claim, before its answer — which the `timedOut` lambda is. A refusal that claims and
+     * answers unconditionally answers notReady there, and this test catches it. A **check-then-act** refusal (it reads
+     * "unclaimed", then answers) is not caught here: on one thread its check already sees the deadline's claim. Only the
+     * two-thread race below can catch that shape, and only probabilistically, when the threads interleave inside the gap.
      */
     @Test
     fun aRefusalBetweenTheDeadlinesClaimAndItsAnswerChangesNothing() =
@@ -133,7 +135,9 @@ class MeshcoreRefusalStage5Test {
 
     /**
      * The race the must-fix closes: the caller's deadline and the actor's refusal on two threads. Whenever the deadline
-     * claims the op, its answer is the deadline's — never the actor's notReady slipped in between claim and answer.
+     * claims the op, its answer is the deadline's — never the actor's notReady slipped in between claim and answer. The one
+     * test of a check-then-act refusal, and a probabilistic one: it fails only on a run whose threads interleave inside
+     * the check-to-answer gap, so a green run is evidence, not proof.
      */
     @Test
     fun aDeadlineRacingTheActorsRefusalNeverAnswersNotReady() =

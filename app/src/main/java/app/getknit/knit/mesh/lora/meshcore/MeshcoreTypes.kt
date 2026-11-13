@@ -1,7 +1,10 @@
 package app.getknit.knit.mesh.lora.meshcore
 
+import app.getknit.knit.mesh.lora.BoardState
+import app.getknit.knit.mesh.lora.LinkState
 import app.getknit.knit.mesh.lora.RefusalClass
 import app.getknit.knit.mesh.lora.SendResult
+import kotlinx.coroutines.flow.Flow
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
@@ -45,6 +48,47 @@ internal sealed interface MeshcoreLinkState {
     ) : MeshcoreLinkState
 }
 
+/**
+ * A MeshCore link state short of Ready as the core's neutral `LinkState` reads it (the field log, the settings row, a
+ * `NotReady` answer): the same terminal and transient states, and [MeshcoreLinkState.FirmwareTooOld] — which has no
+ * Meshtastic peer — and anything else as idle.
+ */
+internal fun meshcoreDownState(detail: Any): LinkState =
+    when (detail) {
+        MeshcoreLinkState.Connecting -> LinkState.Connecting
+        MeshcoreLinkState.Bonding -> LinkState.Bonding
+        MeshcoreLinkState.Handshaking -> LinkState.Handshaking(null)
+        is MeshcoreLinkState.Disconnected -> LinkState.Disconnected(detail.reason, detail.retryAtMs, detail.streak)
+        MeshcoreLinkState.Unavailable -> LinkState.Unavailable
+        is MeshcoreLinkState.NeedsPairing -> LinkState.NeedsPairing(detail.address)
+        is MeshcoreLinkState.StaleBond -> LinkState.StaleBond(detail.address)
+        else -> LinkState.Idle
+    }
+
+/**
+ * The part of a [MeshcoreSession] the plane's MeshCore hooks drive (Stage 5a-2): a seam so the hooks are tested against a
+ * fake as well as the real session over `FakeMeshcoreAir`.
+ */
+internal interface MeshcoreBoardOps {
+    /** Air the board spent that no send of ours booked ([MeshcoreAir]). */
+    val air: Flow<MeshcoreAir>
+
+    /** The session's counts (never a key, a name or a text). */
+    val counters: MeshcoreCounters
+
+    /** Told what the hooks must know before the board reads Ready ([MeshcoreSessionObserver]). */
+    var observer: MeshcoreSessionObserver?
+
+    /** The latest read of the bound Knit slot on this connection, or null. */
+    fun slotReading(): MeshcoreSlotReading?
+
+    /** Sets the board up for Knit (§7); 5b adds the erase step and persists the record. */
+    suspend fun setup(): MeshcoreSetupResult
+
+    /** Puts back what [record] says a setup changed, where it is still Knit's. */
+    suspend fun restore(record: MeshcoreSetupRecord): MeshcoreRestoreResult
+}
+
 /** One channel slot as the session keeps it: never a foreign slot's name or secret (binding rule "contacts" 4). */
 internal data class MeshcoreSlot(
     val index: Int,
@@ -85,6 +129,11 @@ internal class MeshcoreDetail(
     val namedForKnit: Boolean,
     /** `manual_add_contacts` as the board reported it. */
     val manualAdd: Int,
+    /**
+     * The address the session that reported this dialled (Stage 5a-2, the `dialled` race): what the board's key is written
+     * under, so a late Ready from a board the user has since replaced writes nothing back. Null only in a test's detail.
+     */
+    val dialled: String? = null,
 ) {
     private val key = publicKey.copyOf()
 
@@ -92,6 +141,25 @@ internal class MeshcoreDetail(
     val publicKey: ByteArray get() = key.copyOf()
 
     override fun toString(): String = "MeshcoreDetail(v=$versionCode, slots=${slots.size}, scope=$defaultScope)"
+}
+
+/**
+ * What the plane's MeshCore hooks hear of a [MeshcoreSession] (ADR 2026-11.gsqu, Stage 5a-2), on the session's actor: each
+ * returns at once, suspends nothing and never calls the session back.
+ */
+internal interface MeshcoreSessionObserver {
+    /** The board identified itself ([publicKey], a copy), before this connection's first stats poll. */
+    fun onIdentified(publicKey: ByteArray)
+
+    /** The session is about to publish [ready]: the ledger's radio and band go in first. */
+    fun beforeReady(ready: BoardState.Ready)
+
+    /** One poll's CORE uptime and RADIO `tx_air`, read at [wallMs] on the wall clock: the duty law's sample. */
+    fun onRadioStats(
+        wallMs: Long,
+        uptimeSecs: Long,
+        txAirSecs: Long,
+    )
 }
 
 /**

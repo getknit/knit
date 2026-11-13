@@ -389,6 +389,13 @@ internal class LoraDirectPolicy(
         retries.clear()
     }
 
+    /**
+     * The peers whose boards are marked [Reach.REACHABLE] at [now] — acked, within the linger: what a MeshCore DM notice
+     * reads in place of the flood-fed reachable set (`LoraFacts.directReach`, ADR 2026-11.gsqu's Stage 5a-2 amendment).
+     */
+    @Synchronized
+    fun reachablePeers(now: Long): Set<String> = peers.keys.toList().filterTo(HashSet()) { reachOf(it, now) == Reach.REACHABLE }
+
     /** The reach map's counts at [now], for `…debug.LORA`. */
     @Synchronized
     fun counts(now: Long): DirectReachCounts {

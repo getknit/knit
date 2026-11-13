@@ -25,6 +25,7 @@ import app.getknit.knit.mesh.lora.LoraFrameCodec
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.lora.MeshtasticProto
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreProto
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameId
@@ -909,6 +910,34 @@ class CoordinationPlaneSizeBudgetTest {
         assertTrue("the budget is not slack", (transcodedLoraParts(broadcastChat(alice, over), cap = esp32PayloadCap) ?: 0) > 1)
         assertTrue("a room reply has no room in one packet", LoraSizeHint.REPLY_RESERVE_BYTES >= room)
         assertTrue("nor a room attachment", LoraSizeHint.ATTACHMENT_RESERVE_BYTES >= room)
+    }
+
+    /**
+     * [aRoomPostAtTheHintBudgetFitsOneLoraPacketAtTheMtuFloor] on a MeshCore board (ADR 2026-11.gsqu §4, Stage 5a-2): one
+     * channel-data packet ([MeshcoreProto.CHANNEL_DATA_CAP], 164 B) in the `0x05` form, which is what a room post rides until
+     * Stage 5c's elided two-part form. [LoraSizeHint.MESHCORE_ROOM_BODY_BYTES] of incompressible text fits; the slack more
+     * does not.
+     */
+    @Test
+    fun aMeshcoreRoomPostAtItsHintBudgetFitsOneChannelDataPacket() {
+        val alice = party()
+        val random = Random(seed = 13)
+        val room = LoraSizeHint.MESHCORE_ROOM_BODY_BYTES
+        val cap = MeshcoreProto.CHANNEL_DATA_CAP
+        val ascii = String(CharArray(room) { (PRINTABLE_FIRST + random.nextInt(PRINTABLE_COUNT)).toChar() })
+        val emoji =
+            buildString {
+                while (LoraSizeHint.utf8Length(this) + EMOJI_BYTES <= room) appendCodePoint(EMOJI_FIRST + random.nextInt(EMOJI_COUNT))
+            }
+        for ((label, body) in listOf("ascii" to ascii, "emoji" to emoji)) {
+            assertEquals(
+                "a $label MeshCore room post at the hint budget is one packet",
+                1,
+                transcodedLoraParts(broadcastChat(alice, body), cap = cap),
+            )
+        }
+        val over = String(CharArray(room + ROOM_SLACK_BYTES) { (PRINTABLE_FIRST + random.nextInt(PRINTABLE_COUNT)).toChar() })
+        assertTrue("the budget is not slack", (transcodedLoraParts(broadcastChat(alice, over), cap = cap) ?: 0) > 1)
     }
 
     /**

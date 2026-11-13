@@ -19,6 +19,8 @@ import app.getknit.knit.fieldlog.FieldTap
 import app.getknit.knit.identity.IdentitySource
 import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
+import app.getknit.knit.mesh.lora.BoardPlane
+import app.getknit.knit.mesh.lora.LoraAuthorCheck
 import app.getknit.knit.mesh.spool.FreeKeyJournal
 import app.getknit.knit.mesh.spool.SpoolTicketJournal
 import app.getknit.knit.mesh.spool.TicketKeyJournal
@@ -130,6 +132,10 @@ class KoinGraphVerifyTest {
                 // The LoRa planes by board kind (ADR 2026-11.gsqu, Stage 2): LoraDirectRouter's sinks and LoraStatusRepository's
                 // faces, built in their definitions from each kind's qualified single.
                 Map::class,
+                // A plane's kind (ADR 2026-11.gsqu, Stage 5a-2): its traits, link and hooks, and the author check, built
+                // inline by `loraPlaneOf` over each kind's qualified link.
+                BoardPlane::class,
+                LoraAuthorCheck::class,
             )
     }
 }

@@ -73,6 +73,21 @@ enum class LoraCarry { None, Room, Dm }
 fun isLoraOnly(kinds: Set<TransportKind>?): Boolean = kinds == setOf(TransportKind.LoRa)
 
 /**
+ * Whether the board alone carries a DM to [peerId]. [isLoraOnly] where the plane's DM reaches whom its `reachable` set
+ * says (Meshtastic). On a kind whose DM reaches direct neighbours alone (MeshCore, [LoraFacts.directReach]) the per-board
+ * direct mark decides instead, never the flood-fed reachable set: no other radio reaches them, and their board is marked
+ * reachable now (ADR 2026-11.gsqu's Stage 5a-2 amendment, lora-reviewer finding 11).
+ */
+fun loraOnlyFor(
+    peerId: String,
+    facts: LoraFacts,
+    kinds: Set<TransportKind>?,
+): Boolean {
+    val direct = facts.directReach ?: return isLoraOnly(kinds)
+    return peerId in direct && kinds.orEmpty().all { it == TransportKind.LoRa }
+}
+
+/**
  * The [LoraReach] for [conversationId], given the plane's [facts], the radios the peer is currently
  * reachable over ([kinds], from `MeshController.peerTransports` — null when it is reachable over none) and
  * the thread's Internet reach. A relay-covered DM has a better carrier than the board and stays quiet. This
@@ -88,11 +103,18 @@ fun loraReachFor(
 ): LoraReach =
     when {
         conversationId == Conversations.NEARBY -> LoraReach.Silent
+
         facts.plane != LoraPlane.Live -> LoraReach.Silent
-        !isLoraOnly(kinds) -> LoraReach.Silent
+
+        !loraOnlyFor(conversationId, facts, kinds) -> LoraReach.Silent
+
         relayReach == RelayReach.Covered -> LoraReach.Silent
+
         !facts.dms -> LoraReach.LoraOnlyDmsOff
-        facts.airtimeSpent -> LoraReach.LoraOnlySaturated
+
+        // The band's law holding every frame (MeshCore) is a spent window too: messages wait for air.
+        facts.airtimeSpent || facts.lawHeld -> LoraReach.LoraOnlySaturated
+
         else -> LoraReach.LoraOnly
     }
 
@@ -119,9 +141,14 @@ fun loraRoomReachFor(
 ): LoraReach =
     when {
         facts.plane != LoraPlane.Live -> LoraReach.Silent
+
         !loraOnlyPeer -> LoraReach.Silent
+
         facts.bandBusy -> LoraReach.RoomBandBusy
-        facts.airtimeSpent -> LoraReach.RoomSaturated
+
+        // On MeshCore the room's own flood share fills long before the window's total (ADR 2026-11.gsqu's Stage 5a-2 amendment).
+        facts.airtimeSpent || facts.floodSpent || facts.lawHeld -> LoraReach.RoomSaturated
+
         else -> LoraReach.Silent
     }
 
@@ -206,11 +233,13 @@ fun loraBudgetFor(
     replying: Boolean,
     attached: Boolean,
     direct: LoraDirectBudget = LoraDirectBudget.MESHTASTIC,
+    room: Int = LoraSizeHint.ROOM_BODY_BYTES,
 ): Int? =
     when (carry) {
         LoraCarry.None -> null
 
-        LoraCarry.Room -> LoraSizeHint.budget(LoraSizeHint.ROOM_BODY_BYTES, replying, attached)
+        // The bound kind's one-packet room body (`LoraFacts.roomBodyBytes`, ADR 2026-11.gsqu Stage 5a-2): Meshtastic's 100 B.
+        LoraCarry.Room -> LoraSizeHint.budget(room, replying, attached)
 
         // The bound kind's compact budget (`LoraFacts.directBudget`, ADR 2026-11.gsqu Stage 2): Meshtastic's 160-B body.
         LoraCarry.Dm -> LoraSizeHint.budget(LoraSizeHint.dmBodyBytes(direct), replying, attached)

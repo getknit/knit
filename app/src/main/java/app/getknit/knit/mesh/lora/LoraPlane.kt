@@ -95,6 +95,34 @@ data class LoraFacts(
      * a 160-B body) on the dark and demo planes and with no board bound.
      */
     val directBudget: LoraDirectBudget = LoraDirectBudget.MESHTASTIC,
+    /**
+     * Whether [board]'s room floods have spent their own share of the window ([Ceiling.FLOOD], ADR 2026-11.gsqu's Stage
+     * 5a-2 amendment, lora-reviewer finding 11): on MeshCore a room post is held from 15 % of the allowance on, long
+     * before [airtimeSpent] reads the total, so the room's saturated notice reads this too. A threshold off the snapshot's
+     * `floodUsedMs` against `floodCeilingMs`, never a figure, so a busy plane does not re-emit the facts. Always false on
+     * Meshtastic, which admits nothing under the flood ceiling, and unless [plane] is Live.
+     */
+    val floodSpent: Boolean = false,
+    /**
+     * The room composer's body budget on [board]: what one room packet carries of incompressible text (ADR 2026-10.rp3s's
+     * one-packet rule, per kind; [LoraSizeHint.roomBodyBytes]). A constant of the kind, so it never re-emits the facts.
+     */
+    val roomBodyBytes: Int = LoraSizeHint.ROOM_BODY_BYTES,
+    /**
+     * On a kind whose compact DM reaches direct neighbours alone (MeshCore, ADR 2026-11.gsqu §2), the peers whose boards
+     * this plane marks reachable now — acked within the linger (a zero-hop hearing never marks one: it shows their radio
+     * reaching us, not ours reaching them) — which the DM notice reads instead
+     * of the flood-fed `reachable` set (lora-reviewer finding 11): a peer heard through repeaters is not one a zero-hop DM
+     * reaches. Null on Meshtastic, whose DM notice reads the reachable set as it always did.
+     */
+    val directReach: Set<String>? = null,
+    /**
+     * Whether the band's law holds every frame of [board]'s plane now (MeshCore, ADR 2026-11.gsqu's Stage 5a-2 amendment,
+     * lora-reviewer N7): its own trailing hour reached the band's duty, which can hold for up to an hour — a DM and a room
+     * post both wait, and their notices say so as for a spent window. False unless [plane] is Live, and always on
+     * Meshtastic.
+     */
+    val lawHeld: Boolean = false,
 )
 
 /**

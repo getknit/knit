@@ -135,10 +135,18 @@ internal class MeshcoreDutyLaw(
     /** When [sample] was read, on the wall clock. */
     private fun wallOf(sample: Sample): Long = sample.bootWallMs + sample.uptimeSecs * MS_PER_SECOND
 
-    /** The law for a band of [dutyPercent] ([app.getknit.knit.mesh.lora.LoraBand]), or null before any sample. */
+    /**
+     * The law for a band of [dutyPercent] ([app.getknit.knit.mesh.lora.LoraBand]), or null when nothing is known. Before any
+     * sample of this boot a pre-boot term still alive at [wallNowMs] (one a restore kept with no usable ring) answers alone:
+     * what earlier boots spent inside the hour is still spent, so it holds until the term's deadline when it reaches the
+     * duty by itself (lora-reviewer's follow-up on Stage 5a-2). Without [wallNowMs], or with no live term, null.
+     */
     @Synchronized
-    fun verdict(dutyPercent: Double): Verdict? {
-        val now = latest ?: return null
+    fun verdict(
+        dutyPercent: Double,
+        wallNowMs: Long? = null,
+    ): Verdict? {
+        val now = latest ?: return preBootVerdict(dutyPercent, wallNowMs)
         val trailing = trailingTxSecs() ?: return null
         val limit = windowSecs * dutyPercent / PERCENT
         val holding = trailing >= limit
@@ -162,6 +170,19 @@ internal class MeshcoreDutyLaw(
                 ringLift?.let { maxOf(it, preLift) }
             }
         return Verdict(trailing, limit, holding, releaseIn)
+    }
+
+    /** [verdict] from a live pre-boot term alone, before any sample of this boot. */
+    private fun preBootVerdict(
+        dutyPercent: Double,
+        wallNowMs: Long?,
+    ): Verdict? {
+        val wall = wallNowMs ?: return null
+        val pre = preBoot?.takeIf { wall < it.untilWallMs } ?: return null
+        val limit = windowSecs * dutyPercent / PERCENT
+        val holding = pre.txSecs >= limit
+        val releaseIn = if (holding) (pre.untilWallMs - wall + MS_PER_SECOND - 1) / MS_PER_SECOND else null
+        return Verdict(pre.txSecs, limit, holding, releaseIn)
     }
 
     /**

@@ -287,7 +287,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `BoardTraitsTest`; a trait sets a factory default, never an injected value.
   Stage 2 (built, gsqu's 2026-11-13 Stage 2 amendment): every per-kind surface addresses a plane by `BoardKind`
   (`BoardTraits.kind`, `BoardKindHooks.kind`, the transport's `boardKind`, never `kind`). Koin qualifies each per-kind
-  single with `loraPlane(kind)` and the composite takes one child per `BUILT_BOARD_KINDS` (Meshtastic's alone;
+  single with `loraPlane(kind)` and the composite takes one child per `BUILT_BOARD_KINDS` (Meshtastic's, and MeshCore's in a debug build since Stage 5a-2;
   `BuildConfig.MESHCORE_PLANE` is read only by that list's guard). `MeshManager` binds `LoraDirectRouter.sinkFor`, asked
   once per offer: the **bound** kind's plane (`SettingsStore.boundBoardKind`, `BoardKind.boundOf`), Meshtastic's with
   none, never the board map or a holder, and no arrival kind on the inbound side. Settings keys per kind are
@@ -359,7 +359,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `STRICTEST_PERCENT`), `MeshcoreDutyLaw`, `MeshcoreAirRing`'s uptime reset, `MeshcoreRefusal.classOf`, `SessionOp`,
   `MeshcoreSession.WRITE_TOO_LONG` / `CommandRefused` / `MeshcoreCounters.commandsRefused`:** READ ADR 2026-11.gsqu's Stage
   5a-1 amendment (and the maintainer's Stage 5 decisions above it), then ADR 2026-10.ug4a, then "MeshCore's price, band and
-  law" in `lora-bridge.md`. Pure, JVM-tested, wired by nothing until Stage 5a-2. A MeshCore packet is priced by purpose off
+  law" in `lora-bridge.md`. Pure and JVM-tested, wired in debug builds since Stage 5a-2 (the next entry). A MeshCore packet is priced by purpose off
   the firmware's own framing — 4 B of transport codes on a scoped **flood** only, never a zero-hop DM or an ack; AES to 16
   — at the formula with the firmware's preamble (32 symbols at SF ≤ 8) plus 17 ms, never Meshtastic's signing facts or
   LongFast. **The law is Knit's on this kind** (its firmware has a 50 % token bucket and no region): the duty comes off the
@@ -373,6 +373,27 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   effectively dead, by design. Two flights (8 ack codes / 3 airings); a deadline never under `MAX_FLIGHT_MS`. A send its call
   deadline caught unstarted is `Busy`, never `Timeout`; the deadline and the actor's refusal each claim in one atomic step
   (`SessionOp`). A write over `MAX_NOTIFY` or refused as too long refuses that one command, never the session.
+
+- **Before touching the MeshCore plane in the core — `MeshcoreHooks` (`route`, `bookDirectAck`, `checkSlot`, `boundSlot`,
+  `PUBLIC_SLOT`, `NO_CONFIGURED_SLOT`, `cleanVersion`, `digest`), `MeshcorePlaneCounters`, `MeshcoreBoardOps`,
+  `MeshcoreSessionObserver`, `meshcorePlane` / `meshtasticPlane` / `BoardPlane`, `BoardTraits.live` / `heardZeroHop` /
+  `hearsSender`, `LoraAuthorCheck` / `pinnedAuthorCheck`, `AuthorRadio`, `LoraPacePolicy.holdForLaw` / `lawHeld`,
+  `PlaneCore.holdForLaw`, `LoraAirtime.recordMs` / `airMsOfPhy` / `forgetRadio`, `LoraPlaneSnapshot.meshcoreLaws` / `MeshcoreLawStamp`, `LoraFacts.lawHeld` /
+  `LoraStatus.lawHeld`, `NusDialResult.ServiceAbsent`, `MeshcoreSession.UNBONDED_POLL_MS`, `BoardKindHooks.extendSnapshot`, `MeshcoreTraits.STAGED_ROOM_PART_LIMIT`, `BoardBinding.dialled` /
+  `LinkState.Ready.address` / `MeshcoreDetail.dialled`, `di/builtBoardKinds` / `bindingAddress` / `loraPlaneOf`,
+  `LoraDoorClaim`, `LoraFacts.floodSpent` / `roomBodyBytes` / `directReach`, `LoraSizeHint.MESHCORE_ROOM_BODY_BYTES`, or
+  `…debug.LORA --es kind meshcore`:** READ ADR 2026-11.gsqu's Stage 5a-2 amendment (and the maintainer's Stage 5 decisions,
+  the 5a-1 amendment), then "The MeshCore plane in the core" in `lora-bridge.md`. Debug builds only (`MESHCORE_PLANE`); a
+  release build constructs no MeshCore child. The board is Knit's: `route` reads the slot and data type before decoding and
+  counts and discards everything not Knit's as `DROPPED`, never a hearing (Public until Stage 6, a `0x04` fragment until 5c,
+  and `roomPartLimit` 1 until 5c). Our board's answers are booked in `route` for every live acked contact DM, Knit's or not;
+  a flooded DM of ours books only its surcharge. A hearing on MeshCore is a verified, fresh, live, zero-hop Knit frame alone,
+  its radio counted by author; never a sender prefix. The ledger takes the board's radio and band before Ready (or forgets
+  the last board's), and the duty law holds the pacer to its release, its rings persisted per board digest and its hold on the face (`lawHeld`). An unbonded board is never dialled in the
+  background's place (only the hourly direct net), and a board without NUS twice in a row is terminal. An opened DM is a
+  hearing only fresh. Release gate: presence on MeshCore is unverified (#283). A session's
+  Ready carries the address it dialled and the binding is written under it. An offer reads the door claim of its sink's
+  kind. Until 5b: no teaching, an empty board map, `bindMeshcoreDirect` unbound, no device name stored.
 
 ## Adding an entry
 

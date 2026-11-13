@@ -97,14 +97,16 @@ internal class MeshcoreSession(
     private val callDeadlineMs: Long = CALL_DEADLINE_MS,
     /** The same for a setup or a restore. */
     private val setupDeadlineMs: Long = SETUP_DEADLINE_MS,
-) : BoardLink {
+) : BoardLink,
+    MeshcoreBoardOps {
     private val _state = MutableStateFlow<BoardState>(down(MeshcoreLinkState.Idle))
     override val state: StateFlow<BoardState> = _state.asStateFlow()
 
     /**
      * Drained messages, held until collected, so a drain before anyone collects loses nothing the firmware popped. Its
-     * contract, which Stage 5 honours: one collector — the plane core — subscribed before [start]; a second would split
-     * them. Bounded at [PACKET_BACKLOG]: past it the oldest goes ([MeshcoreCounters.packetsDropped]), and the re-probe
+     * contract, which Stage 5 honours: one collector — the plane core — and no more; a second would split them. When that
+     * collector subscribes is not part of it: the buffer keeps a drain that beats the subscription (Stage 5a-2). Bounded at
+     * [PACKET_BACKLOG]: past it the oldest goes ([MeshcoreCounters.packetsDropped]), and the re-probe
      * and custody repair what it carried, as they repair a reply lost on the BLE link.
      */
     private val _packets =
@@ -131,10 +133,18 @@ internal class MeshcoreSession(
     private val _air = MutableSharedFlow<MeshcoreAir>(extraBufferCapacity = OUTCOME_BUFFER)
 
     /** Air the board spent that no send of ours booked ([MeshcoreAir]), for the core to book (Stage 5). */
-    val air: SharedFlow<MeshcoreAir> = _air.asSharedFlow()
+    override val air: SharedFlow<MeshcoreAir> = _air.asSharedFlow()
 
     /** Counts only (never a key, a name or a text). */
-    val counters = MeshcoreCounters()
+    override val counters = MeshcoreCounters()
+
+    /**
+     * The plane's MeshCore hooks (Stage 5a-2), told on the actor what they must know before anything reads the board as
+     * Ready: its key once identified, its radio and band before Ready is published, and every poll's stats. Set once, at
+     * the hooks' construction; null in the session's own tests.
+     */
+    @Volatile
+    override var observer: MeshcoreSessionObserver? = null
 
     private val ackTable = MeshcoreAckTable()
     private val pins = MeshcorePins()
@@ -159,6 +169,9 @@ internal class MeshcoreSession(
 
     // The reconnect loop's own state, as MeshtasticSession keeps it.
     private var readyAt: Long? = null
+
+    /** Dials in a row that found no NUS service (a timeout in between neither counts nor resets): two are terminal. */
+    private var serviceAbsentInRow = 0
     private var lastDirectAt: Long? = null
 
     /** DM flights by handle; only the actor touches them. */
@@ -171,6 +184,7 @@ internal class MeshcoreSession(
         if (this.address == address && loopJob?.isActive == true) return
         stop()
         this.address = address
+        serviceAbsentInRow = 0
         loopJob = scope.launch { connectLoop(address) }
     }
 
@@ -232,13 +246,13 @@ internal class MeshcoreSession(
     // --- the kind's own surface (Stage 5's hooks) ---
 
     /** Sets the board up for Knit as one transaction: reads first, writes verified by reading back (§4). */
-    suspend fun setup(): MeshcoreSetupResult =
+    override suspend fun setup(): MeshcoreSetupResult =
         call({ MeshcoreSetupResult.NotReady }, { MeshcoreSetupResult.Failed(TIMED_OUT, left = null) }, setupDeadlineMs) { c ->
             runSetup(c)
         }
 
     /** Puts back what [record] says a setup changed, where it is still Knit's to put back (binding rule "contacts" 2). */
-    suspend fun restore(record: MeshcoreSetupRecord): MeshcoreRestoreResult =
+    override suspend fun restore(record: MeshcoreSetupRecord): MeshcoreRestoreResult =
         call(
             { MeshcoreRestoreResult.NotReady },
             { MeshcoreRestoreResult.Done(false, emptyList(), listOf(TIMED_OUT)) },
@@ -272,7 +286,7 @@ internal class MeshcoreSession(
     fun setKnitContacts(ranked: List<ByteArray>) = pins.setTaught(ranked)
 
     /** The latest read of the bound slot, or null: `checkSlot` refuses without a recent one (binding rule "contacts" 2). */
-    fun slotReading(): MeshcoreSlotReading? = slotReading
+    override fun slotReading(): MeshcoreSlotReading? = slotReading
 
     /**
      * Runs [op] on the Ready session's actor, or answers [notReady] when there is none or it ends first. The deadline
@@ -345,24 +359,33 @@ internal class MeshcoreSession(
             dialer.adapterOn.first { it }
             return 0
         }
-        // An unbonded board is never left to the controller's background connect: it could not finish a pairing there.
-        val policy = BoardDialPolicy.mode(streak, now(), lastDirectAt)
-        val mode = if (policy == DialMode.Background && dialer.bondState(address) != BondState.BONDED) DialMode.Direct else policy
+        // An unbonded board is never left to the controller's background connect: it could not finish a pairing there. Nor
+        // is it dialled direct in the background's place (Stage 5a-2, the bluetooth review's B1): a board that is off or out
+        // of range would draw a 30-s high-duty dial holding the arbiter every backoff, forever — the #67 scan blackout ADR
+        // 2026-09.hp88 exists to stop. So it waits out the background window, its bond re-read meanwhile, and the hourly
+        // direct net is its only dial after the first [BoardDialPolicy.DIRECT_ATTEMPTS].
+        val mode = BoardDialPolicy.mode(streak, now(), lastDirectAt)
+        if (mode == DialMode.Background && dialer.bondState(address) != BondState.BONDED) {
+            waitUnbonded(address, streak)
+            return streak
+        }
         val timeout = armDial(mode, streak)
         readyAt = null
-        return when (val result = dialer.dial(address, mode, timeout)) {
+        val result = dialer.dial(address, mode, timeout)
+        if (result != NusDialResult.ServiceAbsent && result != NusDialResult.Timeout) serviceAbsentInRow = 0
+        return onDialed(address, mode, streak, result)
+    }
+
+    /** What one dial's [result] does to the loop: the streak to go on with, or null to end it. */
+    private suspend fun onDialed(
+        address: String,
+        mode: DialMode,
+        streak: Int,
+        result: NusDialResult,
+    ): Int? =
+        when (result) {
             is NusDialResult.Opened -> {
-                val end =
-                    try {
-                        sessionWhileAdapterOn(Conn(address, result.channel))
-                    } finally {
-                        result.channel.close()
-                    }
-                if (end.terminal != null) {
-                    _state.value = down(end.terminal)
-                    return null
-                }
-                backoffUnlessAdapterOff(end.reason, if (end.resetStreak) 0 else streak)
+                onOpened(address, result, streak)
             }
 
             NusDialResult.NoHardware -> {
@@ -390,6 +413,62 @@ internal class MeshcoreSession(
             NusDialResult.Timeout -> {
                 if (mode == DialMode.Direct) backoffAndWait(REASON_DIAL_TIMEOUT, streak) else streak
             }
+
+            // Other firmware, or a cache from before a reflash: backed off once, terminal on a second reading in a row
+            // (Stage 5a-2, as Meshtastic's `ServiceAbsent`) — `StaleBond` bonded, `NeedsPairing` not. Forgetting the board or
+            // picking another is the way out; a redial is not.
+            NusDialResult.ServiceAbsent -> {
+                onServiceAbsent(address, streak)
+            }
+        }
+
+    /** One connected session over [opened], then its end: terminal, or a backoff (from zero after a healthy one). */
+    private suspend fun onOpened(
+        address: String,
+        opened: NusDialResult.Opened,
+        streak: Int,
+    ): Int? {
+        val end =
+            try {
+                sessionWhileAdapterOn(Conn(address, opened.channel))
+            } finally {
+                opened.channel.close()
+            }
+        end.terminal?.let { terminal ->
+            _state.value = down(terminal)
+            return null
+        }
+        return backoffUnlessAdapterOff(end.reason, if (end.resetStreak) 0 else streak)
+    }
+
+    /** No NUS service behind [address]: a backoff the first time, terminal the second in a row (`StaleBond` / `NeedsPairing`). */
+    private suspend fun onServiceAbsent(
+        address: String,
+        streak: Int,
+    ): Int? {
+        serviceAbsentInRow++
+        if (serviceAbsentInRow < SERVICE_ABSENT_TERMINAL) return backoffAndWait("$REASON_DIAL service absent", streak)
+        log("meshcore dial: no NUS service twice in a row, terminal")
+        val bonded = dialer.bondState(address) == BondState.BONDED
+        _state.value = down(if (bonded) MeshcoreLinkState.StaleBond(address) else MeshcoreLinkState.NeedsPairing(address))
+        return null
+    }
+
+    /**
+     * The background window of an unbonded board, dialled by nothing: the state says when the next direct dial is due, and
+     * the bond is re-read every [UNBONDED_POLL_MS] (no radio, no arbiter) so a pairing the user finished in the system's
+     * settings ends the wait early. A fresh [start] cancels the loop, as it always did.
+     */
+    private suspend fun waitUnbonded(
+        address: String,
+        streak: Int,
+    ) {
+        val until = now() + BoardDialPolicy.backgroundWindowMs(now(), lastDirectAt)
+        _state.value = down(MeshcoreLinkState.Disconnected(WAITING_FOR_BOARD, until, streak))
+        retireInbox()
+        log("meshcore dial waits: unbonded, next direct dial in ${until - now()}ms")
+        while (now() < until && dialer.bondState(address) != BondState.BONDED) {
+            waits.sleep(minOf(UNBONDED_POLL_MS, until - now()))
         }
     }
 
@@ -577,6 +656,8 @@ internal class MeshcoreSession(
                 else -> {
                     c.info = info
                     c.self = ask<McFrame.SelfInfo>(c, MeshcoreProto.appStart())
+                    // Before the first poll: whose duty law the stats belong to (Stage 5a-2).
+                    c.self?.let { observer?.onIdentified(it.key.copyOf()) }
                     when {
                         c.self == null -> SessionEnd("$REASON_HANDSHAKE self info")
                         !scanSlots(c) -> SessionEnd("$REASON_HANDSHAKE channels")
@@ -618,8 +699,9 @@ internal class MeshcoreSession(
                 slots = c.slots,
                 namedForKnit = self.name.contentEquals(MeshcoreNames.forKey(self.key).encodeToByteArray()),
                 manualAdd = self.manualAdd,
+                dialled = c.address,
             )
-        _state.value =
+        val ready =
             BoardState.Ready(
                 own = BoardAddr.MeshCore(self.key.copyOf(MeshcoreProto.PREFIX_BYTES)),
                 payloadCap = MeshcoreProto.CHANNEL_DATA_CAP,
@@ -627,6 +709,10 @@ internal class MeshcoreSession(
                 channel = c.knitSlot,
                 detail = detail,
             )
+        // The ledger's radio and band before anything reads this board as Ready (Stage 5a-2): the pacer must never run a
+        // Ready plane on the kind's 0.1 % fallback, or on the duty of the board before this one.
+        observer?.beforeReady(ready)
+        _state.value = ready
         log("meshcore ready v=${info.versionCode} slot=${c.knitSlot} radio=${radio != null} scope=${c.defaultScope}")
     }
 
@@ -1064,6 +1150,8 @@ internal class MeshcoreSession(
             airRing.onSample(now(), radio.txAirSecs, radio.rxAirSecs, core?.uptimeSecs)?.let {
                 _boardAir.value = BoardAir(it.channelUtilPercent, it.airUtilTxPercent, atMs = now())
             }
+            // The duty law's sample (Stage 5a-2): the board's own uptime and transmit counter, read in one poll.
+            core?.let { observer?.onRadioStats(wallClock(), it.uptimeSecs, radio.txAirSecs) }
         }
         c.lastPollAt = now()
         if (drain) drainRound(c)
@@ -1811,17 +1899,7 @@ internal class MeshcoreSession(
         )
 
     /** The neutral `SendResult.NotReady` carries a Meshtastic [LinkState]; this is the nearest one for a MeshCore state. */
-    private fun linkStateOf(state: BoardState): LinkState =
-        when (val detail = state.detail) {
-            MeshcoreLinkState.Connecting -> LinkState.Connecting
-            MeshcoreLinkState.Bonding -> LinkState.Bonding
-            MeshcoreLinkState.Handshaking -> LinkState.Handshaking(null)
-            is MeshcoreLinkState.Disconnected -> LinkState.Disconnected(detail.reason, detail.retryAtMs, detail.streak)
-            MeshcoreLinkState.Unavailable -> LinkState.Unavailable
-            is MeshcoreLinkState.NeedsPairing -> LinkState.NeedsPairing(detail.address)
-            is MeshcoreLinkState.StaleBond -> LinkState.StaleBond(detail.address)
-            else -> LinkState.Idle
-        }
+    private fun linkStateOf(state: BoardState): LinkState = meshcoreDownState(state.detail)
 
     /** One connection's state; only its actor touches it. */
     private class Conn(
@@ -1903,6 +1981,12 @@ internal class MeshcoreSession(
         /** `BoardPacket.channel` for a contact text, which arrives on no slot. */
         const val DM_CHANNEL = -1
 
+        /** Missing-service dials in a row that end the session loop terminal. */
+        const val SERVICE_ABSENT_TERMINAL = 2
+
+        /** How often an unbonded board's background wait re-reads its bond: a local read, nothing on the air. */
+        const val UNBONDED_POLL_MS = 60_000L
+
         /** The firmware's Public channel, which `begin()` puts at index 0 (`MyMesh.cpp:997`). */
         const val PUBLIC_SLOT = 0
 
@@ -1976,11 +2060,13 @@ internal class MeshcoreSession(
          */
         const val MAX_FLIGHT_MS = ATTEMPTS * (MAX_EST_TIMEOUT_MS + RETRY_SLACK_MS) + 2 * DEFER_LIMIT_MS + ATTEMPTS * PIN_WORST_MS
 
-        private const val TXT_TYPE_SIGNED_PLAIN = 2
         private const val BYTE_MASK = 0xFF
 
-        /** The text types whose flooded arrival draws a PATH return from our board: plain and signed plain. */
-        private val ACKED_TXT_TYPES = setOf(MeshcoreProto.TXT_TYPE_PLAIN, TXT_TYPE_SIGNED_PLAIN)
+        /**
+         * The text types our board answers (`BaseChatMesh.cpp:244-255`, `:291-304`): plain and signed plain — a flooded one
+         * with a PATH return, a direct one with its acks. What the plane's hooks book (Stage 5a-2).
+         */
+        internal val ACKED_TXT_TYPES = setOf(MeshcoreProto.TXT_TYPE_PLAIN, MeshcoreProto.TXT_TYPE_SIGNED_PLAIN)
 
         /** Whether [bytes] is a command the encoder may emit: the session's last check before a write. */
         fun commandAllowed(bytes: ByteArray): Boolean =

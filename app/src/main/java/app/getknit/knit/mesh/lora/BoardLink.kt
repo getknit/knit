@@ -192,6 +192,17 @@ internal interface BoardKindHooks {
     /** Acts on a packet [route] called [PacketRoute.KIND], after the core has noted the hearing. */
     fun onKindPacket(packet: BoardPacket)
 
+    /**
+     * The slot Knit's own frames go out on and arrive on, given the plane's [configured] index and the Ready board
+     * [ready] (null while it is not): Meshtastic binds the slot the user's setting holds (the setup wrote it), so the
+     * default is [configured]; a kind whose board reports its own Knit slot (MeshCore's `Ready.channel`) answers that.
+     * Read on the packet collector and the pacer; returns at once.
+     */
+    fun boundSlot(
+        configured: Int?,
+        ready: BoardState.Ready?,
+    ): Int? = configured
+
     // --- the kind's own public channel (Stage 1c.1) ---
 
     /**
@@ -225,6 +236,13 @@ internal interface BoardKindHooks {
      * persisted. Called from the save loop and from `stop()`.
      */
     fun snapshotState(shift: WallShift): List<SeenStamp>
+
+    /**
+     * The kind's own share of the plane snapshot beyond [snapshotState]'s, added to [snapshot] (Stage 5a-2: MeshCore's duty
+     * law, [LoraPlaneSnapshot.meshcoreLaws]); [restoreState] reads it back. Meshtastic adds nothing, so its blob is the
+     * one it always wrote. Called from the save loop and from `stop()`.
+     */
+    fun extendSnapshot(snapshot: LoraPlaneSnapshot): LoraPlaneSnapshot = snapshot
 
     // --- the send-time slot guards (Stage 1c.3) ---
 
@@ -347,7 +365,8 @@ internal enum class FragmentOutcome {
 
 /**
  * What a packet off the board is to the plane core (ADR 2026-11.gsqu, Stage 1c.0), as the kind's [BoardKindHooks.route]
- * reads it. Every route but [DIRECT] and [DROPPED] is a hearing first ([BoardTraits.heardLive] decides whether it counts).
+ * reads it. Every route but [DIRECT] and [DROPPED] is a hearing first, by the packet's sender where the kind vouches for it
+ * ([BoardTraits.hearsSender], [BoardTraits.heardLive] deciding whether it counts).
  */
 internal enum class PacketRoute {
     /** A compact DM on a slot one may arrive on: the core opens it when it is addressed to our board. */
@@ -365,7 +384,11 @@ internal enum class PacketRoute {
     /** A hearing, and nothing more: off the bound slot, empty, or a port nothing here reads. */
     HEARD,
 
-    /** Not even a hearing: a packet the kind could not read, or a compact DM on a slot none arrives on. */
+    /**
+     * Not even a hearing: a packet the kind could not read, a compact DM on a slot none arrives on, or — on MeshCore, whose
+     * board is Knit's alone — traffic that is not Knit's, which the kind counts and discards (never stored, logged, shown,
+     * relayed or put in custody).
+     */
     DROPPED,
 }
 
@@ -404,4 +427,21 @@ internal interface PlaneCore {
      * missing-key mark on its peer lifts and the newest DM still without its ✓✓ goes again (ADR 2026-10.aajj).
      */
     fun onBoardKeyHeard(from: BoardAddr)
+
+    /**
+     * Holds every frame until [untilMs] on the plane's clock, or lifts the hold with null: the band's law, where it is the
+     * kind's to keep (MeshCore, `MeshcoreDutyLaw`; ADR 2026-11.gsqu's Stage 5a-1 amendment). The core wakes its pacer.
+     */
+    fun holdForLaw(untilMs: Long?) = Unit
 }
+
+/**
+ * One board kind's plane, as the core is built over it (ADR 2026-11.gsqu, Stage 5a-2; Stage 2's report, item 3): its
+ * numbers ([traits]), its link seen through the neutral seam ([board]) and its hooks, made by [hooks] once the core they
+ * reach back into exists. The core reads no kind's link but through these, and checks the three agree on the kind.
+ */
+internal class BoardPlane(
+    val traits: BoardTraits,
+    val board: BoardLink,
+    val hooks: (PlaneCore) -> BoardKindHooks,
+)

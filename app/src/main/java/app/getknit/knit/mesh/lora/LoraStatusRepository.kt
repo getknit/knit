@@ -74,7 +74,11 @@ internal class LoraStatusRepository(
             lora.status,
         ) { enabled, address, dms, room, status ->
             val plane = loraPlaneFor(enabled, bound = address != null, state = status.state)
-            val ready = (status.state as? LinkState.Ready)?.takeIf { plane == LoraPlane.Live }
+            // The Meshtastic room reads the board's channel table; a MeshCore board has none here (its Ready carries no
+            // Meshtastic identity), and its Public mirror is Stage 6's — so on MeshCore no primary, nothing to post on, and
+            // the notice's safe half ("public").
+            val ready = (status.state as? LinkState.Ready)?.takeIf { plane == LoraPlane.Live && kind == BoardKind.MESHTASTIC }
+            val live = plane == LoraPlane.Live
             // A board pinned to a dedicated RF slot (ADR 067) hears no public channel, so there is no room
             // to mirror on it: hidden, history and all, until the board is restored. Read off the airtime
             // governor's sticky answer rather than the live radio config, so the row does not come back
@@ -105,11 +109,41 @@ internal class LoraStatusRepository(
                 board = kind,
                 // A constant of the kind (its traits'), so it never re-emits the facts.
                 directBudget = lora.directBudget,
+                // The room's own flood share (MeshCore, ADR 2026-11.gsqu's Stage 5a-2 amendment): a threshold, as `airtimeSpent`.
+                floodSpent = live && floodSaturated(status.airtime),
+                roomBodyBytes = LoraSizeHint.roomBodyBytes(kind),
+                // The per-board direct mark on a kind whose DM reaches direct neighbours alone; Meshtastic reads `reachable`.
+                directReach = directReachOf(kind, status, live),
+                lawHeld = lawHeldOf(live, status),
             )
         }.distinctUntilChanged()
     }
 
     private fun saturated(air: AirtimeSnapshot): Boolean = air.usedMs >= air.allowanceMs * AIRTIME_SPENT_SHARE
+
+    /** The flood share at the same threshold: only a kind that books floods ([Ceiling.FLOOD]) ever reaches it. */
+    private fun floodSaturated(air: AirtimeSnapshot?): Boolean =
+        air != null && air.floodCeilingMs > 0 && air.floodUsedMs >= air.floodCeilingMs * AIRTIME_SPENT_SHARE
+
+    /** The band's law holding every frame, shown only while the plane is [live]. */
+    private fun lawHeldOf(
+        live: Boolean,
+        status: LoraStatus,
+    ): Boolean = live && status.lawHeld
+
+    /**
+     * The per-board direct mark on a kind whose DM reaches direct neighbours alone (MeshCore), empty unless [live]; null on
+     * Meshtastic, whose DM notice reads the reachable set.
+     */
+    private fun directReachOf(
+        kind: BoardKind,
+        status: LoraStatus,
+        live: Boolean,
+    ): Set<String>? =
+        when (kind) {
+            BoardKind.MESHTASTIC -> null
+            BoardKind.MESHCORE -> if (live) status.directReachable else emptySet()
+        }
 
     companion object {
         /** How full the window must be before a LoRa-only DM is told it will wait — a whole packet short of refusal. */

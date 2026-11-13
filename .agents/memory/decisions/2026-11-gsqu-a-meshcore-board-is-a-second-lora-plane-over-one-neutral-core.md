@@ -119,7 +119,7 @@ catch-up of #294 into two copies, and every fix since 2026-10-29 would have to l
   - Every attempt is booked, and an outcome carries the exact count that flew.
   - At most eight attempts await an ack at once. That is the firmware's shared circular table (`MyMesh.h:285`), which
     every attempt and every interface fill.
-  - Our board's ack of a DM to us is booked as 1 + `multi_acks` packets.
+  - Our board's ack of a DM to us is booked as 1 + `multi_acks` packets (corrected by the Stage 5a-2 review: at most one multi-ack, below).
 - **Duplicates.** A doubled attempt is new ciphertext and reaches the receiver's phone as a second copy, which
   `lora_direct_seen` absorbs.
 
@@ -724,3 +724,93 @@ Owed to Stage 5a-2:
 - decide with Stage 6 how a Public post is admitted: on MeshCore `PUBLIC_POST` is priced as a flood but admitted under
   `HALF`, so Public posts do not count toward the 0.15 flood share.
 
+
+## Amendment 2026-11-13 — Stage 5a-2: the hooks, the hearing, the law wired, and the child behind `MESHCORE_PLANE` (draft)
+
+Built under the Stage 5 design passes' 5a-2 part (lora-reviewer findings 4, 6, 7, 11; the security pass's B6, replay,
+`cleanReceived`, KIND-ack and `meshcore_device_name` items) and the 5a-1 amendment's owed list. A debug build
+(`MESHCORE_PLANE`) builds a MeshCore child; a release build builds none (`di/builtBoardKinds`).
+
+- **The kind is injected.** The core takes a `BoardPlane` (traits, link, hooks factory); `meshtasticPlane` builds the
+  Meshtastic one exactly as the core built it for itself, and the old `MeshtasticLink` constructor stays as a secondary one.
+  `di/loraPlaneOf` defines each kind's transport, sinks and face in one call.
+- **`route` reads the slot and the data type first** (the channel key is public). Knit's is channel data on the board's own
+  Knit slot (`BoardKindHooks.boundSlot`: `Ready.channel`, no slot setting) under `KNIT_DATA_TYPE`, and a contact DM in a
+  COBS-decoded `0x11` seal's shape; everything else is counted and discarded as `DROPPED` — never a hearing, never stored,
+  logged, shown, relayed or in custody. COBS decoding is no proof: a text in any other shape falls back to a foreign DM. Public
+  slot 0 is counted and discarded until Stage 6. **A `0x04` fragment is discarded too, and `roomPartLimit` answers 1 until
+  Stage 5c**: the core's reassembler keys on a sender MeshCore never names, so a two-part post on the public key waits for 5c's.
+- **Our board's answers are booked from one place** (`route`), for every live plain or signed-plain contact DM, Knit's or not:
+  priced against `companion-v1.18.0`
+  (lora-reviewer N6): the ack code is 6 B for a plain text and 4 for a signed one (`BaseChatMesh.cpp:244-256`). Direct:
+  `sendAckTo` sends at most **one** multi-ack, whatever `multi_acks` reads (stored unclamped, `MyMesh.cpp:1498`), then the ack,
+  along a known path — or one flooded ack with transport codes when our record of the sender has no path. Until 5b's taught set
+  says which, the larger of the two is booked (as milliseconds). Flooded: one PATH return at
+  `pathReturnPlaintext(pathLen, txtType)` = 1 + count × hash size + 1 + the ack (`Mesh.cpp:448-486`) at `PATH_RETURN` (the
+  session's own `PathReturn` event is only counted); replayed, nothing.
+  Under `FULL`, never the room's flood share. **`DirectFlooded` has no `AirPurpose` of its own**: its surcharge is the same
+  packet flooded less direct, booked as milliseconds (`LoraAirtime.recordMs`), since it is a difference of two airings.
+- **`checkSlot`** is clear for a compact DM and refuses a room post only on a reading of `knit=false`, or none this connection.
+- **The hearing.** `heardLive` splits into `live` (any path; the cover's lift) and `heardZeroHop`, and `hearsSender` says
+  whether a packet's sender may key one (false on MeshCore). A room post's author is heard only when the post is live and
+  zero-hop, fresh (`-MAX_FUTURE_SKEW_MS..FRESH_MS`) and signed by the author's pinned key (`LoraAuthorCheck`); its radio is
+  counted by author. An opened DM hears its board only at zero hops. `noteHeard`, `noteBoard` and `onBoardKeyHeard` never key
+  on a MeshCore prefix.
+- **The law and the radio.** The session tells the hooks before it publishes Ready (`MeshcoreSessionObserver`): the ledger
+  takes the board's radio and band (`onRadio`), or `forgetRadio` with none — so a later board never runs on the earlier one's
+  duty. Each poll feeds `MeshcoreDutyLaw`; while it holds, the pacer holds every frame to `releaseInSecs`
+  (`LoraPacePolicy.holdForLaw`, a floor on `nextDueAt`). The ring persists in `meshcore_plane_state` under a SHA-256 digest of the board's key (never the key), saved once a spacing, applied when that board identifies (one per board since the review, below).
+- **The `dialled` race.** A session's Ready carries the address it dialled (`LinkState.Ready.address`, `MeshcoreDetail.dialled`),
+  and the binding is written under it (`BoardBinding.dialled`, `di/bindingAddress`), so on an A→B rebind A's late Ready writes
+  nothing under B. `BoardBinding` stays where it is: moving it into the Meshtastic kind changes nothing about the race.
+- **The door claim per kind.** `MeshManager` gates an offer on the claim of the kind its sink drives (`LoraDoorClaim`:
+  `CAP_LORA_DIRECT`, or a stored `meshcoreKey`).
+- **Not yet, by design.** `teachKey` refuses and the MeshCore board map is empty until 5b, so no DM goes; `bindMeshcoreDirect`
+  stays unbound; the setup record is held in memory only (5b persists it in SQLCipher); `meshcore_device_name` is never
+  written (`BoardBindPolicy`), nor any `meshcore_setup_*` / `meshcore_prior_*` key.
+- **The face.** `LoraFacts.floodSpent` (the room's saturated notice at 90 % of the flood share), `roomBodyBytes` (40 B on
+  MeshCore in the `0x05` form, pinned; 5c raises it with elision), `directReach` (the acked boards a MeshCore DM notice reads,
+  never the flood-fed `reachable`), and the firmware version cleaned (`TextLimits.cleanReceived`) before anything shows it. The
+  dump is `…debug.LORA --es kind meshcore`: counts and own-board state only. MeshCore's counters live in
+  `MeshcorePlaneCounters`, not `MeshMetrics`.
+
+Review of Stage 5a-2 (lora-, bluetooth- and security-reviewer, 2026-11-13), applied:
+
+- **An unbonded board is never dialled in the background's place** (bluetooth B1): once the dial policy says Background
+  and the board is not bonded, the session dials nothing and waits out the background window, re-reading the bond each
+  minute, so after the first three direct dials only the hourly direct net dials it — never a 30-s high-duty dial holding
+  `meshcore-dial` every backoff (the #67 blackout, ADR 2026-09.hp88). Chosen over ending terminal: a board the user pairs
+  later in the system's settings comes up without a re-pick.
+- **A board without NUS is terminal on the second reading in a row** (bluetooth N1, the 3c amendment's open item): discovery
+  that succeeded with no NUS service is `NusDialResult.ServiceAbsent`, backed off once, then `StaleBond` bonded or
+  `NeedsPairing` not, as Meshtastic's `ServiceAbsent`. A discovery that failed still backs off.
+- **The packets' collector**: one collector is the contract, not when it subscribes; the session's buffered channel keeps an
+  early drain, and the core's launch order is not relied on (bluetooth N2).
+- **An opened DM is a hearing only fresh** on a kind with `hearsSender` false (security N4): its `sentAt` within the room
+  post's `-MAX_FUTURE_SKEW_MS..FRESH_MS`, since the seal opens for a day and a DM re-aired direct after MeshCore's dedup forgot
+  it would otherwise lift a mark for a board that may be gone.
+- **Release gate** (security N5): on a `hearsSender`-false kind, `onFramePacket`'s presence (`isPresenceEvidence` →
+  `noteReachable`) and the router's counting of a re-aired signed frame under its author are not verified; this widens #283 to
+  the MeshCore plane, debug-only. Before MeshCore ships in release, `noteReachable` there waits for the author check and
+  #283's fix covers every LoRa kind.
+- **The law on the face** (lora N7): the hold rides `LoraStatus.lawHeld` / `LoraFacts.lawHeld`, the room's notice reads it as
+  `RoomSaturated` and a LoRa-only DM's as `LoraOnlySaturated`, and the dump carries `law.holding` and `releaseInSecs`. The rings
+  are kept per board digest, the last four boards (`LoraPlaneSnapshot.meshcoreLaws`), so an A→B→A rebind keeps A's.
+  **Cost, by design:** with no ring for a board (its first bind, a fifth board since, a wall clock moved back) the hour is
+  bounded from the counter since boot, so a board up over an hour that sent more than its band's hourly duty (36 s on a 1 %
+  band) holds every frame for up to an hour at its first connection. The pre-boot term and a ring's samples live on the
+  phone's wall clock: a clock moved back only holds longer, but a forward move of J (an automatic time correction, a manual
+  change) shortens a carried pre-boot term by J, so after a reboot or restart Knit frames can leave up to J early while an
+  earlier boot's hour is still spent. A hold already set does not move: it runs on the monotonic clock.
+- **The pacer is told only of a change** (lora N8): a hold that starts, lifts or moves by more than 10 s; a 1-s poll no
+  longer wakes it every second. A ring restored after its board identified holds at once (lora N9). The verdict, the record of the pacer's hold and the call that sets it are one step under the hooks' monitor, so the session's actor and the core's restore can never hand the pacer their answers in the other order (the follow-up's L1); a board change's lift goes through the same step. Before any sample of a boot the law answers from a live pre-boot term alone (`MeshcoreDutyLaw.verdict` on the wall clock), so a restore that left no usable ring never reads as "nothing known" and lifts a hold while an earlier boot's hour is still spent; only a board with nothing known lifts it.
+- **`directReach` is acked boards** (lora N10): a zero-hop hearing never marks a board reachable — it shows their radio reaching
+  us, not ours reaching them. If 5b wants a notice for heard-but-never-DM'd peers, it is a separate set.
+- **`heard` and `boardsHeard` read differently on MeshCore** (lora N11): `heard` counts fresh-frame authors at any hop count,
+  unverified; `boardsHeard` counts verified pinned zero-hop authors only. The dump's `meshcoreZeroHopKnitPosts` counts live
+  zero-hop Knit posts, unverified and with no id, beside it.
+- **Owner choices accepted:** `roomPartLimit` 1 and `0x04` discarded until 5c; `DirectFlooded` as `recordMs` with no
+  `AirPurpose`; every answer under `Ceiling.FULL`; `boardsHeard` pinned and verified only; a 40-B one-packet room budget.
+
+Owed to Stage 5b: narrow the audience-only mint's fan-out, memoize `MeshcoreKey`'s point check, then bind
+`bindMeshcoreDirect` before `start()` and feed the MeshCore plane `meshcoreBoardMap`.

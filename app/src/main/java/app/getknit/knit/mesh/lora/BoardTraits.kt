@@ -132,13 +132,35 @@ internal interface BoardTraits {
     val roomPartLimit: Int
 
     /**
-     * Whether [packet] was heard on the air just now, as the hearing hook and the cover's lift read it — never a replay
-     * of the board's queue or a packet that did not cross the air. [nowWallMs] is the wall clock.
+     * Whether [packet] came off the air just now — never a replay of the board's queue, an uplink, or a packet that did not
+     * cross the air — at any hop count. What the cover's lift reads (#294: a live compact frame, any path). [nowWallMs] is
+     * the wall clock. (ADR 2026-11.gsqu's Stage 5a-2 amendment split the old `heardLive` into this and [heardZeroHop].)
      */
-    fun heardLive(
+    fun live(
         packet: BoardPacket,
         nowWallMs: Long,
     ): Boolean
+
+    /**
+     * Whether [packet] came straight from the radio that aired it, by the kind's own rule — what a hearing of a board needs
+     * beside [live] (ADR 2026-11.gsqu §5). Meshtastic reads no hop count here (ADR 2026-10.x9fa counts every live
+     * hearing), so it answers true; MeshCore answers its zero-hop test, live drains only.
+     */
+    fun heardZeroHop(packet: BoardPacket): Boolean
+
+    /**
+     * Whether a packet's sender ([BoardPacket.from]) is the board's own word, which the core may key a hearing on. True on
+     * Meshtastic (the node number in the packet's header, ADR 2026-10.x9fa). False on MeshCore: a contact DM's 6-byte
+     * sender prefix is a claim behind a 2-byte MAC and channel data names no sender, so a hearing there comes only from a
+     * verified Knit frame — an opened seal, or a channel post's verified author (ADR 2026-11.gsqu's Stage 5 decisions).
+     */
+    val hearsSender: Boolean
+
+    /** A hearing as the sender-keyed hook reads it: [live] and [heardZeroHop] together. */
+    fun heardLive(
+        packet: BoardPacket,
+        nowWallMs: Long,
+    ): Boolean = live(packet, nowWallMs) && heardZeroHop(packet)
 
     /** What a refusal by our board or the destination's means to the plane ([RefusalClass]). */
     fun refusalOf(outcome: PacketOutcome.Refused): RefusalClass
@@ -347,7 +369,7 @@ internal object MeshtasticTraits : BoardTraits {
      * An RSSI (the NodeDB replay at every handshake has none), not an MQTT uplink, and an `rx_time`, when present, within
      * [LoraMeshTransport.HEARING_MAX_AGE_MS] (the to-phone queue replayed at reconnect) — ADR 2026-10.x9fa.
      */
-    override fun heardLive(
+    override fun live(
         packet: BoardPacket,
         nowWallMs: Long,
     ): Boolean {
@@ -356,6 +378,12 @@ internal object MeshtasticTraits : BoardTraits {
         val heardAt = packet.rxTimeMs ?: return true
         return nowWallMs - heardAt <= LoraMeshTransport.HEARING_MAX_AGE_MS
     }
+
+    /** No hop count is read on Meshtastic: every live hearing counts, as it always did (ADR 2026-10.x9fa). */
+    override fun heardZeroHop(packet: BoardPacket): Boolean = true
+
+    /** The packet's `from` is the board's node number, what the hearing hook has always keyed on. */
+    override val hearsSender: Boolean get() = true
 
     /**
      * Our board's `39` is ours to act on (ADR 2026-10.aajj); the destination's 35 is our key missing there, never a
