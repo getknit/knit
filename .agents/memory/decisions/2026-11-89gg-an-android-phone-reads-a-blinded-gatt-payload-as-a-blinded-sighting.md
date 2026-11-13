@@ -223,4 +223,6 @@ chose both rules below on 2026-11-12. Contract §5 states the yield as law on bo
     dial), which both fail with the rule disabled, the target at a held proven link's own address, a clock set back, the
     forger's bound, the unlinked case, which is dialed, the release at the re-read, and the read slot's plumbing through
     `GattPayloads`.
-  - Owed: the trial's stranger-no-redial-while-linked step again, with the Pixel 3 and the iPhone, judged strictly.
+  - The trial again, 2026-11-12 (knit-ios `interop.py iphone-blind-reads`, run 70c5df, on a build of this commit): 42 of
+    44 steps passed, the strict stranger-no-redial-while-linked on both Pixels among them, through an early and a late
+    edge. Its one failure, stranger-held-across-edges, was the Pixel 3's Bluetooth stack crashing, not this change.
