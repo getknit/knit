@@ -8,8 +8,8 @@ topics: [lora, meshcore, crypto, airtime]
 
 # ADR 2026-11.gsqu — a MeshCore board is a second LoRa plane over one neutral core
 
-Status: Proposed (2026-11-12). Stage 1, the board-neutral seam with Meshtastic unchanged, is built (2026-11-13); no
-MeshCore code exists yet. The five bench checks were answered on the firmware itself in a simulator (2026-11-13,
+Status: Proposed (2026-11-12). Stages 1-4 are built (2026-11-13): the board-neutral seam with Meshtastic unchanged, the
+per-kind scaffolding, the MeshCore client (not wired) and the sealed `meshcoreKey`. The five bench checks were answered on the firmware itself in a simulator (2026-11-13,
 below); only the BLE half of the first is still owed, on boards.
 
 It amends four ADRs:
@@ -558,3 +558,44 @@ a board drops DMs from non-contacts.
 **Paired.** knit-ios parses label 9 and the text key on `ProfilePayload` only, keeps the key apart from what its cleartext
 writer touches, applies the same canonical-32-byte and point checks, and never advertises a key. iOS skips unknown CBOR
 labels, so an older iOS keeps the profile. The brief is written and not yet sent.
+
+## Amendment 2026-11-13 — the maintainer's Stage 5 decisions: a MeshCore board is Knit's alone
+
+The Stage 5 design passes (lora- and security-reviewer, 2026-11-13) left four questions only the maintainer could answer,
+and five design calls. The maintainer decided them on 2026-11-13.
+
+- **The board is Knit-only.** Knit does not share a MeshCore board with the user's own MeshCore use, which removes the
+  whole class of conflicts between the two: whose contacts, whose inbox, whose deletions.
+  - **Setup erases** every board contact and every channel slot except Public (slot 0), one `REMOVE_CONTACT` /
+    `SET_CHANNEL` at a time, after a consent sheet that says the board becomes Knit's. Never `CMD_FACTORY_RESET`: it
+    formats the board's filesystem, minting a new identity and resetting the radio, which §4 and ADR 045 forbid.
+  - **Restore** puts back the advert name, `manual_add_contacts` and `autoadd_config`, and clears the Knit slot and
+    Knit's contacts. It does not bring back what setup erased.
+  - **Knit's taught set is the board's contact table.** At each Ready, Knit overwrites a contact on a taught key to its
+    own record and removes any other contact, counted and bounded per Ready. A contact deleted from another app is
+    re-taught; there is no deletion-respect rule.
+  - **Non-Knit traffic** (a DM whose text is not a Knit frame, a post on a slot that is neither Knit's nor Public) is
+    drained, counted and discarded: never stored, logged, shown, relayed or put in custody.
+- **§3 amended again.** The Stage 4 amendment's refusal rule ("never overwrites a board contact Knit did not add") and the
+  original snapshot-and-restore both go: setup leaves no contact Knit did not add, and the SQLCipher table holds only the
+  setup record (the prior advert name may be the user's real name), not a contacts snapshot or an added-keys list. The
+  churn bounds stay.
+- **The Public mirror stays** in v1 (Stage 6).
+- **Proof of possession is required before release.** A sealed `meshcoreSig` beside `meshcoreKey`: the board's Ed25519
+  signature over `"knit-meshcore-bind/v1" ‖ nodeId ‖ key`, made through `CMD_SIGN_START` / `DATA` / `FINISH`. Nothing has
+  shipped, so a key without a valid signature is dropped as a bad key is, and never taught. It joins Stage 4's paired
+  change: the unsent iOS brief gains it before it goes out. This replaces the Stage 4 amendment's "Deferred".
+- **Approved design calls**, each to be recorded where Stage 5 builds it:
+  - **Regional duty is Knit's alone on MeshCore**, whose firmware has only a 50 % token bucket: a band table checked
+    against ETSI EN 300 220 (EU 868 sub-bands at 1 % / 0.1 % / 10 %, 433, US, ANZ), the strictest duty for a frequency
+    no row matches, and a law check off the board's Δ`tx_air` over the trailing hour. ADR 2026-10.ug4a's "the law is the
+    firmware's" does not hold on this kind.
+  - **`Ceiling.FLOOD` counts flood bookings only**; the total still caps everything, and a frame over its own ceiling on
+    an empty window is refused and counted.
+  - **Two-part room posts on a public channel key**: fragment ids seeded randomly per process, up to 3 candidates per
+    part with the combination that decodes and verifies accepted, capacity sized by airtime, and a per-plane author tag
+    parked in `docs/NEXT_WIRE_BREAK.md`.
+  - **Pricing** through a kind hook on `BoardTraits`: size on air by purpose, AES padding, +4 B on floods only, and a
+    fixed per-packet term rather than × 1.06.
+  - **Hearing** only from a verified, fresh Knit frame (an opened seal, or a channel post's verified author at zero hops),
+    never from a sender prefix or a non-Knit DM; the trait splits into `live` and `heardZeroHop`.
