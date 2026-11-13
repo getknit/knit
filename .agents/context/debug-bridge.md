@@ -661,7 +661,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
 - `…debug.USBCTL --es op enable|disable|open|close|state|pairings|forget` — the **USB control's** switch
   (`usbcontrol/UsbControlServer`, debug builds only, protocol v1 in `docs/USB_CONTROL.md`): knit-cli drives the app
   over an Android Open Accessory stream, no adb, and only once paired (`knit pair`, a code on the phone's own screen);
-  it reads attachment and avatar bytes and sends pictures through the chat picker's own pipeline (`UsbTransfers`).
+  it reads attachment and avatar bytes, sends pictures through the chat picker's own pipeline (`UsbTransfers`), and
+  sets our status line (`profile`, the Profile screen's own setting: `MeshManager.watchProfileChanges` publishes it).
   Off until `enable` (it persists, and starts the change log the repositories report to); `open` picks up a knit-cli
   accessory that attached while it was off. `pairings` lists the paired computers (`paired.pairings[]`: an 8-character
   handle prefix, `name`, `pairedAt`, `lastUsedAt`, never a key); `forget --es handle <prefix of 4+|all>` forgets them

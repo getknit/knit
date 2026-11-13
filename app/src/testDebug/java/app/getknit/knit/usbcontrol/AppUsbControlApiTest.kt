@@ -2,7 +2,9 @@
 
 package app.getknit.knit.usbcontrol
 
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.test.core.app.ApplicationProvider
+import app.getknit.knit.TextLimits
 import app.getknit.knit.contacts.DirectContacts
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
@@ -66,6 +68,7 @@ class AppUsbControlApiTest : RoomDbTest() {
     private val blocked = MutableStateFlow(emptySet<String>())
     private val accepted = MutableStateFlow(emptySet<String>())
     private val lastRead = MutableStateFlow(emptyMap<String, Long>())
+    private val status = MutableStateFlow("")
     private val settings =
         mockk<SettingsStore>(relaxed = true) {
             every { blockedNodeIds } returns blocked
@@ -74,6 +77,11 @@ class AppUsbControlApiTest : RoomDbTest() {
             every { displayName } returns flowOf("Me")
             every { ownAvatarHash } returns flowOf(null)
             every { contentFilteringEnabled } returns flowOf(true)
+            every { this@mockk.status } returns this@AppUsbControlApiTest.status
+            coEvery { setStatus(any()) } answers {
+                this@AppUsbControlApiTest.status.value = firstArg()
+                emptyPreferences()
+            }
         }
     private val notifier = mockk<Notifier>(relaxed = true)
     private val drafts = mockk<DraftRepository>(relaxed = true)
@@ -255,6 +263,25 @@ class AppUsbControlApiTest : RoomDbTest() {
             api.block(BOB)
             coVerify { settings.block(BOB, null) }
             coVerify { pins.unpinFrom(BOB) }
+        }
+
+    /** Our status as `self` states it. */
+    private suspend fun shownStatus(): String {
+        val self = api.identity()
+        return self.getValue("status").jsonPrimitive.content
+    }
+
+    @Test
+    fun ourStatusIsStoredAndShownAsTheProfileFrameCarriesIt() =
+        runTest {
+            api.setStatus(" out\u2028for\t lunch ")
+            assertEquals("out for lunch", status.value)
+            assertEquals("out for lunch", shownStatus())
+            // A status stored by another path, unfolded and over the cap, is shown as the frame would carry it.
+            status.value = "  ${"b".repeat(TextLimits.STATUS + 20)}"
+            assertEquals("b".repeat(TextLimits.STATUS), shownStatus())
+            api.setStatus("x".repeat(TextLimits.STATUS + 5))
+            assertEquals("x".repeat(TextLimits.STATUS), status.value)
         }
 
     @Test

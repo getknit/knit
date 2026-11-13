@@ -5,8 +5,17 @@ import kotlinx.serialization.json.JsonObject
 
 /** What the USB control session reads and does in the app, behind an interface so the session tests without one. */
 internal interface UsbControlApi {
-    /** `node`, `name`, `alias`, `avatarHash` and `app` (the version name), for the hello reply and the `self` event. */
+    /**
+     * `node`, `name`, `alias`, `avatarHash`, `status` (as the profile publishes it: one line, capped) and `app` (the
+     * version name), for the hello reply and the `self` event.
+     */
     suspend fun identity(): JsonObject
+
+    /**
+     * Stores [status] as our status line, as the Profile screen's Save does: the mesh publishes the profile once it
+     * reads differently from the frame it holds. Empty clears it.
+     */
+    suspend fun setStatus(status: String)
 
     suspend fun status(): JsonObject
 

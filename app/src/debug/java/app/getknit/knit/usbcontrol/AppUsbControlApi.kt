@@ -2,6 +2,8 @@ package app.getknit.knit.usbcontrol
 
 import android.content.Context
 import app.getknit.knit.BuildConfig
+import app.getknit.knit.TextLimits
+import app.getknit.knit.clampToUtf16
 import app.getknit.knit.contacts.DirectContacts
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
@@ -41,6 +43,7 @@ import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleSpan
+import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.ui.ConversationTable
 import app.getknit.knit.ui.ConversationTitle
@@ -104,9 +107,18 @@ internal class AppUsbControlApi :
             put("name", selfName(me))
             put("alias", Alias.aliasFor(me))
             put("avatarHash", settings.ownAvatarHash.first())
+            put("status", ownStatus())
             put("app", BuildConfig.VERSION_NAME)
         }
     }
+
+    // Folded and capped again, as the profile frame carries it, whatever the caller already did.
+    override suspend fun setStatus(status: String) {
+        settings.setStatus(normalizeSingleLine(status).clampToUtf16(TextLimits.STATUS))
+    }
+
+    /** Our status as the profile frame carries it (`MeshManager.currentProfilePayload`): one line, capped. */
+    private suspend fun ownStatus(): String = normalizeSingleLine(settings.status.first()).clampToUtf16(TextLimits.STATUS)
 
     override suspend fun status(): JsonObject =
         buildJsonObject {

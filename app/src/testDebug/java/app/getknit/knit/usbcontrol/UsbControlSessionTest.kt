@@ -40,12 +40,22 @@ class UsbControlSessionTest {
         var readError: UsbControlError? = null
         var opens = 0
 
+        /** Our status as the phone holds it, and every [setStatus] in order. */
+        var ownStatus = ""
+        val statuses = mutableListOf<String>()
+
         override suspend fun identity(): JsonObject =
             buildJsonObject {
                 put("node", "n1")
                 put("name", "Alice")
+                put("status", ownStatus)
                 put("app", "9.9.9")
             }
+
+        override suspend fun setStatus(status: String) {
+            statuses += status
+            ownStatus = status
+        }
 
         override suspend fun status(): JsonObject {
             statusThrows?.let { throw it }
@@ -144,7 +154,7 @@ class UsbControlSessionTest {
     private var now = 0L
     private val api = FakeApi()
     private val feed = FakeFeed()
-    private val ledger = SendLedger(clock = { now }, burst = 3, perMinute = 60)
+    private val ledger = SendLedger(clock = { now }, burst = 3, perMinute = 60, profileBurst = 2, profilesPerMinute = 1)
     private var uploads = 0
     private val session = UsbControlSession(api, feed, ledger, budget = BUDGET, newUploadId = { "u${++uploads}" })
 
@@ -320,6 +330,80 @@ class UsbControlSessionTest {
             now += 1_000
             assertTrue(session.handle("""{"id":5,"op":"send","to":"n2","text":"hi"}""").ok)
             assertEquals(3, api.sent.size)
+        }
+
+    @Test
+    fun helloOffersProfileAndItsStatusLimit() =
+        runTest {
+            val reply = hello()
+            assertTrue(reply.getValue("ops").jsonArray.contains(JsonPrimitive("profile")))
+            val limits = reply.getValue("limits").jsonObject
+            assertEquals(TextLimits.STATUS, limits.getValue("maxStatus").jsonPrimitive.int)
+            assertEquals("", reply.getValue("self").jsonObject.text("status"))
+        }
+
+    @Test
+    fun aStatusChangeIsStoredFoldedToOneLineAndSpendsAProfileTokenTheSameStatusDoesNot() =
+        runTest {
+            hello()
+            val changed = session.handle("""{"id":2,"op":"profile","status":"  at the\tlake \n today "}""")
+            assertTrue("$changed", changed.flag("changed"))
+            assertEquals("at the lake today", changed.getValue("self").jsonObject.text("status"))
+            assertEquals(listOf("at the lake today"), api.statuses)
+            repeat(2) {
+                val same = session.handle("""{"id":3,"op":"profile","status":"at the  lake today"}""")
+                assertTrue("$same", same.ok)
+                assertFalse(same.flag("changed"))
+            }
+            assertEquals("the same status is not stored again", 1, api.statuses.size)
+            // A profile burst of 2: the change took one and the two repeats none, so one more change goes.
+            assertTrue(session.handle("""{"id":4,"op":"profile","status":"home"}""").flag("changed"))
+            assertEquals(listOf("at the lake today", "home"), api.statuses)
+        }
+
+    @Test
+    fun statusChangesHaveTheirOwnTighterBudgetAndStoreNothingWhileItIsSpent() =
+        runTest {
+            hello()
+            repeat(2) { assertTrue(session.handle("""{"id":2,"op":"profile","status":"s$it"}""").flag("changed")) }
+            val limited = session.handle("""{"id":3,"op":"profile","status":"away"}""")
+            assertEquals(Codes.RATE_LIMITED, limited.code)
+            assertEquals("one token a minute", 60_000L, limited.getValue("retryAfterMs").jsonPrimitive.long)
+            assertEquals(listOf("s0", "s1"), api.statuses)
+            repeat(3) { assertTrue("sends keep their own budget", session.handle("""{"id":4,"op":"send","to":"n2","text":"hi"}""").ok) }
+            assertEquals(Codes.RATE_LIMITED, session.handle("""{"id":5,"op":"profile","status":"away"}""").code)
+            now += 60_000
+            assertTrue(session.handle("""{"id":6,"op":"profile","status":"away"}""").flag("changed"))
+            assertEquals(listOf("s0", "s1", "away"), api.statuses)
+        }
+
+    @Test
+    fun aSpentSendBudgetLeavesAStatusChangeFree() =
+        runTest {
+            hello()
+            repeat(3) { session.handle("""{"id":2,"op":"send","to":"n2","text":"hi"}""") }
+            assertEquals(Codes.RATE_LIMITED, session.handle("""{"id":3,"op":"send","to":"n2","text":"hi"}""").code)
+            assertTrue(session.handle("""{"id":4,"op":"profile","status":"away"}""").flag("changed"))
+        }
+
+    @Test
+    fun aStatusThatIsNoStringOrTooLongIsRefusedAndAnEmptyOneClearsIt() =
+        runTest {
+            hello()
+            api.ownStatus = "away"
+            val refusals =
+                listOf(
+                    """{"id":2,"op":"profile"}""",
+                    """{"id":2,"op":"profile","status":null}""",
+                    """{"id":2,"op":"profile","status":5}""",
+                    """{"id":2,"op":"profile","status":"${"a".repeat(TextLimits.STATUS + 1)}"}""",
+                )
+            for (frame in refusals) assertEquals(frame, Codes.BAD_REQUEST, session.handle(frame).code)
+            assertEquals(emptyList<String>(), api.statuses)
+            assertTrue(session.handle("""{"id":3,"op":"profile","status":"${"a".repeat(TextLimits.STATUS)}"}""").ok)
+            val cleared = session.handle("""{"id":4,"op":"profile","status":" "}""")
+            assertTrue("$cleared", cleared.flag("changed"))
+            assertEquals(listOf("a".repeat(TextLimits.STATUS), ""), api.statuses)
         }
 
     @Test

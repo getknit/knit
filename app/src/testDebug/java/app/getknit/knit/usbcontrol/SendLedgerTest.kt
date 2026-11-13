@@ -33,6 +33,27 @@ class SendLedgerTest {
     }
 
     @Test
+    fun statusChangesDrawOnABucketOfTheirOwn() {
+        val ledger = SendLedger({ now }, burst = 1, perMinute = 60, profileBurst = 2, profilesPerMinute = 1)
+        assertNull(ledger.takeProfile())
+        assertNull(ledger.takeProfile())
+        assertEquals("one a minute", 60_000L, ledger.takeProfile())
+        assertNull("sends untouched", ledger.take())
+        assertEquals(1_000L, ledger.take())
+        assertEquals("a spent send bucket takes nothing from the profile's", 60_000L, ledger.takeProfile())
+        now += 60_000
+        assertNull(ledger.takeProfile())
+    }
+
+    @Test
+    fun theProfileBucketDefaultsToTwoThenOneAMinute() {
+        val ledger = SendLedger({ now })
+        assertNull(ledger.takeProfile())
+        assertNull(ledger.takeProfile())
+        assertEquals(60_000L, ledger.takeProfile())
+    }
+
+    @Test
     fun aRecordedReplyIsReplayedUntilNewerSendsPushItOut() {
         val ledger = SendLedger({ now }, capacity = 2)
         ledger.record("a", reply("1"))

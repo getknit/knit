@@ -139,7 +139,7 @@ time, in the order they arrive. Inside a session every request and reply is seal
 | `refused` | The thread can't take it: the Meshtastic board refused it, the thread has no reaction form or takes no pictures, or the attachment is a message request's. |
 | `unknown_group` | A `g-…` id this phone has not joined. |
 | `not_pending` | `accept` or `decline` on a thread that is no message request. |
-| `rate_limited` | Too many sends and reactions; `retryAfterMs` says when the next one is allowed. |
+| `rate_limited` | Too many sends and reactions, or status changes; `retryAfterMs` says when the next one is allowed. |
 | `not_held` | This phone does not hold the attachment's bytes (`fetch` asks the mesh for them). |
 | `too_large` | An `upload` over `maxUpload`. |
 | `internal` | The phone failed answering; the session goes on. |
@@ -158,8 +158,8 @@ time, in the order they arrive. Inside a session every request and reply is seal
 ## Hello and bye
 
 - **`hello {v: 1, nonce, client?}`**, the session's first sealed request, opens (or resets) it. The reply echoes `nonce` and carries `v`, `ops`,
-  `self` (`node`, `name`, `alias`, `avatarHash`, `app`) and `limits` (`maxFrame`, `maxText`, `maxReaction`,
-  `maxHistory`, `maxList`, `maxChunk`, `maxUpload`). A previous run that exited without reading can leave frames queued in the link, so a client
+  `self` (`node`, `name`, `alias`, `avatarHash`, `status`, `app`) and `limits` (`maxFrame`, `maxText`, `maxReaction`,
+  `maxStatus`, `maxHistory`, `maxList`, `maxChunk`, `maxUpload`). A previous run that exited without reading can leave frames queued in the link, so a client
   drops every frame until the reply that carries its own nonce.
 - **`bye`** ends the session (back to the clear side) and stops the feed.
 
@@ -199,8 +199,13 @@ paging always moves past it.
 - **`delete {messageId}`** deletes a message from this phone only, as the chat's own delete does.
 - **`accept {conv}`** / **`decline {conv}`** accept or delete a message request.
 - **`block {node}`** / **`unblock {node}`**.
+- **`profile {status}`** sets our status line, as the Profile screen's Save does: runs of whitespace fold to one
+  space, at most `maxStatus` characters, and an empty one clears it. The reply is `{changed, self}`. A change
+  publishes our profile to the mesh and to every contact; the status we already have changes nothing and publishes
+  nothing.
 
-Sends and reactions share one budget across sessions: a burst of 10, then 30 a minute.
+Sends and reactions share one budget across sessions: a burst of 10, then 30 a minute. Status changes have their
+own, since each one reaches every contact: 2 at once, then 1 a minute.
 
 ## Attachments
 

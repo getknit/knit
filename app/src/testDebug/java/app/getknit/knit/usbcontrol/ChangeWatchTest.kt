@@ -13,22 +13,25 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ChangeWatchTest {
+    private val filtering = MutableStateFlow(true)
+    private val status = MutableStateFlow("")
+    private val settings =
+        mockk<SettingsStore>(relaxed = true) {
+            every { lastReadAll } returns MutableStateFlow(emptyMap())
+            every { acceptedConversations } returns MutableStateFlow(emptySet())
+            every { blockedNodeIds } returns MutableStateFlow(emptySet())
+            every { displayName } returns MutableStateFlow("Me")
+            every { this@mockk.status } returns this@ChangeWatchTest.status
+            every { ownAvatarHash } returns MutableStateFlow(null)
+            every { contentFilteringEnabled } returns filtering
+        }
+    private val commons = mockk<CommonsRepository> { every { observeAll() } returns flowOf(emptyList()) }
+
     @OptIn(ExperimentalCoroutinesApi::class) // runCurrent: the watcher's collectors run on the test's scheduler
     @Test
     fun aFilterSwitchIsAResyncAndEachVerdictThatMovedIsItsAttachment() =
         runTest {
-            val filtering = MutableStateFlow(true)
             val flagged = MutableStateFlow(listOf("a"))
-            val settings =
-                mockk<SettingsStore>(relaxed = true) {
-                    every { lastReadAll } returns MutableStateFlow(emptyMap())
-                    every { acceptedConversations } returns MutableStateFlow(emptySet())
-                    every { blockedNodeIds } returns MutableStateFlow(emptySet())
-                    every { displayName } returns MutableStateFlow("Me")
-                    every { ownAvatarHash } returns MutableStateFlow(null)
-                    every { contentFilteringEnabled } returns filtering
-                }
-            val commons = mockk<CommonsRepository> { every { observeAll() } returns flowOf(emptyList()) }
             val log = ChangeLog { "e1" }.apply { setRecording(true) }
             ChangeWatch.launch(backgroundScope, settings, commons, flagged, log)
             runCurrent()
@@ -41,6 +44,19 @@ class ChangeWatchTest {
             filtering.value = false
             runCurrent()
             assertEquals(listOf(ChangeKey.Resync("content filtering switched")), log.after(beforeSwitch)?.map { it.second })
+        }
+
+    @OptIn(ExperimentalCoroutinesApi::class) // runCurrent: the watcher's collectors run on the test's scheduler
+    @Test
+    fun aStatusThatMovedIsTheSelfObject() =
+        runTest {
+            val log = ChangeLog { "e1" }.apply { setRecording(true) }
+            ChangeWatch.launch(backgroundScope, settings, commons, MutableStateFlow(emptyList()), log)
+            runCurrent()
+            val start = log.latest()
+            status.value = "at the lake"
+            runCurrent()
+            assertEquals(listOf(ChangeKey.Self), log.after(start)?.map { it.second })
         }
 
     @Test

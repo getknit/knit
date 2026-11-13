@@ -49,7 +49,7 @@ internal object ChangeWatch {
                     .collect { it.forEach { hash -> log.record(ChangeKey.Attachment(hash)) } }
             }
             launch {
-                combine(settings.displayName, settings.ownAvatarHash) { name, avatar -> name to avatar }
+                combine(settings.displayName, settings.status, settings.ownAvatarHash, ::Triple)
                     .diffs { old, new -> if (old == new) emptySet() else setOf(Unit) }
                     .collect { log.record(ChangeKey.Self) }
             }

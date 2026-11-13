@@ -2,6 +2,7 @@ package app.getknit.knit.usbcontrol
 
 import app.getknit.knit.TextLimits
 import app.getknit.knit.isValidReactionEmoji
+import app.getknit.knit.normalizeSingleLine
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -90,6 +91,7 @@ internal class UsbControlSession(
             "decline" -> api.decline(request.need("conv"))
             "block" -> api.block(request.need("node"))
             "unblock" -> api.unblock(request.need("node"))
+            "profile" -> serveProfile(request)
             "attachment" -> serveAttachment(request)
             "avatar" -> serveAvatar(request)
             "fetch" -> api.fetch(request.need("messageId"))
@@ -257,10 +259,32 @@ internal class UsbControlSession(
         return api.react(id, emoji)
     }
 
+    /**
+     * Sets our status line: one line (runs of whitespace fold to a space), at most `maxStatus`, and empty clears it. A
+     * change publishes the profile to the mesh and to every contact, so it spends a token from the profile's own budget
+     * ([SendLedger.takeProfile]); the status it already has spends none and publishes nothing.
+     */
+    private suspend fun serveProfile(request: JsonObject): Map<String, JsonElement> {
+        val raw = request.string("status") ?: refuse("missing status (an empty one clears it)")
+        if (raw.length > TextLimits.STATUS) refuse("status longer than ${TextLimits.STATUS} characters")
+        val status = normalizeSingleLine(raw)
+        val before = api.identity()
+        if (before.string("status") == status) return mapOf("changed" to JsonPrimitive(false), "self" to before)
+        refuseUntil(ledger.takeProfile(), "too many status changes")
+        api.setStatus(status)
+        return mapOf("changed" to JsonPrimitive(true), "self" to api.identity())
+    }
+
     /** One token from the send budget, or a refusal saying when the next one comes. */
-    private fun spend() {
-        ledger.take()?.let { wait ->
-            throw UsbControlError(Codes.RATE_LIMITED, "too many sends; try again shortly", mapOf("retryAfterMs" to JsonPrimitive(wait)))
+    private fun spend() = refuseUntil(ledger.take(), "too many sends")
+
+    /** A refusal saying when the next token comes, when a bucket answered a [wait]. */
+    private fun refuseUntil(
+        wait: Long?,
+        what: String,
+    ) {
+        wait?.let {
+            throw UsbControlError(Codes.RATE_LIMITED, "$what; try again shortly", mapOf("retryAfterMs" to JsonPrimitive(it)))
         }
     }
 
@@ -369,6 +393,7 @@ internal class UsbControlSession(
                 "decline",
                 "block",
                 "unblock",
+                "profile",
                 "attachment",
                 "avatar",
                 "fetch",
@@ -398,6 +423,7 @@ internal class UsbControlSession(
                 put("maxFrame", UsbControlFrames.MAX_FRAME)
                 put("maxText", TextLimits.MESSAGE)
                 put("maxReaction", TextLimits.REACTION)
+                put("maxStatus", TextLimits.STATUS)
                 put("maxHistory", MAX_HISTORY)
                 put("maxList", MAX_LIST)
                 put("maxChunk", UsbTransfers.MAX_CHUNK)
