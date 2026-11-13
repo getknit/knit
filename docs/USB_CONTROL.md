@@ -5,8 +5,9 @@
 > paired with the phone, over sealed frames. Nothing here ships in a release build, and nothing here is a
 > compatibility promise yet. Changes stay additive where they can: a client ignores fields and events it does not know.
 
-A workstation drives Knit on a phone plugged in over USB, with no adb: it reads chats, contacts and threads, sends,
-reacts, marks read and handles message requests, and follows what changes through an event feed. This document is
+A workstation drives Knit on a phone plugged in over USB, with no adb: it reads chats, contacts and threads, saves
+attachments and photos, sends text and pictures, reacts, marks read and handles message requests, and follows what
+changes through an event feed. This document is
 the contract a desktop client is written against. The phone's side is `app/src/debug/java/app/getknit/knit/usbcontrol/`;
 `vectors/usb-control-v1.json` pins the pairing and the seal byte for byte.
 
@@ -133,12 +134,14 @@ time, in the order they arrive. Inside a session every request and reply is seal
 | `bad_version` | The hello asked for a version this phone does not speak. |
 | `bad_request` | A missing or misshapen argument. |
 | `unknown_op` | No such op. |
-| `not_found` | No such chat, message or thread. |
-| `blocked` | The on-device content filter refused the text (the Nearby room screens what is sent). |
-| `refused` | The thread can't take it: the Meshtastic board refused it, or the thread has no reaction form. |
+| `not_found` | No such chat, message, thread, upload or shown photo. |
+| `blocked` | The on-device content filter refused the text or the picture (the Nearby room screens what is sent). |
+| `refused` | The thread can't take it: the Meshtastic board refused it, the thread has no reaction form or takes no pictures, or the attachment is a message request's. |
 | `unknown_group` | A `g-…` id this phone has not joined. |
 | `not_pending` | `accept` or `decline` on a thread that is no message request. |
 | `rate_limited` | Too many sends and reactions; `retryAfterMs` says when the next one is allowed. |
+| `not_held` | This phone does not hold the attachment's bytes (`fetch` asks the mesh for them). |
+| `too_large` | An `upload` over `maxUpload`. |
 | `internal` | The phone failed answering; the session goes on. |
 | `session_first` | Before a session: pair, then `open`. |
 | `off` | USB control is switched off on the phone. |
@@ -156,7 +159,7 @@ time, in the order they arrive. Inside a session every request and reply is seal
 
 - **`hello {v: 1, nonce, client?}`**, the session's first sealed request, opens (or resets) it. The reply echoes `nonce` and carries `v`, `ops`,
   `self` (`node`, `name`, `alias`, `avatarHash`, `app`) and `limits` (`maxFrame`, `maxText`, `maxReaction`,
-  `maxHistory`, `maxList`). A previous run that exited without reading can leave frames queued in the link, so a client
+  `maxHistory`, `maxList`, `maxChunk`, `maxUpload`). A previous run that exited without reading can leave frames queued in the link, so a client
   drops every frame until the reply that carries its own nonce.
 - **`bye`** ends the session (back to the clear side) and stops the feed.
 
@@ -180,7 +183,9 @@ paging always moves past it.
 ## Writes
 
 - **`send {conv | to, text, replyTo?, mentions?, styles?, clientMsgId?}`** sends `text` (at most `maxText`) into a
-  thread, or opens a DM with `to`. `replyTo` is the `messageId` of an ordinary message in the same thread. `mentions`
+  thread, or opens a DM with `to`; with `upload` it sends a picture (see *Attachments*). An id that names no room,
+  group or commons is a DM's, and must be a node id (26 characters, `a`–`z` and `2`–`7`): anything else answers
+  `bad_request`, as `block` and `unblock` do. `replyTo` is the `messageId` of an ordinary message in the same thread. `mentions`
   are node ids, each of whose `@label` (the contact's `label`) must be in the text. `styles` are `[start, length, code]`
   triples over the text (codes: 0 bold, 1 italic, 2 strikethrough, 3 monospace, …). The Meshtastic room takes plain
   text only. The reply is `{status: "sent", messageId, conv}`, or `{status: "queued", messageId: null}` on the
@@ -197,6 +202,40 @@ paging always moves past it.
 
 Sends and reactions share one budget across sessions: a burst of 10, then 30 a minute.
 
+## Attachments
+
+Bytes move in chunks of at most `maxChunk` bytes, base64 in `data`, one request per chunk, so events keep flowing
+between them.
+
+- **`attachment {messageId, offset?}`** reads a message's attachment, whatever its kind: `{messageId, hash, mime,
+  name, size, sha256, offset, data, done}`. `size` and `sha256` (lowercase hex) are the phone's own measure of the
+  plain bytes, never the sender's claim. A DM's or a group's bytes are opened on the phone; their key never leaves
+  it. Read from `offset` 0 until `done`, then check `sha256`. A message that `message` would not serve
+  answers `not_found`, a message request's attachment answers `refused` until the request is accepted (its bytes may
+  have landed, but the phone shows none), and bytes this phone does not hold answer `not_held`. `name` and `mime` are
+  the sender's words: never name or type a file on the computer from them alone.
+- **`avatar {hash, offset?}`** reads a photo the phone shows as someone's, in the same shape without `messageId` or
+  `name`: our own, a peer's that is not blocked, or a group's. Any other hash answers `not_found`.
+- **`fetch {messageId}`** is the chat's Tap to download: it asks the mesh for an attachment this phone does not hold
+  and answers `{asked: true}`, or `{held: true}` when it is already here, under the same rules as `attachment`. The
+  bytes landing come as a `message` event with `attachment.held: true`.
+- **`upload {size, sha256}`** opens an upload of at most `maxUpload` bytes and answers its `upload` id.
+  **`upload.chunk {upload, offset, data}`** adds the next bytes, in order (`offset` is the `received` so far), and
+  answers `{received, done}`. At `size` the phone checks `sha256`; a mismatch answers `bad_request` and drops the
+  upload, and so does a chunk that would run past `size`. A session holds one upload, a new one replaces it, and it
+  ends with the session.
+- **`send {…, upload}`** sends a complete upload as a picture, with `text` as its caption (optional beside an upload).
+  The phone treats it as the chat's own picker does: it strips the picture's metadata or re-encodes it (at most
+  1280 px), and shrinks it to what the thread's relays carry. Bytes that are no picture answer `bad_request`; the
+  Meshtastic room and a commons whose relay takes no attachments answer `refused`; a picture the Nearby room's filter
+  flags answers `blocked`. A send that went uses the upload up; a refused one keeps it, to send again. `clientMsgId` is
+  checked before the upload, so a send retried in a new session with the old `upload` answers `duplicate: true`, or
+  `not_found` when it never went (upload again).
+
+The phone keeps the last file it opened, so a read decrypts once rather than once per chunk, and checks on every chunk
+that the message may still be read. It drops the file with the session's keys, at `hello` and `bye`, and at the first
+refused chunk.
+
 ## Objects
 
 **Message**: `id`, `conv`, `kind` (`text`, or a notice: `member_left`, `peer_renamed`, `peer_avatar`,
@@ -207,8 +246,11 @@ arrived on), `pending` (ours, waiting for the peer's key), `flagged` (the conten
 behind a reveal), and when present `styles`, `mentions` (`[{node, name}]`), `replyTo` (`{id, authorId, author,
 snippet, hasAttachment, check: "unchecked" | "verified" | "mismatch", flagged}`), `reactions` (one entry per emoji,
 most reactors first: `{emoji, count, mine, nodes}`, at most 32 emoji and 16 `nodes` each, with `reactionsTruncated`
-when it had to cut; `count` and `mine` are always whole), `attachment` (`{hash, mime, name, size}`: metadata only in
-v1) and `origin` (`{node, name}`, a heard Meshtastic post).
+when it had to cut; `count` and `mine` are always whole), `attachment` (`{hash, mime, name, size, held, flagged}`:
+`size` is the sender's claim, `held` says this phone has the bytes, `flagged` that the chat blurs it: content
+filtering is on and the filter flagged the picture or a video's poster, so hide it behind a reveal; the bytes come
+through `attachment`) and `origin` (`{node,
+name}`, a heard Meshtastic post).
 `fromLabel` and `replyTo.author` are names as of the read: render names from `contacts` by node id where it matters.
 
 **Chat**: `conv`, `kind` (`nearby`, `meshtastic`, `commons`, `group`, `dm`), `title`, `discriminator`, `avatarHash`,
@@ -240,6 +282,10 @@ Every event holds the object's state at the moment it was written, never a delta
 | `status` | `status` | replaces its copy of `status` (presence: who is `reachable`) |
 | `gap` | `reason` | reads everything again |
 
+**Attachments.** Bytes landing or going, or a filter verdict, move `attachment.held` or `attachment.flagged`: the
+client gets a `message` event for each message naming them, or `gap` past 64 of them. Turning content filtering on
+or off sends `gap`.
+
 **Ordering.** One worker on the phone builds and writes every frame, replies and events alike, so a later frame never
 carries older state than an earlier one: the client simply applies frames in order.
 
@@ -256,6 +302,6 @@ reported deleted: a client may see `message.deleted` for an id it never held, wh
 
 ## Deferred
 
-Attachment and avatar bytes, typing indicators, group create, leave and rename, search, notification suppression
+Sending video, voice notes and files, thumbnails and smaller reads of a picture, fetch progress, typing indicators, group create, leave and rename, search, notification suppression
 while a desktop is active, pairing from the phone's settings (today a computer asks and the phone's notice answers),
 and starting the mesh service on attach.

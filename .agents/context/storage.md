@@ -11,13 +11,15 @@ lines.
 ## Entries
 
 - **When touching `data/changes/DataChange`, `DataChangeSink`, `di/DataChangeWiring`, or the `changes` parameter of
-  `MessageRepository`, `ReactionRepository`, `GroupRepository` or `PeerRepository`:** READ `docs/USB_CONTROL.md`
-  (experimental; no ADR while it is debug-only). A repository write reports the id it touched — never its state —
-  right after the DAO call, and only when something was written (a re-received row, an unchanged reaction or a sweep
-  that deleted nothing reports nothing). Release wires `DataChangeSink.NONE`; the debug build's only reader is the USB
-  control's change log, which keeps keys only while USB control is on. A key can outrun its caller's transaction or
-  name a write that rolled back, so a reader re-reads the row and never trusts the key for state
-  (`usbcontrol/ChangeFeed`). Regression: `RepositoryChangesTest`.
+  `MessageRepository`, `ReactionRepository`, `GroupRepository`, `PeerRepository` or `BlobRepository`:** READ
+  `docs/USB_CONTROL.md` (experimental; no ADR while it is debug-only). A repository write reports the id it touched —
+  never its state — right after the DAO call, and only when something was written (a re-received row, an unchanged
+  reaction or a sweep that deleted nothing reports nothing). Release wires `DataChangeSink.NONE`; the debug build's only
+  reader is the USB control's change log, which keeps keys only while USB control is on. A key can outrun its caller's
+  transaction or name a write that rolled back, so a reader re-reads the row and never trusts the key for state
+  (`usbcontrol/ChangeFeed`). `BlobRepository` reports every store and delete of a blob's bytes by hash
+  (`DataChange.Blob`, the attachment's `held`), inside its callers' transactions; the filter's verdicts are watched from
+  `BlobVerdictDao` rather than reported (`usbcontrol/ChangeWatch`). Regression: `RepositoryChangesTest`.
 - **When touching `data/crypto/DatabaseKey`, `SqlCipherKey`, the driver or pool size in `KnitDatabase.build`, or
   anything else that opens a SQLCipher file:** READ ADR 2026-09.uzkm. The database is keyed with the passphrase's
   raw form (`x'<hex>'`, no KDF), and a file an older build keyed through the KDF is rekeyed once by

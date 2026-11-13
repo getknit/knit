@@ -15,6 +15,9 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import java.security.SecureRandom
+import java.util.Base64
+import java.util.Locale
 
 /**
  * One paired computer's session, inside its sealed frames: the v1 ops (`docs/USB_CONTROL.md`). A request is `{"id":…,"op":…}`
@@ -30,7 +33,11 @@ internal class UsbControlSession(
     private val feed: FeedControl = FeedControl.None,
     private val ledger: SendLedger = SendLedger(System::currentTimeMillis),
     private val budget: Int = FrameBudget.BYTES,
+    newUploadId: () -> String = ::randomUploadId,
 ) {
+    /** The file a download opened and the upload held, wiped at a hello, a bye and [close]. */
+    private val transfers = UsbTransfers(newUploadId)
+
     var subscribed: Boolean = false
         private set
 
@@ -83,6 +90,11 @@ internal class UsbControlSession(
             "decline" -> api.decline(request.need("conv"))
             "block" -> api.block(request.need("node"))
             "unblock" -> api.unblock(request.need("node"))
+            "attachment" -> serveAttachment(request)
+            "avatar" -> serveAvatar(request)
+            "fetch" -> api.fetch(request.need("messageId"))
+            "upload" -> serveUpload(request)
+            "upload.chunk" -> serveUploadChunk(request)
             "subscribe" -> serveSubscribe(request)
             "unsubscribe" -> serveUnsubscribe()
             "bye" -> serveBye()
@@ -95,6 +107,7 @@ internal class UsbControlSession(
         val nonce = request.string("nonce")?.takeIf { it.length in 1..MAX_NONCE } ?: refuse("missing nonce")
         hello = true
         dropSubscription()
+        transfers.wipe()
         client = request.string("client")?.take(MAX_CLIENT)
         return mapOf(
             "v" to JsonPrimitive(VERSION),
@@ -133,10 +146,13 @@ internal class UsbControlSession(
      */
     private suspend fun serveSend(request: JsonObject): Map<String, JsonElement> {
         val conversation = request.string("conv") ?: request.string("to") ?: refuse("missing conv or to")
-        val text = request.string("text")?.takeIf { it.isNotBlank() } ?: refuse("missing text")
+        val upload = request.string("upload")?.takeIf { it.isNotEmpty() }
+        // Beside a picture the text is its caption, and may be empty.
+        val text = request.string("text")?.takeIf { it.isNotBlank() } ?: if (upload != null) "" else refuse("missing text")
         if (text.length > TextLimits.MESSAGE) refuse("text longer than ${TextLimits.MESSAGE} characters")
         val clientMsgId = request.string("clientMsgId")
         if (clientMsgId != null && clientMsgId.length !in 1..MAX_CLIENT_ID) refuse("clientMsgId is 1..$MAX_CLIENT_ID characters")
+        // Before the upload is looked at: a send retried in a new session names an upload that session never held.
         clientMsgId?.let { ledger.replay(it) }?.let { return it + ("duplicate" to JsonPrimitive(true)) }
         val send =
             SendRequest(
@@ -145,12 +161,84 @@ internal class UsbControlSession(
                 replyTo = request.string("replyTo"),
                 mentions = request.strings("mentions", MAX_MENTIONS),
                 styles = request.triples("styles"),
+                picture = upload?.let { transfers.complete(it) },
             )
         spend()
         val reply = api.send(send) + mapOf("conv" to JsonPrimitive(conversation))
+        // Kept through a refusal, so the same upload can be sent again; used up once it went.
+        upload?.let { transfers.consume(it) }
         clientMsgId?.let { ledger.record(it, JsonObject(reply)) }
         return reply
     }
+
+    /** A slice of a message's attachment, under `message`'s rules, asked again for every slice. */
+    private suspend fun serveAttachment(request: JsonObject): Map<String, JsonElement> {
+        val id = request.need("messageId")
+        val offset = request.offset()
+        val source = checked { api.attachment(id) }
+        val slice = transfers.read("message:$id:${source.hash}", offset, source.open)
+        return mapOf("messageId" to JsonPrimitive(id)) + sliceOf(source, slice) + ("name" to JsonPrimitive(source.name))
+    }
+
+    /** A slice of a photo the phone shows as someone's. */
+    private suspend fun serveAvatar(request: JsonObject): Map<String, JsonElement> {
+        val hash = request.need("hash")
+        val offset = request.offset()
+        val source = checked { api.avatar(hash) }
+        val slice = transfers.read("avatar:${source.hash}", offset, source.open)
+        return sliceOf(source, slice)
+    }
+
+    private fun serveUpload(request: JsonObject): Map<String, JsonElement> {
+        val size = request.long("size") ?: refuse("missing size")
+        val id = transfers.start(size, request.need("sha256"))
+        return mapOf("upload" to JsonPrimitive(id))
+    }
+
+    private fun serveUploadChunk(request: JsonObject): Map<String, JsonElement> {
+        val id = request.need("upload")
+        val offset = request.long("offset") ?: refuse("missing offset")
+        val encoded = request.string("data") ?: refuse("missing data")
+        if (encoded.length > MAX_CHUNK_BASE64) refuse("a chunk is at most ${UsbTransfers.MAX_CHUNK} bytes")
+        val data = runCatching { Base64.getDecoder().decode(encoded) }.getOrNull() ?: refuse("data is standard base64")
+        val progress = transfers.add(id, offset, data)
+        return mapOf("received" to JsonPrimitive(progress.received), "done" to JsonPrimitive(progress.done))
+    }
+
+    /** [read]'s answer, or its refusal with the opened file dropped: what this slice may not serve, no later one may. */
+    private suspend fun checked(read: suspend () -> BlobSource): BlobSource =
+        try {
+            read()
+        } catch (e: UsbControlError) {
+            transfers.forgetOpened()
+            throw e
+        }
+
+    /** The session is over (its keys zeroed): what it held of any file goes too. */
+    fun close() {
+        transfers.wipe()
+    }
+
+    private fun sliceOf(
+        source: BlobSource,
+        slice: UsbTransfers.Slice,
+    ): Map<String, JsonElement> =
+        mapOf(
+            "hash" to JsonPrimitive(source.hash),
+            "mime" to JsonPrimitive(source.mime),
+            "size" to JsonPrimitive(slice.size),
+            "sha256" to JsonPrimitive(slice.sha256),
+            "offset" to JsonPrimitive(slice.offset),
+            "data" to JsonPrimitive(Base64.getEncoder().encodeToString(slice.bytes)),
+            "done" to JsonPrimitive(slice.done),
+        )
+
+    /** A read's `offset`: 0 when absent, else a whole number. */
+    private fun JsonObject.offset(): Int =
+        when (this["offset"]) {
+            null, JsonNull -> 0
+            else -> int("offset") ?: refuse("offset is a whole number")
+        }
 
     private suspend fun serveReact(request: JsonObject): Map<String, JsonElement> {
         val id = request.need("messageId")
@@ -201,6 +289,7 @@ internal class UsbControlSession(
 
     private fun serveBye(): Map<String, JsonElement> {
         dropSubscription()
+        transfers.wipe()
         hello = false
         ended = true
         client = null
@@ -280,6 +369,11 @@ internal class UsbControlSession(
                 "decline",
                 "block",
                 "unblock",
+                "attachment",
+                "avatar",
+                "fetch",
+                "upload",
+                "upload.chunk",
                 "subscribe",
                 "unsubscribe",
                 "bye",
@@ -293,6 +387,9 @@ internal class UsbControlSession(
         const val MAX_CLIENT_ID = 64
         const val MAX_MENTIONS = 16
         const val MAX_STYLES = 64
+
+        /** The base64 length of a [UsbTransfers.MAX_CHUNK]-byte chunk. */
+        private const val MAX_CHUNK_BASE64 = (UsbTransfers.MAX_CHUNK + 2) / 3 * 4
         private val RESERVED = setOf("id", "ok", "code", "error")
         private val JSON = Json
 
@@ -303,7 +400,18 @@ internal class UsbControlSession(
                 put("maxReaction", TextLimits.REACTION)
                 put("maxHistory", MAX_HISTORY)
                 put("maxList", MAX_LIST)
+                put("maxChunk", UsbTransfers.MAX_CHUNK)
+                put("maxUpload", UsbTransfers.MAX_UPLOAD)
             }
+
+        private val RANDOM = SecureRandom()
+        private const val UPLOAD_ID_BYTES = 8
+
+        /** An upload's id: 16 random hex digits, so one session's id names nothing in the next. */
+        fun randomUploadId(): String {
+            val bytes = ByteArray(UPLOAD_ID_BYTES).also(RANDOM::nextBytes)
+            return bytes.joinToString("") { "%02x".format(Locale.ROOT, it) }
+        }
 
         fun cursorJson(cursor: HistoryCursor): JsonObject =
             buildJsonObject {

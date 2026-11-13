@@ -131,6 +131,7 @@ internal class UsbLinkState(
         sealed = null
         sessionUp = false
         s.keys.zero()
+        s.session.close()
         lastSessionEnd = reason
         onSessionEnd(reason)
         if (!tell) return emptyList()

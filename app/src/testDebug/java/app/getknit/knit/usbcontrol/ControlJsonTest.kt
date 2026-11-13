@@ -153,9 +153,34 @@ class ControlJsonTest {
                 speakers,
             )
         val attachment = json.getValue("attachment").jsonObject
-        assertEquals(setOf("hash", "mime", "name", "size"), attachment.keys)
+        assertEquals(setOf("hash", "mime", "name", "size", "held", "flagged"), attachment.keys)
         assertEquals(JsonNull, attachment["name"])
         assertEquals(2048, attachment.getValue("size").jsonPrimitive.int)
+        assertFalse("the key never leaves the phone", json.toString().contains("secret"))
+    }
+
+    @Test
+    fun anAttachmentSaysWhetherItIsHeldAndBlursAsTheChatDoes() {
+        val picture = row().copy(attachmentHash = "H", attachmentMime = "image/jpeg")
+        val video = row(id = "m2").copy(attachmentHash = "V", attachmentMime = "video/mp4", videoPosterFlagged = true)
+
+        fun attachment(
+            row: MessageEntity,
+            facts: AttachmentFacts,
+        ) = ControlJson.message(row, speakers, attachments = facts).getValue("attachment").jsonObject
+
+        fun JsonObject.flag(key: String) = getValue(key).jsonPrimitive.boolean
+        val plain = row(id = "m3").copy(attachmentHash = "P", attachmentMime = "image/png")
+        val filtering = AttachmentFacts(held = setOf("H", "P"), flagged = setOf("H"), filtering = true)
+        assertTrue(attachment(picture, filtering).flag("held"))
+        assertTrue(attachment(picture, filtering).flag("flagged"))
+        assertFalse(attachment(video, filtering).flag("held"))
+        assertTrue("a flagged poster blurs its video", attachment(video, filtering).flag("flagged"))
+        assertTrue(attachment(plain, filtering).flag("held"))
+        assertFalse("filtering on blurs only what the filter flagged", attachment(plain, filtering).flag("flagged"))
+        val off = AttachmentFacts(held = setOf("H", "P"), flagged = setOf("H"), filtering = false)
+        assertFalse("with filtering off nothing is blurred", attachment(picture, off).flag("flagged"))
+        assertFalse(attachment(video, off).flag("flagged"))
     }
 
     @Test

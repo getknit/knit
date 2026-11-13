@@ -254,6 +254,13 @@ interface MessageDao {
     @Query("SELECT DISTINCT conversationId FROM messages WHERE attachmentHash = :hash")
     suspend fun conversationsOfAttachment(hash: String): List<String>
 
+    /** At most [limit] messages naming attachment [hash], by id and thread: the debug USB control's `attachment.held` events. */
+    @Query("SELECT id, conversationId FROM messages WHERE attachmentHash = :hash LIMIT :limit")
+    suspend fun namingAttachment(
+        hash: String,
+        limit: Int,
+    ): List<AttachmentNamer>
+
     /**
      * The (base64) per-attachment key stored with a message referencing the ciphertext [hash], if any —
      * used to decrypt a just-pulled E2E attachment blob so its plaintext can be screened. Null for a
@@ -952,6 +959,12 @@ data class PeerAttachment(
     val peerId: String,
     val hash: String,
     val sentAt: Long,
+)
+
+/** Room projection for [MessageDao.namingAttachment]: one message naming an attachment, and its thread. */
+data class AttachmentNamer(
+    val id: String,
+    val conversationId: String,
 )
 
 /** Room projection for [MessageDao.ownGroupPostsBetween]: one post of ours in a group. */

@@ -4,6 +4,7 @@ import app.getknit.knit.data.changes.DataChange
 import app.getknit.knit.data.changes.DataChangeSink
 import app.getknit.knit.data.message.AttachmentFetchRow
 import app.getknit.knit.data.message.AttachmentIdentityRow
+import app.getknit.knit.data.message.AttachmentNamer
 import app.getknit.knit.data.message.CommonsAttachmentRow
 import app.getknit.knit.data.message.ConversationActivity
 import app.getknit.knit.data.message.ConversationSender
@@ -232,6 +233,12 @@ class MessageRepository(
 
     /** Every conversation naming attachment [hash] (`MessageDao.conversationsOfAttachment`). */
     suspend fun conversationsOfAttachment(hash: String): List<String> = dao.conversationsOfAttachment(hash)
+
+    /** At most [limit] messages naming attachment [hash], with their threads (`MessageDao.namingAttachment`). */
+    suspend fun namingAttachment(
+        hash: String,
+        limit: Int,
+    ): List<AttachmentNamer> = dao.namingAttachment(hash, limit)
 
     /** Base64 per-attachment key for an encrypted attachment by its ciphertext [hash], if stored. */
     suspend fun attachmentKeyForHash(hash: String): String? = dao.attachmentKeyForHash(hash)

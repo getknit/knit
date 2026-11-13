@@ -29,6 +29,21 @@ internal class Speakers(
     fun label(nodeId: String): String = if (nodeId == me) selfName else labelOf(nodeId)
 }
 
+/**
+ * What a message object says of its attachment beyond its row, read once for a batch of rows: which blobs this phone
+ * [held], which the content filter [flagged], and whether [filtering] is on to blur them — the chat's own rule
+ * (`ChatViewModel`: `attachmentFlagged`, `posterFlagged`).
+ */
+internal class AttachmentFacts(
+    val held: Set<String>,
+    val flagged: Set<String>,
+    val filtering: Boolean,
+) {
+    companion object {
+        val NONE = AttachmentFacts(emptySet(), emptySet(), filtering = false)
+    }
+}
+
 /** The protocol's objects, built from the app's rows: pure, so the session and the feed share one shape. */
 internal object ControlJson {
     /** How much of a body a chat summary's `last` carries; the thread itself carries the whole of it. */
@@ -41,13 +56,14 @@ internal object ControlJson {
     /**
      * A message: the row, its live reactions ([reactions], tombstones left out), and its speaker named for this
      * reader. [preview] trims the body for a chat summary and says so (`bodyTruncated`), so a client never stores a
-     * summary's copy as the message.
+     * summary's copy as the message. [attachments] says whether the attachment is held and to be blurred.
      */
     fun message(
         row: MessageEntity,
         speakers: Speakers,
         reactions: List<ReactionEntity> = emptyList(),
         preview: Boolean = false,
+        attachments: AttachmentFacts = AttachmentFacts.NONE,
     ): JsonObject =
         buildJsonObject {
             put("id", row.id)
@@ -101,6 +117,8 @@ internal object ControlJson {
                     put("mime", row.attachmentMime)
                     put("name", row.attachmentName)
                     put("size", row.attachmentSize)
+                    put("held", hash in attachments.held)
+                    put("flagged", attachments.filtering && (hash in attachments.flagged || row.videoPosterFlagged))
                 }
             }
             row.originNode?.let { node ->

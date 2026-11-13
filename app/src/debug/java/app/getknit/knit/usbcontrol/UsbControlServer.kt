@@ -13,6 +13,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import androidx.core.content.edit
+import app.getknit.knit.data.blob.BlobVerdictDao
 import app.getknit.knit.data.changes.DataChangeSink
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.settings.SettingsStore
@@ -247,7 +248,14 @@ internal object UsbControlServer : KoinComponent {
     /** The settings half of the change log, from the first link on: before one, no session has a cursor to keep. */
     private fun startWatchLocked() {
         if (watch != null || !changeLog.recording) return
-        watch = ChangeWatch.launch(scope, get<SettingsStore>(), get<CommonsRepository>(), changeLog)
+        watch =
+            ChangeWatch.launch(
+                scope,
+                get<SettingsStore>(),
+                get<CommonsRepository>(),
+                get<BlobVerdictDao>().observeFlaggedHashes(),
+                changeLog,
+            )
     }
 
     private fun down(

@@ -32,6 +32,11 @@ sealed interface DataChange {
 
     /** Peer rows changed in bulk (a sweep, a cleared avatar): every one may have. */
     data object Peers : DataChange
+
+    /** A blob's bytes stored or deleted: whether every message naming [hash] holds its attachment may have changed. */
+    data class Blob(
+        val hash: String,
+    ) : DataChange
 }
 
 /** Where repositories report a [DataChange]. Must not block or throw: it is called on the write path. */

@@ -3,6 +3,7 @@
 package app.getknit.knit.usbcontrol
 
 import app.getknit.knit.TextLimits
+import app.getknit.knit.mesh.sha256Hex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonNull
@@ -16,11 +17,13 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Base64
 
 class UsbControlSessionTest {
     private class FakeApi : UsbControlApi {
@@ -31,6 +34,11 @@ class UsbControlSessionTest {
         var historyPage = HistoryPage(emptyList(), null, exhausted = true)
         var chatList: List<JsonObject> = emptyList()
         var statusThrows: Exception? = null
+
+        /** Message id (or avatar hash) -> its plain bytes; [readError] refuses every read while set. */
+        val files = mutableMapOf<String, ByteArray>()
+        var readError: UsbControlError? = null
+        var opens = 0
 
         override suspend fun identity(): JsonObject =
             buildJsonObject {
@@ -93,6 +101,26 @@ class UsbControlSessionTest {
 
         override suspend fun unblock(node: String): JsonObject = record("unblock $node")
 
+        override suspend fun attachment(id: String): BlobSource {
+            readError?.let { throw it }
+            val bytes = files[id] ?: throw UsbControlError(Codes.NOT_FOUND, "no such message")
+            return BlobSource("h-$id", "image/jpeg", "a.jpg") {
+                opens++
+                bytes
+            }
+        }
+
+        override suspend fun avatar(hash: String): BlobSource {
+            readError?.let { throw it }
+            val bytes = files[hash] ?: throw UsbControlError(Codes.NOT_FOUND, "not a photo this phone shows")
+            return BlobSource(hash, "image/jpeg", name = null) {
+                opens++
+                bytes
+            }
+        }
+
+        override suspend fun fetch(id: String): JsonObject = record("fetch $id")
+
         private fun record(call: String): JsonObject {
             calls += call
             return buildJsonObject { put("done", call) }
@@ -117,13 +145,48 @@ class UsbControlSessionTest {
     private val api = FakeApi()
     private val feed = FakeFeed()
     private val ledger = SendLedger(clock = { now }, burst = 3, perMinute = 60)
-    private val session = UsbControlSession(api, feed, ledger, budget = BUDGET)
+    private var uploads = 0
+    private val session = UsbControlSession(api, feed, ledger, budget = BUDGET, newUploadId = { "u${++uploads}" })
 
     private suspend fun hello(id: Int = 1) = session.handle("""{"id":$id,"op":"hello","v":1,"nonce":"abc","client":"knit-cli/0.2"}""")
 
     private val JsonObject.ok get() = getValue("ok").jsonPrimitive.boolean
     private val JsonObject.code get() = getValue("code").jsonPrimitive.content
     private val JsonObject.error get() = getValue("error").jsonPrimitive.content
+
+    private fun JsonObject.text(key: String) = getValue(key).jsonPrimitive.content
+
+    private fun JsonObject.flag(key: String) = getValue(key).jsonPrimitive.boolean
+
+    private fun b64(bytes: ByteArray) = Base64.getEncoder().encodeToString(bytes)
+
+    /** Every slice of message [id]'s attachment from offset 0, read until `done`. */
+    private suspend fun readAll(id: String): List<JsonObject> {
+        val slices = mutableListOf<JsonObject>()
+        var offset = 0
+        do {
+            val reply = session.handle("""{"id":9,"op":"attachment","messageId":"$id","offset":$offset}""")
+            assertTrue("$reply", reply.ok)
+            slices += reply
+            offset += Base64.getDecoder().decode(reply.text("data")).size
+        } while (!reply.flag("done"))
+        return slices
+    }
+
+    /** Uploads [bytes] in [UsbTransfers.MAX_CHUNK] chunks; the upload's id. */
+    private suspend fun upload(bytes: ByteArray): String {
+        val start = session.handle("""{"id":20,"op":"upload","size":${bytes.size},"sha256":"${sha256Hex(bytes)}"}""")
+        assertTrue("$start", start.ok)
+        val id = start.text("upload")
+        var offset = 0
+        while (offset < bytes.size) {
+            val chunk = bytes.copyOfRange(offset, minOf(bytes.size, offset + UsbTransfers.MAX_CHUNK))
+            val reply = session.handle("""{"id":21,"op":"upload.chunk","upload":"$id","offset":$offset,"data":"${b64(chunk)}"}""")
+            assertTrue("$reply", reply.ok)
+            offset += chunk.size
+        }
+        return id
+    }
 
     @Test
     fun nothingButHelloIsServedBeforeAHello() =
@@ -470,6 +533,186 @@ class UsbControlSessionTest {
             assertEquals("internal: IllegalStateException", reply.error)
             api.statusThrows = null
             assertTrue(session.handle("""{"id":3,"op":"status"}""").ok)
+        }
+
+    @Test
+    fun helloOffersTheAttachmentOpsAndTheirLimits() =
+        runTest {
+            val reply = hello()
+            val ops = reply.getValue("ops").jsonArray.map { it.jsonPrimitive.content }
+            assertTrue(ops.containsAll(listOf("attachment", "avatar", "fetch", "upload", "upload.chunk")))
+            val limits = reply.getValue("limits").jsonObject
+            assertEquals(UsbTransfers.MAX_CHUNK, limits.getValue("maxChunk").jsonPrimitive.int)
+            assertEquals(UsbTransfers.MAX_UPLOAD, limits.getValue("maxUpload").jsonPrimitive.int)
+        }
+
+    @Test
+    fun anAttachmentComesInSlicesOpenedOnceThatRebuildTheFile() =
+        runTest {
+            hello()
+            val file = ByteArray(2 * UsbTransfers.MAX_CHUNK + 10) { (it % 251).toByte() }
+            api.files["m1"] = file
+            val slices = readAll("m1")
+            assertEquals(listOf(false, false, true), slices.map { it.flag("done") })
+            val rebuilt = slices.flatMap { Base64.getDecoder().decode(it.text("data")).toList() }.toByteArray()
+            assertTrue(file.contentEquals(rebuilt))
+            slices.forEach {
+                assertEquals(sha256Hex(file), it.text("sha256"))
+                assertEquals(file.size, it.getValue("size").jsonPrimitive.int)
+                assertEquals("m1", it.text("messageId"))
+                assertEquals("h-m1", it.text("hash"))
+                assertEquals("a.jpg", it.text("name"))
+            }
+            assertEquals("opened once, not once per slice", 1, api.opens)
+        }
+
+    @Test
+    fun aRefusedSliceDropsTheOpenedFileSoNoLaterSliceComesFromIt() =
+        runTest {
+            hello()
+            api.files["m1"] = ByteArray(2 * UsbTransfers.MAX_CHUNK) { 1 }
+            val second = """{"id":3,"op":"attachment","messageId":"m1","offset":${UsbTransfers.MAX_CHUNK}}"""
+            assertTrue(session.handle("""{"id":2,"op":"attachment","messageId":"m1"}""").ok)
+            api.readError = UsbControlError(Codes.NOT_FOUND, "no such message")
+            assertEquals(Codes.NOT_FOUND, session.handle(second).code)
+            api.readError = null
+            assertTrue(session.handle(second).ok)
+            assertEquals("the refusal dropped the file, so it was opened again", 2, api.opens)
+        }
+
+    @Test
+    fun aSliceOutsideTheFileOrAMisshapenOffsetIsRefused() =
+        runTest {
+            hello()
+            api.files["m1"] = ByteArray(10)
+            assertEquals(Codes.BAD_REQUEST, session.handle("""{"id":2,"op":"attachment","messageId":"m1","offset":10}""").code)
+            assertEquals(Codes.BAD_REQUEST, session.handle("""{"id":3,"op":"attachment","messageId":"m1","offset":-1}""").code)
+            assertEquals(Codes.BAD_REQUEST, session.handle("""{"id":4,"op":"attachment","messageId":"m1","offset":"0"}""").code)
+            assertEquals(Codes.BAD_REQUEST, session.handle("""{"id":5,"op":"attachment"}""").code)
+            assertTrue(session.handle("""{"id":6,"op":"attachment","messageId":"m1","offset":9}""").flag("done"))
+        }
+
+    @Test
+    fun anAvatarComesInTheSameShapeWithoutAMessageOrAName() =
+        runTest {
+            hello()
+            api.files["face"] = byteArrayOf(1, 2, 3)
+            val reply = session.handle("""{"id":2,"op":"avatar","hash":"face"}""")
+            assertTrue(reply.flag("done"))
+            assertEquals("face", reply.text("hash"))
+            assertFalse("messageId" in reply)
+            assertFalse("name" in reply)
+            assertEquals(Codes.NOT_FOUND, session.handle("""{"id":3,"op":"avatar","hash":"other"}""").code)
+        }
+
+    @Test
+    fun fetchIsHandedToTheApp() =
+        runTest {
+            hello()
+            assertTrue(session.handle("""{"id":2,"op":"fetch","messageId":"m7"}""").ok)
+            assertEquals(listOf("fetch m7"), api.calls)
+        }
+
+    @Test
+    fun anUploadSendsAsAPictureWithAnOptionalCaptionAndIsUsedUp() =
+        runTest {
+            hello()
+            val picture = ByteArray(UsbTransfers.MAX_CHUNK + 5) { 7 }
+            val id = upload(picture)
+            val reply = session.handle("""{"id":3,"op":"send","to":"n2","upload":"$id"}""")
+            assertTrue("$reply", reply.ok)
+            val sent = api.sent.single()
+            assertEquals("", sent.text)
+            assertTrue(picture.contentEquals(sent.picture))
+            assertEquals(Codes.NOT_FOUND, session.handle("""{"id":4,"op":"send","to":"n2","upload":"$id"}""").code)
+            assertEquals(1, api.sent.size)
+        }
+
+    @Test
+    fun aRefusedPictureKeepsItsUploadToSendAgain() =
+        runTest {
+            hello()
+            val id = upload(byteArrayOf(1, 2, 3))
+            val send = """{"id":3,"op":"send","conv":"nearby","upload":"$id","text":"look"}"""
+            api.sendError = UsbControlError(Codes.BLOCKED, "the on-device content filter refused the picture")
+            assertEquals(Codes.BLOCKED, session.handle(send).code)
+            api.sendError = null
+            assertTrue(session.handle(send).ok)
+            assertEquals("look", api.sent.single().text)
+        }
+
+    @Test
+    fun aRetriedPictureSendIsAnsweredFromTheLedgerBeforeItsUploadIsLookedAt() =
+        runTest {
+            hello()
+            val id = upload(byteArrayOf(1, 2, 3))
+            assertTrue(session.handle("""{"id":3,"op":"send","to":"n2","upload":"$id","clientMsgId":"c-9"}""").ok)
+            hello(4) // a new run: the upload went with the old one
+            val again = session.handle("""{"id":5,"op":"send","to":"n2","upload":"$id","clientMsgId":"c-9"}""")
+            assertTrue("$again", again.flag("duplicate"))
+            assertEquals(1, api.sent.size)
+            val fresh = session.handle("""{"id":6,"op":"send","to":"n2","upload":"$id","clientMsgId":"c-10"}""")
+            assertEquals("a send that never went finds no upload: upload again", Codes.NOT_FOUND, fresh.code)
+        }
+
+    @Test
+    fun anUploadIsRefusedOverItsCapOutOfOrderPastItsSizeOrUnderTheWrongHash() =
+        runTest {
+            hello()
+            val hash = sha256Hex(byteArrayOf(1, 2, 3))
+            val big = session.handle("""{"id":2,"op":"upload","size":${UsbTransfers.MAX_UPLOAD + 1},"sha256":"$hash"}""")
+            assertEquals(Codes.TOO_LARGE, big.code)
+            assertEquals(Codes.BAD_REQUEST, session.handle("""{"id":3,"op":"upload","size":3,"sha256":"XYZ"}""").code)
+            assertEquals(Codes.BAD_REQUEST, session.handle("""{"id":3,"op":"upload","size":0,"sha256":"$hash"}""").code)
+            val id = session.handle("""{"id":4,"op":"upload","size":3,"sha256":"$hash"}""").text("upload")
+            val ahead = session.handle("""{"id":5,"op":"upload.chunk","upload":"$id","offset":1,"data":"${b64(byteArrayOf(2))}"}""")
+            assertEquals(Codes.BAD_REQUEST, ahead.code)
+            assertEquals(0, ahead.getValue("received").jsonPrimitive.int)
+            val past = session.handle("""{"id":6,"op":"upload.chunk","upload":"$id","offset":0,"data":"${b64(byteArrayOf(1, 2, 3, 4))}"}""")
+            assertEquals(Codes.BAD_REQUEST, past.code)
+            assertEquals(Codes.BAD_REQUEST, session.handle("""{"id":7,"op":"upload.chunk","upload":"$id","offset":0,"data":"%%"}""").code)
+            val wrong = session.handle("""{"id":8,"op":"upload.chunk","upload":"$id","offset":0,"data":"${b64(byteArrayOf(9, 9, 9))}"}""")
+            assertEquals(Codes.BAD_REQUEST, wrong.code)
+            // A mismatch drops the upload: the computer starts again.
+            assertEquals(Codes.NOT_FOUND, session.handle("""{"id":9,"op":"send","to":"n2","upload":"$id"}""").code)
+            assertTrue(api.sent.isEmpty())
+        }
+
+    @Test
+    fun anUnfinishedUploadIsNoPicture() =
+        runTest {
+            hello()
+            val bytes = byteArrayOf(1, 2, 3)
+            val id = session.handle("""{"id":2,"op":"upload","size":3,"sha256":"${sha256Hex(bytes)}"}""").text("upload")
+            val part = session.handle("""{"id":3,"op":"upload.chunk","upload":"$id","offset":0,"data":"${b64(byteArrayOf(1))}"}""")
+            assertEquals(1, part.getValue("received").jsonPrimitive.int)
+            assertFalse(part.flag("done"))
+            assertEquals(Codes.BAD_REQUEST, session.handle("""{"id":4,"op":"send","to":"n2","upload":"$id"}""").code)
+            assertTrue(api.sent.isEmpty())
+        }
+
+    @Test
+    fun aHelloAndTheSessionsEndEachDropTheUpload() =
+        runTest {
+            hello()
+            val first = upload(byteArrayOf(1))
+            hello(2)
+            assertEquals(Codes.NOT_FOUND, session.handle("""{"id":3,"op":"send","to":"n2","upload":"$first"}""").code)
+            val second = upload(byteArrayOf(2))
+            session.close()
+            assertEquals(Codes.NOT_FOUND, session.handle("""{"id":4,"op":"send","to":"n2","upload":"$second"}""").code)
+            assertTrue(api.sent.isEmpty())
+        }
+
+    @Test
+    fun aByeZeroesTheOpenedFile() =
+        runTest {
+            hello()
+            val file = byteArrayOf(1, 2, 3)
+            api.files["m1"] = file
+            assertTrue(session.handle("""{"id":2,"op":"attachment","messageId":"m1"}""").ok)
+            session.handle("""{"id":3,"op":"bye"}""")
+            assertArrayEquals("the array the session held is zeroed", ByteArray(3), file)
         }
 
     private companion object {

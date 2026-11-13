@@ -9,6 +9,8 @@ import app.getknit.knit.data.blob.PhotoRefusalDao
 import app.getknit.knit.data.blob.PhotoRefusalEntity
 import app.getknit.knit.data.blob.RequestOnlyBlob
 import app.getknit.knit.data.blob.SavedFileDao
+import app.getknit.knit.data.changes.DataChange
+import app.getknit.knit.data.changes.DataChangeSink
 import app.getknit.knit.data.forward.ForwardDao
 import app.getknit.knit.data.group.GroupDao
 import app.getknit.knit.data.message.DeliveryPlane
@@ -45,6 +47,8 @@ class BlobRepository(
     private val holders: AttachmentHolderDao,
     // The photos refused over their ceiling (#234), kept beside the verdicts (ADR 2026-11.4ckq).
     private val refusals: PhotoRefusalDao = db.photoRefusalDao(),
+    // Every store and delete names its hash, for the debug build's USB control feed (`attachment.held`).
+    private val changes: DataChangeSink = DataChangeSink.NONE,
 ) {
     /**
      * The hash of every blob this process stored, kept out of [deleteOrphans] (#288), which runs at each mesh start, a
@@ -67,6 +71,7 @@ class BlobRepository(
     ) {
         storedThisProcess += hash
         blobs.insert(BlobEntity(hash, mime, bytes))
+        changes.emit(DataChange.Blob(hash))
     }
 
     /**
@@ -77,7 +82,10 @@ class BlobRepository(
         hash: String,
         mime: String,
         bytes: ByteArray,
-    ) = blobs.insert(BlobEntity(hash, mime, bytes))
+    ) {
+        blobs.insert(BlobEntity(hash, mime, bytes))
+        changes.emit(DataChange.Blob(hash))
+    }
 
     suspend fun bytes(hash: String): ByteArray? = blobs.bytes(hash)
 
@@ -195,7 +203,7 @@ class BlobRepository(
         if (hash == settings.ownAvatarHash.first()) return
         db.withWriteTransaction {
             if (messages.countByAttachmentHash(hash) > 0 || pinnedOutsideMessages(hash)) return@withWriteTransaction
-            blobs.delete(hash)
+            dropBytes(hash)
             // A peer that still advertises the photo keeps its verdict and its refusal, never its bytes (ADR
             // 2026-11.4ckq): the database re-arm wants an advertised photo whose bytes are gone, and a refused one must
             // stay refused. The bytes go, so a block, a refusal and the ceiling's release still free them.
@@ -219,7 +227,7 @@ class BlobRepository(
         if (hash == settings.ownAvatarHash.first()) return
         db.withWriteTransaction {
             if (messages.countByAttachmentHash(hash) > 0 || pinnedOutsideMessages(hash)) return@withWriteTransaction
-            blobs.delete(hash)
+            dropBytes(hash)
         }
     }
 
@@ -265,7 +273,7 @@ class BlobRepository(
             if (messages.countByAttachmentHash(hash) > 0) return@withWriteTransaction
             if (peers.countByAvatarHash(hash) > 0) return@withWriteTransaction
             if (forward.countByAttachmentHash(hash) > 0) return@withWriteTransaction
-            blobs.delete(hash)
+            dropBytes(hash)
         }
     }
 
@@ -316,11 +324,17 @@ class BlobRepository(
         db.withWriteTransaction {
             hashes.filterNot { keptFromSweeps(it, own) }.forEach {
                 if (pinnedOutsideMessages(it) || !namedOnlyByRequests(it, held, me)) return@forEach
-                blobs.delete(it)
+                dropBytes(it)
                 savedFiles.delete(it)
                 holders.delete(it)
             }
         }
+    }
+
+    /** Deletes [hash]'s bytes and says so; called inside the callers' transactions, so the key can outrun the commit. */
+    private suspend fun dropBytes(hash: String) {
+        blobs.delete(hash)
+        changes.emit(DataChange.Blob(hash))
     }
 
     /** Whether a sweep must leave [hash] alone whatever names it: our own avatar ([own]), or a blob this process stored (#288). */
@@ -356,7 +370,7 @@ class BlobRepository(
         val own = settings.ownAvatarHash.first()
         db.withWriteTransaction {
             blobs.orphanHashes().filterNot { keptFromSweeps(it, own) }.forEach {
-                blobs.delete(it)
+                dropBytes(it)
                 // A photo a peer still advertises keeps its verdict, as in [deleteIfUnreferenced] (ADR 2026-11.4ckq).
                 if (peers.countByAdvertisedAvatar(it) == 0) verdicts.delete(it)
                 savedFiles.delete(it)

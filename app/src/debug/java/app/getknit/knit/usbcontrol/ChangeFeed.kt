@@ -18,6 +18,12 @@ internal interface Hydrator {
     /** The groups [nodeId] is a member of: their titles and faces name them. */
     suspend fun groupsWith(nodeId: String): List<String>
 
+    /** The messages naming attachment [hash], as (id, thread): at most [limit]. */
+    suspend fun namingAttachment(
+        hash: String,
+        limit: Int,
+    ): List<Pair<String, String>>
+
     suspend fun identity(): JsonObject
 
     suspend fun status(): JsonObject
@@ -232,6 +238,18 @@ internal class ChangeFeed(
                 event("thread.reset", "conv" to JsonPrimitive(key.conversation))
             }
 
+            is ChangeKey.Attachment -> {
+                // No state of its own: each message naming the blob is read on its own schedule, and sent if it moved. Anyone
+                // can name one hash in many rows, so past a bound the client reads everything again instead.
+                val naming = hydrator.namingAttachment(key.hash, MAX_NAMING + 1)
+                if (naming.size > MAX_NAMING) {
+                    restart("more than $MAX_NAMING messages name one attachment")
+                } else {
+                    naming.forEach { (id, conversation) -> take(entry.firstSeq, ChangeKey.Message(id, conversation)) }
+                }
+                null
+            }
+
             ChangeKey.Contacts -> {
                 event("contacts.reset")
             }
@@ -277,6 +295,9 @@ internal class ChangeFeed(
         const val MAX_PENDING = 4_096
         const val MAX_PER_RUN = 32
 
+        /** The most messages one attachment's change reads again before it becomes a `gap`. */
+        const val MAX_NAMING = 64
+
         /** The log position of a [touch]ed key: past every real one, so it never holds the [watermark] back. */
         private const val UNLOGGED = Long.MAX_VALUE
         private const val ABSENT = "\u0000absent"
@@ -284,7 +305,7 @@ internal class ChangeFeed(
         private fun scheduleOf(key: ChangeKey): LongArray =
             when (key) {
                 is ChangeKey.Message, is ChangeKey.Chat, is ChangeKey.Contact, ChangeKey.Self -> READS
-                ChangeKey.Status, ChangeKey.Contacts, is ChangeKey.Thread, is ChangeKey.Resync -> ONCE
+                ChangeKey.Status, ChangeKey.Contacts, is ChangeKey.Thread, is ChangeKey.Attachment, is ChangeKey.Resync -> ONCE
             }
     }
 }

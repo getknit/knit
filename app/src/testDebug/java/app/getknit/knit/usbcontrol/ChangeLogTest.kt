@@ -36,6 +36,11 @@ class ChangeLogTest {
     }
 
     @Test
+    fun aBlobWriteIsKeptAsItsAttachmentKey() {
+        assertEquals(ChangeKey.Attachment("h"), ChangeKey.of(DataChange.Blob("h")))
+    }
+
+    @Test
     fun aCursorOutOfTheRingFromAnotherEpochOrAheadCannotBeResumed() {
         log.setRecording(true)
         val start = log.latest()

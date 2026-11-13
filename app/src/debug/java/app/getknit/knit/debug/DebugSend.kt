@@ -1,5 +1,6 @@
 package app.getknit.knit.debug
 
+import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.group.toGroupInfo
 import app.getknit.knit.data.message.ConversationKind
@@ -49,6 +50,8 @@ internal object DebugSend {
         mentions: List<Mention> = emptyList(),
         // The message's id when the caller minted it (FrameId.new) to read its row back; the Meshtastic room mints its own.
         frameId: String? = null,
+        // An ingested picture to send with [text] as its caption; the caller refuses the Meshtastic room first.
+        attachment: AttachmentStore.Ingested? = null,
     ): Outcome {
         val sent =
             when (Conversations.kindFor(conversation)) {
@@ -62,6 +65,7 @@ internal object DebugSend {
                         styles = styles,
                         declared = declared,
                         frameId = frameId,
+                        attachment = attachment,
                     )
                 }
 
@@ -74,6 +78,7 @@ internal object DebugSend {
                         styles = styles,
                         declared = declared,
                         frameId = frameId,
+                        attachment = attachment,
                     )
                 }
 
@@ -87,13 +92,23 @@ internal object DebugSend {
                             styles = styles,
                             declared = declared,
                             frameId = frameId,
+                            attachment = attachment,
                         )
                     }
                 }
 
                 // A commons post goes to the relay that runs the room, never a radio (§7.4).
                 ConversationKind.COMMONS -> {
-                    mesh.sendCommons(conversation, text, mentions, replyTo, styles = styles, declared = declared, frameId = frameId)
+                    mesh.sendCommons(
+                        conversation,
+                        text,
+                        mentions,
+                        replyTo,
+                        styles = styles,
+                        declared = declared,
+                        frameId = frameId,
+                        attachment = attachment,
+                    )
                 }
 
                 // The Meshtastic room posts through this phone's own board, and the outcome says why not.

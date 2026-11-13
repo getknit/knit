@@ -911,14 +911,19 @@ class DebugBridgeReceiver :
         val picked =
             when {
                 asVoice -> attachments.ingestVoice(withContext(Dispatchers.IO) { file.readBytes() })
+
                 asVideo -> attachments.ingestVideo(Uri.fromFile(file), screen = isRoom)
+
                 asFile -> attachments.ingestFile(Uri.fromFile(file))
-                else -> attachments.ingest(Uri.fromFile(file), fitBytes = fitBytes)
+
+                // The room screens a photo as the composer does (`ChatViewModel.stage`), so a flagged one is refused here too.
+                else -> attachments.ingest(Uri.fromFile(file), screen = isRoom, fitBytes = fitBytes)
             }
-        val roomVideo = asVideo && isRoom
-        if (roomVideo && picked is AttachmentStore.IngestResult.Success && picked.flagged) {
+        val roomPicture = isRoom && !asFile && !asVoice
+        if (roomPicture && picked is AttachmentStore.IngestResult.Success && picked.flagged) {
             blobs.deleteIfUnreferenced(picked.ingested.hash)
-            return reply("blocked", "video blocked by on-device content filter").put("conversation", conv).put("flagged", true)
+            val what = if (asVideo) "video" else "picture"
+            return reply("blocked", "$what blocked by on-device content filter").put("conversation", conv).put("flagged", true)
         }
         val ingested =
             when (picked) {

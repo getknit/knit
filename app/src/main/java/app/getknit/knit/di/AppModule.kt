@@ -381,7 +381,7 @@ val appModule =
         single { MessageReceiptRepository(get(), get(), get()) }
         // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, groupDao, forwardDao, db,
         // savedFileDao.
-        single { BlobRepository(get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
+        single { BlobRepository(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), changes = get()) }
         single { GroupRepository(get(), get(), get(), get(), get(), changes = get()) }
         // Store-and-forward custody for DMs, backed by the encrypted forward_store table. Takes the shared
         // StoreDigest (from meshModule) so every carry-store mutation keeps the cue-plane content digest in sync, and the

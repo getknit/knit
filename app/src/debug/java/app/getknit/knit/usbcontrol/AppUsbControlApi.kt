@@ -3,6 +3,9 @@ package app.getknit.knit.usbcontrol
 import android.content.Context
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.contacts.DirectContacts
+import app.getknit.knit.data.AttachmentStore
+import app.getknit.knit.data.BlobRepository
+import app.getknit.knit.data.FileTypes
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.LocalMessageDelete
 import app.getknit.knit.data.MessageRepository
@@ -10,6 +13,7 @@ import app.getknit.knit.data.PeerDirectory
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.blob.BlobVerdictDao
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.draft.DraftRepository
 import app.getknit.knit.data.group.GroupMembersStore
@@ -18,13 +22,19 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.quoteHasAttachment
 import app.getknit.knit.data.message.quoteSnippet
+import app.getknit.knit.data.relay.FreeUploads
+import app.getknit.knit.data.relay.RelayStatusRepository
+import app.getknit.knit.data.relay.photoFitBytes
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.debug.DebugReact
 import app.getknit.knit.debug.DebugSend
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.identity.NodeId
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.MeshController
+import app.getknit.knit.mesh.crypto.AttachmentCrypto
+import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.lora.LoraStatusRepository
 import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.FrameId
@@ -82,6 +92,10 @@ internal class AppUsbControlApi :
     private val localDelete: LocalMessageDelete by inject()
     private val drafts: DraftRepository by inject()
     private val pins: PinRepository by inject()
+    private val blobs: BlobRepository by inject()
+    private val attachments: AttachmentStore by inject()
+    private val relays: RelayStatusRepository by inject()
+    private val verdicts: BlobVerdictDao by inject()
 
     override suspend fun identity(): JsonObject {
         val me = identity.nodeId()
@@ -141,10 +155,13 @@ internal class AppUsbControlApi :
         val raw = messages.page(conversation, before?.sentAt, before?.id, limit + 1)
         val considered = raw.take(limit)
         val reacted = reactions.observeReactionsIn(conversation, identity.nodeId()).first().groupBy { it.messageId }
+        val readable = considered.filter { it.senderId !in blocked }
+        val facts = attachmentFacts(readable)
         val items =
-            considered
-                .filter { it.senderId !in blocked }
-                .map { ControlJson.message(it, speakers, reacted[it.id].orEmpty()) to HistoryCursor(it.sentAt, it.id) }
+            readable.map {
+                ControlJson.message(it, speakers, reacted[it.id].orEmpty(), attachments = facts) to
+                    HistoryCursor(it.sentAt, it.id)
+            }
         return HistoryPage(items, considered.lastOrNull()?.let { HistoryCursor(it.sentAt, it.id) }, exhausted = raw.size <= limit)
     }
 
@@ -154,16 +171,22 @@ internal class AppUsbControlApi :
         val blocked = blocked()
         val speakers = speakers()
         val me = identity.nodeId()
-        return ids
-            .distinct()
-            .mapNotNull { id -> messages.find(id)?.takeIf { it.senderId !in blocked } }
-            .associate { row -> row.id to ControlJson.message(row, speakers, reactions.observeReactionsFor(row.id, me).first()) }
+        val rows = ids.distinct().mapNotNull { id -> messages.find(id)?.takeIf { it.senderId !in blocked } }
+        val facts = attachmentFacts(rows)
+        return rows.associate { row ->
+            row.id to ControlJson.message(row, speakers, reactions.observeReactionsFor(row.id, me).first(), attachments = facts)
+        }
     }
 
     override suspend fun contact(nodeId: String): JsonObject =
         contactJson(nodeId, peers.observeDirectory().first(), reachable(), blocked(), contact = nodeId in directContacts.read())
 
     override suspend fun groupsWith(nodeId: String): List<String> = groups.groupsWith(nodeId).map { it.groupId }
+
+    override suspend fun namingAttachment(
+        hash: String,
+        limit: Int,
+    ): List<Pair<String, String>> = messages.namingAttachment(hash, limit).map { it.id to it.conversationId }
 
     /** Fires (debounced) when the transport's health or who is reachable changes: the `status` event's trigger. */
     @OptIn(FlowPreview::class)
@@ -179,6 +202,8 @@ internal class AppUsbControlApi :
         val kind = Conversations.kindFor(conversation)
         val me = identity.nodeId()
         if (conversation == me) fail(Codes.BAD_REQUEST, "that is this phone")
+        // Any id that names no room, group or commons is taken for a DM's peer, so it must be one: a node id.
+        if (kind == ConversationKind.DM && !isNodeId(conversation)) fail(Codes.BAD_REQUEST, "no such thread: $conversation is no node id")
         val plainOnly = request.replyTo != null || request.mentions.isNotEmpty() || request.styles.isNotEmpty()
         if (kind == ConversationKind.MESHTASTIC && plainOnly) fail(Codes.BAD_REQUEST, "the Meshtastic room takes plain text only")
         if (kind == ConversationKind.COMMONS && commons.find(conversation) == null) fail(Codes.NOT_FOUND, "not in that commons")
@@ -191,18 +216,35 @@ internal class AppUsbControlApi :
                 if ("@$label" !in request.text) fail(Codes.BAD_REQUEST, "mention @$label is not in the text")
                 Mention(node, label)
             }
+        val styles = spansOf(request.styles, request.text)
+        if (request.picture != null) refusePictureIn(conversation, kind)
+        if (kind == ConversationKind.GROUP &&
+            groups.find(conversation) == null
+        ) {
+            fail(Codes.UNKNOWN_GROUP, "not a group this phone has joined")
+        }
+        // Every refusal that needs no bytes is above: from here a picture is stored, and goes unless the send does.
+        val picture = request.picture?.let { picturePrepared(it, kind) }
         val frameId = FrameId.new()
+        var sent = false
         val outcome =
-            DebugSend.send(
-                mesh,
-                groups,
-                conversation,
-                request.text,
-                replyTo = replyTo,
-                styles = spansOf(request.styles, request.text),
-                mentions = mentions,
-                frameId = frameId,
-            )
+            try {
+                DebugSend
+                    .send(
+                        mesh,
+                        groups,
+                        conversation,
+                        request.text,
+                        replyTo = replyTo,
+                        styles = styles,
+                        mentions = mentions,
+                        frameId = frameId,
+                        attachment = picture,
+                    ).also { sent = it == DebugSend.Outcome.Sent }
+            } finally {
+                // A picture that did not go is dropped, as the composer drops what it never sends (unless something names it).
+                if (!sent) picture?.let { blobs.deleteIfUnreferenced(it.hash) }
+            }
         return when (outcome) {
             DebugSend.Outcome.Sent -> sendReply("sent", frameId)
             DebugSend.Outcome.Queued -> sendReply("queued", null)
@@ -286,6 +328,134 @@ internal class AppUsbControlApi :
         return blockReply(node, blocked = false)
     }
 
+    override suspend fun attachment(id: String): BlobSource {
+        val row = readable(id)
+        val hash = row.attachmentHash ?: fail(Codes.NOT_FOUND, "message $id has no attachment")
+        if (!blobs.exists(hash)) fail(Codes.NOT_HELD, "this phone does not hold it; fetch asks the mesh")
+        val key = row.attachmentKey
+        // Asked only when the bytes are opened, once per file: a request never turns back from accepted, and a decline
+        // deletes the row, which the check above meets on every slice.
+        return BlobSource(hash, row.attachmentMime, row.attachmentName) {
+            refuseRequest(row)
+            val stored = blobs.bytes(hash) ?: fail(Codes.NOT_HELD, "this phone no longer holds it")
+            // A DM's or a group's bytes are sealed under the row's key, which stays on the phone.
+            if (key == null) stored else AttachmentCrypto.open(stored, b64d(key)) ?: fail(Codes.INTERNAL, "the row's key does not open it")
+        }
+    }
+
+    override suspend fun avatar(hash: String): BlobSource {
+        if (hash !in shownPhotos()) fail(Codes.NOT_FOUND, "not a photo this phone shows")
+        if (!blobs.exists(hash)) fail(Codes.NOT_HELD, "this phone does not hold it")
+        return BlobSource(hash, blobs.mimeFor(hash), name = null) {
+            blobs.bytes(hash) ?: fail(Codes.NOT_HELD, "this phone no longer holds it")
+        }
+    }
+
+    override suspend fun fetch(id: String): JsonObject {
+        val row = readable(id)
+        val hash = row.attachmentHash ?: fail(Codes.NOT_FOUND, "message $id has no attachment")
+        val reply = buildJsonObject { put("messageId", id) }
+        refuseRequest(row)
+        if (blobs.exists(hash)) return JsonObject(reply + ("held" to JsonPrimitive(true)))
+        mesh.downloadAttachment(hash)
+        return JsonObject(reply + ("asked" to JsonPrimitive(true)))
+    }
+
+    /**
+     * Refuses [row]'s attachment while its thread is a message request: its bytes may have landed (as a carrier's, or a
+     * contact's of the same hash), but the inbox shows none and our pull waits for the acceptance (ADR 2026-11.qu98).
+     * The chat list's own predicate, as `accept` reads it.
+     */
+    private suspend fun refuseRequest(row: MessageEntity) {
+        val state = chatList().entries.firstOrNull { it.first.id == row.conversationId }?.second
+        if (state == STATE_REQUEST) fail(Codes.REFUSED, "a message request's attachment waits until it is accepted")
+    }
+
+    /** Which of [rows]' attachments this phone holds, and the filter's verdicts, read once for the batch. */
+    private suspend fun attachmentFacts(rows: Collection<MessageEntity>): AttachmentFacts {
+        val hashes = rows.mapNotNullTo(HashSet()) { it.attachmentHash }
+        if (hashes.isEmpty()) return AttachmentFacts.NONE
+        val filtering = settings.contentFilteringEnabled.first()
+        return AttachmentFacts(
+            held = blobs.sizes(hashes).keys,
+            flagged = if (filtering) verdicts.observeFlaggedHashes().first().filterTo(HashSet()) { it in hashes } else emptySet(),
+            filtering = filtering,
+        )
+    }
+
+    /** Message [id]'s row when `message` would serve it: it exists and its sender is not blocked. */
+    private suspend fun readable(id: String): MessageEntity =
+        messages.find(id)?.takeIf { it.senderId !in blocked() } ?: fail(Codes.NOT_FOUND, "no such message")
+
+    /** Every photo the phone shows as someone's: our own, an unblocked peer's, and a group's it shows. */
+    private suspend fun shownPhotos(): Set<String> {
+        val blocked = blocked()
+        val peersShown =
+            peers
+                .observeDirectory()
+                .first()
+                .byNode.values
+                .filter { it.nodeId !in blocked }
+                .mapNotNull { it.avatarHash }
+        val groupsShown =
+            groups
+                .observeGroups()
+                .first()
+                .filter { !it.left }
+                .mapNotNull { it.photoShownHash }
+        return (peersShown + groupsShown + listOfNotNull(settings.ownAvatarHash.first())).toSet()
+    }
+
+    /** The threads the chat's picker offers nothing in (`ChatViewModel.stage`): the Meshtastic room, a text-only commons. */
+    private suspend fun refusePictureIn(
+        conversation: String,
+        kind: ConversationKind,
+    ) {
+        if (kind == ConversationKind.MESHTASTIC) fail(Codes.REFUSED, "the Meshtastic room carries text only")
+        if (kind == ConversationKind.COMMONS && conversation in relays.facts.first().textOnlyRooms) {
+            fail(Codes.REFUSED, "this commons' relay takes no attachments")
+        }
+    }
+
+    /**
+     * [bytes] made ready to send the way the chat's picker makes a picture ready (`ChatViewModel.attachPicture` and
+     * `stage`): the Nearby room screens it and refuses a flagged one, metadata is stripped or the picture re-encoded,
+     * and it is fitted to the relays' tickets outside the rooms. Stored on success; the caller drops it if unsent.
+     */
+    private suspend fun picturePrepared(
+        bytes: ByteArray,
+        kind: ConversationKind,
+    ): AttachmentStore.Ingested {
+        val room = kind == ConversationKind.NEARBY
+        val fit =
+            if (room) {
+                null
+            } else {
+                getKoin()
+                    .getOrNull<FreeUploads>()
+                    ?.photoChunks
+                    ?.first()
+                    ?.let(::photoFitBytes)
+            }
+        val result = attachments.ingestPicked(bytes, FileTypes.imageMimeOf(bytes), screen = room, fitBytes = fit)
+        val picked =
+            when (result) {
+                is AttachmentStore.IngestResult.Success -> result
+                is AttachmentStore.IngestResult.Failed -> fail(Codes.BAD_REQUEST, "not a picture this phone reads (${result.reason.name})")
+            }
+        val ingested = picked.ingested
+        // The picker's identity reuse can answer with what this phone once sent under those bytes: only a picture goes.
+        if (!ingested.mime.startsWith("image/")) {
+            blobs.deleteIfUnreferenced(ingested.hash)
+            fail(Codes.BAD_REQUEST, "not a picture")
+        }
+        if (room && picked.flagged) {
+            blobs.deleteIfUnreferenced(ingested.hash)
+            fail(Codes.BLOCKED, "the on-device content filter refused the picture")
+        }
+        return ingested
+    }
+
     /** The quote a reply to [id] carries, built as the chat screen builds it: somebody's words, in this very thread. */
     private suspend fun quoteOf(
         id: String,
@@ -332,8 +502,15 @@ internal class AppUsbControlApi :
     }
 
     private suspend fun requirePeer(node: String) {
-        if (Conversations.kindFor(node) != ConversationKind.DM || node == identity.nodeId()) fail(Codes.BAD_REQUEST, "not a peer")
+        val peer = Conversations.kindFor(node) == ConversationKind.DM && isNodeId(node)
+        if (!peer || node == identity.nodeId()) fail(Codes.BAD_REQUEST, "not a peer")
     }
+
+    /**
+     * Whether [id] is a node id in its one canonical spelling ([NodeId.toBytesOrNull]): a second spelling of a peer's id
+     * would open a second thread, or a second block entry, for the same peer.
+     */
+    private fun isNodeId(id: String): Boolean = NodeId.toBytesOrNull(id) != null
 
     private fun sendReply(
         status: String,
@@ -409,6 +586,7 @@ internal class AppUsbControlApi :
             speakers = Speakers(me, selfName(me)) { directory.label(it).text },
             lastRead = settings.lastReadAll.first(),
             entries = visible.map { it to STATE_ACCEPTED } + requests.map { it to STATE_REQUEST },
+            attachments = attachmentFacts(table.heads.values),
         )
     }
 
@@ -433,7 +611,7 @@ internal class AppUsbControlApi :
             put("state", state)
             put("unread", unread)
             put("lastReadAt", lastRead)
-            put("last", head?.let { ControlJson.message(it, list.speakers, preview = true) } ?: JsonNull)
+            put("last", head?.let { ControlJson.message(it, list.speakers, preview = true, attachments = list.attachments) } ?: JsonNull)
             put("lastActivity", head?.sentAt ?: title.group?.createdAt)
         }
     }
@@ -483,6 +661,7 @@ internal class AppUsbControlApi :
         val speakers: Speakers,
         val lastRead: Map<String, Long>,
         val entries: List<Pair<ConversationTitle, String>>,
+        val attachments: AttachmentFacts,
     )
 
     private companion object {

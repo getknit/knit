@@ -34,6 +34,11 @@ internal sealed interface ChangeKey {
     /** Our own name or photo. */
     data object Self : ChangeKey
 
+    /** A blob's bytes or its filter verdict: every message naming [hash] may show it held, gone or flagged. */
+    data class Attachment(
+        val hash: String,
+    ) : ChangeKey
+
     /** Transport health and who is reachable. Never logged: it is current state, read again on every subscribe. */
     data object Status : ChangeKey
 
@@ -50,6 +55,7 @@ internal sealed interface ChangeKey {
                 is DataChange.ThreadTrimmed -> Thread(change.id)
                 is DataChange.Peer -> Contact(change.nodeId)
                 DataChange.Peers -> Contacts
+                is DataChange.Blob -> Attachment(change.hash)
             }
     }
 }

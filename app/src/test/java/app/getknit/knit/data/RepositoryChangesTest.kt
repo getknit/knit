@@ -11,6 +11,7 @@ import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.InboundSettings
+import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.IdentitySource
 import io.mockk.coEvery
 import io.mockk.every
@@ -54,6 +55,59 @@ class RepositoryChangesTest : RoomDbTest() {
                 ),
                 seen,
             )
+        }
+
+    @Test
+    fun aBlobStoredOrDeletedReportsItsHash() =
+        runTest {
+            val settings = mockk<SettingsStore>(relaxed = true) { every { ownAvatarHash } returns flowOf(null) }
+            val blobs =
+                BlobRepository(
+                    blobs = db.blobDao(),
+                    messages = db.messageDao(),
+                    peers = db.peerDao(),
+                    settings = settings,
+                    verdicts = db.blobVerdictDao(),
+                    groups = db.groupDao(),
+                    forward = db.forwardDao(),
+                    db = db,
+                    savedFiles = db.savedFileDao(),
+                    holders = db.attachmentHolderDao(),
+                    changes = sink,
+                )
+            blobs.insert("a", "image/jpeg", byteArrayOf(1))
+            blobs.insertArrived("b", "image/jpeg", byteArrayOf(2))
+            blobs.deleteIfUnreferenced("b")
+            assertEquals(listOf(DataChange.Blob("a"), DataChange.Blob("b"), DataChange.Blob("b")), seen)
+            seen.clear()
+            messages.save(msg("m1").copy(attachmentHash = "a"))
+            seen.clear()
+            blobs.deleteIfUnreferenced("a")
+            assertEquals("a blob a message names stays, and says nothing", emptyList<DataChange>(), seen)
+        }
+
+    @Test
+    fun theOrphanSweepReportsEveryBlobItDeletes() =
+        runTest {
+            val settings = mockk<SettingsStore>(relaxed = true) { every { ownAvatarHash } returns flowOf(null) }
+            val blobs =
+                BlobRepository(
+                    blobs = db.blobDao(),
+                    messages = db.messageDao(),
+                    peers = db.peerDao(),
+                    settings = settings,
+                    verdicts = db.blobVerdictDao(),
+                    groups = db.groupDao(),
+                    forward = db.forwardDao(),
+                    db = db,
+                    savedFiles = db.savedFileDao(),
+                    holders = db.attachmentHolderDao(),
+                    changes = sink,
+                )
+            blobs.insertArrived("orphan", "image/jpeg", byteArrayOf(1))
+            seen.clear()
+            blobs.deleteOrphans()
+            assertEquals(listOf(DataChange.Blob("orphan")), seen)
         }
 
     @Test

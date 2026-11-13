@@ -59,15 +59,44 @@ internal interface UsbControlApi {
     suspend fun block(node: String): JsonObject
 
     suspend fun unblock(node: String): JsonObject
+
+    /**
+     * Message [id]'s attachment, whatever its kind, read under `message`'s own rules: `not_found` when `message` would
+     * not serve it or it names none, `not_held` when this phone lacks the bytes. Asked again for every slice.
+     */
+    suspend fun attachment(id: String): BlobSource
+
+    /** A photo the phone shows as someone's: our own, a contact's or a chat's; any other [hash] is `not_found`. */
+    suspend fun avatar(hash: String): BlobSource
+
+    /** The chat's Tap to download for message [id]'s attachment: `held` when it is already here, else `asked`. */
+    suspend fun fetch(id: String): JsonObject
 }
 
-/** A `send`, its arguments checked for shape: [styles] are `[start, length, code]` triples, [mentions] node ids. */
+/**
+ * A file the session may read: its stored [hash], [mime] and [name], and [open], which reads its plain bytes (a DM's or
+ * a group's opened with the row's key, which never leaves the phone).
+ */
+internal class BlobSource(
+    val hash: String,
+    val mime: String?,
+    val name: String?,
+    val open: suspend () -> ByteArray,
+)
+
+/**
+ * A `send`, its arguments checked for shape: [styles] are `[start, length, code]` triples, [mentions] node ids, and
+ * [picture] a complete upload's bytes (then [text] is its caption, and may be empty). Compared by reference on
+ * [picture], which only the session's tests compare, and only for text sends.
+ */
+@Suppress("ArrayInDataClass")
 internal data class SendRequest(
     val conversation: String,
     val text: String,
     val replyTo: String? = null,
     val mentions: List<String> = emptyList(),
     val styles: List<List<Int>> = emptyList(),
+    val picture: ByteArray? = null,
 )
 
 /** The session's door to its change feed, which the server's worker owns: `subscribe` and `unsubscribe` go through it. */
@@ -120,6 +149,8 @@ internal object Codes {
     const val UNKNOWN_GROUP = "unknown_group"
     const val NOT_PENDING = "not_pending"
     const val RATE_LIMITED = "rate_limited"
+    const val NOT_HELD = "not_held"
+    const val TOO_LARGE = "too_large"
     const val INTERNAL = "internal"
     const val FRAMING = "framing"
 

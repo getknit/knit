@@ -13,14 +13,16 @@ import kotlinx.coroutines.launch
 
 /**
  * The changes no repository reports, because they live in settings rather than the database: a thread read or
- * accepted, the blocked set, our own name and photo, a commons joined, left or renamed. Each flow's first value is
- * the baseline; after it, what moved is recorded in the [ChangeLog] like a repository write.
+ * accepted, the blocked set, our own name and photo, a commons joined, left or renamed, content filtering switched,
+ * and the filter's verdicts ([flaggedHashes], written by the screening service rather than a repository). Each flow's
+ * first value is the baseline; after it, what moved is recorded in the [ChangeLog] like a repository write.
  */
 internal object ChangeWatch {
     fun launch(
         scope: CoroutineScope,
         settings: SettingsStore,
         commons: CommonsRepository,
+        flaggedHashes: Flow<List<String>>,
         log: ChangeLog,
     ): Job =
         scope.launch {
@@ -34,6 +36,18 @@ internal object ChangeWatch {
                     .collect { it.forEach { c -> log.record(ChangeKey.Chat(c)) } }
             }
             launch { settings.blockedNodeIds.diffs(::changedMembers).collect { log.record(ChangeKey.Resync("the blocked set changed")) } }
+            // Every attachment's `flagged` reads the switch, so a flip moves too many objects to name one by one.
+            launch {
+                settings.contentFilteringEnabled
+                    .diffs { old, new -> if (old == new) emptySet() else setOf(Unit) }
+                    .collect { log.record(ChangeKey.Resync("content filtering switched")) }
+            }
+            launch {
+                flaggedHashes
+                    .map { it.toSet() }
+                    .diffs(::changedMembers)
+                    .collect { it.forEach { hash -> log.record(ChangeKey.Attachment(hash)) } }
+            }
             launch {
                 combine(settings.displayName, settings.ownAvatarHash) { name, avatar -> name to avatar }
                     .diffs { old, new -> if (old == new) emptySet() else setOf(Unit) }

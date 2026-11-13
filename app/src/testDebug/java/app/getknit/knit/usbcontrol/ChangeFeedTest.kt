@@ -50,6 +50,14 @@ class ChangeFeedTest {
 
         override suspend fun groupsWith(nodeId: String): List<String> = groups[nodeId].orEmpty()
 
+        /** Attachment hash -> the message ids naming it (their threads from [rows]). */
+        val naming = mutableMapOf<String, List<String>>()
+
+        override suspend fun namingAttachment(
+            hash: String,
+            limit: Int,
+        ): List<Pair<String, String>> = naming[hash].orEmpty().take(limit).map { it to rows.getValue(it) }
+
         override suspend fun identity(): JsonObject = buildJsonObject { put("node", "me") }
 
         override suspend fun status(): JsonObject = buildJsonObject { put("health", "Healthy") }
@@ -327,4 +335,77 @@ class ChangeFeedTest {
             assertNull(feed.watermark())
             assertFalse(feed.active)
         }
+
+    @Test
+    fun aBlobLandingReadsEveryMessageNamingItAgain() =
+        runTest {
+            app.rows["m1"] = "c"
+            app.rows["m2"] = "d"
+            app.naming["h"] = listOf("m1", "m2")
+            subscribe()
+            log.record(ChangeKey.Attachment("h"))
+            val sent = drain()
+            val ids =
+                sent.filter { it.name == "message" }.map {
+                    it
+                        .getValue("message")
+                        .jsonObject
+                        .getValue("id")
+                        .jsonPrimitive.content
+                }
+            assertEquals(setOf("m1", "m2"), ids.toSet())
+            app.bodies["m1"] = "held" // the next landing moved m1
+            log.record(ChangeKey.Attachment("h"))
+            val again = drain().filter { it.name == "message" }.map { it.getValue("message").jsonObject }
+            assertEquals(
+                "held",
+                again
+                    .single { it.getValue("id").jsonPrimitive.content == "m1" }
+                    .getValue("body")
+                    .jsonPrimitive.content,
+            )
+        }
+
+    @Test
+    fun aBlobNamedByMoreMessagesThanTheBoundIsAGapAndOneAtTheBoundIsNot() =
+        runTest {
+            // Room for every key the bound lets through, so only the bound can turn this into a gap.
+            val roomy = ChangeFeed(log, app, clock = { now }, maxPending = 4 * ChangeFeed.MAX_NAMING)
+            val ids = (0..ChangeFeed.MAX_NAMING).map { "m$it" }
+            ids.forEach { app.rows[it] = "c" }
+
+            app.naming["at"] = ids.take(ChangeFeed.MAX_NAMING)
+            roomy.start(null)
+            log.record(ChangeKey.Attachment("at"))
+            val atBound = roomy.drainAll()
+            assertFalse("gap" in atBound.map { it.name })
+            assertEquals(
+                ChangeFeed.MAX_NAMING,
+                atBound
+                    .filter {
+                        it.name == "message"
+                    }.map { it.getValue("message").jsonObject.getValue("id") }
+                    .toSet()
+                    .size,
+            )
+
+            app.naming["over"] = ids
+            app.reads = 0
+            log.record(ChangeKey.Attachment("over"))
+            val over = roomy.drainAll()
+            assertEquals(listOf("gap"), over.map { it.name }.distinct())
+            assertEquals("no message was read for it", 0, app.reads)
+        }
+
+    /** Runs [this] feed's reads until nothing is due; everything it sent. */
+    private suspend fun ChangeFeed.drainAll(): List<JsonObject> {
+        val out = mutableListOf<JsonObject>()
+        repeat(1_000) {
+            pull()
+            val due = nextDueAt() ?: return out
+            now = maxOf(now, due)
+            out += runDue()
+        }
+        error("the feed never settled")
+    }
 }
