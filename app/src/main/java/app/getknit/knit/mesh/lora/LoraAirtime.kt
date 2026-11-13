@@ -3,7 +3,6 @@ package app.getknit.knit.mesh.lora
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.ceil
 import kotlin.math.min
-import kotlin.math.pow
 
 /**
  * How much of the window's one allowance a frame may bring the total to (ADR 2026-10.ug4a). Every Knit frame of ours
@@ -180,6 +179,11 @@ internal data class SigningFacts(
  * pinned to a dedicated RF slot ([LoraRadioConfig.dedicatedSlot], [LoraSlot]) there is no-one there to be
  * polite to. So a dedicated US board runs to the 100 % its region allows and an EU_868 one still stops at
  * 10 %, because that one was never politeness.
+ *
+ * **Priced from neutral inputs** (ADR 2026-11.gsqu, Stage 1a.2): the formula reads a [RadioParams] and the allowance a
+ * [DutyPolicy], and a Meshtastic board's [LoraRadioConfig] becomes both in one place ([MeshtasticTraits.radioParams],
+ * [MeshtasticTraits.dutyPolicy]). The framing around a payload and the contention slot are the kind's ([traits]).
+ * [radio] is still kept whole: the snapshot reports its preset and region.
  */
 internal class LoraAirtime(
     private val windowMs: Long = WINDOW_MS,
@@ -191,6 +195,8 @@ internal class LoraAirtime(
      * class can be tested in both states.
      */
     private val dedicatedUnlocksDuty: Boolean = false,
+    /** The board kind's airtime framing and contention slot ([BoardTraits.packetOverheadBytes], [BoardTraits.slotTimeMs]). */
+    private val traits: BoardTraits = BoardTraits.MESHTASTIC,
 ) : PacketCost {
     private val samples = ArrayDeque<Booking>()
     private var spentMs = 0L
@@ -198,6 +204,12 @@ internal class LoraAirtime(
     /** The board's radio settings, or null until the handshake reports them. */
     var radio: LoraRadioConfig? = null
         private set
+
+    /** The modulation the formula reads, or null until a board reports one ([FALLBACK_RADIO] meanwhile). */
+    private var params: RadioParams? = null
+
+    /** The duty cycle the allowance reads, or null until a board reports one ([FALLBACK_PERCENT] meanwhile). */
+    private var duty: DutyPolicy? = null
 
     /**
      * How the bound board signs, as its last handshake said ([onBoard]). Unknown until a board says otherwise, and
@@ -213,7 +225,22 @@ internal class LoraAirtime(
     /** Records the board's radio settings from the config handshake; a null report leaves the last one standing. */
     @Synchronized
     fun onRadioConfig(config: LoraRadioConfig?) {
-        if (config != null) radio = config
+        if (config == null) return
+        radio = config
+        onRadio(MeshtasticTraits.radioParams(config.modemPreset), MeshtasticTraits.dutyPolicy(config))
+    }
+
+    /**
+     * Records the modulation and the duty a board transmits under, kind-neutral: what [onRadioConfig] makes of a
+     * Meshtastic config, and what another kind reports directly. Leaves [radio] as it was.
+     */
+    @Synchronized
+    fun onRadio(
+        params: RadioParams,
+        duty: DutyPolicy,
+    ) {
+        this.params = params
+        this.duty = duty
     }
 
     /**
@@ -275,30 +302,25 @@ internal class LoraAirtime(
         extraBytes: Int,
         signedUpTo: Int,
     ): Long {
-        val preset = radio?.modemPreset ?: ModemPreset.LONG_FAST
-        val sf = preset.spreadFactor
-        val symbolMs = 2.0.pow(sf) * MS_PER_SECOND / preset.bandwidthHz
+        val radio = params ?: FALLBACK_RADIO
+        val sf = radio.spreadFactor
+        val symbolMs = radio.symbolMs
         // Low-data-rate optimize: the firmware enables it once a symbol exceeds 16 ms, which costs 2 bits/symbol.
         val de = if (symbolMs > LDO_THRESHOLD_MS) 1 else 0
-        val phyBytes = payloadBytes + extraBytes + PACKET_OVERHEAD_BYTES + signatureBytes(payloadBytes, signedUpTo)
+        val phyBytes = payloadBytes + extraBytes + traits.packetOverheadBytes + signatureBytes(payloadBytes, signedUpTo)
         val numerator = (BITS_PER_BYTE * phyBytes - 4 * sf + PAYLOAD_CONST + CRC_BITS).toDouble()
         val denominator = (4 * (sf - 2 * de)).toDouble()
-        val payloadSymbols = PAYLOAD_SYMBOL_BASE + maxOf(0.0, ceil(numerator / denominator) * preset.codingRate)
-        return ((PREAMBLE_SYMBOLS + payloadSymbols) * symbolMs).toLong().coerceAtLeast(1)
+        val payloadSymbols = PAYLOAD_SYMBOL_BASE + maxOf(0.0, ceil(numerator / denominator) * radio.codingRate)
+        return ((traits.preambleSymbols + payloadSymbols) * symbolMs).toLong().coerceAtLeast(1)
     }
 
     /**
-     * The firmware's contention slot at this board's preset (`RadioInterface::computeSlotTimeMsec`, firmware
-     * `src/mesh/RadioInterface.cpp`, v2.8.1): a channel-activity scan of four symbols plus half a symbol on an SX126x, plus
-     * 7.6 ms of propagation, turnaround and MAC time — ≈ 44.5 ms at LongFast. What a reliable unicast's retransmit gap
-     * is counted in (`LoraDirectPolicy.retransmitMs`, ADR 2026-10.x9fa).
+     * The firmware's contention slot at this board's modulation — Meshtastic's `RadioInterface::computeSlotTimeMsec`
+     * ([MeshtasticTraits.slotTimeMs]), ≈ 44.5 ms at LongFast. What a reliable unicast's retransmit gap is counted in
+     * (`LoraDirectPolicy.retransmitMs`, ADR 2026-10.x9fa).
      */
     @Synchronized
-    fun slotTimeMs(): Double {
-        val preset = radio?.modemPreset ?: ModemPreset.LONG_FAST
-        val symbolMs = 2.0.pow(preset.spreadFactor) * MS_PER_SECOND / preset.bandwidthHz
-        return (CAD_SYMBOLS + CAD_TAIL_SYMBOLS) * symbolMs + SLOT_TURNAROUND_MS
-    }
+    fun slotTimeMs(): Double = traits.slotTimeMs(params ?: FALLBACK_RADIO)
 
     /**
      * The signature the board will bolt onto this packet, or 0. Mirrors the firmware's own `signedDataFits`
@@ -347,10 +369,10 @@ internal class LoraAirtime(
     /** The window's one allowance, in milliseconds of air — the lower of the two ceilings that still apply (see the class doc). */
     @Synchronized
     fun allowanceMs(): Long {
-        val cfg = radio ?: return (windowMs * FALLBACK_PERCENT / PERCENT * safety).toLong()
+        val cfg = duty ?: return (windowMs * FALLBACK_PERCENT / PERCENT * safety).toLong()
         // Law. The user set the firmware's own duty-cycle override: they have taken the regulatory call, so
-        // the regional cap stops applying to us too.
-        val regional = if (cfg.overrideDutyCycle) FULL_PERCENT else cfg.region.dutyCyclePercent
+        // the regional cap stops applying to us too ([MeshtasticTraits.dutyPolicy] reads it as 100 %).
+        val regional = cfg.dutyCyclePercent
         // Manners. Nobody to be polite to on a slot of our own, so the ceiling lifts with the shared band.
         val polite = if (dedicatedUnlocksDuty && cfg.dedicatedSlot) FULL_PERCENT else politeCeilingPercent
         return (windowMs * min(regional, polite) / PERCENT * safety).toLong()
@@ -358,7 +380,7 @@ internal class LoraAirtime(
 
     /** Whether the budget above is running under the dedicated-slot rules; diagnostics, the settings row and the brake. */
     @Synchronized
-    fun dedicated(): Boolean = dedicatedUnlocksDuty && radio?.dedicatedSlot == true
+    fun dedicated(): Boolean = dedicatedUnlocksDuty && duty?.dedicatedSlot == true
 
     /** How far into [allowanceMs] a [Ceiling.HALF] frame may take the window's total. */
     @Synchronized
@@ -674,24 +696,20 @@ internal class LoraAirtime(
         /** "This ceiling does not apply": the whole window, left for the other ceiling to bound. */
         private const val FULL_PERCENT = 100.0
 
-        /** Meshtastic header + protobuf/crypto framing around our `Data.payload`. */
+        /** Meshtastic header + protobuf/crypto framing around our `Data.payload` ([BoardTraits.packetOverheadBytes]). */
         const val PACKET_OVERHEAD_BYTES = 24
 
+        /** What the formula prices before a board has reported its modulation: LongFast, the shipping default. */
+        private val FALLBACK_RADIO: RadioParams = MeshtasticTraits.radioParams(ModemPreset.LONG_FAST)
+
         private const val PERCENT = 100.0
-        private const val MS_PER_SECOND = 1000.0
         private const val LDO_THRESHOLD_MS = 16.0
         private const val BITS_PER_BYTE = 8
         private const val PAYLOAD_CONST = 28
         private const val CRC_BITS = 16
         private const val PAYLOAD_SYMBOL_BASE = 8.0
 
-        /** 16 preamble symbols (the firmware's setting) plus the 4.25-symbol sync word. */
-        private const val PREAMBLE_SYMBOLS = 20.25
-
-        // The contention slot (`RadioInterface::computeSlotTimeMsec`): an SX126x CAD of four symbols, half a symbol of
-        // processing, and 0.2 + 0.4 + 7 ms of propagation, turnaround and MAC time.
-        private const val CAD_SYMBOLS = 4
-        private const val CAD_TAIL_SYMBOLS = 0.5
-        private const val SLOT_TURNAROUND_MS = 7.6
+        /** 16 preamble symbols (the Meshtastic firmware's setting) plus the 4.25-symbol sync word ([BoardTraits.preambleSymbols]). */
+        const val PREAMBLE_SYMBOLS = 20.25
     }
 }

@@ -253,7 +253,15 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   under `mesh/lora/meshcore/` / `mesh/bluetooth/meshcore/`:** READ ADR 2026-11.gsqu (the build shape: one plane
   instance per board kind over a neutral core, a ledger per board; the compact DM as a COBS-framed contact text DM,
   pinned zero-hop on both boards and retried by Knit; own room posts in up to two elided packets under
-  `Ceiling.FLOOD`; the zero-hop hearing hook), then ADR 2026-10.jend for the scope it amends.
+  `Ceiling.FLOOD`; the zero-hop hearing hook), then ADR 2026-10.jend for the scope it amends, then "The layers" in
+  `lora-bridge.md`. Stage 1 (built): the core reads the board through `BoardLink` / `MeshtasticBoardLink` (`BoardState`,
+  `BoardPacket`, `SendPurpose`, `BoardSend`), a kind's numbers through `BoardTraits` / `MeshtasticTraits`, refusals through
+  `BoardTraits.refusalOf` (`RefusalClass`) and its status half through `BoardKindHooks`; `LoraAirtime` prices from
+  `RadioParams` and `DutyPolicy`; a compact DM's `DirectSend.airings` ride the frame; `BoardAddr` is kind-tagged
+  (`BoardAddr.Meshtastic`, `BoardAddr.MeshCore`, `meshtasticNode`); `MeshManager` sizes compact copies by
+  `LoraDirectSink.budgetFor` (`LoraDirectBudget`, `compactTickAcks`) and `compactCopyOf` gives shed LoRa-held acks back to
+  the coalescer. Every Meshtastic number stays the constant it was, pinned by `LoraAirtimeParityTest` and
+  `BoardTraitsTest`; a trait sets a factory default, never an injected value.
   <!-- doc-lint: allow FLOOD — Ceiling.FLOOD is proposed by ADR 2026-11.gsqu and not built yet -->
   On a MeshCore board only people's room posts and reactions flood, plus our own profile right before our first
   flooded post. Floods are scoped to the board's region when one is set, and booked as every repeater's airtime under

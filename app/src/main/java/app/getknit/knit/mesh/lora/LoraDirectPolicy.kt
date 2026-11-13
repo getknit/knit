@@ -43,6 +43,8 @@ internal class LoraDirectPolicy(
     private val lingerMs: Long = LoraMeshTransport.REACHABLE_LINGER_MS,
     /** How long a refusal holds a peer whose profile never changes: the re-probe's longest gap, then one more try. */
     private val refusedLapseMs: Long = LoraReprobe.CAP_MS,
+    /** The most sends waiting at once, and the most ended ones remembered: the board kind's ([BoardTraits.maxFlights]). */
+    private val maxFlights: Int = MAX_FLIGHTS,
 ) {
     enum class Reach { UNKNOWN, REACHABLE, UNREACHABLE, REFUSED, NO_KEY }
 
@@ -239,7 +241,7 @@ internal class LoraDirectPolicy(
     @Synchronized
     fun firstNoKey(handle: UInt): Boolean {
         if (!noKeyHandles.add(handle)) return false
-        while (noKeyHandles.size > MAX_FLIGHTS) noKeyHandles.remove(noKeyHandles.first())
+        while (noKeyHandles.size > maxFlights) noKeyHandles.remove(noKeyHandles.first())
         return true
     }
 
@@ -294,7 +296,7 @@ internal class LoraDirectPolicy(
     @Synchronized
     fun launch(flight: Flight): Flight? {
         flights[flight.handle] = flight
-        if (flights.size <= MAX_FLIGHTS) return null
+        if (flights.size <= maxFlights) return null
         val oldest = flights.keys.first()
         return flights.remove(oldest)?.also(::remember)
     }
@@ -337,7 +339,7 @@ internal class LoraDirectPolicy(
 
     private fun remember(flight: Flight) {
         ended[flight.handle] = flight.send
-        while (ended.size > MAX_FLIGHTS) ended.remove(ended.keys.first())
+        while (ended.size > maxFlights) ended.remove(ended.keys.first())
     }
 
     /** The soonest deadline or re-offer, or null with nothing waiting: what the deadline loop sleeps until. */

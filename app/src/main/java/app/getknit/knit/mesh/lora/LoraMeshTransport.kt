@@ -83,6 +83,13 @@ import java.util.concurrent.atomic.AtomicLong
  * stamp cannot survive a reboot). Pure/Android-free — the only `android.bluetooth.*` sits behind the
  * [MeshtasticLink]/[MeshtasticGattDialer] seam.
  *
+ * Becoming the board-neutral plane core (ADR 2026-11.gsqu, Stage 1): it reads the board through [BoardLink], a board
+ * kind's numbers through [BoardTraits] and its status half through [BoardKindHooks]. Meshtastic is the only kind, so
+ * the constructor still takes the [MeshtasticLink] and adapts it here. The Meshtastic-only features — the slot-0 room,
+ * the auto-reply, the `add_contact`, the reply to a 35, the slot and AEAD guards, signing — still read the Meshtastic
+ * link and its records ([BoardPacket.meshtastic], [BoardState.meshtasticReady]) until Stage 1c moves them behind the
+ * hooks.
+ *
  * Large by suppression, as [MeshtasticSession] is: this is the plane's single owner. The pacer loop, the
  * linger sweep and the published status all read and write one set of mutable fields under one scope, so
  * splitting it would mean a second owner of that state.
@@ -120,7 +127,7 @@ internal class LoraMeshTransport(
      * whose proof our board found forged ([AckProof.INVALID]) never comes here; an implicit ack, a receipt's or a
      * reaction's never does either.
      *
-     * Called on the one `link.outcomes` collector, between moving the marks and releasing what was parked behind the
+     * Called on the one `board.outcomes` collector, between moving the marks and releasing what was parked behind the
      * send: it must return at once, take no lock that waits, launch nothing and never call back into this plane — a
      * stall there drops the answers queued behind it, and a re-entry would reorder the parked offers.
      */
@@ -142,8 +149,10 @@ internal class LoraMeshTransport(
      */
     private val processStartWall: Long = wallClock(),
     private val log: (String) -> Unit = {},
-    // A board on a dedicated slot lifts the politeness ceiling, the setup's whole point (ADR 067's amendment).
-    private val pace: LoraPacePolicy = LoraPacePolicy(airtime = LoraAirtime(dedicatedUnlocksDuty = true)),
+    // A board on a dedicated slot lifts the politeness ceiling, the setup's whole point (ADR 067's amendment). The board
+    // kind sets the gap of this default only; an injected pace keeps its own (ADR 2026-11.gsqu).
+    private val pace: LoraPacePolicy =
+        LoraPacePolicy(minGapMs = BoardTraits.MESHTASTIC.minGapMs, airtime = LoraAirtime(dedicatedUnlocksDuty = true)),
     /**
      * How often [lingerSweepLoop] re-reads the heard set. The field value always; the mesh-in-a-box lab shortens it,
      * because a scenario that moves the calendar past the linger needs the sweep to notice inside an await.
@@ -170,6 +179,18 @@ internal class LoraMeshTransport(
     override val inbound = _inbound.asSharedFlow()
 
     override val incomingFiles: Flow<ReceivedFile> = emptyFlow() // LoRa carries no files
+
+    /** The board kind's numbers (ADR 2026-11.gsqu, Stage 1a): Meshtastic's, the one kind there is. */
+    private val traits: BoardTraits = BoardTraits.MESHTASTIC
+
+    /** What only the board kind does, as far as Stage 1b has moved it: the status's board half. */
+    private val hooks: BoardKindHooks = MeshtasticHooks
+
+    /** The board as the core reads it: [link] seen through the neutral seam, with no buffering of its own (Stage 1b). */
+    private val board: BoardLink = MeshtasticBoardLink(link)
+
+    /** A compact DM's budget on this kind ([LoraDirectSink.budgetFor]): fixed, so any coroutine reads it. */
+    private val directBudget: LoraDirectBudget = traits.directBudget()
 
     private val _status = MutableStateFlow(LoraStatus())
 
@@ -206,7 +227,7 @@ internal class LoraMeshTransport(
      * What each peer's board said to a compact DM, and the unicasts still waiting on an answer (ADR 2026-10.x9fa). In
      * memory only: after a restart every board is unknown and the first DM's ack decides. Cleared by [quiesce].
      */
-    private val direct = LoraDirectPolicy()
+    private val direct = LoraDirectPolicy(maxFlights = traits.maxFlights)
 
     /**
      * Which pinned contacts' keys our board was taught with `add_contact`, and whether it may be taught another (ADR
@@ -227,7 +248,9 @@ internal class LoraMeshTransport(
     /** Poked when a direct send starts waiting, so the deadline loop re-reads the soonest deadline. */
     private val flightWake = Channel<Unit>(Channel.CONFLATED)
     private val fragSeq = AtomicInteger()
-    private val reassembler = FragReassembler<UInt>(now = clock, capacity = FRAG_CAP, timeoutMs = FRAG_TIMEOUT_MS)
+
+    // Keyed on the sending board, every undecoded `from` in one bucket as before ([NoSender]).
+    private val reassembler = FragReassembler<Any>(now = clock, capacity = FRAG_CAP, timeoutMs = FRAG_TIMEOUT_MS)
 
     // LoRa-heard senders (a long linger — there are no periodic cues on LoRa).
     // NOTE these are frame **authors**, not radios: an older build's gateway can still air a frame its pocket-mate
@@ -243,7 +266,7 @@ internal class LoraMeshTransport(
     // incomplete fragments — an older build's board that only publishes offers is still a board in range. The value is that
     // radio's last signal reading, so the row reports a link we actually have rather than the last thing the
     // board overheard, and one linger rule ages the reading out with the radio it belongs to.
-    private val boardsHeardAt = ConcurrentHashMap<UInt, RxQuality>()
+    private val boardsHeardAt = ConcurrentHashMap<BoardAddr, RxQuality>()
     private val heardPeers = ConcurrentHashMap<String, Peer>()
 
     // Peers a higher-preference plane holds a **live link** to right now (BLE/NAN, via suppressDataPath). The link
@@ -299,7 +322,7 @@ internal class LoraMeshTransport(
     // The pre-Ready floor, not the protocol maximum: frames fanned out while the board is still connecting are
     // chunked with this and drained the moment the session is Ready, so it has to fit the smallest MTU a real
     // board negotiates. It used to be MAX_PAYLOAD — every one of those frames then came back TOO_LARGE.
-    private var maxPayload: Int = PRE_READY_PAYLOAD
+    private var maxPayload: Int = traits.floorPayload
 
     // Our own node id, resolved off [selfId] (a suspend read) by [start]. Until it lands, every gate that asks
     // "is this frame addressed to us?" answers no, so [pacerLoop] takes nothing before it does (#141).
@@ -341,22 +364,20 @@ internal class LoraMeshTransport(
         jobs += scope.launch { stateSaveLoop() }
         jobs += scope.launch { resolveSelfId() }
         jobs += scope.launch { config.collect(::onConfig) }
-        jobs += scope.launch { link.state.collect(::onLinkState) }
-        jobs += scope.launch { link.packets.collect(::onLoraPacket) }
+        jobs += scope.launch { board.state.collect(::onBoardState) }
+        jobs += scope.launch { board.packets.collect(::onLoraPacket) }
         // Nudge the pacer too: a board that was full is the one state [waitForNextSend] can only wait out on
         // its floor, and this is the event that ends it.
         jobs +=
             scope.launch {
-                link.queue.collect {
-                    it?.let { q ->
-                        pace.onQueueStatus(q.free)
-                        if (q.free > 0) wake.trySend(Unit)
-                    }
+                board.headroom.collect { free ->
+                    pace.onQueueStatus(free)
+                    if (free > 0) wake.trySend(Unit)
                 }
             }
-        jobs += scope.launch { link.outcomes.collect(::onOutcome) }
-        jobs += scope.launch { link.battery.collect { publishStatus() } }
-        jobs += scope.launch { link.boardAir.collect(::onBoardAir) }
+        jobs += scope.launch { board.outcomes.collect(::onOutcome) }
+        jobs += scope.launch { board.battery.collect { publishStatus() } }
+        jobs += scope.launch { board.boardAir.collect(::onBoardAir) }
         jobs += scope.launch { pacerLoop() }
         jobs += scope.launch { lingerSweepLoop() }
         jobs += scope.launch { deadlineLoop() }
@@ -442,7 +463,7 @@ internal class LoraMeshTransport(
      */
     private fun quiesce() {
         configured.value = false
-        link.stop()
+        board.stop()
         lastHeardAt.clear()
         heardPeers.clear()
         // Takes the signal readings with it: they belong to radios this session heard, and a stale one used
@@ -662,7 +683,7 @@ internal class LoraMeshTransport(
     ): ProvisionResult {
         provisioning = true
         try {
-            return link.provisionChannel(ProvisionSpec(KnitChannel.NAME, KnitChannel.PSK, mode, previous))
+            return board.provision(ProvisionSpec(KnitChannel.NAME, KnitChannel.PSK, mode, previous))
         } finally {
             provisioning = false
         }
@@ -724,8 +745,9 @@ internal class LoraMeshTransport(
         // A room post rides only in one packet (ADR 2026-10.rp3s): the room is read by everyone the flood reaches, so
         // a post that needs two is two packets of a shared window spent on one line nobody is waiting for, while the
         // radios and the spool carry it anyway. Asked after encoding, because the 0x05 deflate makes the fit
-        // depend on the words, not on a length. Its own counter, apart from `loraTooBig` (past three packets).
-        if (LoraFramePolicy.isBroadcastRoomChat(env) && parts.size > 1) {
+        // depend on the words, not on a length. Its own counter, apart from `loraTooBig` (past three packets). The
+        // limit is the board kind's ([BoardTraits.roomPartLimit]): one on Meshtastic.
+        if (LoraFramePolicy.isBroadcastRoomChat(env) && parts.size > traits.roomPartLimit) {
             metrics.onLoraRoomTooLong()
             log("lora room too long $label:${env.id} parts=${parts.size}")
             return
@@ -840,7 +862,7 @@ internal class LoraMeshTransport(
         ceiling: Ceiling = Ceiling.FULL,
         destination: Destination = Destination.Knit,
         gate: RideGate = RideGate(),
-        to: UInt = MeshtasticProto.BROADCAST,
+        to: BoardAddr? = null,
         sigKey: String? = null,
     ): Boolean = enqueue(OutboundFrame(parts, label, FrameClass.ROOM, ceiling, destination, to, gate = gate, sigKey = sigKey))
 
@@ -889,7 +911,7 @@ internal class LoraMeshTransport(
         val packet = sealOrNull(recipientId, frameId, sentAtMs, plaintext) ?: return
         enqueueDirect(
             packet,
-            DirectSend(recipientId, holder.addr, frameId, kind),
+            DirectSend(recipientId, holder.addr, frameId, kind, airings = traits.airings),
             RideGate(recipientId = recipientId, direct = true, reachHeld = true),
         )
     }
@@ -973,11 +995,20 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * The largest compact DM one packet carries here ([LoraDirectPolicy.payloadCap], the one `MeshManager` sizes its
-     * plaintext by): the firmware's PKI size check, under the broadcast cap less what `want_ack` adds to the `ToRadio`.
-     * A seal past it would draw `TOO_LARGE` from our own board and never fly (ADR 2026-10.x9fa's PKI amendment).
+     * The largest compact DM one packet carries here ([BoardTraits.directPayloadCap]: the seal's bound with the link's
+     * framing already subtracted — on Meshtastic [LoraDirectPolicy.payloadCap], the firmware's PKI size check under the
+     * broadcast cap less what `want_ack` adds to the `ToRadio`). A seal past it would draw `TOO_LARGE` from our own
+     * board and never fly (ADR 2026-10.x9fa's PKI amendment). `MeshManager` sizes its plaintext by the same function at
+     * the floor ([budgetFor]).
      */
-    private fun directPayloadCap(): Int = LoraDirectPolicy.payloadCap(maxPayload)
+    private fun directPayloadCap(): Int = traits.directPayloadCap(maxPayload)
+
+    /**
+     * The compact budget to [recipientId] on this board ([LoraDirectSink.budgetFor], ADR 2026-11.gsqu Stage 1a.4): the
+     * kind's [BoardTraits.directBudget], the same function as [directPayloadCap] at the kind's floor — never the holder,
+     * Ready or the live payload cap. Immutable, so `MeshManager` may ask from any coroutine.
+     */
+    override fun budgetFor(recipientId: String): LoraDirectBudget = directBudget
 
     private fun enqueueDirect(
         packet: ByteArray,
@@ -1033,6 +1064,7 @@ internal class LoraMeshTransport(
                 DirectKind.MESSAGE,
                 resend = true,
                 flushAfter = flushAfter,
+                airings = traits.airings,
             ),
             RideGate(recipientId = peerId, direct = true, unackedFrameId = dm.frameId),
         )
@@ -1073,7 +1105,7 @@ internal class LoraMeshTransport(
         if (!reprobe.onHeard(peerId, now)) return
         val held =
             source
-                .unackedTo(peerId, RESEND_LIMIT, untakenOnly = true)
+                .unackedTo(peerId, RESEND_LIMIT, untakenOnly = true, maxBytes = directBudget.plaintextBytes)
                 .filter { it.frameId != skip && !it.boardTook && !copyWaiting(it.frameId) }
         val newest = held.firstOrNull() ?: return
         if (!enqueueResend(peerId, newest, flushAfter = held.drop(1).map { it.frameId })) {
@@ -1152,7 +1184,7 @@ internal class LoraMeshTransport(
         peerId: String,
         now: Long,
     ) {
-        val newest = source.unackedTo(peerId, 1).firstOrNull()
+        val newest = source.unackedTo(peerId, 1, untakenOnly = false, maxBytes = directBudget.plaintextBytes).firstOrNull()
         if (newest == null) {
             reprobe.forget(peerId) // acked, or past the window: nothing left to ask with
             stateWake.trySend(Unit)
@@ -1190,8 +1222,8 @@ internal class LoraMeshTransport(
                 send = send,
                 airMs = air,
                 sentAt = bookedAt,
-                deadline = bookedAt + LoraDirectPolicy.deadlineMs(air, slot),
-                retransmitMs = LoraDirectPolicy.retransmitMs(air, slot, LoraDirectPolicy.CW_MIN),
+                deadline = bookedAt + traits.deadlineMs(air, slot),
+                retransmitMs = traits.retransmitMs(air, slot, traits.cwMin),
                 packet = packet,
                 gate = frame.gate,
                 userSeqAtSend = userSeq,
@@ -1204,14 +1236,15 @@ internal class LoraMeshTransport(
 
     /**
      * Gives back the airings an answered send was booked for and did not need: all but the first and the retries that
-     * had flown by [now], counted at the shortest gap so the refund errs small.
+     * had flown by [now], counted at the shortest gap so the refund errs small. Of the airings the frame carried
+     * ([DirectSend.airings]), the ones its send booked.
      */
     private fun refundUnflown(
         flight: LoraDirectPolicy.Flight,
         now: Long,
     ) {
-        val flown = 1 + LoraDirectPolicy.retriesBefore(now - flight.sentAt, flight.retransmitMs)
-        val back = pace.airtime.refund(flight.sentAt, flight.airMs, LoraDirectPolicy.AIRINGS - flown)
+        val flown = 1 + traits.retriesBefore(now - flight.sentAt, flight.retransmitMs)
+        val back = pace.airtime.refund(flight.sentAt, flight.airMs, flight.send.airings - flown)
         if (back > 0) {
             pace.onAirReturned()
             wake.trySend(Unit) // air came back: a frame the window held may fit now
@@ -1247,7 +1280,7 @@ internal class LoraMeshTransport(
                 if (!outcome.byDestination) return
                 val send = direct.ended(outcome.id) ?: return
                 direct.onAcked(send.peerId, now)
-                ownBoard()?.let { contacts.onDelivered(it, send.addr.node) }
+                noteContactDelivered(send)
                 if (send.kind == DirectKind.MESSAGE) {
                     reprobe.onAcked(send.peerId, now, fresh = !send.resend)
                     radioReached(send, outcome, late = true)
@@ -1278,7 +1311,10 @@ internal class LoraMeshTransport(
         outcome: PacketOutcome.Refused,
         now: Long,
     ) {
-        if (outcome.reason == RoutingError.PKI_SEND_FAIL_PUBLIC_KEY && !outcome.byDestination && direct.handledNoKey(outcome.id)) {
+        // The order is the core's (ADR 2026-11.gsqu, Stage 1a.3): a handled missing key first, then the ended send, then
+        // their lack of our key, then any other refusal by their board. What each means is the kind's classifier's.
+        val refusal = traits.refusalOf(outcome)
+        if (refusal == RefusalClass.OWN_NO_KEY && direct.handledNoKey(outcome.id)) {
             log("lora nak id=${outcome.id} reason=${outcome.reason} (late, no key)")
             return
         }
@@ -1288,12 +1324,12 @@ internal class LoraMeshTransport(
                 onLateNak(outcome)
             }
 
-            outcome.byDestination && outcome.reason == RoutingError.PKI_UNKNOWN_PUBKEY -> {
+            refusal == RefusalClass.PEER_LACKS_KEY -> {
                 metrics.onLoraDirectPeerLacksOurKey()
                 bookNodeInfoReply(now)
             }
 
-            outcome.byDestination -> {
+            refusal == RefusalClass.DEST_REFUSED -> {
                 direct.onRefused(send.peerId, now)
                 publishStatus()
             }
@@ -1318,6 +1354,10 @@ internal class LoraMeshTransport(
         runCatching { onRadioReached(send.frameId, late) }.onFailure { log("lora direct radio reached failed: $it") }
     }
 
+    /**
+     * A late refusal of a send nothing waits on: counted, and paced by its reason alone through the Meshtastic reading of
+     * a NAK ([LoraPacePolicy.onNak], the classifier's) — whoever sent it, as before the seam.
+     */
     private fun onLateNak(outcome: PacketOutcome.Refused) {
         metrics.onLoraNak(outcome.reason.name)
         log("lora nak id=${outcome.id} reason=${outcome.reason} (late)")
@@ -1343,7 +1383,7 @@ internal class LoraMeshTransport(
                 metrics.onLoraDirectAcked()
                 direct.onAcked(peer, now)
                 // Their board took a PKI packet under the key ours holds: should ours lose it again, it may be taught once more.
-                ownBoard()?.let { contacts.onDelivered(it, send.addr.node) }
+                noteContactDelivered(send)
                 if (send.kind == DirectKind.MESSAGE) {
                     reprobe.onAcked(peer, now, fresh = !send.resend)
                     radioReached(send, outcome, late = false)
@@ -1390,13 +1430,13 @@ internal class LoraMeshTransport(
     ) {
         val send = flight.send
         val peer = send.peerId
-        when {
-            outcome.reason == RoutingError.PKI_SEND_FAIL_PUBLIC_KEY && !outcome.byDestination -> {
+        when (val refusal = traits.refusalOf(outcome)) {
+            RefusalClass.OWN_NO_KEY -> {
                 refundAll(flight)
                 flight.packet?.let { onNoKey(frameOf(flight, send, it), flight.handle, flight.userSeqAtSend) }
             }
 
-            outcome.reason == RoutingError.PKI_UNKNOWN_PUBKEY && outcome.byDestination -> {
+            RefusalClass.PEER_LACKS_KEY -> {
                 refundUnflown(flight, now)
                 onPeerLacksOurKey(flight, now)
             }
@@ -1405,7 +1445,8 @@ internal class LoraMeshTransport(
                 refundUnflown(flight, now)
                 metrics.onLoraNak(outcome.reason.name)
                 log("lora direct refused ${send.frameId} -> $peer reason=${outcome.reason} byDestination=${outcome.byDestination}")
-                if (outcome.byDestination) direct.onRefused(peer, now) else pace.onNak(outcome.reason, now)
+                if (refusal == RefusalClass.DEST_REFUSED) direct.onRefused(peer, now)
+                if (refusal == RefusalClass.PACE) pace.onPaceRefusal(now)
                 direct.unpark(peer)
             }
         }
@@ -1443,6 +1484,7 @@ internal class LoraMeshTransport(
                 resend = send.resend,
                 flushAfter = send.flushAfter,
                 afterPeerKey = true,
+                airings = send.airings,
             )
         direct.scheduleRetry(peer, now + flight.retransmitMs, frameOf(flight, retry, packet))
         flightWake.trySend(Unit)
@@ -1458,7 +1500,7 @@ internal class LoraMeshTransport(
      */
     private fun bookNodeInfoReply(now: Long) {
         val size =
-            ownBoard()?.let {
+            ownNode()?.let {
                 link
                     .nodeUser(it)
                     ?.user
@@ -1487,14 +1529,25 @@ internal class LoraMeshTransport(
 
     /** Gives back every airing [flight] was booked for: our own board refused it, so none flew. */
     private fun refundAll(flight: LoraDirectPolicy.Flight) {
-        if (pace.airtime.refund(flight.sentAt, flight.airMs, LoraDirectPolicy.AIRINGS) > 0) {
+        if (pace.airtime.refund(flight.sentAt, flight.airMs, flight.send.airings) > 0) {
             pace.onAirReturned()
             wake.trySend(Unit)
         }
     }
 
-    /** Our bound board's node number, or null with no session up. */
-    private fun ownBoard(): UInt? = (link.state.value as? LinkState.Ready)?.board?.myNodeNum
+    /** Our bound board's address, or null with no session up. */
+    private fun ownBoard(): BoardAddr? = (board.state.value as? BoardState.Ready)?.own
+
+    // --- Meshtastic-only reads of a board address: what the `add_contact` and NodeInfo paths key on (Stage 1c moves them) ---
+
+    /** Our bound Meshtastic board's node number, or null with no session up. */
+    private fun ownNode(): UInt? = ownBoard()?.meshtasticNode
+
+    /** The destination's board took [send]: our board may be taught its key once more should it lose it (ADR 2026-10.aajj). */
+    private fun noteContactDelivered(send: DirectSend) {
+        val own = ownNode() ?: return
+        send.addr.meshtasticNode?.let { contacts.onDelivered(own, it) }
+    }
 
     // --- a missing key on our board: the add_contact (ADR 2026-10.aajj) ---
 
@@ -1518,7 +1571,7 @@ internal class LoraMeshTransport(
         metrics.onLoraDirectNoKey()
         val peer = send.peerId
         log("lora direct no key ${send.frameId} -> $peer id=$handle")
-        val own = ownBoard()
+        val own = ownNode()
         val holder = boardHolders?.get(peer)
         if (own == null || provisioning) {
             // Between sessions, or inside a setup's admin transaction: ask again once it is over.
@@ -1531,7 +1584,8 @@ internal class LoraMeshTransport(
         }
         // The 39 is the board's word that it holds no key for them now; the stream's copy of their NodeInfo is read for a
         // key only if it raced this send (`sentAfter`), never a stale or forged one from before.
-        when (val verdict = contacts.judge(peer, holder, own, link.nodeUser(holder.addr.node), sentAfter, clock())) {
+        val streamed = holder.addr.meshtasticNode?.let(link::nodeUser)
+        when (val verdict = contacts.judge(peer, holder, own, streamed, sentAfter, clock())) {
             is LoraContactPolicy.Verdict.Write -> {
                 direct.holdForContact(peer, frame)
                 scope.launch { writeContact(peer, own, verdict) }
@@ -1559,14 +1613,7 @@ internal class LoraMeshTransport(
         own: UInt,
         write: LoraContactPolicy.Verdict.Write,
     ) {
-        val result =
-            link.send(
-                write.admin,
-                PublicChannelPolicy.PRIMARY_INDEX,
-                portnum = MeshtasticProto.PORT_ADMIN,
-                hopLimit = null,
-                destination = LinkDestination.Direct(BoardAddr(own), ack = false),
-            )
+        val result = board.send(write.admin, SendPurpose.Admin(BoardAddr(own))).result
         val now = clock()
         when (result) {
             // Only res 0 records the write. A refused admission hands the frame to the shed, which `enqueue` abandons, so
@@ -1609,7 +1656,8 @@ internal class LoraMeshTransport(
         peerId: String,
         frameIds: List<String>,
     ) {
-        val held = source.unackedTo(peerId, RESEND_LIMIT, untakenOnly = true).associateBy { it.frameId }
+        val held =
+            source.unackedTo(peerId, RESEND_LIMIT, untakenOnly = true, maxBytes = directBudget.plaintextBytes).associateBy { it.frameId }
         frameIds.mapNotNull(held::get).forEach { enqueueResend(peerId, it, flushAfter = emptyList()) }
     }
 
@@ -1650,28 +1698,30 @@ internal class LoraMeshTransport(
      * only then is their board heard, so a ✓✓ it carried is applied before a resend asks what is still unacked.
      */
     private fun onDirectPacket(
-        packet: ReceivedPacket,
+        packet: BoardPacket,
+        raw: ReceivedPacket,
         bound: Int?,
     ) {
-        val ready = link.state.value as? LinkState.Ready ?: return
+        val ready = board.state.value as? BoardState.Ready ?: return
         // Addressed to our board, and not from it: our own unicast echoed back is nobody's DM to us.
-        if (packet.to != ready.board.myNodeNum || packet.from == ready.board.myNodeNum) return
-        if (packet.channelIndex != bound && packet.channelIndex != PublicChannelPolicy.PRIMARY_INDEX) return
+        if (!packet.toUs || packet.from == ready.own) return
+        if (packet.channel != bound && packet.channel != PublicChannelPolicy.PRIMARY_INDEX) return
         // A radio sending Knit frames on the bound slot counts at once, as every Knit packet there does. One on index 0 —
         // where firmware 2.8 reports every PKI DM, which every compact DM now is — counts once it has authenticated
         // below: index 0 is the public slot too, and only a pinned peer's seal says the radio is a Knit one.
-        if (packet.channelIndex == bound) noteBoard(packet)
+        if (packet.channel == bound) noteBoard(packet)
         // Our board acked it on our behalf, before the phone could open it — a stranger's and a forged one too: air the
         // window owes (ADR 2026-10.x9fa). Only when the firmware did send that ACK: a unicast that asked for none, and
         // named nobody's next hop as ours, drew none. A routing unicast on the channel the DM came in on: unsigned but in
-        // 2.8.1's ham mode, +12 B on an AEAD slot 0 (#243, LoraAirtime.price).
-        if (LoraDirectPolicy.boardAcks(packet, ready.board.myNodeNum)) {
-            val slot = if (packet.channelIndex == bound) AirSlot.KNIT else AirSlot.PRIMARY
+        // 2.8.1's ham mode, +12 B on an AEAD slot 0 (#243, LoraAirtime.price). Read off the Meshtastic record (Stage 1c.0).
+        val own = ready.own.meshtasticNode
+        if (own != null && LoraDirectPolicy.boardAcks(raw, own)) {
+            val slot = if (packet.channel == bound) AirSlot.KNIT else AirSlot.PRIMARY
             val price = pace.airtime.price(slot, PacketKind.ROUTING_UNICAST, MeshtasticProto.PORT_ROUTING)
-            pace.airtime.record(LoraDirectPolicy.ACK_PAYLOAD_BYTES, clock(), price)
+            pace.airtime.record(traits.ackPayloadBytes, clock(), price)
         }
         val opened = openDirect(packet) ?: return
-        if (packet.channelIndex != bound) noteBoard(packet)
+        if (packet.channel != bound) noteBoard(packet)
         metrics.onLoraDirectDelivered()
         log("lora rx direct ${opened.frameId} from ${opened.peerId}")
         // Lifted before delivery, so the ✓✓ the delivery coalesces passes skipCovered. Any authenticated compact frame
@@ -1689,7 +1739,7 @@ internal class LoraMeshTransport(
     }
 
     /** [packet] opened, or null — a stranger's, a forged one, one out of its window or not one at all, each counted. */
-    private fun openDirect(packet: ReceivedPacket): OpenedDirect? =
+    private fun openDirect(packet: BoardPacket): OpenedDirect? =
         when (val result = crypto.open(packet.payload)) {
             is LoraDirectOpen.Opened -> {
                 result.direct
@@ -1722,26 +1772,23 @@ internal class LoraMeshTransport(
      * at every handshake) and one whose `rx_time` is minutes old (the to-phone queue replayed at reconnect) are not.
      * Slot-0 traffic from that board counts: it is RF from it all the same.
      */
-    private fun noteHeard(packet: ReceivedPacket) {
-        val ready = link.state.value as? LinkState.Ready ?: return
-        if (packet.from == 0u || packet.from == ready.board.myNodeNum || !isLive(packet)) return
-        val peer = peerByBoard[BoardAddr(packet.from)] ?: return
+    private fun noteHeard(packet: BoardPacket) {
+        val ready = board.state.value as? BoardState.Ready ?: return
+        val from = packet.from ?: return
+        if (from == ready.own || !isLive(packet)) return
+        val peer = peerByBoard[from] ?: return
         // Only the edge out of an unreachable mark does anything; a busy contact's every packet must not cost a coroutine.
         if (direct.reachOf(peer, clock()) != LoraDirectPolicy.Reach.UNREACHABLE) return
         scope.launch { onBoardHeard(peer) }
     }
 
     /**
-     * Whether [packet] came to us over the air just now: an RSSI (the NodeDB replay at every handshake has none), not
-     * an MQTT uplink, and an `rx_time`, when present, within [HEARING_MAX_AGE_MS] (the to-phone queue replayed at
-     * reconnect). What the hearing hook and the cover's lift both read.
+     * Whether [packet] came to us over the air just now, by the board kind's hearing rule ([BoardTraits.heardLive]): on
+     * Meshtastic an RSSI (the NodeDB replay at every handshake has none), not an MQTT uplink, and an `rx_time`, when
+     * present, within [HEARING_MAX_AGE_MS] (the to-phone queue replayed at reconnect). What the hearing hook and the
+     * cover's lift both read.
      */
-    private fun isLive(packet: ReceivedPacket): Boolean {
-        val rssi = packet.rxRssi
-        if (packet.viaMqtt || rssi == null || rssi == 0) return false
-        val heardAt = packet.rxTime ?: return true
-        return wallClock() - heardAt.toLong() * MS_PER_SECOND <= HEARING_MAX_AGE_MS
-    }
+    private fun isLive(packet: BoardPacket): Boolean = traits.heardLive(packet, wallClock())
 
     /**
      * A pinned contact's board broadcast its `NodeInfo` with a key (ADR 2026-10.aajj): our board stores a key it lacks
@@ -1755,7 +1802,8 @@ internal class LoraMeshTransport(
         log("lora direct key heard for $peer")
         publishStatus()
         scope.launch {
-            val newest = source.unackedTo(peer, 1).firstOrNull() ?: return@launch
+            val newest =
+                source.unackedTo(peer, 1, untakenOnly = false, maxBytes = directBudget.plaintextBytes).firstOrNull() ?: return@launch
             if (enqueueResend(peer, newest, flushAfter = emptyList())) log("lora resend ${newest.frameId} -> $peer (key heard)")
         }
     }
@@ -1792,9 +1840,9 @@ internal class LoraMeshTransport(
      */
     private fun aeadBlocks(
         frame: OutboundFrame,
-        ready: LinkState.Ready,
+        ready: LinkState.Ready?,
         index: Int,
-    ): Boolean = (frame.direct == null || ready.board.licensed) && ready.channels.any { it.index == index && it.useAead }
+    ): Boolean = ready != null && (frame.direct == null || ready.board.licensed) && ready.channels.any { it.index == index && it.useAead }
 
     /**
      * The two covers for a compact DM (ADR 054, ADR 2026-09.y5f3), each counted under its own name; true means the
@@ -1910,7 +1958,7 @@ internal class LoraMeshTransport(
         // A board on a dedicated RF slot (ADR 067) has no public channel under it: a post would go on the
         // air where only other pinned Knit boards could hear it, into a room this phone no longer draws.
         if (pace.airtime.dedicated()) return refusePublicPost(PublicPostRefusal.DEDICATED)
-        val ready = link.state.value as? LinkState.Ready ?: return refusePublicPost(PublicPostRefusal.NOT_READY)
+        val ready = board.state.value.meshtasticReady ?: return refusePublicPost(PublicPostRefusal.NOT_READY)
         // A board whose slot 0 is the Knit channel has no primary to post on — the debug-bridge shape the
         // receive half refuses to read for the same reason, decided off the same table.
         if (PublicChannelPolicy.isKnitPrimary(ready.channels)) return refusePublicPost(PublicPostRefusal.KNIT_ON_PRIMARY)
@@ -1961,8 +2009,8 @@ internal class LoraMeshTransport(
             // [requeue]. Park on the link itself rather than [waitForNextSend]: with a frame queued its idle
             // tick fired every second for the whole outage (#67), and an absent board can be away for days.
             // Reading the state flow cannot miss the session-up the way a wake could.
-            if (link.state.value !is LinkState.Ready) {
-                link.state.first { it is LinkState.Ready }
+            if (board.state.value !is BoardState.Ready) {
+                board.state.first { it is BoardState.Ready }
                 continue
             }
             val frame =
@@ -2021,7 +2069,7 @@ internal class LoraMeshTransport(
         // pacer would otherwise eat one every `minGapMs` for the whole outage. Field-observed on a board whose
         // link flapped five times in twenty minutes: a 93-second backoff destroyed six queued frames, and the
         // log blamed the channel setup because this read a missing link as the wrong slot.
-        val ready = link.state.value as? LinkState.Ready
+        val ready = board.state.value as? BoardState.Ready
         if (ready == null) {
             requeue(frame)
             return
@@ -2041,12 +2089,7 @@ internal class LoraMeshTransport(
             abandon(frame)
             return
         }
-        val skipped =
-            when {
-                !boundSlotIsKnit(ready.channels, ch) -> "slot $ch is not the Knit channel — set this board up"
-                aeadBlocks(frame, ready, ch) -> "slot $ch is AEAD (use_aead), which no other Knit board shares — set it up again"
-                else -> null
-            }
+        val skipped = slotRefusal(frame, ready, ch)
         if (skipped != null) {
             metrics.onLoraSuppressed()
             log("lora send skipped: $skipped")
@@ -2056,13 +2099,33 @@ internal class LoraMeshTransport(
         // Resume where the board left off. A frame refused part-way is requeued whole, and re-sending the
         // fragments it already holds would both duplicate them on the air and book their airtime again — the
         // ledger only grows on a retry, so that inflates the hourly budget until it refuses the whole plane.
+        val purpose = frame.direct?.let { SendPurpose.DirectDm(ch, it.addr) } ?: SendPurpose.KnitFrame(ch)
         for (message in frame.remaining) {
             // OWED (requeued, or held for a key) and ENDED alike stop the frame here; the next take resumes an owed one.
-            if (sendMessage(message, ch, frame) != FragmentOutcome.SENT) return
+            if (sendMessage(message, frame, purpose) != FragmentOutcome.SENT) return
         }
         metrics.onLoraSent()
         if (frame.fragmented) metrics.onLoraFragSent()
         log("lora tx ${frame.label} parts=${frame.messages.size}")
+    }
+
+    /**
+     * Why bound slot [ch] must not carry [frame], in the words `lora send skipped` logs, or null to send it. The slot
+     * guards read the Meshtastic channel table ([boundSlotIsKnit], [aeadBlocks]); Stage 1c.3 moves them behind the hooks.
+     * Until then a Ready board with no Meshtastic session under it is not set up as far as these guards can tell, and is
+     * refused: an empty table would read as "don't suppress" and skip both guards. Never the case on a Meshtastic board.
+     */
+    private fun slotRefusal(
+        frame: OutboundFrame,
+        ready: BoardState.Ready,
+        ch: Int,
+    ): String? {
+        val session = ready.meshtasticReady ?: return "slot $ch cannot be checked: no Meshtastic session under this board"
+        return when {
+            !boundSlotIsKnit(session.channels, ch) -> "slot $ch is not the Knit channel — set this board up"
+            aeadBlocks(frame, session, ch) -> "slot $ch is AEAD (use_aead), which no other Knit board shares — set it up again"
+            else -> null
+        }
     }
 
     /**
@@ -2078,8 +2141,9 @@ internal class LoraMeshTransport(
         val reply = frame.destination == Destination.Reply
         // The auto-reply is the one direct send without `want_ack`: a stock client's board answers nobody's retries
         // for us, and the window would pay for them (ADR 2026-09.4n5p).
-        val to = if (reply) LinkDestination.Direct(BoardAddr(frame.to), ack = false) else LinkDestination.Broadcast
-        val outcome = sendMessage(message, PublicChannelPolicy.PRIMARY_INDEX, frame, MeshtasticProto.PORT_TEXT_MESSAGE, to)
+        val replyTo = frame.to ?: BoardAddr(MeshtasticProto.BROADCAST)
+        val purpose = if (reply) SendPurpose.AutoReply(replyTo) else SendPurpose.PublicPost
+        val outcome = sendMessage(message, frame, purpose)
         // OWED is back on the queue (the board busy, or the session gone under it): not a refusal, and its airing after
         // the reconnect is counted sent then, once (#307). Should it never air, the pacer's shed counts it
         // `loraDroppedQueue`, as it does any frame; the refusal counters are for what the board refused.
@@ -2090,7 +2154,7 @@ internal class LoraMeshTransport(
         }
         if (reply) {
             metrics.onAutoReplySent()
-            log("lora tx auto-reply to ${meshNodeLabel(frame.to.toLong())} ${message.size}B")
+            log("lora tx auto-reply to ${meshNodeLabel((replyTo.meshtasticNode ?: MeshtasticProto.BROADCAST).toLong())} ${message.size}B")
         } else {
             metrics.onPublicPostSent()
             log("lora tx public ${message.size}B")
@@ -2105,20 +2169,23 @@ internal class LoraMeshTransport(
      */
     private suspend fun sendMessage(
         message: ByteArray,
-        channelIndex: Int,
         frame: OutboundFrame,
-        portnum: Int = MeshtasticProto.PORT_PRIVATE_APP,
-        to: LinkDestination = frame.direct?.let { LinkDestination.Direct(it.addr) } ?: LinkDestination.Broadcast,
+        purpose: SendPurpose,
     ): FragmentOutcome {
-        // The NodeInfo stream's stamp as the send is issued: a key streamed after it raced a `39`; one before is stale.
-        val userSeq = link.userSeq()
-        val result = link.send(message, channelIndex, portnum = portnum, hopLimit = HOP_LIMIT, destination = to)
+        // The board writes what the purpose says (ADR 2026-11.gsqu, Stage 1b.1) and stamps the NodeInfo stream as the
+        // send is issued: a key streamed after it raced a `39`; one before is stale.
+        val sent = board.send(message, purpose)
+        val userSeq = sent.preSend
+        val result = sent.result
+        val refusal = traits.refusalOf(result)
         // Our own board holds no key for the destination's board and refused it before it aired (ADR 2026-10.aajj):
         // reported first as the queueStatus's res, its self-NAK later — or, rarely, the other way round. Held, never
         // given up: the add_contact path decides what becomes of it.
-        noKeyHandle(result)?.takeIf { frame.direct != null }?.let { handle ->
-            onNoKey(frame, handle, userSeq)
-            return FragmentOutcome.OWED
+        if (refusal == RefusalClass.OWN_NO_KEY && frame.direct != null) {
+            refusedHandle(result)?.let { handle ->
+                onNoKey(frame, handle, userSeq)
+                return FragmentOutcome.OWED
+            }
         }
         return when (result) {
             is SendResult.Queued -> {
@@ -2145,7 +2212,7 @@ internal class LoraMeshTransport(
             is SendResult.Nak -> {
                 metrics.onLoraNak(result.reason.name)
                 log("lora nak id=${result.id} reason=${result.reason} label=${frame.label}")
-                pace.onNak(result.reason, clock())
+                if (refusal == RefusalClass.PACE) pace.onPaceRefusal(clock())
                 abandon(frame) // a no-op once a fragment has flown
                 FragmentOutcome.ENDED
             }
@@ -2188,11 +2255,11 @@ internal class LoraMeshTransport(
         ENDED,
     }
 
-    /** The handle of a send our board refused for want of the destination's key (`39`), or null for any other result. */
-    private fun noKeyHandle(result: SendResult): UInt? =
+    /** The handle of a send the board refused at once, or null for a result that refused nothing. */
+    private fun refusedHandle(result: SendResult): UInt? =
         when (result) {
-            is SendResult.Rejected -> result.id.takeIf { result.res == RoutingError.PKI_SEND_FAIL_PUBLIC_KEY.code }
-            is SendResult.Nak -> result.id.takeIf { result.reason == RoutingError.PKI_SEND_FAIL_PUBLIC_KEY }
+            is SendResult.Rejected -> result.id
+            is SendResult.Nak -> result.id
             else -> null
         }
 
@@ -2217,7 +2284,8 @@ internal class LoraMeshTransport(
         if (send == null) {
             pace.airtime.record(message.size, now, price)
         } else {
-            repeat(LoraDirectPolicy.AIRINGS) { pace.airtime.record(message.size, now, price) }
+            // The airings the frame carries, the number its admission asked (OutboundFrame.admissionSizes).
+            repeat(send.airings) { pace.airtime.record(message.size, now, price) }
         }
         frame.onPartSent()
         send?.let { launchFlight(frame, it, handle, message, price, now, userSeq) }
@@ -2262,17 +2330,23 @@ internal class LoraMeshTransport(
 
     // --- inbound ---
 
-    private fun onLoraPacket(packet: ReceivedPacket) {
+    /**
+     * One packet off the board. The dispatch is still Meshtastic's — the compact-DM tag on the private port, the portnum
+     * split, the bound-slot filter, the retired tag — read off the packet's Meshtastic record; Stage 1c.0 moves it behind
+     * the kind's hooks. What it hands on is the neutral packet.
+     */
+    private fun onLoraPacket(packet: BoardPacket) {
+        val raw = packet.meshtastic ?: return
         val bound = currentConfig?.channelIndex
         // A compact DM addressed to us (ADR 2026-10.x9fa), ahead of the bound-channel filter: it may report on index 0.
         // Its board is heard only once it has been delivered (onDirectPacket); every other packet is a hearing now.
-        val compact = packet.portnum == MeshtasticProto.PORT_PRIVATE_APP && packet.payload.firstOrNull() == LORA_DIRECT_TAG
+        val compact = raw.portnum == MeshtasticProto.PORT_PRIVATE_APP && packet.payload.firstOrNull() == LORA_DIRECT_TAG
         if (compact) {
-            onDirectPacket(packet, bound)
+            onDirectPacket(packet, raw, bound)
             return
         }
         noteHeard(packet)
-        if (packet.portnum == MeshtasticProto.PORT_NODEINFO) onNodeInfoHeard(packet)
+        if (raw.portnum == MeshtasticProto.PORT_NODEINFO) onNodeInfoHeard(raw)
         if (packet.payload.isEmpty()) return
         // Slot 0 is the Meshtastic room's channel, mirrored as the user configured it. The room reads only
         // chat, so only `TEXT_MESSAGE_APP` turns off here; everything else on the slot falls through to the
@@ -2285,13 +2359,13 @@ internal class LoraMeshTransport(
         // thing to do with it is tell the sender. Taken ahead of the room's branch on the portnum and the
         // address alone, never the channel index: on 2.5+ firmware a DM is PKI-encrypted and reported on
         // index 0 whatever slot the sender used, and an older board reports the slot it decoded on.
-        if (packet.portnum == MeshtasticProto.PORT_TEXT_MESSAGE) {
-            onTextPacket(packet)
+        if (raw.portnum == MeshtasticProto.PORT_TEXT_MESSAGE) {
+            onTextPacket(raw)
             return
         }
         // Outbound is pinned to the bound channel; inbound was not, so a board carrying a second channel with
         // Knit traffic on it used to ingest both. Ignore anything off the channel this plane is bound to.
-        if (packet.portnum != MeshtasticProto.PORT_PRIVATE_APP || (bound != null && packet.channelIndex != bound)) return
+        if (raw.portnum != MeshtasticProto.PORT_PRIVATE_APP || (bound != null && packet.channel != bound)) return
         noteBoard(packet)
         // An older build's gateway still airs its OFFERs (tag 0x10, burned in `FastFrameCodec`'s registry). Dropped
         // here under a counter of their own, so `UNKNOWN_TAG` keeps meaning a tag nobody ever assigned
@@ -2345,7 +2419,7 @@ internal class LoraMeshTransport(
      */
     private fun onPrimaryPacket(packet: ReceivedPacket) {
         metrics.onMeshPostHeard()
-        val ready = link.state.value as? LinkState.Ready ?: return
+        val ready = board.state.value.meshtasticReady ?: return
         val verdict =
             PublicChannelPolicy.judge(
                 packet = packet,
@@ -2399,7 +2473,7 @@ internal class LoraMeshTransport(
 
     /** The gate that stopped the reply to [packet], by name — or null once the reply is queued. */
     private fun autoReplyRefusal(packet: ReceivedPacket): String? {
-        val ready = link.state.value as? LinkState.Ready ?: return AutoReplyRefusal.NOT_READY.name
+        val ready = board.state.value.meshtasticReady ?: return AutoReplyRefusal.NOT_READY.name
         // The once-a-day memory is not back yet: answering now could answer, again, a sender the last process already did.
         // Refused unstamped. This copy is not answered — the board's to-phone queue gives a packet up once the phone has
         // read it, so it is not delivered again — but the sender's next DM is judged against the memory.
@@ -2424,13 +2498,13 @@ internal class LoraMeshTransport(
                 is DmAutoReplyPolicy.Verdict.Reply -> verdict
             }
         log("lora dm from ${meshNodeLabel(packet.from.toLong())}: auto-reply queued")
-        enqueue(listOf(reply.text.encodeToByteArray()), "autoreply", Ceiling.HALF, Destination.Reply, to = reply.to)
+        enqueue(listOf(reply.text.encodeToByteArray()), "autoreply", Ceiling.HALF, Destination.Reply, to = BoardAddr(reply.to))
         stateWake.trySend(Unit) // the sender is stamped now, not at the write: persist it
         return null
     }
 
     /** One inbound mesh frame off the air: reassemble, decode, dedup, and hand it to the router. */
-    private fun onFramePacket(packet: ReceivedPacket) {
+    private fun onFramePacket(packet: BoardPacket) {
         val fragmented = packet.payload[0] == FastFrameCodec.TAG_FRAG
         val compact = reassemble(packet) ?: return
         val wire = FastFrameCodec.decodeCompact(compact)
@@ -2447,7 +2521,8 @@ internal class LoraMeshTransport(
         // something a spool just handed an older build's gateway says where a *frame* has been, not where its
         // author is. Everything below runs either way — this path must never become a propagation black hole.
         // And never off our own board, heard back through a repeater: that is our own airing, nobody's reach.
-        if (isPresenceEvidence(env, wallClock()) && packet.from != (link.state.value as? LinkState.Ready)?.board?.myNodeNum) {
+        val own = ownBoard()
+        if (isPresenceEvidence(env, wallClock()) && (own == null || packet.from != own)) {
             noteReachable(Peer(env.senderId))
         }
         metrics.onLoraReceived()
@@ -2458,7 +2533,7 @@ internal class LoraMeshTransport(
     }
 
     /** Returns the complete frame for [packet]: itself if a whole `0x03`/`0x05` frame, else reassembled from `0x04` parts. */
-    private fun reassemble(packet: ReceivedPacket): ByteArray? =
+    private fun reassemble(packet: BoardPacket): ByteArray? =
         when (packet.payload[0]) {
             FastFrameCodec.TAG_COMPACT, FastFrameCodec.TAG_TRANSCODED -> {
                 packet.payload
@@ -2466,7 +2541,7 @@ internal class LoraMeshTransport(
 
             FastFrameCodec.TAG_FRAG -> {
                 val frag = FastFrameCodec.parseFragment(packet.payload) ?: return null
-                reassembler.accept(packet.from, frag)?.takeIf { it.isNotEmpty() && FastFrameCodec.isFrameTag(it[0]) }
+                reassembler.accept(packet.from ?: NoSender, frag)?.takeIf { it.isNotEmpty() && FastFrameCodec.isFrameTag(it[0]) }
             }
 
             else -> {
@@ -2481,10 +2556,9 @@ internal class LoraMeshTransport(
      * two diverged the moment a gateway relayed somebody else's frame, which an older build still does. Reporting
      * the second as the first read as a phantom radio in the field.
      */
-    private fun noteBoard(packet: ReceivedPacket) {
-        val from = packet.from
-        if (from == 0u) return // undecoded `from`; counting it would invent a radio
-        if (from == (link.state.value as? LinkState.Ready)?.board?.myNodeNum) return // our own board's echo
+    private fun noteBoard(packet: BoardPacket) {
+        val from = packet.from ?: return // undecoded `from`; counting it would invent a radio
+        if (from == ownBoard()) return // our own board's echo
         val heard = RxQuality(packet.rxSnr, packet.rxRssi, clock())
         boardsHeardAt.compute(from) { _, previous -> previous?.refreshedBy(heard) ?: heard }
         publishStatus()
@@ -2532,20 +2606,19 @@ internal class LoraMeshTransport(
             quiesce()
         } else {
             configured.value = true
-            link.start(cfg.address)
+            board.start(cfg.address)
         }
         publishStatus()
     }
 
-    private fun onLinkState(state: LinkState) {
+    private fun onBoardState(state: BoardState) {
         _health.value =
             when (state) {
-                is LinkState.Ready -> TransportHealth.Healthy
-                LinkState.Connecting, LinkState.Bonding, is LinkState.Handshaking, is LinkState.Disconnected -> TransportHealth.Degraded
-                LinkState.Idle, LinkState.Unavailable, is LinkState.NeedsPairing, is LinkState.StaleBond -> TransportHealth.Unavailable
+                is BoardState.Ready -> TransportHealth.Healthy
+                is BoardState.Down -> state.health
             }
-        if (state is LinkState.Ready) {
-            maxPayload = (state.mtu - TORADIO_OVERHEAD).coerceIn(LoraFrameCodec.MIN_PAYLOAD, MeshtasticProto.MAX_PAYLOAD)
+        if (state is BoardState.Ready) {
+            maxPayload = state.payloadCap
             val evicted = pace.evictOversize(maxPayload)
             abandonShed()
             if (evicted > 0) {
@@ -2556,31 +2629,39 @@ internal class LoraMeshTransport(
             // The pacer parks itself while the link is down, so the queue it kept across the outage only
             // moves again if the session-up wakes it.
             wake.trySend(Unit)
-            pace.airtime.onRadioConfig(state.radio)
-            // What the firmware signs, and so what the budget charges and the codec pads past (#243): the version, the
-            // build's `has_xeddsa`, the policy it streamed (none: unknown, priced as signing), ham mode, and AEAD on the
-            // two slots we write to.
-            val bound = currentConfig?.channelIndex
-            pace.airtime.onBoard(
-                SigningFacts(
-                    firmware = state.board.firmwareVersion,
-                    hasXeddsa = state.board.hasXeddsa,
-                    policy = state.signaturePolicy,
-                    licensed = state.board.licensed,
-                ),
-                primaryAead = state.channels.any { it.index == PublicChannelPolicy.PRIMARY_INDEX && it.useAead },
-                knitAead = bound != null && state.channels.any { it.index == bound && it.useAead },
-            )
-            val air = pace.airtime.snapshot(clock())
-            log(
-                "lora ready board=${state.board.myNodeNum} mtu=${state.mtu} maxPayload=$maxPayload " +
-                    "radio=${state.radio?.region}/${state.radio?.modemPreset} " +
-                    "fw=${state.board.firmwareVersion} signing=${air.signing} policy=${state.signaturePolicy} " +
-                    "knitSignedUpTo=${air.knitSignedUpTo} roomSignedUpTo=${air.roomSignedUpTo} licensed=${state.board.licensed}",
-            )
-            scope.launch { onBoardBound(BoardBinding(state.board.myNodeNum, boundKey(state.board))) }
+            state.meshtasticReady?.let(::onMeshtasticReady)
         }
         publishStatus()
+    }
+
+    /**
+     * The Meshtastic half of a session coming up (Stage 1c.4 moves it behind the hooks): the radio and how the board
+     * signs, for the ledger, the `lora ready` line, and the binding the profile advertises.
+     */
+    private fun onMeshtasticReady(state: LinkState.Ready) {
+        pace.airtime.onRadioConfig(state.radio)
+        // What the firmware signs, and so what the budget charges and the codec pads past (#243): the version, the
+        // build's `has_xeddsa`, the policy it streamed (none: unknown, priced as signing), ham mode, and AEAD on the
+        // two slots we write to.
+        val bound = currentConfig?.channelIndex
+        pace.airtime.onBoard(
+            SigningFacts(
+                firmware = state.board.firmwareVersion,
+                hasXeddsa = state.board.hasXeddsa,
+                policy = state.signaturePolicy,
+                licensed = state.board.licensed,
+            ),
+            primaryAead = state.channels.any { it.index == PublicChannelPolicy.PRIMARY_INDEX && it.useAead },
+            knitAead = bound != null && state.channels.any { it.index == bound && it.useAead },
+        )
+        val air = pace.airtime.snapshot(clock())
+        log(
+            "lora ready board=${state.board.myNodeNum} mtu=${state.mtu} maxPayload=$maxPayload " +
+                "radio=${state.radio?.region}/${state.radio?.modemPreset} " +
+                "fw=${state.board.firmwareVersion} signing=${air.signing} policy=${state.signaturePolicy} " +
+                "knitSignedUpTo=${air.knitSignedUpTo} roomSignedUpTo=${air.roomSignedUpTo} licensed=${state.board.licensed}",
+        )
+        scope.launch { onBoardBound(BoardBinding(state.board.myNodeNum, boundKey(state.board))) }
     }
 
     /**
@@ -2607,34 +2688,35 @@ internal class LoraMeshTransport(
      * Taken outermost: no caller holds the pacer's or the ledger's monitor, and those are taken inside it
      * ([LoraPacePolicy.pending], [LoraAirtime.snapshot]), never the other way round. No JVM test pins it: the window
      * is two non-suspending statements, and `FakeMeshtasticLink` has no seam to park a thread between them, so a stress
-     * test would pass on the unlocked code too. Keep the `link.state` read inside the lock.
+     * test would pass on the unlocked code too. Keep the `board.state` read inside the lock.
      */
     private fun publishStatus() =
         synchronized(statusLock) {
-            val linkState = link.state.value
-            val board = (linkState as? LinkState.Ready)?.board
+            // Read inside the lock (ADR 2026-10.a239's amendment); the kind renders its half of the row from it.
+            val boardState = board.state.value
             // The freshest reading among the radios still within the linger — the row's "last heard", now bounded
             // to radios this plane actually talks to. Empty once they all age out, which is the honest answer.
             val lastRx = boardsHeardAt.values.maxByOrNull { it.atMs }
             val now = clock()
             _status.value =
-                LoraStatus(
-                    state = linkState,
-                    boardAddress = currentConfig?.address,
-                    boardNodeNum = board?.myNodeNum,
-                    lastSnr = lastRx?.snr,
-                    lastRssi = lastRx?.rssi,
-                    queueFree = link.queue.value?.free,
-                    queued = pace.pending,
-                    heard = _reachable.value.size,
-                    boardsHeard = boardsHeardAt.size,
-                    battery = link.battery.value,
-                    boardAir = link.boardAir.value,
-                    airtime = pace.airtime.snapshot(now),
-                    braked = pace.braked(now),
-                    bandReadingAgeMs = pace.bandReadAt()?.let { now - it },
-                    internetCovered = covered.size,
-                    direct = direct.counts(now),
+                hooks.statusOf(
+                    boardState,
+                    LoraStatus(
+                        boardAddress = currentConfig?.address,
+                        lastSnr = lastRx?.snr,
+                        lastRssi = lastRx?.rssi,
+                        queueFree = board.headroomNow,
+                        queued = pace.pending,
+                        heard = _reachable.value.size,
+                        boardsHeard = boardsHeardAt.size,
+                        battery = board.battery.value,
+                        boardAir = board.boardAir.value,
+                        airtime = pace.airtime.snapshot(now),
+                        braked = pace.braked(now),
+                        bandReadingAgeMs = pace.bandReadAt()?.let { now - it },
+                        internetCovered = covered.size,
+                        direct = direct.counts(now),
+                    ),
                 )
         }
 
@@ -2739,8 +2821,6 @@ internal class LoraMeshTransport(
          */
         const val HEARING_MAX_AGE_MS = 3 * 60_000L
 
-        private const val MS_PER_SECOND = 1_000L
-
         /**
          * The first byte of an older build's gossip OFFER (`LoraCtl`, ADR 044), burned in `FastFrameCodec`'s registry
          * and dropped on receipt under `loraRetiredCtl` (ADR 2026-10.rp3s).
@@ -2782,6 +2862,9 @@ internal class LoraMeshTransport(
         val PRE_READY_PAYLOAD: Int = minOf(MeshtasticProto.MAX_PAYLOAD, MTU_FLOOR - TORADIO_OVERHEAD)
     }
 }
+
+/** The reassembly key of a fragment whose board could not say who sent it: every such fragment shares one, as before. */
+private object NoSender
 
 /**
  * Whether a peer's mark keeps the resend after a hearing and the re-probe off the air: their board refused us, or ours

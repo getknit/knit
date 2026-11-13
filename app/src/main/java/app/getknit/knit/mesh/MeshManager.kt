@@ -81,14 +81,12 @@ import app.getknit.knit.mesh.link.LinkClaims
 import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.DirectDm
 import app.getknit.knit.mesh.lora.DirectKind
-import app.getknit.knit.mesh.lora.LORA_DIRECT_OVERHEAD
 import app.getknit.knit.mesh.lora.LoraBoardHolder
 import app.getknit.knit.mesh.lora.LoraBoardMap
 import app.getknit.knit.mesh.lora.LoraContactPolicy
-import app.getknit.knit.mesh.lora.LoraDirectPolicy
+import app.getknit.knit.mesh.lora.LoraDirectBudget
 import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraDirectSource
-import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.lora.OpenedDirect
 import app.getknit.knit.mesh.protocol.BadgeEntry
@@ -220,23 +218,60 @@ internal const val MAX_INLINE_ACKS = 4
 internal const val MAX_READ_RIDERS = DmAckCoalescer.MAX_LORA_TICK_ACKS
 
 /**
- * The plaintext one compact LoRa DM carries at the MTU-255 floor (ADR 2026-10.x9fa and its PKI amendment): the plane's
- * own compact-DM cap ([LoraDirectPolicy.payloadCap] — the firmware's PKI size check, 219 B, under the `want_ack` write's
- * 226 B) less the 51 bytes of header and GCM tag around the content — 168 B. What a compact copy sheds its inline acks
- * to fit, and what the coalesced ✓✓'s compact ticks are sized against. One function with the transport's, so the two
- * cannot drift: a copy sized here and refused there is a ✓✓ re-probed every 4 h.
+ * The plaintext one compact LoRa DM carries at the MTU-255 floor on a Meshtastic board (ADR 2026-10.x9fa and its PKI
+ * amendment): the plane's own compact-DM cap (`LoraDirectPolicy.payloadCap` — the firmware's PKI size check, 219 B, under
+ * the `want_ack` write's 226 B) less the 51 bytes of header and GCM tag around the content — 168 B. Meshtastic's
+ * [LoraDirectBudget] (ADR 2026-11.gsqu, Stage 1a.4): a compact copy is sized by its sink's own `budgetFor`, and this is
+ * the figure where there is no sink to ask. One function with the transport's, so the two cannot drift: a copy sized
+ * here and refused there is a ✓✓ re-probed every 4 h.
  */
-internal val LORA_DIRECT_PLAINTEXT_BYTES: Int =
-    LoraDirectPolicy.payloadCap(LoraMeshTransport.PRE_READY_PAYLOAD) - LORA_DIRECT_OVERHEAD
+internal val LORA_DIRECT_PLAINTEXT_BYTES: Int = LoraDirectBudget.MESHTASTIC.plaintextBytes
 
 /**
- * Most ids one compact ✓✓ carries, riders included (Crypto 5): a v3 `CTL_RECEIPT` holds each as its 16 raw bytes and a
- * one-byte header, and [LORA_DIRECT_PLAINTEXT_BYTES] less the receipt's fixed fields leaves room for nine — ten until the
- * PKC overhead was reserved (ADR 2026-10.x9fa's PKI amendment). Pinned by
- * `CoordinationPlaneSizeBudgetTest.aCompactTickAtItsCapIsOnePacketAtTheMtuFloor` (nine fit, ten do not). A coalesced
- * flush past it leaves as several compact ticks; the signed tick keeps `DmAckCoalescer.MAX_LORA_TICK_ACKS`.
+ * Most ids one compact ✓✓ carries on a Meshtastic board, riders included (Crypto 5): a v3 `CTL_RECEIPT` holds each as its
+ * 16 raw bytes and a one-byte header, and [LORA_DIRECT_PLAINTEXT_BYTES] less the receipt's fixed fields leaves room for
+ * nine — ten until the PKC overhead was reserved (ADR 2026-10.x9fa's PKI amendment). Derived from the budget
+ * ([LoraDirectBudget.tickAcks]) and pinned by `CoordinationPlaneSizeBudgetTest.aCompactTickAtItsCapIsOnePacketAtTheMtuFloor`
+ * (nine fit, ten do not). A coalesced flush past it leaves as several compact ticks; the signed tick keeps
+ * `DmAckCoalescer.MAX_LORA_TICK_ACKS`.
  */
-internal const val LORA_DIRECT_TICK_ACKS = 9
+internal val LORA_DIRECT_TICK_ACKS: Int = LoraDirectBudget.MESHTASTIC.tickAcks
+
+/**
+ * A compact copy of a DM's content ([compactCopyOf]): its [plaintext], and the ids among the LoRa-held receipts it
+ * carried inline that it shed to fit ([giveBack]) — owed back to the coalescer, so a standalone compact ✓✓ still takes
+ * them to a peer who hears only the board (ADR 2026-11.gsqu, Stage 1a.4).
+ */
+internal class CompactCopy(
+    val plaintext: ByteArray,
+    val giveBack: List<String> = emptyList(),
+)
+
+/**
+ * [content] in the v3 compact layout within [budgetBytes], its inline acks shed when that is what it takes (Crypto 4:
+ * they are idempotent and ride the signed copy), or null when the layout has no canonical form for it. Still too long,
+ * it goes as it is, and the plane counts it `loraDirectTooLong` against its own cap. A shed copy names the ids of
+ * [loraHeld] — the receipts the coalescer gave this DM to carry — that it dropped, for [CompactCopy.giveBack].
+ */
+internal fun compactCopyOf(
+    content: MessageContent,
+    budgetBytes: Int,
+    loraHeld: List<String> = emptyList(),
+): CompactCopy? {
+    val whole = MessageContentV2.encodeOrNull(content) ?: return null
+    val acks = content.acks
+    if (whole.size <= budgetBytes || content.ctl != null || acks.isNullOrEmpty()) return CompactCopy(whole)
+    // The read mask indexes the acks, so it goes with them.
+    val shed = MessageContentV2.encodeOrNull(content.copy(acks = null, rm = null)) ?: return null
+    return CompactCopy(shed, acks.filter { it in loraHeld })
+}
+
+/**
+ * How far under a compact DM's plaintext budget the composer's DM body budget sits ([LoraSizeHint.DM_BODY_BYTES], 160 of
+ * Meshtastic's 168): the v3 layout's field headers and a few bytes' margin. The inline-ack room is cut from the
+ * recipient's own budget by it.
+ */
+private val DM_BODY_MARGIN_BYTES: Int = LORA_DIRECT_PLAINTEXT_BYTES - LoraSizeHint.DM_BODY_BYTES
 
 /**
  * How old a DM of ours may be and still ride LoRa compact (Crypto 6): an hour inside the receiver's window
@@ -2450,7 +2485,7 @@ class MeshManager(
         } finally {
             tellInlineReads(recipientId, inline, envelope, seal.rootTag, sent)
         }
-        offerChatLoraDirect(row, group, envelope, inlineIds, inline.compactRead)
+        offerChatLoraDirect(row, group, envelope, inlineIds, inline.compactRead, loraHeld = inlineAcks.dm)
         return true
     }
 
@@ -2527,7 +2562,8 @@ class MeshManager(
     /**
      * The compact copy of a DM [sendChat] just sealed, for the LoRa plane (ADR 2026-10.x9fa): beside the signed one and
      * never instead of it, under the same id and stamp, with the content the signed copy sealed — the inline acks
-     * included when its v2/v3 arm carried them, which is the only arm that does.
+     * included when its v2/v3 arm carried them, which is the only arm that does. [loraHeld] are the ones the coalescer
+     * held for the board: shed to fit, they go back to it ([offerLoraDirect]).
      */
     private suspend fun offerChatLoraDirect(
         row: MessageEntity,
@@ -2536,13 +2572,14 @@ class MeshManager(
         inlineIds: List<String>,
         // The read marks among [inlineIds] (ADR 2026-11.z6jw), null toward an author who reads no mask.
         read: Set<String>? = null,
+        loraHeld: List<String>,
     ) {
         val recipientId = row.recipientId
         if (recipientId == null || group != null) return
         val carried = EncEnvelope.isDmRatchetVersion(envelope.v) && inlineIds.isNotEmpty()
         val rm = if (carried) read?.let { ReadMask.encode(inlineIds, it) } else null
         val content = row.sealedContent().copy(acks = inlineIds.takeIf { carried }, rm = rm)
-        offerLoraDirect(recipientId, row.id, row.sentAt, content, DirectKind.MESSAGE)
+        offerLoraDirect(recipientId, row.id, row.sentAt, content, DirectKind.MESSAGE, loraHeld = loraHeld.takeIf { carried }.orEmpty())
     }
 
     /** Builds a [FrameType.CHAT] routing envelope wrapping the given [content] payload. */
@@ -3721,7 +3758,7 @@ class MeshManager(
      * The LoRa-held receipts a DM to [recipientId] may carry inline (ADR 054): none for a group or a peer
      * without [Protocol.CAP_INLINE_ACK], and only as many as the composer's one-packet LoRa budget
      * (`LoraSizeHint.DM_BODY_BYTES`) leaves room for. The compact copy sheds them if it still will not fit one packet
-     * (`compactPlaintext`); the signed copy always keeps them.
+     * (`compactCopyOf`), and gives back the ones it held for the board; the signed copy always keeps them.
      * Taken out of the coalescer here; [sendChat] gives them back if the seal falls short of v2.
      */
     private suspend fun inlineAcksFor(
@@ -3741,8 +3778,10 @@ class MeshManager(
         // A styled body's ranges ride in the same frame (ADR 2026-10.p95v), and so do its declared languages (ADR
         // 2026-10.t2h6), both counted at the named layout's two-byte key: the larger of the two seal forms, so a fallback
         // to v2 never overflows.
+        // The recipient's own compact budget (ADR 2026-11.gsqu, Stage 1a.4): Meshtastic's 168 B, so the 160-B body budget.
+        val plaintext = loraDirectSink()?.budgetFor(recipientId)?.plaintextBytes ?: LORA_DIRECT_PLAINTEXT_BYTES
         val room =
-            LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying, attached) - LoraSizeHint.utf8Length(text) -
+            LoraSizeHint.budget(plaintext - DM_BODY_MARGIN_BYTES, replying, attached) - LoraSizeHint.utf8Length(text) -
                 StyleSpans.wireCost(styles, StyleKey.NAMED) - declared.wireCost(named = true)
         val fit = (room / INLINE_ACK_BYTES).coerceIn(0, MAX_INLINE_ACKS)
         if (fit == 0) return InlineAcks()
@@ -6625,6 +6664,15 @@ class MeshManager(
                 peerId: String,
                 limit: Int,
                 untakenOnly: Boolean,
+            ): List<DirectDm> = unackedTo(peerId, limit, untakenOnly, maxBytes = LORA_DIRECT_PLAINTEXT_BYTES)
+
+            // The asking plane's own budget, filtered before the limit (ADR 2026-11.gsqu, Stage 1a.4): a DM too long for
+            // this board must not take the place of one that fits.
+            override suspend fun unackedTo(
+                peerId: String,
+                limit: Int,
+                untakenOnly: Boolean,
+                maxBytes: Int,
             ): List<DirectDm> {
                 if (peerId in settings.blockedNodeIds.first()) return emptyList()
                 val since = clock() - LORA_DIRECT_SEND_WINDOW_MS
@@ -6635,8 +6683,9 @@ class MeshManager(
                     .filter { it.sentAt > since && !(untakenOnly && it.id in tookBoard) }
                     .sortedByDescending { it.sentAt }
                     .mapNotNull { row ->
-                        compactPlaintext(row.sealedContent())
-                            ?.takeIf { it.size <= LORA_DIRECT_PLAINTEXT_BYTES }
+                        compactCopyOf(row.sealedContent(), maxBytes)
+                            ?.plaintext
+                            ?.takeIf { it.size <= maxBytes }
                             ?.let { DirectDm(row.id, row.sentAt, it, boardTook = row.id in tookBoard) }
                     }.take(limit)
                     .toList()
@@ -6661,7 +6710,8 @@ class MeshManager(
      * the signed copy sealed, under its id and stamp. Only toward a pinned profile carrying [Protocol.CAP_LORA_DIRECT],
      * and only inside [LORA_DIRECT_SEND_WINDOW_MS]; whether a packet goes on the air is then the plane's own gates (the
      * board map, the covers, its reach marks, one packet). A content the compact layout cannot hold canonically has no
-     * compact copy at all.
+     * compact copy at all. [loraHeld] are the inline acks the coalescer gave [content] to carry: shed to fit the sink's
+     * budget, they are given back to it.
      */
     private suspend fun offerLoraDirect(
         recipientId: String,
@@ -6669,27 +6719,40 @@ class MeshManager(
         sentAt: Long,
         content: MessageContent,
         kind: DirectKind,
+        loraHeld: List<String> = emptyList(),
     ) {
         val sink = loraDirectSink() ?: return
-        if (clock() - sentAt >= LORA_DIRECT_SEND_WINDOW_MS) return
-        val peer = peers.find(recipientId) ?: return
-        if ((peer.capabilities ?: 0L) and Protocol.CAP_LORA_DIRECT == 0L) return
-        val plaintext = compactPlaintext(content) ?: return
-        // A peer pinned a moment ago is in the seal's index before the peer table's flow comes round.
-        peer.pubKey?.let { PublicKeyBundle.decode(it) }?.let { loraSeal?.learn(recipientId, it.dhPublicKey()) }
-        sink.offer(recipientId, frameId, sentAt, plaintext, kind)
+        offerLoraDirect(sink, sink.budgetFor(recipientId), recipientId, frameId, sentAt, content, kind, loraHeld)
     }
 
     /**
-     * [content] in the v3 compact layout, the inline acks shed when that is what it takes to fit one packet at the MTU
-     * floor (Crypto 4: they are idempotent and ride the signed copy). Null when the layout has no canonical form for it.
-     * Still too long, it goes to the plane as it is, which counts it `loraDirectTooLong` against its own payload cap.
+     * [offerLoraDirect] to the [sink] resolved once for the whole offer, sized by its [budget] (ADR 2026-11.gsqu, Stage
+     * 1a.4): the copy, its shed and the offer all read one board's numbers, so nothing sized for one board goes to
+     * another.
      */
-    private fun compactPlaintext(content: MessageContent): ByteArray? {
-        val whole = MessageContentV2.encodeOrNull(content) ?: return null
-        if (whole.size <= LORA_DIRECT_PLAINTEXT_BYTES || content.ctl != null || content.acks.isNullOrEmpty()) return whole
-        // The read mask indexes the acks, so it goes with them.
-        return MessageContentV2.encodeOrNull(content.copy(acks = null, rm = null))
+    @Suppress("LongParameterList")
+    private suspend fun offerLoraDirect(
+        sink: LoraDirectSink,
+        budget: LoraDirectBudget,
+        recipientId: String,
+        frameId: String,
+        sentAt: Long,
+        content: MessageContent,
+        kind: DirectKind,
+        loraHeld: List<String>,
+    ) {
+        if (clock() - sentAt >= LORA_DIRECT_SEND_WINDOW_MS) return
+        val peer = peers.find(recipientId) ?: return
+        if ((peer.capabilities ?: 0L) and Protocol.CAP_LORA_DIRECT == 0L) return
+        val copy = compactCopyOf(content, budget.plaintextBytes, loraHeld) ?: return
+        // A peer pinned a moment ago is in the seal's index before the peer table's flow comes round.
+        peer.pubKey?.let { PublicKeyBundle.decode(it) }?.let { loraSeal?.learn(recipientId, it.dhPublicKey()) }
+        sink.offer(recipientId, frameId, sentAt, copy.plaintext, kind)
+        // The ✓✓s the shed copy cannot carry go back to the hold, so a standalone compact tick takes them to a peer who
+        // hears only the board; the signed copy carried them too, and a receipt is idempotent. Their flush also re-seals one
+        // signed CTL_RECEIPT, since DmReAckLedger does not record inline acks on purpose: bounded at one per shed DM (the
+        // ledger then records that tick, ADR 2026-10.8hn6) and idempotent (ADR 018). Never mark them carried in the ledger.
+        if (copy.giveBack.isNotEmpty()) dmAcks.giveBack(recipientId, copy.giveBack)
     }
 
     /**
@@ -6703,17 +6766,20 @@ class MeshManager(
         sentAt: Long,
         ids: List<String>,
     ) {
-        if (loraDirectSink() == null) return
+        // One sink and one budget for every chunk (ADR 2026-11.gsqu, Stage 1a.4): the ticks are cut to that board's count.
+        val sink = loraDirectSink() ?: return
+        val budget = sink.budgetFor(authorId)
         // The read marks among [ids] (ADR 2026-11.z6jw), told or not; null toward an author who reads no mask. Each chunk
         // carries its own mask over its own list as built, as wide as with none of it read: never a packet of its own, never
         // a told read, and the same chunks and bytes as a flush with no read.
         val read = readSync.readSet(peers.find(authorId)?.capabilities, ids)
-        ids.distinct().chunked(LORA_DIRECT_TICK_ACKS).forEachIndexed { i, chunk ->
+        ids.distinct().chunked(budget.tickAcks.coerceAtLeast(1)).forEachIndexed { i, chunk ->
             val rm = read?.let { ReadMask.encode(chunk, it) }
             val content = receiptContent(chunk, rm)
             // Counted only for a chunk with a read in it: past four ids a mask is never 0 (its width bit), read or not.
             if (read != null && chunk.any { it in read }) metrics.onReadsLoraOffered()
-            offerLoraDirect(authorId, if (i == 0) firstId else FrameId.new(), sentAt, content, DirectKind.RECEIPT)
+            val id = if (i == 0) firstId else FrameId.new()
+            offerLoraDirect(sink, budget, authorId, id, sentAt, content, DirectKind.RECEIPT, loraHeld = emptyList())
         }
     }
 

@@ -1,0 +1,219 @@
+none allowance=22500 ceiling=11250 slot=44.464000000000006 dedicated=false known=false snapAllowance=22500 snapCeiling=11250 toa=[927, 1050, 1296, 1665, 2074, 2074, 2156, 1665, 1910, 2074, 2115, 2156] unsigned=[436, 559, 804, 1173, 1583, 1583, 1665, 1665, 1910, 2074, 2115, 2156] pad=[1, 100, 166, 166, 166, 166, 166, 165, 200]
+none-unlocked allowance=22500 ceiling=11250 slot=44.464000000000006 dedicated=false known=false snapAllowance=22500 snapCeiling=11250 toa=[927, 1050, 1296, 1665, 2074, 2074, 2156, 1665, 1910, 2074, 2115, 2156] unsigned=[436, 559, 804, 1173, 1583, 1583, 1665, 1665, 1910, 2074, 2115, 2156] pad=[1, 100, 166, 166, 166, 166, 166, 165, 200]
+null-after allowance=45000 ceiling=22500 slot=16.816000000000003 dedicated=false known=true snapAllowance=45000 snapCeiling=22500 toa=[272, 303, 385, 498, 621, 621, 641, 498, 569, 621, 641, 641] unsigned=[119, 160, 231, 344, 467, 467, 498, 498, 569, 621, 641, 641] pad=[1, 100, 166, 166, 166, 166, 166, 165, 200] region=EU_868 preset=MEDIUM_FAST
+dedicated unlocks=false US LONG_FAST ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US LONG_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US LONG_SLOW ch=114 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US LONG_SLOW ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US VERY_LONG_SLOW ch=114 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US VERY_LONG_SLOW ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US MEDIUM_SLOW ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US MEDIUM_SLOW ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US MEDIUM_FAST ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US MEDIUM_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US SHORT_SLOW ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US SHORT_SLOW ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US SHORT_FAST ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US SHORT_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US LONG_MODERATE ch=114 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US LONG_MODERATE ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US SHORT_TURBO ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US SHORT_TURBO ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US LONG_TURBO ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US LONG_TURBO ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US LITE_FAST ch=114 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US LITE_FAST ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US LITE_SLOW ch=114 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US LITE_SLOW ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US NARROW_FAST ch=114 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US NARROW_FAST ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US NARROW_SLOW ch=114 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US NARROW_SLOW ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US TINY_FAST ch=62 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US TINY_FAST ch=63 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US TINY_SLOW ch=62 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US TINY_SLOW ch=63 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US MEDIUM_TURBO ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false US MEDIUM_TURBO ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ LONG_FAST ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ LONG_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ LONG_SLOW ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ LONG_SLOW ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ VERY_LONG_SLOW ch=114 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ VERY_LONG_SLOW ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ MEDIUM_SLOW ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ MEDIUM_SLOW ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ MEDIUM_FAST ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ MEDIUM_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ SHORT_SLOW ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ SHORT_SLOW ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ SHORT_FAST ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ SHORT_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ LONG_MODERATE ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ LONG_MODERATE ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ SHORT_TURBO ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ SHORT_TURBO ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ LONG_TURBO ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ LONG_TURBO ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ LITE_FAST ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ LITE_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ LITE_SLOW ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ LITE_SLOW ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ NARROW_FAST ch=114 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ NARROW_FAST ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ NARROW_SLOW ch=114 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ NARROW_SLOW ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ TINY_FAST ch=62 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ TINY_FAST ch=63 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ TINY_SLOW ch=62 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ TINY_SLOW ch=63 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ MEDIUM_TURBO ch=10 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=false ANZ MEDIUM_TURBO ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US LONG_FAST ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US LONG_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US LONG_SLOW ch=114 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US LONG_SLOW ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US VERY_LONG_SLOW ch=114 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US VERY_LONG_SLOW ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US MEDIUM_SLOW ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US MEDIUM_SLOW ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US MEDIUM_FAST ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US MEDIUM_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US SHORT_SLOW ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US SHORT_SLOW ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US SHORT_FAST ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US SHORT_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US LONG_MODERATE ch=114 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US LONG_MODERATE ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US SHORT_TURBO ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US SHORT_TURBO ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US LONG_TURBO ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US LONG_TURBO ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US LITE_FAST ch=114 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US LITE_FAST ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US LITE_SLOW ch=114 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US LITE_SLOW ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US NARROW_FAST ch=114 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US NARROW_FAST ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US NARROW_SLOW ch=114 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US NARROW_SLOW ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US TINY_FAST ch=62 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US TINY_FAST ch=63 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US TINY_SLOW ch=62 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US TINY_SLOW ch=63 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true US MEDIUM_TURBO ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true US MEDIUM_TURBO ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ LONG_FAST ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ LONG_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ LONG_SLOW ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ LONG_SLOW ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ VERY_LONG_SLOW ch=114 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ VERY_LONG_SLOW ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ MEDIUM_SLOW ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ MEDIUM_SLOW ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ MEDIUM_FAST ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ MEDIUM_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ SHORT_SLOW ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ SHORT_SLOW ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ SHORT_FAST ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ SHORT_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ LONG_MODERATE ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ LONG_MODERATE ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ SHORT_TURBO ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ SHORT_TURBO ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ LONG_TURBO ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ LONG_TURBO ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ LITE_FAST ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ LITE_FAST ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ LITE_SLOW ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ LITE_SLOW ch=11 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ NARROW_FAST ch=114 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ NARROW_FAST ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ NARROW_SLOW ch=114 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ NARROW_SLOW ch=115 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ TINY_FAST ch=62 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ TINY_FAST ch=63 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ TINY_SLOW ch=62 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ TINY_SLOW ch=63 allowance=45000 ceiling=22500 dedicated=false
+dedicated unlocks=true ANZ MEDIUM_TURBO ch=10 allowance=450000 ceiling=225000 dedicated=true
+dedicated unlocks=true ANZ MEDIUM_TURBO ch=11 allowance=45000 ceiling=22500 dedicated=false
+radio LONG_FAST sha256=626982b1e7d7dbbf265ac84ed89ee75169636e3c87655842e3684faf2b1e3ca9
+radio LONG_FAST EU_868 override=false allowance=45000 ceiling=22500 slot=44.464000000000006 dedicated=false known=true snapAllowance=45000 snapCeiling=22500 toa=[927, 1050, 1296, 1665, 2074, 2074, 2156, 1665, 1910, 2074, 2115, 2156] unsigned=[436, 559, 804, 1173, 1583, 1583, 1665, 1665, 1910, 2074, 2115, 2156] pad=[1, 100, 166, 166, 166, 166, 166, 165, 200]
+radio LONG_FAST EU_868 override=true allowance=45000 ceiling=22500 slot=44.464000000000006 dedicated=false known=true snapAllowance=45000 snapCeiling=22500 toa=[927, 1050, 1296, 1665, 2074, 2074, 2156, 1665, 1910, 2074, 2115, 2156] unsigned=[436, 559, 804, 1173, 1583, 1583, 1665, 1665, 1910, 2074, 2115, 2156] pad=[1, 100, 166, 166, 166, 166, 166, 165, 200]
+radio LONG_FAST US override=false allowance=45000 ceiling=22500 slot=44.464000000000006 dedicated=false known=true snapAllowance=45000 snapCeiling=22500 toa=[927, 1050, 1296, 1665, 2074, 2074, 2156, 1665, 1910, 2074, 2115, 2156] unsigned=[436, 559, 804, 1173, 1583, 1583, 1665, 1665, 1910, 2074, 2115, 2156] pad=[1, 100, 166, 166, 166, 166, 166, 165, 200]
+radio LONG_SLOW sha256=dd115606eadcbd72f3fb8723307e8c3199dd669ee9410b5fb40bb3d0e181be7b
+radio VERY_LONG_SLOW sha256=9bddf897f434b5b7a20d2ee2e6b6810682a2bfb5ef5f9a804e02ec459ee81c35
+radio MEDIUM_SLOW sha256=8fad2148c855411991dbb82a5d9b187677a8d5db775b3f164a7fe227090e3a6e
+radio MEDIUM_FAST sha256=4dfa5f2cfe5d12653d4485f5b10a1b3d7c09fdbfc3559493d1140a77443dae23
+radio SHORT_SLOW sha256=ca60219f1ad10d9e13ab3a6f6324d8629da1a0ab826d8f87419839d419ea23bb
+radio SHORT_FAST sha256=d85216071a017c88552aef804881619c65134c2fe1bc6c3a4c12c015d9af47d0
+radio LONG_MODERATE sha256=b28e11410d17e72840d1ad6c27634827d697a53c3bca608245c249a425f3f4e7
+radio SHORT_TURBO sha256=4c7de17167ec8874689f7cdd58043677bcbb429039ad426aa661475798b5865e
+radio LONG_TURBO sha256=9eb6f8ecbb7d2a86ef9cd869d35fa33ed4c6a1d6b3f95f9b33293d0405ed9f1a
+radio LITE_FAST sha256=abc98fb8840cf41de4ce01335c583031200588a2f7abd164bb31828813652017
+radio LITE_SLOW sha256=04efd98de23f240ff9b782ef3704d0f8080b895852f7a23ca5932f5c79394609
+radio NARROW_FAST sha256=df383b9b0b30ab78b0138d4e5163819dd07d206af23d36143385bd26fa36bc4d
+radio NARROW_SLOW sha256=734afe2d7be3e1d7a372169324c53a78d56a57b5c107332a742325feec88323f
+radio TINY_FAST sha256=8db968ead80513427465ac524f310c38a795504961398d851e871eb7c25bfe11
+radio TINY_SLOW sha256=801ffbde4e75e785b6d2583f898fa8cfeb4c86720a7eb2e25d3627de332388c5
+radio MEDIUM_TURBO sha256=ca1172cb2bd7ab663067c9751488dda8df13454a4ff696451f09649528edf856
+board SigningFacts(firmware=null, hasXeddsa=null, policy=null, licensed=false) sha256=e4ec1965935bea35ed0e64243521aa45ccded613905b37b554468d52ca157fb2
+snapshot SigningFacts(firmware=null, hasXeddsa=null, policy=null, licensed=false) p=false k=false knit=165 room=166
+snapshot SigningFacts(firmware=null, hasXeddsa=null, policy=null, licensed=false) p=false k=true knit=153 room=166
+snapshot SigningFacts(firmware=null, hasXeddsa=null, policy=null, licensed=false) p=true k=false knit=165 room=154
+snapshot SigningFacts(firmware=null, hasXeddsa=null, policy=null, licensed=false) p=true k=true knit=153 room=154
+board SigningFacts(firmware=2.7.15.567b8ea, hasXeddsa=false, policy=null, licensed=false) sha256=3588bc5e83cce6fd034f64227515d7895ee616d367118b25bc8cb715c9a31751
+board SigningFacts(firmware=2.7.15.567b8ea, hasXeddsa=true, policy=null, licensed=false) sha256=f64c6cc854bb8062b2cec0c336d8e1ff276d8375de7163d1ae15ec59cba12cde
+board SigningFacts(firmware=2.8, hasXeddsa=true, policy=null, licensed=false) sha256=5eb081997f9c466a6fb88f016025576deda7ca91fcf36ddeed2065e1ff182f2a
+board SigningFacts(firmware=garbage, hasXeddsa=null, policy=null, licensed=false) sha256=6280088d3b433f26e850c888fb7f912a0c867d2d2ee441d867542c407ac26121
+board SigningFacts(firmware=2.8.0.1, hasXeddsa=true, policy=null, licensed=false) sha256=3dc9f2d5038166f1db3e5d07a4bff8f0281ab1458fd33c5c8ff720bdb63ae8fc
+board SigningFacts(firmware=2.8.0.1, hasXeddsa=true, policy=null, licensed=true) sha256=d5331edb53d6ae106ff25b91801017ec54796dd2151b7b7bdf36e31ac353b2f6
+board SigningFacts(firmware=2.8.0.1, hasXeddsa=true, policy=COMPATIBLE, licensed=false) sha256=ceac2525f6424f364a5805735470ee873269b610902366de68764d3a02be7237
+board SigningFacts(firmware=2.8.0.1, hasXeddsa=true, policy=COMPATIBLE, licensed=true) sha256=7aa384240faa2bcf49b252562446bb1a3e4bba189d14cc7c0d7c9febdd6921dc
+board SigningFacts(firmware=2.8.0.1, hasXeddsa=true, policy=BALANCED, licensed=false) sha256=11e742f7398275012f37d99a12c7c49ad49b6f6b0a225215decee13d83abeeb4
+board SigningFacts(firmware=2.8.0.1, hasXeddsa=true, policy=BALANCED, licensed=true) sha256=42b3c571fc1e07d853c5e81b8bb9a92715e9da48cead668613e616a33425c453
+board SigningFacts(firmware=2.8.0.1, hasXeddsa=true, policy=STRICT, licensed=false) sha256=c8e9769d546b0cd7edae412212e0fe1e8a42d636fb77af0dca5d8eef655e6c1a
+board SigningFacts(firmware=2.8.0.1, hasXeddsa=true, policy=STRICT, licensed=true) sha256=16f6e75c251be88040083fefb6fed159460b2cc869ca9a511cf07151e73b8aae
+board SigningFacts(firmware=2.8.0.1, hasXeddsa=true, policy=UNRECOGNISED, licensed=false) sha256=97cf197b559b60797ea0bd0cad133a8dc5fcc9de08240fdaad2a251b93dc31c0
+board SigningFacts(firmware=2.8.0.1, hasXeddsa=true, policy=UNRECOGNISED, licensed=true) sha256=08b52dfda8a1e0e5648ef57abe8be2af8e59b155effabaf44109e96a798386f5
+board SigningFacts(firmware=2.8.1.abc, hasXeddsa=true, policy=null, licensed=false) sha256=10420aae2d3b33b0cea43d870e2ef43b01d03b831bb49f22ebca45a2c2dbbc15
+board SigningFacts(firmware=2.8.1.abc, hasXeddsa=true, policy=null, licensed=true) sha256=47bc2150b515a52f7bc7eaa8bc1651240749cedb8b0e7e65eac56da33d52d1b9
+board SigningFacts(firmware=2.8.1.abc, hasXeddsa=true, policy=COMPATIBLE, licensed=false) sha256=76d634fc4ca06739bfb8df37a25b2d33eccf8c301667dc5cdd40615f4525c5a0
+board SigningFacts(firmware=2.8.1.abc, hasXeddsa=true, policy=COMPATIBLE, licensed=true) sha256=7982a6657fbf316414f94adde3298f7c289b26cf6c2f7b6709375116f3d7ff64
+board SigningFacts(firmware=2.8.1.abc, hasXeddsa=true, policy=BALANCED, licensed=false) sha256=d6cb264adbae824fd5fccf5c64f78c1405d9a8170a0586da0d8e87ea5258a762
+board SigningFacts(firmware=2.8.1.abc, hasXeddsa=true, policy=BALANCED, licensed=true) sha256=53e44edeaf8cd7edccb638f91ee04080a10cc3551068dea53031029d28dbc5b9
+board SigningFacts(firmware=2.8.1.abc, hasXeddsa=true, policy=STRICT, licensed=false) sha256=814e4ac7d9a5eaa4ec07c077e9438708cc4b708cac481ed90b625067000b2d11
+board SigningFacts(firmware=2.8.1.abc, hasXeddsa=true, policy=STRICT, licensed=true) sha256=b80cdced60a822ede9c409925026ab229915f9beb4da97d1586b4c1605c43b1c
+board SigningFacts(firmware=2.8.1.abc, hasXeddsa=true, policy=UNRECOGNISED, licensed=false) sha256=c1f0ff9066947732b338b92d2fce217c8f1401de1e084d15fd6d2e7ed1fd3734
+board SigningFacts(firmware=2.8.1.abc, hasXeddsa=true, policy=UNRECOGNISED, licensed=true) sha256=99fabd4103ffa6387bd5e42fdae50430ff1bb11e2b975be50a94885ac760b816
+board SigningFacts(firmware=2.8.2.def, hasXeddsa=true, policy=null, licensed=false) sha256=b46c5ebcd5ef7a5c07cadae65e6d44bbca5a201a087a6f49146e567b71c831a4
+board SigningFacts(firmware=2.8.2.def, hasXeddsa=true, policy=null, licensed=true) sha256=5f87663ababbe1ea153549c84b41afe56a309c4fb1947ae1a7a8331d33eecc38
+board SigningFacts(firmware=2.8.2.def, hasXeddsa=true, policy=COMPATIBLE, licensed=false) sha256=e0edf051a76856f308ebb972fea50cb51a0879cbf24f03902af2c2d742eb6999
+board SigningFacts(firmware=2.8.2.def, hasXeddsa=true, policy=COMPATIBLE, licensed=true) sha256=3b40fd6835e5b9eac4e953ba549e03b9a21f031ca127d5e2882deae0ed8f5b0f
+board SigningFacts(firmware=2.8.2.def, hasXeddsa=true, policy=BALANCED, licensed=false) sha256=1b76782f9164ad007f7a82cf8d88841c5bfcab5de6b15784d713253c669397b0
+board SigningFacts(firmware=2.8.2.def, hasXeddsa=true, policy=BALANCED, licensed=true) sha256=2aaa57d4ffee69655e72b6f3f66f4c793d4e1dc3231a28c9f50b162fb35d5591
+board SigningFacts(firmware=2.8.2.def, hasXeddsa=true, policy=STRICT, licensed=false) sha256=a4c511ad071bcc0e4f96f088bb08110f296129f8f0a623f39dc4b50d6f98b1b4
+board SigningFacts(firmware=2.8.2.def, hasXeddsa=true, policy=STRICT, licensed=true) sha256=b03cb416c5017452c5001f86210d3315400385fb62d16747148b38b7b8e7b252
+board SigningFacts(firmware=2.8.2.def, hasXeddsa=true, policy=UNRECOGNISED, licensed=false) sha256=90bc2bb5993c22d1af52728c077033aa06e1248e11ad9202e4d9fae8d69d39b6
+board SigningFacts(firmware=2.8.2.def, hasXeddsa=true, policy=UNRECOGNISED, licensed=true) sha256=761513157fea969d7f36161fa6609a934bc43be838a69cb55c01248128c2ef57
+board SigningFacts(firmware=2.9.0.0, hasXeddsa=true, policy=null, licensed=false) sha256=fa8c59e1112abb8da25423dcdf7d75c0c24d4f7496cdacbae1dafb1b1ad60713
+board SigningFacts(firmware=2.9.0.0, hasXeddsa=true, policy=null, licensed=true) sha256=bae1d0f9f9d9f16598ef99cd046a04166802bb1c18e477edfb1ce68f889b6c0f
+board SigningFacts(firmware=2.9.0.0, hasXeddsa=true, policy=COMPATIBLE, licensed=false) sha256=e58bc1380e00af811d9ceb5ac2292df6365875dbd02f4a2135e4e1bf0ad049f2
+board SigningFacts(firmware=2.9.0.0, hasXeddsa=true, policy=COMPATIBLE, licensed=true) sha256=090e1adc5fa2ecb0fe8d38a330af384cc2940fac4b8b13af7c85c09a15c1b4dc
+board SigningFacts(firmware=2.9.0.0, hasXeddsa=true, policy=BALANCED, licensed=false) sha256=e6c76d7dfd9a7b0d5f3b9d190fe0ae72edbfc15649e4b9eac52e0cf3385fe6ba
+board SigningFacts(firmware=2.9.0.0, hasXeddsa=true, policy=BALANCED, licensed=true) sha256=d376e7d687ee099f4478322c82ff4694b7503859a1ed88e56f88ff66c79dacb4
+board SigningFacts(firmware=2.9.0.0, hasXeddsa=true, policy=STRICT, licensed=false) sha256=b8b91ec2e1fddddbc0eb2f5d1973a32b1cf8b78c2b68a4356fc0a571e8bdf33f
+board SigningFacts(firmware=2.9.0.0, hasXeddsa=true, policy=STRICT, licensed=true) sha256=aa6e91135f3789d4b3f77e62c4c7556a176a272df4ce11a9aa4bec43c761556a
+board SigningFacts(firmware=2.9.0.0, hasXeddsa=true, policy=UNRECOGNISED, licensed=false) sha256=34da20f13ded12e7e065b9e86dfaa53e86c558756d6262bebebe51e8447af84d
+board SigningFacts(firmware=2.9.0.0, hasXeddsa=true, policy=UNRECOGNISED, licensed=true) sha256=3b609da0a64455a62e4a25c40d3e8dac35c43a962b38a8224932ef3a69b1e361
+board SigningFacts(firmware=null, hasXeddsa=true, policy=null, licensed=false) sha256=0e00cef9420334e0ce036f52ef170f8e51e8e6de009b0bceb231663e851adce0
+board SigningFacts(firmware=null, hasXeddsa=true, policy=null, licensed=true) sha256=ec101cedd582e7dd4ccb41308e25a9be3cf7b6bfdc89417694f4a9c64c608494
+board SigningFacts(firmware=null, hasXeddsa=true, policy=COMPATIBLE, licensed=false) sha256=c0b96414a42db8bba59ad79867d009ac586d53ee93745c8e890148934204f9f4
+board SigningFacts(firmware=null, hasXeddsa=true, policy=COMPATIBLE, licensed=true) sha256=a41180379a3fe29960746aaab2e0e4d9cd8e66113df5e4c49e5ba43b85b164e7
+board SigningFacts(firmware=null, hasXeddsa=true, policy=BALANCED, licensed=false) sha256=800cd6a011486bd81f963f1af7a4197c454823a1212793944dc1460064d9846c
+board SigningFacts(firmware=null, hasXeddsa=true, policy=BALANCED, licensed=true) sha256=74a39c8eaea062714c01fe643570a98100d1e816ffd718c684df286a8711ae1a
+board SigningFacts(firmware=null, hasXeddsa=true, policy=STRICT, licensed=false) sha256=01c657b3dab745e0623576ea89c06b1fea96dc04abe6b5c593bacd06f9dcdcbc
+board SigningFacts(firmware=null, hasXeddsa=true, policy=STRICT, licensed=true) sha256=0a451c2c936b46f00afb440580e6dff7fdbe4ba1d9a63fcde8a3afa224d50721
+board SigningFacts(firmware=null, hasXeddsa=true, policy=UNRECOGNISED, licensed=false) sha256=9f1ec04f736fd54cea9aeeb41fc61453be71f5eec1125910b341a578a392936c
+board SigningFacts(firmware=null, hasXeddsa=true, policy=UNRECOGNISED, licensed=true) sha256=0f248d41f11776e35aa98f0d32cc23934cd3e801545d5e5b80f0492514eaf33f
+board SigningFacts(firmware=2.8.1.abc, hasXeddsa=false, policy=null, licensed=true) sha256=6ec6796631e34f76e7040f27d5a6233587109dce5d0134c9637e72f9be887215

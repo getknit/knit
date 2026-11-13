@@ -443,6 +443,14 @@ val meshModule =
                             untakenOnly: Boolean,
                         ): List<DirectDm> = get<MeshManager>().loraDirectSource().unackedTo(peerId, limit, untakenOnly)
 
+                        // The plane's own budget, passed through (ADR 2026-11.gsqu, Stage 1a.4).
+                        override suspend fun unackedTo(
+                            peerId: String,
+                            limit: Int,
+                            untakenOnly: Boolean,
+                            maxBytes: Int,
+                        ): List<DirectDm> = get<MeshManager>().loraDirectSource().unackedTo(peerId, limit, untakenOnly, maxBytes)
+
                         override suspend fun isUnacked(frameId: String): Boolean = get<MeshManager>().loraDirectSource().isUnacked(frameId)
                     },
                 // Collected at start(), and only while a board is configured, when the manager exists.

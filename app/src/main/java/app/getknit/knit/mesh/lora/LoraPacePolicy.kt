@@ -416,19 +416,27 @@ internal class LoraPacePolicy(
         boardFree = free
     }
 
-    /** A rate-limit or duty-cycle NAK widens the gap for a cool-down; other NAKs don't pace. */
+    /**
+     * A rate-limit or duty-cycle NAK widens the gap for a cool-down; other NAKs don't pace. The Meshtastic reading of a
+     * NAK, through the one classifier ([MeshtasticTraits.refusalOf]); the plane core asks [onPaceRefusal] itself.
+     */
     @Synchronized
     fun onNak(
         reason: RoutingError,
         now: Long,
     ) {
-        if (reason == RoutingError.RATE_LIMIT_EXCEEDED || reason == RoutingError.DUTY_CYCLE_LIMIT) {
-            nakUntil = now + nakBackoffMs
-        }
+        if (MeshtasticTraits.refusalOf(reason, byDestination = false) == RefusalClass.PACE) onPaceRefusal(now)
+    }
+
+    /** Our board refused for pace ([RefusalClass.PACE]): nothing leaves for a cool-down. */
+    @Synchronized
+    fun onPaceRefusal(now: Long) {
+        nakUntil = now + nakBackoffMs
     }
 
     companion object {
-        private const val MIN_GAP_MS = 3_000L
+        /** The shortest gap between two packets on a Meshtastic board ([BoardTraits.minGapMs]). */
+        internal const val MIN_GAP_MS = 3_000L
 
         // Raised from 12 with the bridge (ADR 044, gone since ADR 2026-10.rp3s, which kept the cap): a resend after
         // a hearing can still enqueue a small burst behind live traffic, and class shedding — not the cap — is what protects
@@ -602,8 +610,8 @@ internal class OutboundFrame(
     val ceiling: Ceiling = Ceiling.FULL,
     /** Which channel it is written to, and so which guard it must pass; see [Destination]. */
     val destination: Destination = Destination.Knit,
-    /** Whom it is addressed to: the broadcast address for everything but a [Destination.Reply]. */
-    val to: UInt = MeshtasticProto.BROADCAST,
+    /** Whom it is addressed to: null, the whole channel, for everything but a [Destination.Reply]. */
+    val to: BoardAddr? = null,
     /**
      * A key identifying **the thing this frame is a snapshot of**, so that enqueuing a newer copy discards the
      * older one still waiting. Null for a frame that is an event rather than a state.
@@ -629,6 +637,35 @@ internal class OutboundFrame(
      */
     val sigKey: String? = null,
 ) {
+    /**
+     * A frame addressed by a Meshtastic node number, [MeshtasticProto.BROADCAST] for the channel: the form before
+     * [BoardAddr] was kind-tagged (ADR 2026-11.gsqu, Stage 1b.3), which the pacer's tests still build.
+     */
+    @Suppress("LongParameterList")
+    constructor(
+        messages: List<ByteArray>,
+        label: String,
+        klass: FrameClass = FrameClass.ROOM,
+        ceiling: Ceiling = Ceiling.FULL,
+        destination: Destination = Destination.Knit,
+        to: UInt,
+        supersedes: String? = null,
+        gate: RideGate = RideGate(),
+        direct: DirectSend? = null,
+        sigKey: String? = null,
+    ) : this(
+        messages,
+        label,
+        klass,
+        ceiling,
+        destination,
+        to.takeIf { it != MeshtasticProto.BROADCAST }?.let { BoardAddr(it) },
+        supersedes,
+        gate,
+        direct,
+        sigKey,
+    )
+
     /**
      * How many of [messages] the board has already taken. A board that runs out of queue part-way through a
      * fragmented frame refuses the rest, and the frame is requeued **whole** — so without this cursor it
@@ -706,12 +743,14 @@ internal class OutboundFrame(
 
     /**
      * What the pacer admits this frame against, at [price]: what is still owed, and for a compact DM that one packet
-     * as often as the firmware may put it on the air — the send and every retry ([LoraDirectPolicy.AIRINGS]). Admitting
-     * one airing and then retrying three times would spend air no admission asked for (ADR 2026-10.x9fa).
+     * as often as the firmware may put it on the air — the send and every retry ([DirectSend.airings], the board kind's,
+     * carried on the frame so admission and booking read one number). Admitting one airing and then retrying three times
+     * would spend air no admission asked for (ADR 2026-10.x9fa).
      */
     fun admissionSizes(): List<Int> {
         val sizes = remaining.map { it.size }
-        return if (direct == null) sizes else List(LoraDirectPolicy.AIRINGS) { sizes.first() }
+        val send = direct ?: return sizes
+        return List(send.airings) { sizes.first() }
     }
 
     private companion object {
@@ -743,4 +782,9 @@ internal class DirectSend(
      * `NodeInfo` (ADR 2026-10.aajj): a second 35 to it is a give-up, never another re-offer.
      */
     val afterPeerKey: Boolean = false,
+    /**
+     * Every airing the board kind may give it ([BoardTraits.airings]), fixed when it was queued: what its admission asks,
+     * what its send books and what its ack and refusal refund — one number for all four (ADR 2026-11.gsqu, Stage 1a.1).
+     */
+    val airings: Int = LoraDirectPolicy.AIRINGS,
 )

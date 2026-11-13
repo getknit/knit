@@ -64,6 +64,7 @@ import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.DirectKind
 import app.getknit.knit.mesh.lora.LoraBoardHolder
 import app.getknit.knit.mesh.lora.LoraContactPolicy
+import app.getknit.knit.mesh.lora.LoraDirectBudget
 import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.protocol.BlobReqContent
@@ -1753,6 +1754,97 @@ class MeshManagerTest {
             assertNull("shed", compact.acks)
             assertTrue(offer.plaintext.size <= LORA_DIRECT_PLAINTEXT_BYTES)
         }
+
+    /**
+     * ADR 2026-11.gsqu, Stage 1a.4: a compact copy that sheds its inline acks gives the LoRa-held ones back to the
+     * coalescer, so a standalone compact ✓✓ still takes them to a peer who hears only the board — never the room rider,
+     * which is AckSync's and never airs. The sink's budget is asked twice by the send: by `inlineAcksFor` (168, so all
+     * three ride the signed copy) and by the offer (a smaller board's, so the compact copy sheds them).
+     */
+    @Test
+    fun aShedCompactCopyGivesItsLoraHeldAcksBackForAStandaloneTick() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val sink = rig.bindBudgetedLora(LoraDirectBudget(168, 9), LoraDirectBudget(40, 1))
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val held = List(2) { FrameId.new() }
+            val rider = FrameId.new()
+            held.forEach { rig.manager.dmAcks.hold(rig.bob.nodeId, it) }
+            rig.manager.ackSync.giveBackRiding(rig.bob.nodeId, listOf(rider))
+
+            assertTrue(rig.manager.sendChat("hi", recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+
+            assertEquals("the signed copy carried both DM acks inline", 2L, rig.metrics.receipts().receiptsCoalesced)
+            assertEquals("and the room rider", 1L, rig.metrics.receipts().receiptsRidden)
+            val offer = sink.offers.single()
+            assertEquals(DirectKind.MESSAGE, offer.kind)
+            assertNull("the compact copy shed them", checkNotNull(MessageContentV2.decode(offer.plaintext)).acks)
+            assertEquals("the coalescer holds the DM acks again, never the rider", held, rig.manager.dmAcks.pending(rig.bob.nodeId))
+
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+
+            val ticks = sink.offers.filter { it.kind == DirectKind.RECEIPT }
+            assertEquals("a standalone compact ✓✓ takes both", held.toSet(), ticks.flatMap(::ackedBy).toSet())
+            assertTrue("never the rider", ticks.flatMap(::ackedBy).none { it == rider })
+        }
+
+    /** The control: a compact copy that fits keeps its acks, and nothing is given back or ticked again. */
+    @Test
+    fun aCompactCopyThatFitsGivesNothingBack() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val sink = rig.bindBudgetedLora(LoraDirectBudget(168, 9))
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val held = List(2) { FrameId.new() }
+            held.forEach { rig.manager.dmAcks.hold(rig.bob.nodeId, it) }
+
+            assertTrue(rig.manager.sendChat("hi", recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+
+            assertEquals(held, checkNotNull(MessageContentV2.decode(sink.offers.single().plaintext)).acks)
+            assertTrue(
+                rig.manager.dmAcks
+                    .pending(rig.bob.nodeId)
+                    .isEmpty(),
+            )
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+            assertTrue("no compact receipt for them", sink.offers.none { it.kind == DirectKind.RECEIPT })
+        }
+
+    /** A LoRa sink that records its offers and answers [budgets] in turn, the last one from then on. */
+    private class BudgetedSink(
+        private val budgets: List<LoraDirectBudget>,
+    ) : LoraDirectSink {
+        val offers = java.util.concurrent.CopyOnWriteArrayList<LoraOffer>()
+        private var asked = 0
+
+        override fun offer(
+            recipientId: String,
+            frameId: String,
+            sentAtMs: Long,
+            plaintext: ByteArray,
+            kind: DirectKind,
+        ) {
+            offers += LoraOffer(recipientId, frameId, sentAtMs, plaintext, kind)
+        }
+
+        @Synchronized
+        override fun budgetFor(recipientId: String): LoraDirectBudget = budgets[minOf(asked++, budgets.lastIndex)]
+    }
+
+    /** Binds a [BudgetedSink] the way `bindLora` binds the rig's own, and returns it. */
+    private fun Rig.bindBudgetedLora(vararg budgets: LoraDirectBudget): BudgetedSink {
+        val sink = BudgetedSink(budgets.toList() + LoraDirectBudget(168, 9))
+        manager.bindLoraDirect(sink = { sink }, seal = LoraDirectSeal(ownDhPrivate = { ByteArray(32) { 1 } }, clock = { clockNow }))
+        return sink
+    }
 
     /** Nothing compact toward a group, toward a peer without the capability, or from a manager no plane is bound to. */
     @Test

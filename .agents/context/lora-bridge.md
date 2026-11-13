@@ -131,6 +131,22 @@ LoraMeshTransport (pure)      fastFanout/longRangeFanout · LoraFramePolicy (air
                  └─ MeshtasticGatt           the ONLY android.bluetooth importer for the feature (mesh/bluetooth/meshtastic/)
 ```
 
+**The neutral seam (ADR 2026-11.gsqu, Stage 1).** The transport reads its board through `BoardLink`, never
+`MeshtasticLink` directly: `MeshtasticBoardLink` adapts the unchanged Meshtastic link with no buffering of its own
+(`state` is a value-mapping view, read on every `.value`; `packets` and `outcomes` are mapped on the transport's
+collectors). `BoardState.Ready` carries the board's `BoardAddr`, its payload cap, its `RadioParams` and the kind's own
+state (`detail`, the `LinkState.Ready`); a `BoardPacket` carries the neutral fields and the `ReceivedPacket` as its
+attachment. `BoardLink.send` takes a `SendPurpose` (`KnitFrame`, `DirectDm`, `PublicPost`, `AutoReply`, `Admin`) and the
+adapter writes exactly the fields the transport did (`hop_limit` 3 but on the admin write, the port, `want_ack` on a
+compact DM alone, the bound slot or 0), returning `SendResult` and the `userSeq()` stamped before the write. A kind's
+numbers are `BoardTraits` (`MeshtasticTraits` reads every Meshtastic constant where it lives); a compact DM's
+`airings` ride its `DirectSend`, so admission, booking and refund read one number. Every refusal is read through
+`BoardTraits.refusalOf` (`RefusalClass`: `OWN_NO_KEY`, `PEER_LACKS_KEY`, `PACE`, `DEST_REFUSED`, `OTHER`). `LoraAirtime`
+prices from `RadioParams` and a `DutyPolicy`, mapped from a `LoraRadioConfig` in one place. `MeshManager` sizes a compact
+copy by its sink's `LoraDirectSink.budgetFor` (Meshtastic: 168 B, 9 tick acks), and a copy that sheds its inline acks
+gives the LoRa-held ones back to the coalescer (`compactCopyOf`). The Meshtastic-only features still read the Meshtastic
+records until Stage 1c moves them behind `BoardKindHooks`.
+
 `MeshtasticProto` + `ProtoIo` are a hand-rolled protobuf codec (zero new deps): `ToRadio{want_config_id,
 heartbeat, disconnect, packet{Data{portnum=PRIVATE_APP 256, payload}}}` out; `FromRadio{my_info,
 config_complete_id, packet, queueStatus, rebooted, channel, metadata}` in; `Routing.error_reason` NAKs.

@@ -1,5 +1,9 @@
 package app.getknit.knit.mesh.lora
 
+import app.getknit.knit.mesh.crypto.MessageContent
+import app.getknit.knit.mesh.crypto.MessageContentV2
+import app.getknit.knit.mesh.crypto.ReadMask
+import app.getknit.knit.mesh.protocol.FrameId
 import kotlinx.coroutines.flow.Flow
 
 /*
@@ -104,6 +108,20 @@ internal interface LoraDirectSource {
         untakenOnly: Boolean = false,
     ): List<DirectDm>
 
+    /**
+     * [unackedTo], keeping only the DMs whose compact plaintext is at most [maxBytes] — the asking plane's own budget
+     * ([LoraDirectSink.budgetFor]) — before the limit applies, so a DM too long for this board cannot hide one that fits.
+     * Its default ignores [maxBytes] and asks the three-argument form, which a source sizes at Meshtastic's 168 B: a
+     * forward written before the budget was per board still compiles, and is right for a Meshtastic board alone (ADR
+     * 2026-11.gsqu, Stage 1a.4; Stage 5 makes it required).
+     */
+    suspend fun unackedTo(
+        peerId: String,
+        limit: Int,
+        untakenOnly: Boolean,
+        maxBytes: Int,
+    ): List<DirectDm> = unackedTo(peerId, limit, untakenOnly)
+
     /** Whether [frameId] is still one of ours without its ✓✓ (and inside the window): the at-send re-ask of a resend. */
     suspend fun isUnacked(frameId: String): Boolean
 
@@ -144,7 +162,62 @@ internal interface LoraDirectSink {
         plaintext: ByteArray,
         kind: DirectKind,
     )
+
+    /**
+     * How much compact content one packet to [recipientId] holds on this sink's board (ADR 2026-11.gsqu, Stage 1a.4): what
+     * `MeshManager` sizes a compact copy, its inline acks and its ticks by. Total and never null, and fixed per board kind
+     * — never the holder, the link's state or the live payload cap — so a copy sized here is sized as the plane will
+     * check it. The default is Meshtastic's, (168, 9).
+     */
+    fun budgetFor(recipientId: String): LoraDirectBudget = LoraDirectBudget.MESHTASTIC
 }
+
+/**
+ * A compact DM's room on one board kind (ADR 2026-11.gsqu, Stage 1a.4): [plaintextBytes] of v3 compact content in one
+ * packet, and the most ids one compact ✓✓ carries there ([tickAcks], derived: [forPlaintext]).
+ */
+internal data class LoraDirectBudget(
+    val plaintextBytes: Int,
+    val tickAcks: Int,
+) {
+    companion object {
+        /** A budget of [plaintextBytes], with the most tick acks that fit it. */
+        fun forPlaintext(plaintextBytes: Int): LoraDirectBudget = LoraDirectBudget(plaintextBytes, compactTickAcks(plaintextBytes))
+
+        /** Meshtastic's: 168 B at the MTU-255 floor, nine acks (`LORA_DIRECT_PLAINTEXT_BYTES`, `LORA_DIRECT_TICK_ACKS`). */
+        val MESHTASTIC: LoraDirectBudget by lazy { BoardTraits.MESHTASTIC.directBudget() }
+    }
+}
+
+/**
+ * The most ids one compact ✓✓ carries inside [plaintextBytes]: the largest n whose v3 `CTL_RECEIPT` encodes within it —
+ * one id as `ack`, more as `acks`, each 16 raw bytes and a one-byte header (about 5 + 17n B). Encoded rather than
+ * computed, so the count follows the layout; 0 when not even one fits.
+ */
+internal fun compactTickAcks(plaintextBytes: Int): Int {
+    var fits = 0
+    while (fits < MAX_TICK_ACKS_PROBED && receiptBytes(fits + 1) <= plaintextBytes) fits++
+    return fits
+}
+
+/**
+ * The encoded size of a compact `CTL_RECEIPT` carrying [ids] ids, as `MeshManager.offerLoraTicks` builds it toward an
+ * author who reads a mask (ADR 2026-11.z6jw): with its read mask, whose width is a function of the id count alone.
+ */
+private fun receiptBytes(ids: Int): Int {
+    val acks = List(ids) { FrameId.new() }
+    val rm = ReadMask.encode(acks, emptySet())
+    val content =
+        if (ids == 1) {
+            MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = acks.single(), rm = rm)
+        } else {
+            MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, acks = acks, rm = rm)
+        }
+    return MessageContentV2.encodeOrNull(content)?.size ?: Int.MAX_VALUE
+}
+
+/** Far past any packet: a probe bound, never a budget. */
+private const val MAX_TICK_ACKS_PROBED = 64
 
 /**
  * What a compact DM is, as far as the plane needs to know — the one thing it cannot read off sealed bytes. Every kind is

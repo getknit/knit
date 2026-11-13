@@ -128,7 +128,7 @@ internal class LoraContactPolicy(
         sentAfter: Long,
         now: Long,
     ): Verdict {
-        val node = holder.addr.node
+        val node = holder.addr.meshtasticNode ?: return Verdict.Refused(Refusal.NOT_A_BOARD)
         refusal(holder, node, ownBoard)?.let { return Verdict.Refused(it) }
         val keyB64 = checkNotNull(holder.loraKey)
         val key = profileKey(keyB64) ?: return Verdict.Refused(Refusal.NO_PROFILE_KEY)

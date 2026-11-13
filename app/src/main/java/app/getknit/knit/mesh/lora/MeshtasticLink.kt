@@ -3,6 +3,7 @@ package app.getknit.knit.mesh.lora
 import app.getknit.knit.mesh.crypto.XeddsaVerify
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.util.Locale
 
 /**
  * What [app.getknit.knit.mesh.lora.LoraMeshTransport] consumes: a managed link to one Meshtastic board.
@@ -276,14 +277,51 @@ internal data class BoardInfo(
 )
 
 /**
- * One board on the air, as the link addresses it (ADR 2026-10.x9fa). Opaque above the link on purpose: a Meshtastic
- * board is its 32-bit node number, and a MeshCore board will be a public-key prefix — nothing in the transport may
- * read the number, only compare and hand the address back.
+ * One board on the air, as a link addresses it (ADR 2026-10.x9fa), tagged with its kind (ADR 2026-11.gsqu §7): a
+ * Meshtastic board is its 32-bit node number ([Meshtastic]), a MeshCore board the first six bytes of its public key
+ * ([MeshCore], defined for the second board kind and unused until it is built). Opaque above the link on purpose: the
+ * plane core compares addresses and hands them back, and only a Meshtastic-only path — the board's own `add_contact`,
+ * its NodeInfo stream — reads [Meshtastic.node]. Value equality, so it keys a map. `BoardAddr(node)` builds the Meshtastic
+ * case.
  */
-@JvmInline
-internal value class BoardAddr(
-    val node: UInt,
-)
+internal sealed interface BoardAddr {
+    /** A Meshtastic board: its node number, the CRC32 of its key on firmware 2.8. */
+    data class Meshtastic(
+        val node: UInt,
+    ) : BoardAddr
+
+    /**
+     * A MeshCore board: the first [PREFIX_BYTES] of its Ed25519 public key, the form a companion addresses a contact by
+     * (ADR 2026-11.gsqu). Copied in and compared by content.
+     */
+    class MeshCore(
+        prefix: ByteArray,
+    ) : BoardAddr {
+        private val bytes = prefix.copyOf()
+
+        init {
+            require(bytes.size == PREFIX_BYTES) { "a MeshCore key prefix is $PREFIX_BYTES bytes, not ${bytes.size}" }
+        }
+
+        /** A copy of the prefix. */
+        val prefix: ByteArray get() = bytes.copyOf()
+
+        override fun equals(other: Any?): Boolean = other is MeshCore && bytes.contentEquals(other.bytes)
+
+        override fun hashCode(): Int = bytes.contentHashCode()
+
+        override fun toString(): String = "MeshCore(${bytes.joinToString("") { "%02x".format(Locale.ROOT, it) }})"
+
+        companion object {
+            const val PREFIX_BYTES = 6
+        }
+    }
+
+    companion object {
+        /** A Meshtastic board's address: what every caller before the kind tag wrote as `BoardAddr(node)`. */
+        operator fun invoke(node: UInt): Meshtastic = Meshtastic(node)
+    }
+}
 
 /**
  * Where one packet goes: the whole channel, or one board. Not the pacer's `Destination`, which says which *channel*
@@ -298,7 +336,8 @@ internal sealed interface LinkDestination {
      * and the outcome arrives on [MeshtasticLink.outcomes]. The DM auto-reply is direct without it.
      */
     data class Direct(
-        val addr: BoardAddr,
+        /** A Meshtastic board: this is the Meshtastic link's own addressing; the neutral one is [BoardLink.send]'s. */
+        val addr: BoardAddr.Meshtastic,
         val ack: Boolean = true,
     ) : LinkDestination
 }
