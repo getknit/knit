@@ -320,6 +320,7 @@ carries; never renumber an old one.
 | [2026-11.ejn8](decisions/2026-11-ejn8-translation-models-go-phone-to-phone-over-a-direct-transfer.md) | Translation models go phone to phone over a direct transfer | transfer, ml, wire, privacy |
 | [2026-11.f8pg](decisions/2026-11-f8pg-an-update-of-knit-restarts-the-mesh-like-a-reboot-does.md) | An update of Knit restarts the mesh like a reboot does | reliability, service, android |
 | [2026-11.khhj](decisions/2026-11-khhj-an-evicted-own-profile-goes-back-as-the-bytes-we-kept.md) | an evicted own profile goes back as the bytes we kept, never re-minted | mesh, profiles, custody |
+| [2026-11.gsqu](decisions/2026-11-gsqu-a-meshcore-board-is-a-second-lora-plane-over-one-neutral-core.md) | a MeshCore board is a second LoRa plane over one neutral core | lora, meshcore, crypto, airtime |
 | [2026-11.mfbq](decisions/2026-11-mfbq-a-callee-with-no-live-path-declines-no-route-unrung.md) | A callee with no live path declines no_route unrung, and the caller re-places it as a mesh call | calls |
 | [2026-11.nsbf](decisions/2026-11-nsbf-a-block-also-holds-a-person-s-profile-presentation.md) | A block also holds a person's profile presentation | moderation, privacy, security, profile, contacts |
 | [2026-11.pk9u](decisions/2026-11-pk9u-chat-menus.md) | Chat menus, sheets and confirmations draw in the chat's own window | ui |

@@ -248,7 +248,13 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   lock-free update, no database, no launch, no call back into the plane. In memory, bounded, first ack wins, never
   persisted or pruned; `received` always wins in every reader. A flight evicted from the full table is remembered, so
   its late ack still moves the marks.
-- **Before adding a second board kind (MeshCore) or making `MeshtasticLink` board-neutral:** READ ADR 2026-10.jend.
+- **Before adding a second board kind (MeshCore), making `MeshtasticLink` board-neutral, or touching `BoardLink`,
+  `BoardKindHooks`, `BoardTraits`, `BoardKind`, `Ceiling.FLOOD`, `meshcoreKey` / `CAP_MESHCORE_DIRECT` or anything
+  under `mesh/lora/meshcore/` / `mesh/bluetooth/meshcore/`:** READ ADR 2026-11.gsqu (the build shape: one plane
+  instance per board kind over a neutral core, a ledger per board; the compact DM as a COBS-framed contact text DM,
+  pinned zero-hop on both boards and retried by Knit; own room posts in up to two elided packets under
+  `Ceiling.FLOOD`; the zero-hop hearing hook), then ADR 2026-10.jend for the scope it amends.
+  <!-- doc-lint: allow FLOOD — Ceiling.FLOOD is proposed by ADR 2026-11.gsqu and not built yet -->
   On a MeshCore board only people's room posts and reactions flood, plus our own profile right before our first
   flooded post. Floods are scoped to the board's region when one is set, and booked as every repeater's airtime under
   `AirBucket.PUBLIC` (the ledger is one total since ADR 2026-10.ug4a; MeshCore's `GET_STATS` fills the same

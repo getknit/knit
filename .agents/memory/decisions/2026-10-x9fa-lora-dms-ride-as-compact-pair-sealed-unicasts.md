@@ -11,6 +11,8 @@ topics: [lora, crypto]
 Status: Proposed (2026-10-29). The LoRa half (Stage 2a) and the crypto half (Stage 2b, below: the seal, the
 `lora_direct_seen` table, delivery, the offers in `MeshManager` and the deletion of `MeshTransport.longRangeFanout`).
 
+**Amended by ADR 2026-11.gsqu (2026-11-12):** on a MeshCore board the compact frame rides COBS-framed in a contact text DM (about 105 B of plaintext), retried by Knit's session; `AIRINGS`, the deadline and the payload cap become per-kind traits.
+
 **Amended 2026-10-30 (below, "firmware 2.8 PKI-encrypts every compact DM"):** the DM is never kept off PKI by the Knit
 secondary; it is sized and priced as a PKI packet, and ADR 2026-10.aajj builds Plan B.
 

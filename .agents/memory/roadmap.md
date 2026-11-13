@@ -206,15 +206,21 @@ doc). **Don't start a deferred item without explicit direction.**
   - **The iOS half,** a knit-pair change against the ADR and the `vectors/` entries.
 
 - **A MeshCore board kind on the LoRa plane** (ADR 2026-10.jend, scope decided 2026-10-18 from a two-board spike on
-  MeshCore companion v1.18.0; nothing built). The scope: people's room posts and reactions flood, plus a profile
-  before the first post, scoped to the board's region and budgeted as every repeater's airtime. Everything DM-form
-  and everything automated stays zero-hop, or one named-repeater hop.
-  - **Owed to build it:** a board-neutral seam in place of `MeshtasticLink`; a MeshCore client (164 B BLE cap, a
-    response matched to its request, a lossy drain, a varying byte per send); a direct-reach set for the DM gate; a
-    MeshCore-only reassembly limit of 4–5 parts; a registered `data_type`; region UX; `GET_STATS` filling the same
-    `BoardAir` (channel utilisation, our own TX) the shared-band brake reads (ADR 2026-10.ug4a).
-  - **Owed before release:** two trials, a one-named-hop route through a third board as a repeater, and real-range
-    loss outdoors.
+  MeshCore companion v1.18.0; build shape ADR 2026-11.gsqu, proposed 2026-11-12; nothing built). Parity with the
+  Meshtastic plane as ADR 2026-10.rp3s narrowed it: own room posts flood in up to two elided packets under
+  `Ceiling.FLOOD`, compact DMs ride as COBS-framed contact text DMs pinned zero-hop, plus the Public-channel mirror and
+  board setup/restore. One plane instance per board kind over a neutral core; one board bound at a time in v1.
+  - **Owed to build it** (gsqu's stages): the board-neutral seam
+    (`BoardLink`, `BoardKindHooks`, `BoardTraits`, behaviour unchanged); per-kind scaffolding; the MeshCore client and
+    GATT; `meshcoreKey` / `CAP_MESHCORE_DIRECT` on the profile (paired iOS change); the kind in the plane; the
+    Public-channel mirror; setup, radio screen and strings; lab scenarios.
+  - **Owed before release:** the board trials in gsqu's Stage 8, including a third board as a repeater and real-range
+    loss outdoors, and a 157 B DM through the board's BLE notify (the one bench check a simulator can't answer);
+    then a registered `data_type` (MeshCore's `number_allocations.md` asks for a working app first).
+  - **Deferred:** both boards at once (router preference and failover, a two-board radio screen, per-kind
+    diagnostics), room reactions, the lean profile and `keyreq`, one named-repeater hop, region-scope UX, the
+    auto-reply, MeshCore on iOS.
+  <!-- doc-lint: allow FLOOD — Ceiling.FLOOD is proposed by ADR 2026-11.gsqu and not built yet -->
 
 - **The walkie transcript past its experiment** (ADR 2026-10.nz3g, 2026-10-09; streaming since 2026-10-14). The
   receiver writes heard bursts out as text in debug builds, as they play, from a tap-to-download Moonshine v2
