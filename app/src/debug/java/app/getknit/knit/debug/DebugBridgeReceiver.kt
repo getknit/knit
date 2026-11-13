@@ -608,6 +608,10 @@ class DebugBridgeReceiver :
                             handleLeave(intent)
                         }
 
+                        ACTION_DELETE -> {
+                            handleDelete(intent)
+                        }
+
                         ACTION_PURGE -> {
                             handlePurge(intent)
                         }
@@ -3870,6 +3874,84 @@ class DebugBridgeReceiver :
     }
 
     /**
+     * The chat's long-press Delete, headless: removes the chosen messages from this phone's chats through
+     * [LocalMessageDelete] (the row, its reactions, its pin, its receipt rows, the attachment blob once nothing
+     * references it) and leaves custody alone, unlike [ACTION_PURGE]. A custodied frame stays in [ForwardStore], so
+     * this phone still carries it to its peers until its TTL and its digest keeps listing the id, which stops a linked
+     * peer re-serving it here. A copy that arrives anyway is stopped by the router's SeenSet or the ratchet's
+     * duplicate drop, not by custody. Pick messages by `--es id <id,…>` (exact ids, any thread) or
+     * `--es prefix 'a |b '` (body prefixes, `|`-separated, scanned over the newest `--ei limit` per thread,
+     * default [PURGE_SCAN_LIMIT]); `--es conv <id>` narrows either to one thread. `--ez dry true` counts without
+     * deleting. Nothing is sent over the mesh.
+     */
+    private suspend fun handleDelete(intent: Intent): JSONObject {
+        val ids =
+            intent
+                .getStringExtra(EXTRA_ID)
+                ?.split(',')
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                .orEmpty()
+        val prefixes =
+            intent
+                .getStringExtra(EXTRA_PREFIX)
+                ?.split('|')
+                ?.filter { it.isNotEmpty() }
+                .orEmpty()
+        if (ids.isEmpty() && prefixes.isEmpty()) {
+            return reply("error", "missing --es id <id,…> or --es prefix 'soak |burst '")
+        }
+        val conv = intent.getStringExtra(EXTRA_CONV)?.trim()?.takeIf { it.isNotEmpty() }
+        val dry = intent.getBooleanExtra(EXTRA_DRY, false)
+        val limit = intent.getIntExtra(EXTRA_LIMIT, PURGE_SCAN_LIMIT)
+        val hits = LinkedHashMap<String, MessageEntity>()
+        val notFound = JSONArray()
+        val otherConv = JSONArray()
+        ids.forEach { id ->
+            val m = messages.find(id)
+            when {
+                m == null -> notFound.put(id)
+                conv == null || m.conversationId == conv -> hits[m.id] = m
+                else -> otherConv.put(id)
+            }
+        }
+        if (prefixes.isNotEmpty()) {
+            (conv?.let { listOf(it) } ?: messages.distinctConversations()).forEach { c ->
+                messages
+                    .observeNewestMessages(c, limit)
+                    .first()
+                    .filter { m -> prefixes.any { m.body.startsWith(it) } }
+                    .forEach { hits[it.id] = it }
+            }
+        }
+        val byConversation = JSONObject()
+        hits.values
+            .groupingBy { it.conversationId }
+            .eachCount()
+            .forEach { (c, n) -> byConversation.put(c, n) }
+        var deleted = 0
+        var custodyKept = 0
+        var blobsChecked = 0
+        if (!dry) {
+            hits.values.forEach { m ->
+                localDelete.delete(m.id, m.attachmentHash)
+                if (forward.has(m.id)) custodyKept++
+                if (m.attachmentHash != null) blobsChecked++
+                deleted++
+            }
+        }
+        return reply("ok", if (dry) "would delete ${hits.size}" else "deleted $deleted")
+            .put("dry", dry)
+            .put("matched", hits.size)
+            .put("deleted", deleted)
+            .put("custodyKept", custodyKept)
+            .put("blobsChecked", blobsChecked)
+            .put("byConversation", byConversation)
+            .put("notFound", notFound)
+            .put("otherConv", otherConv)
+    }
+
+    /**
      * Purges soak-harness traffic from this phone: every message whose body starts with one of the
      * `|`-separated `--es prefix` alternatives (the harness stamps `soak …` and `burst …`), in every thread,
      * through the same [LocalMessageDelete] the chat's long-press runs — the row, its reactions, its pin, its receipt
@@ -4737,6 +4819,7 @@ class DebugBridgeReceiver :
         const val ACTION_DEMOCALL = "app.getknit.knit.debug.DEMOCALL"
         const val ACTION_DEMOGO = "app.getknit.knit.debug.DEMOGO"
         const val ACTION_BACKUP = "app.getknit.knit.debug.BACKUP"
+        const val ACTION_DELETE = "app.getknit.knit.debug.DELETE"
         const val ACTION_PURGE = "app.getknit.knit.debug.PURGE"
         const val ACTION_RESETDB = "app.getknit.knit.debug.RESETDB"
         const val ACTION_USBCTL = "app.getknit.knit.debug.USBCTL"

@@ -103,6 +103,7 @@
                 <action android:name="app.getknit.knit.debug.DEMOCALL" />
                 <action android:name="app.getknit.knit.debug.DEMOGO" />
                 <action android:name="app.getknit.knit.debug.BACKUP" />
+                <action android:name="app.getknit.knit.debug.DELETE" />
                 <action android:name="app.getknit.knit.debug.PURGE" />
                 <action android:name="app.getknit.knit.debug.RESETDB" />
                 <action android:name="app.getknit.knit.debug.USBCTL" />

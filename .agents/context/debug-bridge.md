@@ -628,6 +628,19 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `…debug.LEAVE --es conv <g-…>` is the group-details "Leave" (the signed `groupleave` floods, then the local
   tombstone). Together they drive the leave → re-create → send flow of ADR 2026-09.v6fu headlessly: on the
   receiver expect `holding group key … sender departed`, a `rejoin:` notice, then the message.
+- `…debug.DELETE --es id <id,…>` or `--es prefix 'soak |burst '` — the chat's **long-press Delete**, headless: the
+  chosen messages leave this phone's chats through `LocalMessageDelete` (row, reactions, pin, receipt rows, the
+  attachment blob once unreferenced) and **custody is left alone**, unlike `PURGE`. A custodied frame stays in
+  `ForwardStore`, so this phone still carries it to peers until its TTL and its digest keeps listing the id, which stops
+  a linked peer re-serving it. A copy that arrives anyway (`MeshManager`'s custodied-group replay, a re-flood) is
+  stopped by the router's SeenSet or the ratchet's duplicate drop, not by custody. `--es id` takes exact message ids
+  (comma-separated, any thread); `--es prefix` scans the newest `--ei limit` per thread (default 5000); `--es conv
+  <id>` narrows either to one thread; `--ez dry true` counts only. Nothing goes over the mesh. Reply: `matched` /
+  `deleted` / `byConversation`, `custodyKept` (deleted rows whose custody frame is still held, so `STORE`'s `allIds`
+  still lists them: the oracle that this was a delete, not a purge; it equals `deleted` only when every row's frame was
+  custodied, and a spool, LoRa-compact or point-to-point delivery has none), `blobsChecked`, `notFound` (ids with no
+  row), `otherConv` (ids found outside `--es conv`, left alone). Check: the body is gone from `STATE --es conv <id>`'s
+  `messages[]` and stays gone across a receiver restart and a relink.
 - `…debug.PURGE --es prefix 'soak |burst '` — removes **injected soak traffic** from this phone: every message
   whose body starts with one of the `|`-separated prefixes, in every thread, through the chat's own local delete,
   `LocalMessageDelete` (row, reactions, pin, receipt rows, the attachment blob once unreferenced), **plus the frame's
