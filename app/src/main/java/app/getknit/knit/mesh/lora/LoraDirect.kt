@@ -257,6 +257,12 @@ internal enum class DirectKind {
  * [loraKey] is the profile's `loraKey` (base64, the key their board signs and decrypts under), [contact] the rank the
  * map ranks claims by, and [contested] that another pinned profile names the same board — whose key it is then cannot
  * be told. Any of them changing is a new holder, so a missing-key hold under the old one lifts.
+ *
+ * On a MeshCore plane (ADR 2026-11.gsqu, Stage 5b-2; `MeshcoreContacts.holdersOf`) [addr] is the key's 6-byte prefix,
+ * [loraKey] the 32-byte MeshCore key the contact's sealed profile claims, [direct] that claim itself (false when
+ * [contested]: two claims of the key, or two keys sharing the prefix), and [rank] the order the board's capacity is
+ * ranked in, highest first (Meshtastic leaves it 0). Its [toString] names neither the address nor the key: a holder never
+ * reaches a log line.
  */
 internal data class LoraBoardHolder(
     val addr: BoardAddr,
@@ -265,7 +271,11 @@ internal data class LoraBoardHolder(
     val loraKey: String? = null,
     val contact: Boolean = false,
     val contested: Boolean = false,
-)
+    val rank: Int = 0,
+) {
+    override fun toString(): String =
+        "LoraBoardHolder(direct=$direct, v=$profileVersion, key=${loraKey != null}, contact=$contact, contested=$contested, rank=$rank)"
+}
 
 /** The board map's source: pinned contacts with a board, as they change. Null in a transport built with no such source. */
 internal typealias LoraBoardMap = Flow<Map<String, LoraBoardHolder>>

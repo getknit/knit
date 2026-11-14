@@ -5729,6 +5729,13 @@ class MeshManager(
     @Volatile
     internal var beforeSealedProfileFanOut: (suspend () -> Unit)? = null
 
+    /**
+     * Test seam: told of each peer [sendIntroTo] marks owed a fan-out seal ([sealedOutsideFanOut]), before its own seal.
+     * `mesh/lab` counts the fan-out's designed re-seal of a marked session by it. Null in production.
+     */
+    @Volatile
+    internal var onIntroMarked: ((String) -> Unit)? = null
+
     /** Test seam: told of each sealed profile copy the fan-out sent, with the content it sealed. Null in production. */
     @Volatile
     internal var onSealedProfile: ((SealedProfileSend) -> Unit)? = null
@@ -5939,6 +5946,7 @@ class MeshManager(
         // and a fan-out deciding meanwhile must not spare it. Kept even when nothing went (it may have overwritten an
         // earlier intro's mark): the cost is one seal the fan-out need not have made.
         sealedOutsideFanOut[peerId] = outsideFanOutTokens.incrementAndGet()
+        onIntroMarked?.invoke(peerId)
         return sendCtlDm(peerId, payload, avatarHash, identity.nodeId(), CtlDmPurpose.INTRO) { v3 ->
             profileCopy(peerId, payload, audience, v3)
         }

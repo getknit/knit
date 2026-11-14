@@ -303,6 +303,13 @@ internal interface BoardKindHooks {
     fun onDelivered(to: BoardAddr)
 
     /**
+     * The plane's board map changed to [map] (Stage 5b-2): a kind that teaches its board the whole set it may DM (MeshCore's
+     * `MeshcoreContacts`) decides it here; Meshtastic teaches per refusal ([teachKey]) and ignores it. Called on the board
+     * map's collector after the core took the map; returns at once (a write is launched on the plane's scope).
+     */
+    fun onBoardMap(map: Map<String, LoraBoardHolder>) = Unit
+
+    /**
      * The destination's board lacks our key ([RefusalClass.PEER_LACKS_KEY]), and ours answers it on its own (Meshtastic:
      * our `NodeInfo`): books that air at [now]. Called on the outcomes collector.
      */

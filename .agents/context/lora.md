@@ -346,8 +346,8 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   connection; its attempts 0..2 keep the timestamp and change `attempt`; its outcome carries the exact count that flew
   (`flown`), which the core's refund reads instead of the elapsed-time guess (Meshtastic leaves it null). The ack table is
   the board's circular eight, filled by every client. Teaching writes only into a confirmed free slot; setup reads first,
-  writes `[38, 1]`, auto-add off, `Knit abcd` and the channel, each read back; restore touches only what still reads as
-  Knit's. The encoder's command set is pinned (`MeshcoreProtoTest`): never a key export or import, a PIN, the radio, a raw
+  erases (Stage 5b-2, the next entry), then writes `[38, 1]`, auto-add off, `Knit abcd` and the channel, each read back;
+  restore touches only what still reads as Knit's. The encoder's command set is pinned (`MeshcoreProtoTest`): never a key export or import, a PIN, the radio, a raw
   packet or the CLI. Room posts ride `DATA_TYPE_DEV` until registered, and a release build may not ship on it. Pinned
   against the real firmware's frames (`src/test/resources/meshcore/`) and, through `MeshcoreFakeVsSimTest`, the fake.
   The Android half (Stage 3c, `mesh/bluetooth/meshcore/MeshcoreGatt` over the shared `BoardGatt`) is routed in
@@ -393,7 +393,21 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   background's place (only the hourly direct net), and a board without NUS twice in a row is terminal. An opened DM is a
   hearing only fresh. Release gate: presence on MeshCore is unverified (#283). A session's
   Ready carries the address it dialled and the binding is written under it. An offer reads the door claim of its sink's
-  kind. Until 5b: no teaching, an empty board map, `bindMeshcoreDirect` unbound, no device name stored.
+  kind. Until 5b-2's second part: an empty board map in the app, `bindMeshcoreDirect` unbound, no device name stored.
+
+- **Before touching MeshCore's contacts — `MeshcoreContacts` (`holdersOf`, `wanted`, `judgeTeach`, `plan`, `isKnitRecord`,
+  `MAX_REMOVALS_PER_READY`, `MAX_OVERWRITES_PER_READY`), `MeshcorePins.keyFor` / `learn` / `contest` / `teaches`,
+  `MeshcoreSession.setKnitContacts` / `teach` / `removeContact`, `MeshcoreProto.listContacts`, the setup's erase or Restore's
+  contact clearing, `BoardKindHooks.onBoardMap`, `LoraBoardHolder.rank`, or `MeshcoreSetupResult.Done.erasedContacts`:** READ
+  ADR 2026-11.gsqu's Stage 5b-2 amendment (and the maintainer's Stage 5 decisions), then "MeshCore's contacts" in
+  `lora-bridge.md`. The board is Knit's: its table is the taught set. The session sends to and pins only taught keys
+  (security B1), and nothing at all — no DM, pin, teach or removal — off a board set up for Knit (part 2 adds the persisted
+  setup record to that gate); a prefix two keys share is taught to neither and refused at `learn` (B3); the Ready reconcile runs only on
+  a board set up for Knit and once the taught set is known, from **one** `GET_CONTACTS` listing a Ready (never one per key),
+  bounded per Ready; setup erases before it writes, never `CMD_FACTORY_RESET`; Restore removes Knit's contacts and brings
+  back nothing the erase removed. No key, prefix or `Knit xxxx` name in any line (`BoardAddr.MeshCore` and
+  `LoraBoardHolder` print neither). Regression: `MeshcoreContactsTest`, `MeshcoreSessionTest`'s Stage 5b-2 block,
+  `MeshcoreHooksTest`'s taught-set block, `MeshcorePoliciesTest`.
 
 ## Adding an entry
 

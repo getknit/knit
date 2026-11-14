@@ -3,7 +3,6 @@ package app.getknit.knit.mesh.lora
 import app.getknit.knit.mesh.crypto.XeddsaVerify
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import java.util.Locale
 
 /**
  * What [app.getknit.knit.mesh.lora.LoraMeshTransport] consumes: a managed link to one Meshtastic board.
@@ -315,7 +314,8 @@ internal sealed interface BoardAddr {
 
         override fun hashCode(): Int = bytes.contentHashCode()
 
-        override fun toString(): String = "MeshCore(${bytes.joinToString("") { "%02x".format(Locale.ROOT, it) }})"
+        /** Never the prefix: an address can reach a log line or an exception, and the prefix names a person's board. */
+        override fun toString(): String = "MeshCore(…)"
 
         companion object {
             const val PREFIX_BYTES = 6

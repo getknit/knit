@@ -85,8 +85,17 @@ internal interface MeshcoreBoardOps {
     /** Sets the board up for Knit (§7); 5b adds the erase step and persists the record. */
     suspend fun setup(): MeshcoreSetupResult
 
-    /** Puts back what [record] says a setup changed, where it is still Knit's. */
+    /** Puts back what [record] says a setup changed, where it is still Knit's, and removes Knit's contacts. */
     suspend fun restore(record: MeshcoreSetupRecord): MeshcoreRestoreResult
+
+    /** The keys Knit teaches the board, ranked (`MeshcoreContacts`, Stage 5b-2): the only keys sent to or pinned. Any thread. */
+    fun setKnitContacts(ranked: List<ByteArray>)
+
+    /** Writes [key]'s Knit contact into a free slot, read back, and marks it taught. */
+    suspend fun teach(key: ByteArray): ContactWrite
+
+    /** Removes [key]'s contact, read back gone, unless it is taught again by then (lora N1). */
+    suspend fun removeUntaught(key: ByteArray): ContactWrite
 }
 
 /** One channel slot as the session keeps it: never a foreign slot's name or secret (binding rule "contacts" 4). */
@@ -243,14 +252,19 @@ internal class MeshcoreSetupRecord(
 
 /** The outcome of [MeshcoreSession.setup]. */
 internal sealed interface MeshcoreSetupResult {
-    /** The board is set up: Knit's channel at [slot]; [record] holds what a restore puts back. */
+    /**
+     * The board is set up: Knit's channel at [slot]; [record] holds what a restore puts back. The erase removed
+     * [erasedContacts] contacts and cleared [clearedSlots] channel slots (Stage 5b-2), which no restore brings back.
+     */
     data class Done(
         val slot: Int,
         val alreadyPresent: Boolean,
         val record: MeshcoreSetupRecord,
+        val erasedContacts: Int = 0,
+        val clearedSlots: Int = 0,
     ) : MeshcoreSetupResult
 
-    /** Every slot but Public is taken by another channel: nothing was written. */
+    /** The board has no channel slot but Public: nothing was written. */
     data object NoFreeSlot : MeshcoreSetupResult
 
     /**
@@ -271,8 +285,10 @@ internal sealed interface MeshcoreRestoreResult {
         val slotCleared: Boolean,
         /** What was not Knit's any more and so left as found (by key, never a value: `slot`, `name`, `manualAdd`, `autoadd`). */
         val leftAsFound: List<String>,
-        /** What could not be written or verified. */
+        /** What could not be written or verified (`contacts` among them when Knit's could not all be removed). */
         val failed: List<String>,
+        /** Knit's contacts removed, each read back gone (Stage 5b-2). */
+        val contactsRemoved: Int = 0,
     ) : MeshcoreRestoreResult
 
     data object NotReady : MeshcoreRestoreResult
@@ -283,7 +299,7 @@ internal enum class ContactWrite {
     /** Written and read back. */
     WRITTEN,
 
-    /** A teach of a key the board already holds: nothing written, the caller decides (Stage 5 snapshots it). */
+    /** A teach of a key the board already holds, left as it was (a board not set up for Knit, or already Knit's record). */
     ALREADY_PRESENT,
 
     /** A teach with no free slot confirmed: nothing written, so nobody's contact is evicted. */
@@ -294,6 +310,9 @@ internal enum class ContactWrite {
 
     /** A read, a write or its verification failed or timed out. */
     FAILED,
+
+    /** The board is not set up for Knit (no Knit slot and name): nothing of the user's is written or removed (5b-2 review B1). */
+    NOT_SET_UP,
 
     NOT_READY,
 }
@@ -381,6 +400,42 @@ internal object MeshcoreNames {
 internal class MeshcoreCounters {
     /** An answer nobody of ours was waiting for: another client's, or ours after its wait ended. */
     val unexpected = AtomicLong()
+
+    /** A whole `GET_CONTACTS` listing read (Stage 5b-2: one a Ready on a board set up for Knit, one per setup and restore). */
+    val contactListings = AtomicLong()
+
+    /** A listing short of its `CONTACTS_START` count: never acted on whole. */
+    val listingsShort = AtomicLong()
+
+    /** A Ready reconcile run from a listing. */
+    val reconciles = AtomicLong()
+
+    /** A Ready reconcile skipped: the listing failed or came short (the per-key re-assert ran instead). */
+    val reconcilesSkipped = AtomicLong()
+
+    /** Contacts a reconcile removed (not taught). */
+    val reconcileRemoved = AtomicLong()
+
+    /** Taught contacts a reconcile overwrote to Knit's record. */
+    val reconcileOverwritten = AtomicLong()
+
+    /** Taught keys a reconcile wrote fresh. */
+    val reconcileTaught = AtomicLong()
+
+    /** Reconcile steps that did not read back. */
+    val reconcileFailed = AtomicLong()
+
+    /** Removals, overwrites or writes the per-Ready bounds or the capacity left for later. */
+    val reconcileDeferred = AtomicLong()
+
+    /** Taught keys whose prefix a listed contact of another key shares, kept from sends for the connection (security B3). */
+    val prefixContests = AtomicLong()
+
+    /** Contacts a setup's erase removed. */
+    val setupErasedContacts = AtomicLong()
+
+    /** Channel slots a setup's erase cleared. */
+    val setupClearedSlots = AtomicLong()
 
     /** A frame [MeshcoreProto.decode] refused. */
     val rejected = AtomicLong()

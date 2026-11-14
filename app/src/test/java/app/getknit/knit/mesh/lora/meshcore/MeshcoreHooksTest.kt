@@ -1,5 +1,7 @@
 package app.getknit.knit.mesh.lora.meshcore
 
+import app.getknit.knit.mesh.MeshcoreBoardHolder
+import app.getknit.knit.mesh.MeshcoreRank
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.lora.AirPurpose
@@ -12,6 +14,7 @@ import app.getknit.knit.mesh.lora.DirectKind
 import app.getknit.knit.mesh.lora.DirectSend
 import app.getknit.knit.mesh.lora.FrameClass
 import app.getknit.knit.mesh.lora.KeyTeach
+import app.getknit.knit.mesh.lora.KeyWrite
 import app.getknit.knit.mesh.lora.LORA_DIRECT_OVERHEAD
 import app.getknit.knit.mesh.lora.LORA_DIRECT_TAG
 import app.getknit.knit.mesh.lora.LinkState
@@ -67,6 +70,25 @@ class MeshcoreHooksTest {
             restored += record
             return MeshcoreRestoreResult.Done(slotCleared = true, leftAsFound = emptyList(), failed = emptyList())
         }
+
+        val taught = mutableListOf<List<ByteArray>>()
+        val teaches = mutableListOf<ByteArray>()
+        val removals = mutableListOf<ByteArray>()
+        var teachResult = ContactWrite.WRITTEN
+
+        override fun setKnitContacts(ranked: List<ByteArray>) {
+            taught += ranked
+        }
+
+        override suspend fun teach(key: ByteArray): ContactWrite {
+            teaches += key
+            return teachResult
+        }
+
+        override suspend fun removeUntaught(key: ByteArray): ContactWrite {
+            removals += key
+            return ContactWrite.WRITTEN
+        }
     }
 
     private class Core : PlaneCore {
@@ -119,6 +141,7 @@ class MeshcoreHooksTest {
         freqKhz: Long? = 869_525,
         version: String? = "v1.18.0",
         key: ByteArray = boardKey,
+        capacity: Int = 100,
     ) = MeshcoreDetail(
         publicKey = key,
         versionCode = 11,
@@ -127,7 +150,7 @@ class MeshcoreHooksTest {
         multiAcks = multiAcks,
         clientRepeat = false,
         freqKhz = freqKhz,
-        contactCapacity = 100,
+        contactCapacity = capacity,
         slots = emptyList(),
         namedForKnit = true,
         manualAdd = 1,
@@ -548,6 +571,132 @@ class MeshcoreHooksTest {
         assertFalse(everything.contains(base64.encodeToString(prefix).trimEnd('=')))
         assertFalse(everything.contains(text))
     }
+
+    // --- the taught set (Stage 5b-2) ---
+
+    private fun edKey(): ByteArray =
+        com.google.crypto.tink.subtle.Ed25519Sign.KeyPair
+            .newKeyPair()
+            .publicKey
+
+    private fun holders(vararg peers: Pair<String, ByteArray>): Map<String, LoraBoardHolder> =
+        MeshcoreContacts.holdersOf(
+            peers.associate { (peer, key) ->
+                peer to
+                    MeshcoreBoardHolder(
+                        java.util.Base64
+                            .getEncoder()
+                            .encodeToString(key),
+                        MeshcoreRank.ACCEPTED,
+                        1,
+                        false,
+                    )
+            },
+        )
+
+    /**
+     * The interim placeholder (`di/MeshModule` feeds a map that never emits until 5b-2's second part): with no board map,
+     * a Ready hands the session no taught set at all — so its reconcile, which waits for one, never runs.
+     */
+    @Test
+    fun noTaughtSetIsHandedOverWhileNoBoardMapHasBeenEmitted() {
+        hooks.onIdentified(boardKey)
+        hooks.beforeReady(ready())
+        hooks.onReady(ready())
+        assertTrue("no setKnitContacts before a map", ops.taught.isEmpty())
+        hooks.onBoardMap(emptyMap())
+        assertEquals("an emitted empty map is a taught set of nothing", 1, ops.taught.size)
+    }
+
+    @Test
+    fun theBoardMapDecidesTheTaughtSetAndABlockedContactIsRemovedFromTheBoard() {
+        val bob = edKey()
+        val carol = edKey()
+        val map = holders("bob" to bob, "carol" to carol)
+        hooks.onBoardMap(map)
+        assertEquals(2, ops.taught.last().size)
+        hooks.onBoardMap(map - "bob")
+        assertEquals(listOf(carol.toList()), ops.taught.last().map { it.toList() })
+        assertEquals("removed from the board once taught (ADR 2026-09.adgd)", listOf(bob.toList()), ops.removals.map { it.toList() })
+        assertEquals(1L, hooks.counters.removedUntaught.get())
+    }
+
+    @Test
+    fun theTaughtSetIsCutToTheBoardsCapacityAndNeverHoldsOurOwnKey() {
+        // A real point, so the "us" holder survives the point check and only the own-key skip can drop it.
+        val own = edKey()
+        hooks.onIdentified(own)
+        val keys = List(3) { edKey() }
+        hooks.onBoardMap(holders("a" to keys[0], "b" to keys[1], "c" to keys[2], "us" to own))
+        assertEquals(3, ops.taught.last().size)
+        assertEquals("our own key is the one skipped", 1L, hooks.counters.keysSkipped.get())
+        hooks.beforeReady(ready(detail = detail(capacity = 2, key = own)))
+        assertEquals(2, ops.taught.last().size)
+        assertTrue(ops.taught.flatten().none { it.contentEquals(own) })
+    }
+
+    @Test
+    fun aRefusedDmIsTaughtOnlyForAWantedKeyAndOncePerBoardUntilADmToItIsAcked() =
+        runTest {
+            hooks.onIdentified(boardKey)
+            val own = checkNotNull(MeshcorePins.addrOf(boardKey))
+            val bob = edKey()
+            val map = holders("bob" to bob)
+            hooks.onBoardMap(map)
+            val teach = hooks.teachKey("bob", map.getValue("bob"), own, 0) as KeyTeach.Write
+            assertEquals(KeyWrite.WRITTEN, teach.write())
+            assertTrue(ops.teaches.single().contentEquals(bob))
+            assertEquals("written already, no DM acked since", KeyTeach.Refused, hooks.teachKey("bob", map.getValue("bob"), own, 0))
+            hooks.onDelivered(checkNotNull(MeshcorePins.addrOf(bob)))
+            assertTrue(hooks.teachKey("bob", map.getValue("bob"), own, 0) is KeyTeach.Write)
+            val stranger = holders("eve" to edKey()).getValue("eve")
+            assertEquals("not in the taught set", KeyTeach.Refused, hooks.teachKey("eve", stranger, own, 0))
+            ops.teachResult = ContactWrite.NO_FREE_SLOT
+            assertEquals(KeyWrite.REFUSED, (hooks.teachKey("bob", map.getValue("bob"), own, 0) as KeyTeach.Write).write())
+        }
+
+    @Test
+    fun afterARestoreNothingIsTaughtUntilTheNextSetup() =
+        runTest {
+            val record = MeshcoreSetupRecord(KNIT_SLOT, slotWritten = true, priorName = null, priorManualAdd = 0, priorAutoadd = null)
+            ops.setupResult =
+                MeshcoreSetupResult.Done(KNIT_SLOT, alreadyPresent = false, record = record, erasedContacts = 3, clearedSlots = 1)
+            val bob = edKey()
+            val map = holders("bob" to bob)
+            hooks.onBoardMap(map)
+            hooks.provision(ProvisionMode.Setup, null)
+            assertTrue(logs.any { it == "lora setup kind=meshcore slot=$KNIT_SLOT erased contacts=3 slots=1" })
+            assertEquals(ProvisionResult.Restored, hooks.provision(ProvisionMode.Restore, null))
+            assertTrue(ops.taught.last().isEmpty())
+            hooks.onBoardMap(map)
+            assertTrue("a map after the Restore teaches nothing", ops.taught.last().isEmpty())
+            val own = BoardAddr.MeshCore(ByteArray(6))
+            assertEquals(KeyTeach.Refused, hooks.teachKey("bob", map.getValue("bob"), own, 0))
+            hooks.provision(ProvisionMode.Setup, null)
+            assertEquals(1, ops.taught.last().size)
+        }
+
+    @Test
+    fun noLineOfTheTeachingNamesAKeyAPrefixOrAKnitName() =
+        runTest {
+            hooks.onIdentified(boardKey)
+            val own = checkNotNull(MeshcorePins.addrOf(boardKey))
+            val bob = edKey()
+            val map = holders("bob" to bob)
+            hooks.onBoardMap(map)
+            (hooks.teachKey("bob", map.getValue("bob"), own, 0) as KeyTeach.Write).write()
+            hooks.teachKey("bob", map.getValue("bob"), own, 0)
+            hooks.onBoardMap(emptyMap())
+            val everything =
+                logs.joinToString("\n") + hooks.counters.toString() + map.values.joinToString() + own.toString() +
+                    MeshcoreContacts().wanted(map, null, null, 0).toString()
+            val base64 = java.util.Base64.getEncoder()
+            for (k in listOf(bob, boardKey)) {
+                assertFalse(everything.contains(hex(k).take(12)))
+                assertFalse(everything.contains(base64.encodeToString(k).take(12)))
+                assertFalse(everything.contains(MeshcoreNames.forKey(k)))
+            }
+        }
 
     private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(Locale.ROOT, it) }
 

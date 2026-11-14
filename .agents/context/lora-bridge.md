@@ -1134,12 +1134,46 @@ Debug builds only (`MESHCORE_PLANE`): `di/LoraWiring.loraPlaneOf` builds each ki
 - **Dialling.** An unbonded board is never dialled in the background's place: after its three direct dials it waits out the
   background window (its bond re-read each minute), so the hourly direct net is its only dial. A board without NUS twice in a
   row is terminal (`NusDialResult.ServiceAbsent`: `StaleBond` bonded, `NeedsPairing` not).
-- **Not yet.** `teachKey` refuses (Stage 5b), the board map is empty (no DM goes), `bindMeshcoreDirect` stays unbound, a room
-  post is one packet (`roomPartLimit` 1 until 5c), and the setup record is held in memory only (5b persists it).
+- **Not yet.** The board map is empty in the app (no DM goes) and `bindMeshcoreDirect` stays unbound until 5b-2's second part,
+  a room post is one packet (`roomPartLimit` 1 until 5c), and the setup record is held in memory only (5b-2's second part
+  persists it). Teaching is built (below).
 - **Face.** `LoraFacts.floodSpent` (the room's saturated notice at 90 % of the flood share), `roomBodyBytes` (40 B on
   MeshCore, pinned by `CoordinationPlaneSizeBudgetTest`) and `directReach` (the acked boards a MeshCore DM notice reads,
   never the flood-fed `reachable`; a zero-hop hearing never marks one); the version string is cleaned before anything shows it. The dump is
   `…debug.LORA --es kind meshcore` (`debug-bridge.md`).
+
+### MeshCore's contacts (ADR 2026-11.gsqu's Stage 5b-2 amendment)
+
+The board is Knit's, so its contact table is the taught set. The hooks decide it (`MeshcoreContacts.wanted`) from each board
+map the core hands over (`BoardKindHooks.onBoardMap`; `MeshcoreContacts.holdersOf` turns `meshcoreBoardMap` into the core's
+holders: prefix-addressed, keyed, ranked, `direct` false when contested) and give it to the session
+(`setKnitContacts`): only those keys are ever sent to or pinned (`MeshcorePins.keyFor`, security B1), and a prefix another
+key holds is refused (`learn`) or, listed on the board under another key, contested for the connection (`contest`, B3). A
+key that leaves the set is removed from the board; a refused DM teaches only a key in the set, once per (board, key) until a
+DM to it is acked.
+
+```
+Ready ──(taught set known, board set up for Knit: Knit slot + `Knit abcd`)──► GET_CONTACTS since 0  (one a Ready)
+   └─ MeshcoreContacts.plan: remove the untaught (≤ 16) → overwrite the changed (≤ 16) → write the missing (room)
+        one step a tick; a listed Knit record is pinned as read; a short or failed listing removes nothing
+setup: reads → erase (REMOVE_CONTACT each, clear every slot but 0 and Knit's) → writes → plan from what is left
+restore: remove Knit's contacts (one listing) → slot → name, manual add, autoadd → forget the taught set
+```
+
+**Nothing of the user's is touched off a board set up for Knit** (Knit's slot and `Knit abcd`): no DM, pin, re-pin,
+teach, path reset or removal (`NO_RECORD` under the send's handle, `ContactWrite.NOT_SET_UP`); only setup's erase and
+Restore's own removals bypass it. Part 2 adds this phone's persisted setup record for the board to the gate. A listing's
+contests stand until the next whole listing on the same board of ours (a rebind clears them); a listing ends short past its
+count + 8 or 60 s. Until part 2 the plane's MeshCore board map never emits (`emptyFlow()`): an empty map would be a taught
+set of nothing, and the reconcile would empty the board. The firmware rewrites a
+contact's name and type on every advert it hears and its `out_path` on every PATH (`BaseChatMesh.cpp:191-193`, `:357`), so a
+taught peer whose board is not named `Knit xxxx` is overwritten again at each Ready, and Restore counts it Knit's only while
+taught.
+
+The local count is the listing's, kept as writes and removals read back and on `0x8F`; a teach with no listing taken counts
+once. Never `CMD_FACTORY_RESET`. Oracles: `meshcore reconcile listed=N Plan(remove=…, overwrite=…, teach=…, verified=…,
+contested=…, deferred=…)`, `lora setup kind=meshcore slot=S erased contacts=N slots=M`, `lora restore kind=meshcore
+contacts=N …` — counts only, never a key, a prefix or a name.
 
 ## Board setup (once, Meshtastic CLI or app)
 

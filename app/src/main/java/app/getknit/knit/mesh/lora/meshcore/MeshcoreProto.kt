@@ -49,9 +49,9 @@ internal object MeshcoreProto {
     const val CMD_GET_DEFAULT_FLOOD_SCOPE = 64
 
     /**
-     * Every command code an encoder here can emit — the pinned allowlist. `CMD_GET_CONTACTS` (4) is there only as a
-     * count read (its `since` past every `lastmod`, so the board lists none): teaching a key needs a free slot confirmed
-     * first, and the count is the one way the firmware tells it.
+     * Every command code an encoder here can emit — the pinned allowlist. `CMD_GET_CONTACTS` (4) is a count read (its
+     * `since` past every `lastmod`, so the board lists none: teaching a key needs a free slot confirmed first) or, from
+     * Stage 5b-2, the one listing a Ready's reconcile, a setup's erase and a restore read ([listContacts]).
      */
     val ENCODED_COMMANDS: Set<Int> =
         setOf(
@@ -370,6 +370,13 @@ internal object MeshcoreProto {
 
     /** `GET_CONTACTS` past every `lastmod`: answers `CONTACTS_START` with the board's count, then `END_OF_CONTACTS`. */
     fun countContacts(): ByteArray = byteArrayOf(CMD_GET_CONTACTS.toByte()) + u32(SINCE_NONE)
+
+    /**
+     * `GET_CONTACTS` from `since` 0: `CONTACTS_START` with the board's count, a `CONTACT` for every contact modified since the
+     * epoch, then `END_OF_CONTACTS` (`MyMesh.cpp:1238-1257`) — the one listing a Ready's reconcile, a setup's erase and a
+     * restore read (Stage 5b-2), never one per key.
+     */
+    fun listContacts(): ByteArray = byteArrayOf(CMD_GET_CONTACTS.toByte()) + u32(0)
 
     fun getStats(type: Int): ByteArray = byteArrayOf(CMD_GET_STATS.toByte(), type.toByte())
 

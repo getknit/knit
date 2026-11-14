@@ -118,6 +118,12 @@ class MeshcoreHearingTest {
         override suspend fun setup(): MeshcoreSetupResult = MeshcoreSetupResult.NotReady
 
         override suspend fun restore(record: MeshcoreSetupRecord): MeshcoreRestoreResult = MeshcoreRestoreResult.NotReady
+
+        override fun setKnitContacts(ranked: List<ByteArray>) = Unit
+
+        override suspend fun teach(key: ByteArray): ContactWrite = ContactWrite.NOT_READY
+
+        override suspend fun removeUntaught(key: ByteArray): ContactWrite = ContactWrite.NOT_READY
     }
 
     /** Seals readably; opens a DM from bob whose second byte is [OPENS], stamped at its next four bytes' seconds. */

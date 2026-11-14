@@ -891,3 +891,78 @@ before).
 
 Owed to Stage 5b-2: bind the seam in `di/MeshModule` before `start()`, feed the plane `meshcoreBoardMap`, and the per-kind
 offer gate (`LoraDoorClaim`, built in 5a-2).
+
+## Amendment 2026-11-13 — Stage 5b-2, first part: the taught set, the Ready reconcile and the erase (draft)
+
+Built under the Stage 5 design passes' 5b part (security B1, B3 and the `GET_CONTACTS` iterator; the no-logs item) and the
+maintainer's Stage 5 decisions (the board is Knit's alone). The persisted setup record, the unbind / sign-out / cross-kind
+rules, the backup class and the door (`meshcoreBoardMap` fed to the plane, `bindMeshcoreDirect` bound) are the second part:
+until it lands the MeshCore board map stays empty in the app and no DM goes, so what is below runs in the JVM tests alone.
+
+- **`MeshcoreContacts`** (pure, the hooks hold one) decides the taught set from the board map (`holdersOf`: each holder
+  addressed by its key's 6-byte prefix, carrying the key and its rank; `direct` false and `contested` when two claims share
+  the key or two keys share the prefix). Skipped and counted: no valid key, not a contact, contested (Stage 4's or the
+  prefix's, security B3), our own key, past `LoraContactPolicy.MAX_KEYS_PER_DAY` distinct keys per peer a day, ranked past
+  the board's capacity (`DEVICE_INFO`'s `MAX_CONTACTS / 2`, doubled). A key that leaves the set (a contact removed or
+  blocked) is removed from the board (ADR 2026-09.adgd). A DM our board refused for want of the contact is taught only for a
+  key in the set, once per (our board, key) until a DM to it is acked — `LoraContactPolicy`'s write memo.
+- **The session sends to and pins only taught keys** (security B1): `MeshcorePins.keyFor` answers null for any other key
+  (`NO_RECORD`), a contact read never feeds the send map, and `learn` refuses a prefix another key holds (security B3).
+- **The Ready reconcile**, on a board set up for Knit only (Knit's slot and the `Knit abcd` name: a board nobody set up keeps
+  its owner's contacts) and only once the taught set is known (a Ready that beats the board map removes nothing): **one**
+  `GET_CONTACTS` listing from `since` 0 (`MeshcoreProto.listContacts`), never one per key; then every contact on an untaught
+  key is removed, every taught key's contact that is not Knit's record is overwritten to it, and a missing taught key is
+  written while the local count (the listing's, kept as writes and removals read back, and on `0x8F`) leaves room —
+  removals and overwrites at most 16 each per Ready (`MAX_REMOVALS_PER_READY`, `MAX_OVERWRITES_PER_READY`, proposed
+  defaults), one step a tick. A taught key listed as Knit's record is pinned as read, so the per-key re-assert is skipped. A
+  taught key whose prefix a listed contact of another key shares is written only once that removal reads back; else the
+  prefix is contested for the connection (`MeshcorePins.contest`) and nothing is sent to it. A listing that fails or comes
+  short of its `CONTACTS_START` count removes nothing and leaves the per-key re-assert.
+- **The record** is type CHAT, `flags = 0x01`, `Knit xxxx` from the key, `out_path_len = 0` (`MeshcoreContacts.isKnitRecord`).
+- **Setup's erase** runs after the reads and before the writes: one listing, `REMOVE_CONTACT` each contact (a taught key
+  already holding Knit's record is kept, so a setup run again writes no flash for it), then each slot other than Public and
+  Knit's cleared, one command at a time, each read back. A board whose slots are all taken is no longer `NoFreeSlot`: its
+  first non-Public slot becomes Knit's (only a board with no slot but Public is refused). Never `CMD_FACTORY_RESET` (51): not
+  in `ENCODED_COMMANDS`. The setup's line counts what it erased (`lora setup kind=meshcore … erased contacts=N slots=M`).
+- **Restore** removes Knit's contacts first (named `Knit xxxx` for their own key, or taught), from one listing, each read
+  back, then the slot and the settings as before, and forgets the taught set; it does not bring back what the erase removed.
+  After a Restore the hooks teach nothing until the next setup. A setup's own rollback does not clear contacts.
+- **Never in a line.** `BoardAddr.MeshCore` and `LoraBoardHolder` print no prefix or key; every new count is a count.
+
+Review of Stage 5b-2's first part (lora- and security-reviewer, 2026-11-13), applied:
+
+- **Every contact write and every MeshCore DM is gated on a board set up for Knit** (both reviewers' Blocking finding: B1
+  came back through the taught set, which is the policy's wish, not the board's state). Off such a board — setup never ran
+  or failed, or a Restore and then a process restart — the session sends nothing (`NO_RECORD`), pins nothing (the Ready
+  re-assert, the `0x81` / `0x8F` jobs and `sendDirect`'s pin are dropped), teaches and resets nothing and removes nothing
+  (`ContactWrite.NOT_SET_UP`, which a held frame reads as refused). Only setup's erase and Restore's own removals, each
+  inside its own transaction, remove off that gate. **Part 2 tightens it**: the gate also needs this phone's persisted setup
+  record for that board address — the record is the consent; a board's name and slot are a claim any client can write — and
+  the hooks' `restored` is derived from that record rather than held in memory.
+- **A removal decided earlier is re-checked when it runs** (lora N1): the hooks' removals of keys that left the taught set
+  (`removeUntaught`) and the reconcile's removal steps skip a key taught again since.
+- **`NO_RECORD` carries the send's own handle** (lora N2), as `UNPINNED` does, so the core's once-per-handle `onNoKey` acts
+  on every refusal (the hooks refuse an untaught key, the peer is marked keyless) and never leaves a frame unaccounted.
+  Telling the core which holders are untaught so it never offers to them waits for part 2's door.
+- **A listing's prefix contests stand across a Ready** until the next whole listing replaces them (lora N3): before, a new
+  Ready cleared them and a queued DM could go to the prefix before the reconcile listed. They are kept per our own board
+  (the follow-up's shape 9): a Ready on another board (a rebind) clears them, while a short or cut listing on the same board
+  keeps them — else a peer would stay refused `NO_RECORD`, and held keyless, on a board where nothing shares its prefix.
+- **The firmware rewrites a contact behind Knit** (lora N4): a heard advert sets its name and type
+  (`BaseChatMesh.cpp:191-193`) and a PATH its `out_path` (`:357`). So a taught peer whose own board is not named `Knit xxxx`
+  fails `isKnitRecord` after each advert and is overwritten at each Ready (bounded by `MAX_OVERWRITES_PER_READY`), and Restore
+  counts it as Knit's only while it is taught — a contact taught in an earlier process and renamed since is left by a Restore.
+- **A listing is bounded in length and time** (security N5): past its count and 8 frames, or 60 s, it ends short, and a short
+  listing removes nothing.
+- **The placeholder map never emits** (security's interim caution): until the second part feeds `meshcoreBoardMap`,
+  `di/MeshModule` hands the MeshCore plane `emptyFlow()`, not an empty map. An empty map is a taught set of nothing, and the
+  Ready reconcile would remove every contact (16 a Ready) on any board passing the Knit check — one another client or another
+  Knit install dressed up. With no map the session is never given a taught set, so no reconcile runs. **Part 2 must make the
+  first map the plane sees the real one**, never a placeholder or a transient empty emission.
+- **Security N6 does not apply on this tree**: `…debug.LORAPROV` drives the Meshtastic plane instance only
+  (`DebugBridgeReceiver`'s `lora` is `loraPlane(BoardKind.MESHTASTIC)`), so it cannot reach, let alone erase, a MeshCore
+  board. A MeshCore setup action, with an explicit erase extra and the counts in its reply, is part 2's.
+
+Owed to the second part: the SQLCipher setup record (DB 34 → 35), unbind / sign-out / cross-kind, the backup class, the door,
+`bookAnswer` priced direct for a taught and pinned sender, and a MeshCore setup action on the debug bridge naming what it
+erases. The lab's first MeshCore DM case needs 5c's `MeshLab.node(board = MESHCORE)`.

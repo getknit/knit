@@ -15,6 +15,7 @@ import app.getknit.knit.mesh.lora.SendPurpose
 import app.getknit.knit.mesh.lora.SendResult
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
@@ -62,6 +63,8 @@ class MeshcoreSessionTest {
     private fun TestScope.rig(
         pinned: Boolean = true,
         knitSlot: Boolean = true,
+        // Set up for Knit (its slot and `Knit abcd`): nothing is sent, pinned or taught on any other board (5b-2 review B1).
+        knitBoard: Boolean = knitSlot,
         taught: Boolean = true,
         collectPackets: Boolean = true,
         callDeadlineMs: Long = 30_000,
@@ -77,6 +80,7 @@ class MeshcoreSessionTest {
             alice.setChannel(1, KnitChannel.NAME, KnitChannel.PSK)
             bob.setChannel(1, KnitChannel.NAME, KnitChannel.PSK)
         }
+        if (knitBoard) alice.advertName = MeshcoreNames.forKey(alice.key).encodeToByteArray()
         val dialer = FakeMeshcoreDialer(alice)
         val logs = mutableListOf<String>()
         val session =
@@ -414,13 +418,16 @@ class MeshcoreSessionTest {
             val r = rig(pinned = false, taught = false)
             up(r)
             assertTrue(r.session.readContact(r.bob.key) is ContactRead.Found)
+            // Taught after the Ready, so its re-assert has not pinned it: only a taught key is ever pinned (security B1).
+            r.session.setKnitContacts(listOf(r.bob.key))
             val before = r.ch.writes.size
             assertTrue(r.dm() is SendResult.Queued)
             val codes =
                 r.ch.writes
                     .drop(before)
                     .map { it[0].toInt() }
-            assertEquals("read, write back zero-hop, read back, send", listOf(30, 9, 30, 2), codes)
+            // The reconcile the taught set woke lists after it (a poll, then GET_CONTACTS).
+            assertEquals("read, write back zero-hop, read back, send", listOf(30, 9, 30, 2), codes.take(4))
             assertEquals("the 144-B form, no lastmod", 144, r.ch.writes[before + 1].size)
             assertEquals(0, r.alice.contact(r.bob.key)?.outPathLen)
             assertEquals(
@@ -435,7 +442,7 @@ class MeshcoreSessionTest {
         runTest {
             val r = rig(pinned = false, taught = false)
             up(r)
-            r.session.readContact(r.bob.key)
+            r.session.setKnitContacts(listOf(r.bob.key))
             r.ch.swallow = { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACT_BY_KEY }
             val result = r.dm()
             assertTrue("$result", result is SendResult.Rejected && result.res == MeshcoreRefusal.UNPINNED)
@@ -454,7 +461,7 @@ class MeshcoreSessionTest {
             val r = rig(taught = false)
             up(r)
             val result = r.dm()
-            assertEquals(SendResult.Rejected(0u, MeshcoreRefusal.NO_RECORD), result)
+            assertTrue("$result", result.isNoRecord())
             assertEquals(RefusalClass.OWN_NO_KEY, MeshcoreRefusal.classOf(result))
             assertTrue(r.sendTexts().isEmpty())
         }
@@ -699,7 +706,7 @@ class MeshcoreSessionTest {
     @Test
     fun teachingIntoAFullTableNeverEvictsTheUsersContacts() =
         runTest {
-            val r = rig()
+            val r = rig(taught = false) // no taught set: the reconcile waits and removes nothing
             val carol = r.air.board("carol")
             r.alice.addContact(carol, flags = 0) // the user's own, not a favourite
             r.alice.maxContacts = 2
@@ -798,20 +805,62 @@ class MeshcoreSessionTest {
             assertEquals("what was still Knit's went back", 0, r.alice.manualAdd)
         }
 
+    /**
+     * The maintainer's Stage 5 decisions: setup erases every slot but Public and Knit's, so a board whose slots are all taken
+     * is no longer refused (it was `NoFreeSlot`, nothing written, before Stage 5b-2): its first slot becomes Knit's.
+     */
     @Test
-    fun setupWithNoFreeSlotWritesNothing() =
+    fun setupOnABoardWithEverySlotTakenErasesThemAndTakesTheFirst() =
         runTest {
             val r = rig(knitSlot = false)
             (1..3).forEach { r.alice.setChannel(it, "c$it", ByteArray(16) { _ -> it.toByte() }) }
             up(r)
-            val before = r.ch.writes.size
-            assertEquals(MeshcoreSetupResult.NoFreeSlot, r.session.setup())
+            val done = r.session.setup() as MeshcoreSetupResult.Done
+            assertEquals(1, done.slot)
+            assertEquals(3, done.clearedSlots)
+            assertEquals(
+                "Knit",
+                r.alice.channels[1]
+                    .first
+                    .decodeToString(),
+            )
+            assertTrue(
+                (2..3).all {
+                    r.alice.channels[it]
+                        .first
+                        .isEmpty()
+                },
+            )
+            assertEquals(
+                "Public stays",
+                "Public",
+                r.alice.channels[0]
+                    .first
+                    .decodeToString(),
+            )
+        }
+
+    @Test
+    fun setupWithNoSlotButPublicWritesNothing() =
+        runTest {
+            val air = FakeMeshcoreAir(backgroundScope) { testScheduler.currentTime }
+            val alice = air.board("alice", maxChannels = 1)
+            val carol = air.board("carol")
+            alice.addContact(carol, name = "Carol Smith", flags = 0) // something an erase would remove
+            val dialer = FakeMeshcoreDialer(alice)
+            val session =
+                MeshcoreSession(dialer = dialer, scope = backgroundScope, now = { testScheduler.currentTime }, wallClock = { epochMs })
+            session.start("AA:BB")
+            runCurrent()
+            val before = dialer.channel.writes.size
+            assertEquals(MeshcoreSetupResult.NoFreeSlot, session.setup())
             val writes =
-                r.ch.writes
+                dialer.channel.writes
                     .drop(before)
                     .map { it[0].toInt() }
-            assertTrue("$writes", writes.none { it in setOf(8, 32, 38, 58) })
-            assertEquals("alice", r.alice.advertName.decodeToString())
+            assertTrue("$writes", writes.none { it in setOf(8, 15, 32, 38, 58) })
+            assertEquals("alice", alice.advertName.decodeToString())
+            assertNotNull("refused before any erase", alice.contact(carol.key))
         }
 
     @Test
@@ -883,7 +932,7 @@ class MeshcoreSessionTest {
     @Test
     fun aForeignNotFoundDuringATeachNeverOverwritesTheUsersContact() =
         runTest {
-            val r = rig()
+            val r = rig(taught = false) // no taught set: the reconcile waits and removes nothing
             val carol = r.air.board("carol")
             r.alice.addContact(carol, name = "Carol Smith", flags = 0)
             up(r)
@@ -946,7 +995,7 @@ class MeshcoreSessionTest {
     @Test
     fun aCountRefusedWhileAnotherClientListsIsAskedAgain() =
         runTest {
-            val r = rig()
+            val r = rig(taught = false) // no listing this Ready: the teach reads the count
             up(r)
             var refusals = 1
             r.ch.swallow = { frame -> frame[0].toInt() == MeshcoreProto.CMD_GET_CONTACTS && refusals-- > 0 }
@@ -1042,7 +1091,7 @@ class MeshcoreSessionTest {
         runTest {
             val r = rig(pinned = false, taught = false, callDeadlineMs = 2_000)
             up(r)
-            r.session.readContact(r.bob.key)
+            r.session.setKnitContacts(listOf(r.bob.key))
             // The pin's reads answer late: the op has started, so the caller waits for it rather than answering a timeout.
             r.ch.delayFrame = { f -> if (f[0].toInt() == MeshcoreProto.RESP_CONTACT) 2_500L else 0L }
             val result = r.dm()
@@ -1220,4 +1269,364 @@ class MeshcoreSessionTest {
             assertEquals("backed off once, then terminal", 2, r.dialer.modes.size)
             assertEquals(MeshcoreLinkState.StaleBond("AA:BB"), r.session.state.value.detail)
         }
+
+    // --- Stage 5b-2: the taught set, the reconcile, the erase ---
+
+    /** `NO_RECORD`, under the send's own handle (lora N2), so the core acts on every refusal. */
+    private fun SendResult.isNoRecord(): Boolean = this is SendResult.Rejected && res == MeshcoreRefusal.NO_RECORD && id != 0u
+
+    private fun Rig.knitBoard() {
+        alice.advertName = MeshcoreNames.forKey(alice.key).encodeToByteArray()
+    }
+
+    private fun Rig.listings(): Int = ch.writes.count { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACTS && MeshcoreProto.u32(it, 1) == 0L }
+
+    @Test
+    fun aContactTheBoardHoldsThatKnitDidNotTeachIsNeverPinnedOrSentTo() =
+        runTest {
+            val r = rig(pinned = false, taught = false)
+            up(r)
+            assertTrue("a read of it", r.session.readContact(r.bob.key) is ContactRead.Found)
+            val result = r.dm()
+            assertTrue("a read never feeds the send map (security B1): $result", result.isNoRecord())
+            assertEquals("the user's own route stands", MeshcoreProto.PATH_UNKNOWN, r.alice.contact(r.bob.key)?.outPathLen)
+            assertTrue(r.ch.writes.none { it[0].toInt() == MeshcoreProto.CMD_ADD_UPDATE_CONTACT })
+            assertTrue(r.sendTexts().isEmpty())
+        }
+
+    @Test
+    fun theReadyReconcileMakesAKnitBoardsTableTheTaughtSetFromOneListing() =
+        runTest {
+            val r = rig(taught = false)
+            r.knitBoard()
+            val carol = r.air.board("carol")
+            val dave = r.air.board("dave")
+            val erin = r.air.board("erin")
+            r.alice.addContact(carol, name = "Carol Smith", flags = 0) // not taught: removed
+            r.alice.addContact(dave, outPathLen = 3, name = "Dave") // taught, not Knit's record: overwritten
+            r.session.setKnitContacts(listOf(r.bob.key, dave.key, erin.key)) // erin is not on the board: written
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertNull(r.alice.contact(carol.key))
+            val d = requireNotNull(r.alice.contact(dave.key))
+            assertEquals(MeshcoreNames.forKey(dave.key), d.name.decodeToString())
+            assertEquals(0, d.outPathLen)
+            assertEquals(MeshcoreProto.CONTACT_FLAG_FAVOURITE, d.flags)
+            assertEquals(0, r.alice.contact(erin.key)?.outPathLen)
+            assertNotNull("bob was Knit's already", r.alice.contact(r.bob.key))
+            assertEquals("one listing a Ready, never one a key", 1, r.listings())
+            assertEquals("no count read either", 1, r.ch.codes.count { it == MeshcoreProto.CMD_GET_CONTACTS })
+            val lines = r.logs.joinToString("\n")
+            for (board in listOf(r.bob, carol, dave, erin)) {
+                assertFalse("no Knit name in a line", lines.contains(MeshcoreNames.forKey(board.key)))
+                assertFalse("no prefix in a line", lines.contains(board.key.copyOf(6).joinToString("") { "%02x".format(it) }))
+            }
+            assertTrue(lines.contains("meshcore reconcile listed=3 "))
+            val c = r.session.counters
+            assertEquals(1L, c.reconcileRemoved.get())
+            assertEquals(1L, c.reconcileOverwritten.get())
+            assertEquals(1L, c.reconcileTaught.get())
+            // bob read back as Knit's record in the listing: pinned as read, sent to with no further read.
+            val before = r.ch.writes.size
+            assertTrue(r.dm() is SendResult.Queued)
+            val codes =
+                r.ch.writes
+                    .drop(before)
+                    .map { it[0].toInt() }
+            assertTrue(
+                "$codes",
+                codes.takeWhile { it != MeshcoreProto.CMD_SEND_TXT_MSG }.none { it == MeshcoreProto.CMD_GET_CONTACT_BY_KEY },
+            )
+        }
+
+    @Test
+    fun theReconcileWaitsForTheTaughtSetSoAnEarlyReadyRemovesNothing() =
+        runTest {
+            val r = rig(taught = false)
+            r.knitBoard()
+            val carol = r.air.board("carol")
+            r.alice.addContact(carol, name = "Carol Smith", flags = 0)
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertNotNull("no taught set yet: nothing removed", r.alice.contact(carol.key))
+            assertEquals(0, r.listings())
+            r.session.setKnitContacts(listOf(r.bob.key))
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertNull(r.alice.contact(carol.key))
+            assertEquals(1, r.listings())
+        }
+
+    @Test
+    fun aBoardNotSetUpForKnitIsNeverReconciled() =
+        runTest {
+            val r = rig(knitBoard = false)
+            val carol = r.air.board("carol")
+            r.alice.addContact(carol, name = "Carol Smith", flags = 0)
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertNotNull(r.alice.contact(carol.key))
+            assertEquals(0, r.listings())
+            assertTrue(r.ch.writes.none { it[0].toInt() == MeshcoreProto.CMD_REMOVE_CONTACT })
+        }
+
+    @Test
+    fun aListedContactSharingATaughtKeysPrefixThatWillNotGoKeepsThatPrefixFromSends() =
+        runTest {
+            val r = rig(taught = false)
+            r.knitBoard()
+            r.alice.contacts.clear()
+            val mallory =
+                r.air.board(
+                    "mallory",
+                    key =
+                        r.bob.key
+                            .copyOf()
+                            .also { it[31] = (it[31] + 1).toByte() },
+                )
+            r.alice.addContact(mallory, name = "Mallory")
+            up(r)
+            // The reconcile waits for the taught set: mallory's removal never reads back.
+            r.ch.swallow = { it[0].toInt() == MeshcoreProto.CMD_REMOVE_CONTACT }
+            r.session.setKnitContacts(listOf(r.bob.key))
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertNotNull(r.alice.contact(mallory.key))
+            assertNull("bob is not written beside a prefix sharer", r.alice.contact(r.bob.key))
+            assertTrue(r.dm().isNoRecord())
+            assertTrue(r.sendTexts().isEmpty())
+            assertTrue(
+                r.session.counters.prefixContests
+                    .get() >= 1,
+            )
+        }
+
+    @Test
+    fun setupErasesTheBoardBeforeItsWritesAndNeverFactoryResets() =
+        runTest {
+            val r = rig(knitSlot = false)
+            val carol = r.air.board("carol")
+            r.alice.addContact(carol, name = "Carol Smith", flags = 0)
+            r.alice.setChannel(2, "family", ByteArray(16) { 7 })
+            up(r)
+            val before = r.ch.writes.size
+            val done = r.session.setup() as MeshcoreSetupResult.Done
+            assertEquals("carol is erased; bob's contact is Knit's record for a taught key, and kept", 1, done.erasedContacts)
+            assertEquals(1, done.clearedSlots)
+            assertNull(r.alice.contact(carol.key))
+            assertNotNull(r.alice.contact(r.bob.key))
+            assertTrue(
+                r.alice.channels[2]
+                    .first
+                    .isEmpty(),
+            )
+            assertEquals(
+                "Public",
+                r.alice.channels[0]
+                    .first
+                    .decodeToString(),
+            )
+            val codes =
+                r.ch.writes
+                    .drop(before)
+                    .map { it[0].toInt() }
+            val firstRemove = codes.indexOf(MeshcoreProto.CMD_REMOVE_CONTACT)
+            val firstWrite = codes.indexOf(MeshcoreProto.CMD_SET_OTHER_PARAMS)
+            assertTrue("$codes", firstRemove in 0 until firstWrite)
+            assertTrue("the reads come first", codes.indexOf(MeshcoreProto.CMD_GET_AUTOADD_CONFIG) < firstRemove)
+            assertTrue("$codes", codes.indexOf(MeshcoreProto.CMD_SET_CHANNEL) < firstWrite)
+            assertFalse("CMD_FACTORY_RESET is never encodable", CMD_FACTORY_RESET in MeshcoreProto.ENCODED_COMMANDS)
+            assertTrue(r.ch.codes.none { it == CMD_FACTORY_RESET })
+        }
+
+    @Test
+    fun restoreRemovesKnitsContactsAndPutsBackTheRecordButNotWhatSetupErased() =
+        runTest {
+            val r = rig(knitSlot = false)
+            val carol = r.air.board("carol")
+            r.alice.addContact(carol, name = "Carol Smith", flags = 0)
+            r.alice.setChannel(2, "family", ByteArray(16) { 7 })
+            up(r)
+            val done = r.session.setup() as MeshcoreSetupResult.Done
+            advanceTimeBy(30_000)
+            runCurrent()
+            val back = r.session.restore(done.record) as MeshcoreRestoreResult.Done
+            assertTrue("${back.failed}", back.failed.isEmpty())
+            assertEquals(1, back.contactsRemoved)
+            assertTrue("no contact is left", r.alice.contacts.isEmpty())
+            assertEquals("alice", r.alice.advertName.decodeToString())
+            assertTrue(
+                "the slot is cleared",
+                r.alice.channels[1]
+                    .first
+                    .isEmpty(),
+            )
+            assertTrue(
+                "what the erase removed stays removed",
+                r.alice.channels[2]
+                    .first
+                    .isEmpty(),
+            )
+            // Set up again with no new taught set: had the Restore kept the old one, the reconcile would teach bob back.
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Done)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertNull("the taught set is forgotten", r.alice.contact(r.bob.key))
+            assertTrue(r.dm().isNoRecord())
+        }
+
+    /** Alice's own contact for bob as the firmware writes it: its frame, to compare byte for byte. */
+    private fun Rig.bobRecord(): List<Any> {
+        val c = requireNotNull(alice.contact(bob.key))
+        return listOf(c.type, c.flags, c.outPathLen, c.name.toList(), c.lastmod)
+    }
+
+    private fun Rig.noContactWrites(from: Int) =
+        ch.writes.drop(from).none {
+            it[0].toInt() in setOf(MeshcoreProto.CMD_ADD_UPDATE_CONTACT, MeshcoreProto.CMD_REMOVE_CONTACT, MeshcoreProto.CMD_RESET_PATH)
+        }
+
+    /**
+     * The 5b-2 review's Blocking finding: "taught" is the policy's wish, so on a board Knit never set up (no Knit slot and
+     * name) the user's own contact for a taught key must survive a DM, the Ready re-assert, a `0x81` re-pin, a reactive teach
+     * and the key leaving the taught set — byte for byte, with no contact write at all.
+     */
+    @Test
+    fun aBoardNotSetUpForKnitKeepsTheUsersContactForATaughtKeyByteForByte() =
+        runTest {
+            val r = rig(knitSlot = false)
+            r.alice.contacts.clear()
+            r.alice.addContact(r.bob, outPathLen = 3, name = "Bob", flags = 0)
+            val before = r.bobRecord()
+            up(r) // taught bob: the Ready re-assert
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertTrue("a DM is refused unwritten", r.dm().isNoRecord())
+            r.ch.inject(byteArrayOf(0x81.toByte()) + r.bob.key) // a path push for the taught key
+            advanceTimeBy(120_000)
+            runCurrent()
+            assertEquals(ContactWrite.NOT_SET_UP, r.session.teach(r.bob.key))
+            r.session.setKnitContacts(emptyList())
+            assertEquals(ContactWrite.NOT_SET_UP, r.session.removeUntaught(r.bob.key))
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertEquals("the user's record, byte for byte", before, r.bobRecord())
+            assertTrue("no contact write of Knit's", r.noContactWrites(0))
+            assertTrue(r.sendTexts().isEmpty())
+        }
+
+    @Test
+    fun afterARestoreAndANewSessionTheUsersContactIsNeverTouched() =
+        runTest {
+            val r = rig(knitSlot = false)
+            up(r)
+            val done = r.session.setup() as MeshcoreSetupResult.Done
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertTrue((r.session.restore(done.record) as MeshcoreRestoreResult.Done).failed.isEmpty())
+            // The user adds bob back by hand, then the process restarts: a new session, taught bob again.
+            r.alice.addContact(r.bob, outPathLen = 3, name = "Bob", flags = 0)
+            val before = r.bobRecord()
+            r.session.stop()
+            val fresh =
+                MeshcoreSession(
+                    dialer = r.dialer,
+                    scope = backgroundScope,
+                    now = { testScheduler.currentTime },
+                    wallClock = { epochMs + testScheduler.currentTime },
+                )
+            fresh.setKnitContacts(listOf(r.bob.key))
+            fresh.start("AA:BB")
+            runCurrent()
+            advanceTimeBy(30_000)
+            runCurrent()
+            val from = r.ch.writes.size
+            val dm = fresh.send(seal, SendPurpose.DirectDm(1, r.bobAddr)).result
+            assertTrue("$dm", dm.isNoRecord())
+            r.ch.inject(byteArrayOf(0x81.toByte()) + r.bob.key)
+            advanceTimeBy(120_000)
+            runCurrent()
+            assertEquals(ContactWrite.NOT_SET_UP, fresh.teach(r.bob.key))
+            fresh.setKnitContacts(emptyList())
+            assertEquals(ContactWrite.NOT_SET_UP, fresh.removeUntaught(r.bob.key))
+            assertEquals(before, r.bobRecord())
+            assertTrue(r.noContactWrites(from))
+        }
+
+    /** A `CONTACT` frame as the board writes it, for a key of its own. */
+    private fun contactFrame(n: Int): ByteArray {
+        val out = ByteArray(MeshcoreProto.CONTACT_FULL_SIZE)
+        out[0] = MeshcoreProto.RESP_CONTACT.toByte()
+        FakeMeshcoreAir.keyOf("stray$n").copyInto(out, 1)
+        out[33] = MeshcoreProto.ADV_TYPE_CHAT.toByte()
+        return out
+    }
+
+    /** A Knit board whose listing (`GET_CONTACTS` since 0) answers only `CONTACTS_START` [count]; the test feeds the rest. */
+    private fun TestScope.listingRig(count: Long): Rig {
+        val r = rig(taught = false)
+        r.alice.addContact(r.air.board("carol"), name = "Carol Smith", flags = 0)
+        up(r)
+        val listing = { f: ByteArray -> f[0].toInt() == MeshcoreProto.CMD_GET_CONTACTS && MeshcoreProto.u32(f, 1) == 0L }
+        r.ch.swallow = listing
+        r.ch.writeResult = { f ->
+            if (listing(f)) r.ch.inject(byteArrayOf(MeshcoreProto.RESP_CONTACTS_START.toByte()) + MeshcoreProto.u32(count))
+            GattResult.Ok(Unit)
+        }
+        return r
+    }
+
+    private fun Rig.assertListingCutAndNothingRemoved() {
+        assertEquals(1L, session.counters.listingsShort.get())
+        assertEquals(1L, session.counters.reconcilesSkipped.get())
+        assertEquals(0L, session.counters.reconciles.get())
+        assertTrue(ch.writes.none { it[0].toInt() == MeshcoreProto.CMD_REMOVE_CONTACT })
+        assertNotNull(alice.contacts.firstOrNull { it.name.decodeToString() == "Carol Smith" })
+    }
+
+    /** Security's 5b-2 follow-up: a board that streams `CONTACT` frames past its count and never ends the listing. */
+    @Test
+    fun aListingPastItsCountAndTheSlackEndsShortAndRemovesNothing() =
+        runTest {
+            val r = listingRig(count = 1)
+            r.ch.writeResult.let { inner ->
+                r.ch.writeResult = { f ->
+                    val res = inner(f)
+                    if (f[0].toInt() == MeshcoreProto.CMD_GET_CONTACTS) repeat(40) { r.ch.inject(contactFrame(it)) }
+                    res
+                }
+            }
+            r.session.setKnitContacts(listOf(r.bob.key))
+            advanceTimeBy(30_000)
+            runCurrent()
+            r.assertListingCutAndNothingRemoved()
+        }
+
+    /** The same, the frames trickling in under the per-frame timeout for longer than the listing's deadline. */
+    @Test
+    fun aListingThatTricklesPastItsDeadlineEndsShortAndRemovesNothing() =
+        runTest {
+            val r = listingRig(count = 1_000)
+            val trickle =
+                backgroundScope.launch {
+                    // A period that does not divide the 60-s deadline: the listing's last wait is clipped below the gap.
+                    repeat(70) { n ->
+                        delay(1_700)
+                        r.ch.inject(contactFrame(n))
+                    }
+                }
+            r.session.setKnitContacts(listOf(r.bob.key))
+            advanceTimeBy(90_000)
+            runCurrent()
+            trickle.cancel()
+            r.assertListingCutAndNothingRemoved()
+        }
+
+    private companion object {
+        /** `CMD_FACTORY_RESET` (`MyMesh.cpp`): formats the board, a new identity and the radio reset (ADR 045). */
+        const val CMD_FACTORY_RESET = 51
+    }
 }

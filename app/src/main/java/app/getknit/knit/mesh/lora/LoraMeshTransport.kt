@@ -514,6 +514,7 @@ internal class LoraMeshTransport(
         map.forEach { (peer, holder) -> if (previous?.get(peer) != holder) direct.onProfileChanged(peer) }
         boardHolders = map
         peerByBoard = buildMap { map.forEach { (peer, holder) -> putIfAbsent(holder.addr, peer) } }
+        hooks.onBoardMap(map)
         publishStatus()
     }
 

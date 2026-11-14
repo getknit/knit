@@ -222,6 +222,17 @@ import java.util.concurrent.atomic.AtomicInteger
  * error in this file rather than as a silently narrower rig.
  */
 class MeshLab {
+    /**
+     * The newest sealed profile copy a holder sent a viewer, as [assertConverged]'s `sealedTo` names it: its [version] and the
+     * MeshCore key it carried ([meshcoreKey], canonical, null keyless). Never logged.
+     */
+    class SealedCopy(
+        val version: Long,
+        val meshcoreKey: String?,
+    ) {
+        override fun toString(): String = "SealedCopy(v=$version, keyed=${meshcoreKey != null})"
+    }
+
     private val context: Context = ApplicationProvider.getApplicationContext()
     private val dir: File = Files.createTempDirectory("meshlab").toFile()
     private val nodes = mutableListOf<LabNode>()
@@ -601,10 +612,11 @@ class MeshLab {
      * re-offer) until they meet by radio again.
      *
      * [sealedTo] is the profile leg's parity mode for a sender that spares sessions a sealed profile (ADR 2026-11.gsqu,
-     * Stage 5b-1): given (holder, viewer), the newest version the holder sealed the viewer, or null to ask for the holder's
-     * newest. A viewer that holds the holder's presentation at that version, every visible field equal, has converged: an
-     * audience-only mint marks an unchanged session sent without sealing it the newer number. Null, the default, keeps the
-     * oracle exact.
+     * Stage 5b-1): given (holder, viewer), the newest copy the holder sealed the viewer ([SealedCopy]), or null to ask for the
+     * holder's newest. A viewer that holds the holder's presentation at that version, every visible field equal, **and** the
+     * MeshCore key that copy carried (`PeerEntity.meshcoreKey`, which the presentation does not show: a wrong spare that
+     * differs only in the key would otherwise pass; the 5b-1 mesh-lab review), has converged: an audience-only mint marks an
+     * unchanged session sent without sealing it the newer number. Null, the default, keeps the oracle exact.
      */
     suspend fun assertConverged(
         nodes: List<LabNode>,
@@ -612,7 +624,7 @@ class MeshLab {
         carriers: List<LabNode> = emptyList(),
         timeoutMs: Long = AWAIT_MS,
         custodyAcross: List<LabNode> = nodes + carriers,
-        sealedTo: (suspend (holder: LabNode, viewer: LabNode) -> Long?)? = null,
+        sealedTo: (suspend (holder: LabNode, viewer: LabNode) -> SealedCopy?)? = null,
         conversation: (LabNode) -> String,
     ) {
         val names = nodes.map { it.name }
@@ -740,7 +752,7 @@ class MeshLab {
     private suspend fun assertProfilesAgree(
         nodes: List<LabNode>,
         timeoutMs: Long,
-        sealedTo: (suspend (holder: LabNode, viewer: LabNode) -> Long?)?,
+        sealedTo: (suspend (holder: LabNode, viewer: LabNode) -> SealedCopy?)?,
     ) {
         val pairs = nodes.flatMap { a -> nodes.filter { it !== a }.map { b -> a to b } }
         val presented = tryAwait(1, timeoutMs) { if (pairs.all { (a, b) -> presentsAsItIs(a, b, sealedTo?.invoke(b, a)) }) 1 else 0 }
@@ -4044,9 +4056,12 @@ data class GroupShape(
 private suspend fun presentsAsItIs(
     a: LabNode,
     b: LabNode,
-    sealedVersion: Long? = null,
+    sealed: MeshLab.SealedCopy? = null,
 ): Boolean {
     val held = a.presentationOf(b) ?: return false
+    // The key the newest copy sealed to [a] carried, which the presentation does not show (the 5b-1 mesh-lab review).
+    if (sealed != null && a.peer(b)?.meshcoreKey != sealed.meshcoreKey) return false
+    val sealedVersion = sealed?.version
     // A spared session holds [b]'s presentation at the newest version [b] sealed it (ADR 2026-11.gsqu, Stage 5b-1).
     val newest = b.ownPresentation()
     val own = if (sealedVersion != null && sealedVersion < newest.version) newest.copy(version = sealedVersion) else newest

@@ -6,9 +6,12 @@ import app.getknit.knit.mesh.lora.BoardAddr
  * What the session knows about the zero-hop pins on its board's contacts (ADR 2026-11.gsqu §3; binding rules "sends" 1
  * and 2). Pure bookkeeping; the session does the reads and writes.
  *
- * - **The key map.** A DM is addressed by a 6-byte prefix, a pin by the 32-byte key: the map is fed only by the session's
- *   contact plumbing (a teach, a read, the taught list Stage 5 hands it), never by an advert, so a flood of adverts keeps
- *   nothing here. A send to a prefix with no key is refused.
+ * - **The key map is the taught set** (security B1, Stage 5b-2). A DM is addressed by a 6-byte prefix, a pin by the 32-byte
+ *   key: the map is fed only by the keys Knit taught — the ranked list `MeshcoreContacts` hands it, and a teach this session
+ *   wrote — never by a read of a contact or an advert, so a key that is someone else's contact on the board is never
+ *   pinned or sent to. A send to a prefix with no taught key is refused ([keyFor] null: `NO_RECORD`).
+ * - **One key a prefix** (security B3). The board takes the first contact a prefix matches, so a prefix another key holds
+ *   is refused ([learn]), and one a listed contact of another key shares is contested for the connection ([contest]).
  * - **Verified.** A DM is written only after a pin that succeeded in this connection: the set empties at every Ready
  *   ([onReady]) and loses a key whenever the board may have moved its route — a path push, a contact deleted, a flooded
  *   send, an `Unreachable`.
@@ -46,38 +49,85 @@ internal class MeshcorePins(
     private val keys = HashMap<BoardAddr.MeshCore, ByteArray>()
     private val taught = LinkedHashSet<BoardAddr.MeshCore>()
     private val verified = HashSet<BoardAddr.MeshCore>()
+    private val contested = HashSet<BoardAddr.MeshCore>()
+
+    /** Our own board the [contested] prefixes were listed on (the last [onReady]'s), or null before one. */
+    private var contestBoard: BoardAddr.MeshCore? = null
     private val lastJobAt = HashMap<BoardAddr.MeshCore, Long>()
     private val queued = LinkedHashMap<BoardAddr.MeshCore, Job>()
 
-    /** Learns [key]'s prefix → key, from the contact plumbing; returns its address, or null for a key not 32 bytes. */
+    /** Keys [learn] refused, their prefix held by another key: counted for the dump, never named. */
+    @Volatile
+    var refusedPrefixes: Long = 0L
+        private set
+
+    /**
+     * Learns [key]'s prefix → key into the taught set: its address, or null for a key not 32 bytes or a prefix another key
+     * already holds (security B3: the board would send that key's DMs to the first contact the prefix matches).
+     */
     @Synchronized
     fun learn(key: ByteArray): BoardAddr.MeshCore? {
         val addr = addrOf(key) ?: return null
+        val held = keys[addr]
+        if (held != null && !held.contentEquals(key)) {
+            refusedPrefixes++
+            return null
+        }
         keys[addr] = key.copyOf()
+        taught += addr
         return addr
     }
 
     /**
-     * The keys Knit taught this board, ranked most-wanted first (Stage 5's `MeshcoreContacts` decides): the targets of a
-     * targeted re-pin and the order of the Ready re-assert. Each is learned; a key dropped from the list keeps its map
-     * entry (a DM to it still pins it first) but no longer draws a re-pin.
+     * The keys Knit taught this board, ranked most-wanted first (`MeshcoreContacts` decides): the only keys a DM is sent to
+     * or a pin written for, the targets of a targeted re-pin and the order of the Ready re-assert. It replaces the set: a
+     * key dropped from the list is forgotten, so a DM to it is refused unwritten.
      */
     @Synchronized
     fun setTaught(ranked: List<ByteArray>) {
         taught.clear()
-        ranked.forEach { key -> learn(key)?.let(taught::add) }
+        keys.clear()
+        ranked.forEach(::learn)
+        verified.retainAll(taught)
         queued.keys.retainAll(taught)
     }
 
-    /** Marks [key] taught by Knit (a teach this session wrote), at the end of the ranking. */
+    /** Marks [key] taught by Knit (a teach this session wrote), at the end of the ranking: its address, or null as [learn]. */
     @Synchronized
-    fun noteTaught(key: ByteArray) {
-        learn(key)?.let(taught::add)
+    fun noteTaught(key: ByteArray): BoardAddr.MeshCore? = learn(key)
+
+    /** Whether [key] could be learned: 32 bytes, and its prefix held by no other key. */
+    @Synchronized
+    fun prefixFree(key: ByteArray): Boolean = addrOf(key)?.let { keys[it]?.contentEquals(key) ?: true } == true
+
+    /** The taught keys, ranked. */
+    @Synchronized
+    fun taughtKeys(): List<ByteArray> = taught.mapNotNull { keys[it]?.copyOf() }
+
+    /**
+     * The key a DM to [addr] is written for: a taught key whose prefix no listed contact of another key shares on this
+     * connection, or null — the send is refused unwritten.
+     */
+    @Synchronized
+    fun keyFor(addr: BoardAddr.MeshCore): ByteArray? = keys[addr]?.takeIf { addr in taught && addr !in contested }?.copyOf()
+
+    /** Whether [key] is taught, exactly (the same 32 bytes at its prefix). */
+    @Synchronized
+    fun teaches(key: ByteArray): Boolean = addrOf(key)?.let { keys[it]?.contentEquals(key) == true && it in taught } == true
+
+    /** The contests a whole listing found, replacing the last ones. */
+    @Synchronized
+    fun setContested(addrs: List<BoardAddr.MeshCore>) {
+        contested.clear()
+        addrs.forEach(::contest)
     }
 
-    /** The key a DM to [addr] is written for, or null when none was learned: the send is refused. */
+    /** A listed contact of another key shares [addr]'s prefix and is still on the board: nothing goes to it until a listing clears it. */
     @Synchronized
-    fun keyFor(addr: BoardAddr.MeshCore): ByteArray? = keys[addr]?.copyOf()
+    fun contest(addr: BoardAddr.MeshCore) {
+        contested += addr
+        verified -= addr
+    }
 
     @Synchronized
     fun isVerified(addr: BoardAddr.MeshCore): Boolean = addr in verified
@@ -102,8 +152,15 @@ internal class MeshcorePins(
      * full re-assert to run (each counted against the rate limit as of [now]).
      */
     @Synchronized
-    fun onReady(now: Long): List<ByteArray> {
+    fun onReady(
+        now: Long,
+        board: BoardAddr.MeshCore? = null,
+    ): List<ByteArray> {
         verified.clear()
+        // The last listing's contests stand until this connection's listing replaces them ([setContested], lora N3), but only
+        // on the board they were read on: our own [board] changed (a rebind), and they say nothing about this one.
+        if (board != contestBoard) contested.clear()
+        contestBoard = board
         queued.clear()
         return taught.mapNotNull { addr -> keys[addr]?.copyOf().also { lastJobAt[addr] = now } }
     }
@@ -140,6 +197,10 @@ internal class MeshcorePins(
         val key = keys[addr] ?: return null
         return key.copyOf() to job
     }
+
+    /** Drops every queued job (a board not set up for Knit runs none). */
+    @Synchronized
+    fun clearJobs() = queued.clear()
 
     /** Whether any job is queued. */
     @Synchronized

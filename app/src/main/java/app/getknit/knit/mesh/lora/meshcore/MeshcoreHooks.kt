@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lora.meshcore
 
 import app.getknit.knit.TextLimits
 import app.getknit.knit.mesh.PublicPostRefusal
+import app.getknit.knit.mesh.crypto.MeshcoreKey
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.lora.AirPurpose
 import app.getknit.knit.mesh.lora.BoardAddr
@@ -14,6 +15,7 @@ import app.getknit.knit.mesh.lora.BoardSettings
 import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.FragmentOutcome
 import app.getknit.knit.mesh.lora.KeyTeach
+import app.getknit.knit.mesh.lora.KeyWrite
 import app.getknit.knit.mesh.lora.LORA_DIRECT_OVERHEAD
 import app.getknit.knit.mesh.lora.LORA_DIRECT_TAG
 import app.getknit.knit.mesh.lora.LawSampleStamp
@@ -51,11 +53,18 @@ import java.util.concurrent.atomic.AtomicLong
  * custody, and never a hearing ([PacketRoute.DROPPED]). The channel key is public, so the slot and the data type are read
  * first.
  *
- * Not yet: teaching contacts and the inbox claim are Stage 5b's ([teachKey] refuses, `bindMeshcoreDirect` stays unbound),
- * two-part room posts 5c's, the Public mirror Stage 6's.
+ * **The board's contacts are Knit's taught set** (Stage 5b-2, [MeshcoreContacts]): each board map ([onBoardMap]) decides
+ * the ranked keys the session may DM and pin, cut to the board's capacity; a key that leaves the set (a contact removed or
+ * blocked) is removed from the board (ADR 2026-09.adgd), and a DM our board refused for want of the contact is taught only
+ * for a key in the set, once per (board, key) until a DM to it is acked ([teachKey]). After a Restore nothing is taught
+ * until the next setup.
+ *
+ * Not yet: the persisted setup record and the inbox claim are Stage 5b-2's second part (`bindMeshcoreDirect` stays
+ * unbound), two-part room posts 5c's, the Public mirror Stage 6's.
  *
  * State: the duty law ([MeshcoreDutyLaw], `@Synchronized`), the board its ring is for and the band's duty, guarded by
- * [lock], which is never held across a call into the core; counters are atomics; the setup record is volatile.
+ * [lock], which is never held across a call into the core; the contact policy is `@Synchronized`; counters are atomics;
+ * the setup record, the board map and the board's facts are volatile.
  */
 @Suppress("TooManyFunctions") // one seam per kind: every behaviour the core calls, grouped as BoardKindHooks groups it
 internal class MeshcoreHooks(
@@ -106,9 +115,31 @@ internal class MeshcoreHooks(
     @Volatile
     private var multiAcks = 0
 
-    /** What this process's last setup changed, for a Restore in the same process; persisted from Stage 5b. */
+    /** What this process's last setup changed, for a Restore in the same process; persisted in 5b-2's second part. */
     @Volatile
     private var setupRecord: MeshcoreSetupRecord? = null
+
+    /** Which contacts the board is taught (Stage 5b-2). */
+    private val contacts = MeshcoreContacts()
+
+    /** Serialises [reteach]; taken outside the contact policy's and the pins' monitors, never inside them. */
+    private val teachLock = Any()
+
+    /** The last board map the core handed over ([onBoardMap]), in its form; null before one. */
+    @Volatile
+    private var holders: Map<String, LoraBoardHolder>? = null
+
+    /** Our board's key once it identified, and its address: never taught, and the write memo's board. */
+    @Volatile
+    private var ownKey: ByteArray? = null
+
+    /** The board's contact capacity (`DEVICE_INFO`'s `MAX_CONTACTS / 2`, doubled), once a Ready reported it. */
+    @Volatile
+    private var capacity: Int? = null
+
+    /** A Restore succeeded: nothing is taught until the next setup. */
+    @Volatile
+    private var restored = false
 
     @Volatile
     override var provisioning = false
@@ -428,6 +459,7 @@ internal class MeshcoreHooks(
      * its first connection (a cost the 5a-2 amendment records). The old board's hold goes with it.
      */
     override fun onIdentified(publicKey: ByteArray) {
+        ownKey = publicKey.copyOf()
         val board = digest(publicKey)
         val changed =
             synchronized(lock) {
@@ -460,6 +492,9 @@ internal class MeshcoreHooks(
         if (radio != null && duty != null) core.airtime.onRadio(radio, duty) else core.airtime.forgetRadio()
         synchronized(lock) { dutyPercent = duty?.dutyCyclePercent ?: MeshcoreTraits.fallbackDutyPercent }
         applyLaw()
+        // The taught set cut to this board's capacity before the Ready reconcile reads it.
+        capacity = detail?.contactCapacity
+        if (holders != null) reteach()
     }
 
     /** One poll's sample: the law reads it, the pacer is held or released, and the ring is saved once a spacing. */
@@ -563,6 +598,10 @@ internal class MeshcoreHooks(
         when (val r = session.setup()) {
             is MeshcoreSetupResult.Done -> {
                 if (r.record.changedAnything) setupRecord = r.record
+                restored = false
+                if (holders != null) reteach()
+                // What the erase removed, counted, never named: the oracle a setup trial greps.
+                log("lora setup kind=meshcore slot=${r.slot} erased contacts=${r.erasedContacts} slots=${r.clearedSlots}")
                 ProvisionResult.Provisioned(r.slot, r.alreadyPresent)
             }
 
@@ -584,7 +623,12 @@ internal class MeshcoreHooks(
         val record = setupRecord ?: return ProvisionResult.Failed(NO_RECORD)
         return when (val r = session.restore(record)) {
             is MeshcoreRestoreResult.Done -> {
-                if (r.failed.isEmpty()) setupRecord = null
+                if (r.failed.isEmpty()) {
+                    setupRecord = null
+                    restored = true
+                    session.setKnitContacts(emptyList())
+                }
+                log("lora restore kind=meshcore contacts=${r.contactsRemoved} slotCleared=${r.slotCleared} failed=${r.failed.size}")
                 if (r.failed.isEmpty()) {
                     ProvisionResult.Restored
                 } else {
@@ -601,9 +645,48 @@ internal class MeshcoreHooks(
     }
 
     /**
-     * Refused until Stage 5b: the contacts our board is taught come from `MeshcoreContacts`, which teaches only keys it
-     * vetted (no contested prefix, no unproven key), never a key the core asks for after a refusal. Counted and logged by
-     * reason, never by key.
+     * The board map changed (Stage 5b-2): the taught set is decided again ([MeshcoreContacts.wanted]) and handed to the
+     * session, and every key it dropped — a contact removed or blocked, a key now contested — is removed from the board
+     * (ADR 2026-09.adgd), launched on the plane's scope. Returns at once.
+     */
+    override fun onBoardMap(map: Map<String, LoraBoardHolder>) {
+        holders = map
+        reteach()
+    }
+
+    /**
+     * Decides the taught set from the last board map and hands it to the session; removes what left it. One decision at a
+     * time ([teachLock]: the map's collector and the session's actor both call in), so an older set never lands last. The
+     * lock is held over no wait: the session's hand-over and the launch return at once.
+     */
+    private fun reteach() = synchronized(teachLock) { reteachLocked() }
+
+    private fun reteachLocked() {
+        val map = holders ?: return
+        val before = contacts.current
+        val wanted = contacts.wanted(map, ownKey, capacity, clock())
+        counters.keysWanted.set(wanted.ranked.size.toLong())
+        counters.keysSkipped.set(
+            wanted.skipped.values
+                .sum()
+                .toLong(),
+        )
+        if (restored) {
+            session.setKnitContacts(emptyList())
+            return
+        }
+        session.setKnitContacts(wanted.ranked)
+        val gone = before.ranked.filterNot(wanted::has)
+        if (gone.isEmpty()) return
+        counters.removedUntaught.addAndGet(gone.size.toLong())
+        scope.launch { gone.forEach { key -> session.removeUntaught(key) } }
+    }
+
+    /**
+     * Our board refused a DM to [peerId] for want of the contact ([app.getknit.knit.mesh.lora.RefusalClass.OWN_NO_KEY]): the
+     * key is taught only when it is in the taught set ([MeshcoreContacts.judgeTeach]: vetted, ranked inside the capacity,
+     * inside the peer's daily bound) and was not written already for our board without a DM to it acked since. Never after a
+     * Restore. Counted and logged by reason, never by key.
      */
     override fun teachKey(
         peerId: String,
@@ -611,13 +694,34 @@ internal class MeshcoreHooks(
         own: BoardAddr,
         sentAfter: Long,
     ): KeyTeach {
-        counters.teachRefused.incrementAndGet()
-        log("lora direct no contact $peerId reason=MESHCORE_TEACHING_IS_5B")
-        return KeyTeach.Refused
+        val board = own as? BoardAddr.MeshCore
+        val key = holder.loraKey?.let(MeshcoreKey::bytesOrNull)
+        val refusal =
+            when {
+                board == null || key == null -> "NO_KEY"
+                restored -> "RESTORED"
+                else -> contacts.judgeTeach(peerId, key, board)?.name
+            }
+        if (refusal != null || board == null || key == null) {
+            counters.teachRefused.incrementAndGet()
+            log("lora direct no contact $peerId reason=$refusal")
+            return KeyTeach.Refused
+        }
+        return KeyTeach.Write {
+            val written = session.teach(key)
+            if (written == ContactWrite.WRITTEN) {
+                contacts.onWritten(board, key)
+                counters.teachWritten.incrementAndGet()
+            }
+            keyWriteOf(written)
+        }
     }
 
-    /** Nothing kept about teaching until Stage 5b. */
-    override fun onDelivered(to: BoardAddr) = Unit
+    /** A DM to [to] was acked by its board: one more reactive teach of it is allowed should our board lose it. */
+    override fun onDelivered(to: BoardAddr) {
+        val board = ownKey?.let(MeshcorePins::addrOf) ?: return
+        (to as? BoardAddr.MeshCore)?.let { contacts.onDelivered(board, it) }
+    }
 
     /** MeshCore answers no `PEER_LACKS_KEY`: nothing of ours airs for it. */
     override fun bookKeyReply(now: Long) = Unit
@@ -644,7 +748,19 @@ internal class MeshcoreHooks(
         private const val MS_PER_SECOND = 1_000L
         private const val DIGEST_BYTES = 8
         private const val NO_DEDICATED_SLOT = "a MeshCore board has no dedicated slot: Knit never moves its radio"
-        private const val NO_RECORD = "no setup record held: setup again first (persisted from Stage 5b)"
+        private const val NO_RECORD = "no setup record held: setup again first (persisted in Stage 5b-2's second part)"
+
+        /**
+         * What a teach's answer is to the core's held frame: taken, it goes again; present already or unconfirmed, once more
+         * and a second refusal is terminal; no room or no contact, the peer is keyless; not Ready, it is owed.
+         */
+        fun keyWriteOf(written: ContactWrite): KeyWrite =
+            when (written) {
+                ContactWrite.WRITTEN -> KeyWrite.WRITTEN
+                ContactWrite.ALREADY_PRESENT, ContactWrite.FAILED -> KeyWrite.UNCONFIRMED
+                ContactWrite.NO_FREE_SLOT, ContactWrite.NOT_FOUND, ContactWrite.NOT_SET_UP -> KeyWrite.REFUSED
+                ContactWrite.NOT_READY -> KeyWrite.NOT_WRITTEN
+            }
 
         /**
          * The neutral link state for a MeshCore board: Ready as a `LinkState.Ready` with no Meshtastic identity — node 0, no
@@ -751,15 +867,28 @@ internal class MeshcorePlaneCounters {
     /** `meshcoreZeroHopKnitPosts`: a live zero-hop Knit post routed, unverified — beside `boardsHeard`'s verified authors. */
     val zeroHopKnitPosts = AtomicLong()
 
-    /** A key the core asked to teach, refused until Stage 5b. */
+    /** A key the core asked to teach, refused by the contact policy (not wanted, written already, after a Restore). */
     val teachRefused = AtomicLong()
+
+    /** A key the core asked to teach, written and read back. */
+    val teachWritten = AtomicLong()
+
+    /** The taught set's size, as the last board map decided it (a gauge). */
+    val keysWanted = AtomicLong()
+
+    /** Holders the last decision left untaught (a gauge): no key, contested, our own, the daily bound, the capacity. */
+    val keysSkipped = AtomicLong()
+
+    /** Keys that left the taught set (a contact removed or blocked) and were removed from the board. */
+    val removedUntaught = AtomicLong()
 
     /** The counts, by name: nothing here can carry a key, a prefix, a name or a text. */
     override fun toString(): String =
         "MeshcorePlaneCounters(foreignDms=$foreignDms, foreignPosts=$foreignPosts, publicDiscarded=$publicDiscarded, " +
             "fragmentsRefused=$fragmentsRefused, acksBooked=$acksBooked, pathReturnsBooked=$pathReturnsBooked, " +
             "pathReturnsSeen=$pathReturnsSeen, answersReplayed=$answersReplayed, floodSurcharges=$floodSurcharges, " +
-            "lawHolds=$lawHolds, zeroHopKnitPosts=$zeroHopKnitPosts, teachRefused=$teachRefused)"
+            "lawHolds=$lawHolds, zeroHopKnitPosts=$zeroHopKnitPosts, teachRefused=$teachRefused, teachWritten=$teachWritten, " +
+            "keysWanted=$keysWanted, keysSkipped=$keysSkipped, removedUntaught=$removedUntaught)"
 }
 
 /**

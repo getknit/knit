@@ -53,6 +53,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.random.Random
 
@@ -167,6 +168,14 @@ internal class MeshcoreSession(
     @Volatile
     private var slotReading: MeshcoreSlotReading? = null
 
+    /** Whether the hooks have handed over the taught set at least once ([setKnitContacts]): the reconcile waits for it. */
+    @Volatile
+    private var taughtKnown = false
+
+    /** A Ready's reconcile not yet run: [setKnitContacts] wakes the actor for it. Mirrors the connection's own flag. */
+    @Volatile
+    private var reconcilePending = false
+
     // The reconnect loop's own state, as MeshtasticSession keeps it.
     private var readyAt: Long? = null
 
@@ -245,28 +254,51 @@ internal class MeshcoreSession(
 
     // --- the kind's own surface (Stage 5's hooks) ---
 
-    /** Sets the board up for Knit as one transaction: reads first, writes verified by reading back (§4). */
+    /**
+     * Sets the board up for Knit as one transaction (§4, the maintainer's Stage 5 decisions): reads first, then the erase —
+     * every contact that is not a taught Knit one and every slot but Public and Knit's, one command at a time, each read
+     * back — then the writes, each read back. Never `CMD_FACTORY_RESET`: it would format the board, mint it a new identity
+     * and reset its radio (ADR 045), and the encoder cannot write it.
+     */
     override suspend fun setup(): MeshcoreSetupResult =
         call({ MeshcoreSetupResult.NotReady }, { MeshcoreSetupResult.Failed(TIMED_OUT, left = null) }, setupDeadlineMs) { c ->
             runSetup(c)
         }
 
-    /** Puts back what [record] says a setup changed, where it is still Knit's to put back (binding rule "contacts" 2). */
+    /**
+     * Puts back what [record] says a setup changed, where it is still Knit's to put back (binding rule "contacts" 2), and
+     * removes Knit's contacts first; what setup erased is not brought back. The taught set is forgotten on success.
+     */
     override suspend fun restore(record: MeshcoreSetupRecord): MeshcoreRestoreResult =
         call(
             { MeshcoreRestoreResult.NotReady },
             { MeshcoreRestoreResult.Done(false, emptyList(), listOf(TIMED_OUT)) },
             setupDeadlineMs,
         ) { c ->
-            runRestore(c, record)
+            runRestore(c, record, clearContacts = true)
         }
 
-    /** Writes [key] as a Knit contact (zero-hop, favourite, `Knit xxxx`), only into a free slot; never evicts anyone. */
-    suspend fun teach(key: ByteArray): ContactWrite = call({ ContactWrite.NOT_READY }, { ContactWrite.FAILED }) { c -> runTeach(c, key) }
+    /**
+     * Writes [key] as a Knit contact (zero-hop, favourite, `Knit xxxx`), only into a free slot (the count the Ready's listing
+     * read, kept locally; one read only when no listing was taken), and marks it taught; never evicts anyone. On a board set
+     * up for Knit a contact already on the key is overwritten to Knit's record; on any other board it is left alone
+     * ([ContactWrite.ALREADY_PRESENT]).
+     */
+    override suspend fun teach(key: ByteArray): ContactWrite =
+        call({ ContactWrite.NOT_READY }, { ContactWrite.FAILED }) { c -> runTeach(c, key) }
 
     /** Removes [key]'s contact and reads it gone. */
     suspend fun removeContact(key: ByteArray): ContactWrite =
         call({ ContactWrite.NOT_READY }, { ContactWrite.FAILED }) { c -> runRemove(c, key) }
+
+    /**
+     * Removes [key]'s contact unless it is taught again by the time the actor runs it (lora N1: the hooks decided it left the
+     * taught set earlier, and a key that came back keeps its contact). [ContactWrite.NOT_FOUND] when skipped.
+     */
+    override suspend fun removeUntaught(key: ByteArray): ContactWrite =
+        call({ ContactWrite.NOT_READY }, { ContactWrite.FAILED }) { c ->
+            if (pins.teaches(key)) ContactWrite.NOT_FOUND else runRemove(c, key)
+        }
 
     /** Resets [key]'s route to flood (`RESET_PATH`) and reads it back; the next DM to it pins it again. */
     suspend fun resetPath(key: ByteArray): ContactWrite =
@@ -280,10 +312,16 @@ internal class MeshcoreSession(
         }
 
     /**
-     * The keys Knit taught this board, ranked (Stage 5's `MeshcoreContacts`): the targets of a targeted re-pin and the
-     * Ready re-assert's order. Any thread.
+     * The keys Knit teaches this board, ranked (`MeshcoreContacts`): the only keys a DM is sent to or a pin written for
+     * (security B1), the targets of a targeted re-pin, and what the Ready reconcile makes the board's table on a board set up
+     * for Knit. Until the first call no reconcile runs, so a Ready that beats the board map removes nothing. Any thread.
      */
-    fun setKnitContacts(ranked: List<ByteArray>) = pins.setTaught(ranked)
+    override fun setKnitContacts(ranked: List<ByteArray>) {
+        pins.setTaught(ranked)
+        taughtKnown = true
+        // Only a reconcile waiting on the set is woken: any other change waits for the next tick.
+        if (reconcilePending) poke.trySend(Unit)
+    }
 
     /** The latest read of the bound slot, or null: `checkSlot` refuses without a recent one (binding rule "contacts" 2). */
     override fun slotReading(): MeshcoreSlotReading? = slotReading
@@ -673,12 +711,18 @@ internal class MeshcoreSession(
         headroomPolicy.reset()
         airRing.reset()
         c.reassert.clear()
-        c.reassert.addAll(pins.onReady(now()))
+        c.reassert.addAll(pins.onReady(now(), c.self?.key?.let(MeshcorePins::addrOf)))
+        c.steps.clear()
+        c.removalFailed.clear()
+        c.contacts = null
+        c.reconcileWanted = true
+        reconcilePending = true
         c.drainWanted = true
         c.lastPollAt = now()
         readyAt = now()
         publishReady(c)
-        if (c.reassert.isNotEmpty()) poke.trySend(Unit)
+        // The reconcile's decision is owed at once (a board not set up for Knit drops it there), and the re-assert after it.
+        poke.trySend(Unit)
     }
 
     /** Publishes the board as it stands: after the handshake, and again after a setup or a restore moves its slot. */
@@ -1079,6 +1123,8 @@ internal class MeshcoreSession(
         deleted: Boolean,
     ) {
         val addr = MeshcorePins.addrOf(key) ?: return
+        // A contact gone frees its slot in the count the Ready's listing read (Stage 5b-2: one listing a Ready, kept here).
+        if (deleted) c.contacts = c.contacts?.let { (it - 1).coerceAtLeast(0) }
         flights.values.filter { it.to == addr }.forEach { it.repinNeeded = true }
         when (pins.onPush(key, deleted, now())) {
             MeshcorePins.PushAction.IGNORED -> counters.foreignPathPushes.incrementAndGet()
@@ -1175,10 +1221,17 @@ internal class MeshcoreSession(
         runOneJob(c)
     }
 
-    /** One low-priority contact job — the Ready re-assert first, then a targeted re-pin — under sends and the drain. */
+    /**
+     * One low-priority contact job under sends and the drain: the Ready reconcile's listing first (a board set up for Knit,
+     * once the taught set is known), then its steps one at a time, then the Ready re-assert, then a targeted re-pin.
+     */
     private suspend fun runOneJob(c: Conn) {
-        val reassert = c.reassert.removeFirstOrNull()
-        if (reassert != null) {
+        if (reconcileOrDrop(c)) return
+        val step = c.steps.removeFirstOrNull()
+        val reassert = if (step == null) c.reassert.removeFirstOrNull() else null
+        if (step != null) {
+            runStep(c, step)
+        } else if (reassert != null) {
             pinKey(c, reassert)
         } else {
             val (key, job) = pins.nextJob() ?: return
@@ -1187,7 +1240,28 @@ internal class MeshcoreSession(
                 MeshcorePins.Job.TEACH -> runTeach(c, key)
             }
         }
-        if (c.reassert.isNotEmpty() || pins.hasJobs()) poke.trySend(Unit)
+        if (c.steps.isNotEmpty() || c.reassert.isNotEmpty() || pins.hasJobs()) poke.trySend(Unit)
+    }
+
+    /**
+     * The Ready reconcile's turn, or a board Knit did not set up, whose pin, re-pin and re-teach jobs are dropped (the 5b-2
+     * review's B1). True when the tick is spent.
+     */
+    private suspend fun reconcileOrDrop(c: Conn): Boolean {
+        val knit = knitBoard(c)
+        if (c.reconcileWanted && (taughtKnown || !knit)) {
+            c.reconcileWanted = false
+            reconcilePending = false
+            if (knit) reconcile(c)
+            poke.trySend(Unit)
+            return true
+        }
+        if (!knit) {
+            c.reassert.clear()
+            c.steps.clear()
+            pins.clearJobs()
+        }
+        return !knit
     }
 
     // --- sends ---
@@ -1328,7 +1402,9 @@ internal class MeshcoreSession(
         handle: UInt,
     ): SendResult {
         if (payload.isEmpty() || payload.size > MeshcoreProto.DIRECT_SEAL_CAP) return SendResult.TooLarge
-        val key = pins.keyFor(to) ?: return SendResult.Rejected(0u, MeshcoreRefusal.NO_RECORD)
+        // Off a board set up for Knit nothing is sent or pinned (the 5b-2 review's B1): the user's own contacts stay theirs.
+        // Refused under this send's own handle, so the core acts on every refusal, not the first (lora N2).
+        val key = pins.keyFor(to)?.takeIf { knitBoard(c) } ?: return SendResult.Rejected(handle, MeshcoreRefusal.NO_RECORD)
         if (ackTable.full(now()) || headroomPolicy.holding) return SendResult.Busy
         if (!pins.isVerified(to) && !pinKey(c, key)) return SendResult.Rejected(handle, MeshcoreRefusal.UNPINNED)
         val flight = Flight(handle, to, key, Cobs.encode(payload), wallClock() / MS_PER_SECOND, startedAt = now())
@@ -1491,8 +1567,8 @@ internal class MeshcoreSession(
         c: Conn,
         key: ByteArray,
     ): Found? {
+        // Never into the send map (security B1): a contact read is not a key Knit taught.
         val bytes = MeshcoreProto.getContactByKey(key) ?: return Found(null)
-        pins.learn(key)
         return when (val f = requestMatched(c, bytes) { it is McFrame.Contact && it.record.key.contentEquals(key) }) {
             is McFrame.Contact -> Found(f.record)
             is McFrame.Err -> if (f.code == MeshcoreProto.ERR_NOT_FOUND) Found(null) else null
@@ -1502,13 +1578,14 @@ internal class MeshcoreSession(
 
     /**
      * Pins [key]'s contact zero-hop: a read-modify-write of the 144-B form, skipped when it already reads 0, verified by
-     * reading it back. False — counted, and the DM refused — when the contact is missing or anything fails.
+     * reading it back. False — counted, and the DM refused — when the contact is missing or anything fails. Only a key Knit
+     * taught is ever pinned (security B1): another's contact on the board keeps the route its owner gave it.
      */
     private suspend fun pinKey(
         c: Conn,
         key: ByteArray,
     ): Boolean {
-        val addr = pins.learn(key) ?: return false
+        val addr = MeshcorePins.addrOf(key)?.takeIf { pins.teaches(key) && knitBoard(c) } ?: return false
         val pinned = pin(c, key)
         if (pinned) pins.onPinned(addr) else counters.pinFailures.incrementAndGet()
         return pinned
@@ -1559,25 +1636,58 @@ internal class MeshcoreSession(
         c: Conn,
         key: ByteArray,
     ): ContactWrite {
-        val addr = MeshcorePins.addrOf(key) ?: return ContactWrite.FAILED
-        val existing = readContactOn(c, key) ?: return ContactWrite.FAILED
-        if (existing.record != null) return ContactWrite.ALREADY_PRESENT
+        if (!knitBoard(c)) return ContactWrite.NOT_SET_UP
+        val existing = MeshcorePins.addrOf(key)?.let { readContactOn(c, key) } ?: return ContactWrite.FAILED
+        val record = existing.record ?: return teachFresh(c, key)
+        // A board set up for Knit is Knit's: a contact on a taught key is made Knit's record. Any other board's is the user's.
+        val overwrite = knitBoard(c) && pins.teaches(key) && !MeshcoreContacts.isKnitRecord(record)
+        return if (overwrite) writeKnitRecord(c, key, fresh = false) else ContactWrite.ALREADY_PRESENT
+    }
+
+    /** A teach of a key the board does not hold: only into a free slot, by the local count (one count read when none). */
+    private suspend fun teachFresh(
+        c: Conn,
+        key: ByteArray,
+    ): ContactWrite {
         val capacity = requireNotNull(c.info).maxContactsHalf * 2
-        val count = countContacts(c) ?: return ContactWrite.FAILED
+        if (c.contacts == null) c.contacts = countContacts(c)?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt()
+        val count = c.contacts ?: return ContactWrite.FAILED
         if (count >= capacity) {
             log("meshcore teach refused: no free contact slot")
             return ContactWrite.NO_FREE_SLOT
         }
+        return writeKnitRecord(c, key, fresh = true)
+    }
+
+    /**
+     * Writes [key]'s Knit record (a CHAT favourite named `Knit xxxx`, zero-hop) and reads it back as exactly that; a [fresh]
+     * one takes a slot in the local count. The key becomes taught and its pin verified.
+     */
+    private suspend fun writeKnitRecord(
+        c: Conn,
+        key: ByteArray,
+        fresh: Boolean,
+    ): ContactWrite {
+        // A prefix another taught key holds is never written: the board would send both keys' DMs to the first (security B3).
+        if (!pins.prefixFree(key)) return ContactWrite.FAILED
         val write = MeshcoreProto.addUpdateContact(ContactRecord.knit(key, MeshcoreNames.forKey(key)), withPosition = false)
         if (writeAnswered(c, write, FLASH_TIMEOUT_MS) != Answer.OK) return ContactWrite.FAILED
+        if (fresh) c.contacts = c.contacts?.plus(1)
         val back = readContactOn(c, key)?.record ?: return ContactWrite.FAILED
-        if (back.outPathLen != 0) return ContactWrite.FAILED
-        pins.noteTaught(key)
+        if (!MeshcoreContacts.isKnitRecord(back)) return ContactWrite.FAILED
+        val addr = pins.noteTaught(key) ?: return ContactWrite.FAILED
         pins.onPinned(addr)
         return ContactWrite.WRITTEN
     }
 
+    /** A removal outside setup's erase and Restore's own: only on a board set up for Knit (the 5b-2 review's B1). */
     private suspend fun runRemove(
+        c: Conn,
+        key: ByteArray,
+    ): ContactWrite = if (knitBoard(c)) removeOn(c, key) else ContactWrite.NOT_SET_UP
+
+    /** `REMOVE_CONTACT`, read back gone: the erase's and Restore's, under their own transaction, and [runRemove]'s. */
+    private suspend fun removeOn(
         c: Conn,
         key: ByteArray,
     ): ContactWrite {
@@ -1589,13 +1699,202 @@ internal class MeshcoreSession(
             Answer.NONE -> return ContactWrite.FAILED
         }
         MeshcorePins.addrOf(key)?.let(pins::unverify)
-        return if (readContactOn(c, key)?.let { it.record == null } == true) ContactWrite.WRITTEN else ContactWrite.FAILED
+        val gone = readContactOn(c, key)?.let { it.record == null } == true
+        if (gone) c.contacts = c.contacts?.let { (it - 1).coerceAtLeast(0) }
+        return if (gone) ContactWrite.WRITTEN else ContactWrite.FAILED
+    }
+
+    /** Whether the connected board is set up for Knit: Knit's slot on it, and its own name Knit's (`Knit abcd`). */
+    private fun knitBoard(c: Conn): Boolean {
+        val self = c.self ?: return false
+        return c.knitSlot != null && self.name.contentEquals(MeshcoreNames.forKey(self.key).encodeToByteArray())
+    }
+
+    // --- the reconcile at Ready (Stage 5b-2): one listing, then one step a tick ---
+
+    /** The board's whole contact table as one `GET_CONTACTS` listed it, and the count its `CONTACTS_START` gave. */
+    private class Listing(
+        val records: List<ContactRecord>,
+        val count: Int,
+        /** Ended by its bound or deadline, not by `END_OF_CONTACTS`. */
+        val cut: Boolean = false,
+    ) {
+        /** A listing short of its count (another client's frames lost or mixed in, a contact never modified): never acted on whole. */
+        val complete: Boolean get() = !cut && records.size == count
+    }
+
+    /** One step of a reconcile: a removal, or a write of Knit's record ([blockedBy]: a prefix sharer that must go first). */
+    private sealed interface Step {
+        class Remove(
+            val key: ByteArray,
+        ) : Step
+
+        class Write(
+            val key: ByteArray,
+            val fresh: Boolean,
+            val blockedBy: ByteArray?,
+        ) : Step
+    }
+
+    /**
+     * `GET_CONTACTS` from `since` 0: every contact on the board, once (the iterator is one for every client,
+     * `MyMesh.cpp:1238-1257`; while another client lists, ours is refused `ERR BAD_STATE` and asked again after a backoff).
+     * Null when the board would not list.
+     */
+    private suspend fun listContacts(c: Conn): Listing? {
+        repeat(COUNT_ATTEMPTS) { n ->
+            when (val f = requestMatched(c, MeshcoreProto.listContacts()) { it is McFrame.ContactsStart }) {
+                is McFrame.ContactsStart -> {
+                    return collectListing(c, f.count)
+                }
+
+                is McFrame.Err -> {
+                    if (f.code != MeshcoreProto.ERR_BAD_STATE) return null
+                }
+
+                else -> {
+                    return null
+                }
+            }
+            waits.sleep(COUNT_BACKOFF_MS shl n)
+        }
+        return null
+    }
+
+    private suspend fun collectListing(
+        c: Conn,
+        count: Long,
+    ): Listing? {
+        val records = ArrayList<ContactRecord>()
+        // Bounded in length and in time (security N5): past the count and a slack, or the deadline, it ends short — and a
+        // short listing removes nothing.
+        val deadline = now() + LISTING_DEADLINE_MS
+        // null while reading; true at END_OF_CONTACTS; false when the bound or the deadline cut it.
+        var ended: Boolean? = null
+        while (ended == null) {
+            val left = minOf(REQUEST_TIMEOUT_MS, deadline - now())
+            ended =
+                if (left <= 0 || records.size > count + LISTING_SLACK) {
+                    false
+                } else {
+                    when (val f = await(c, left) { it is McFrame.Contact || it == McFrame.EndOfContacts }) {
+                        is McFrame.Contact -> null.also { if (records.size < MAX_LISTED) records += f.record }
+
+                        McFrame.EndOfContacts -> true
+
+                        // A wait the deadline clipped ran out on the deadline, not on a silent board: cut short, not failed.
+                        else -> if (left < REQUEST_TIMEOUT_MS) false else return null
+                    }
+                }
+        }
+        val cut = ended == false
+        counters.contactListings.incrementAndGet()
+        val listing = Listing(records, count.coerceIn(0, MAX_LISTED.toLong()).toInt(), cut)
+        if (!listing.complete) counters.listingsShort.incrementAndGet()
+        return listing
+    }
+
+    /**
+     * The Ready reconcile on a board set up for Knit (the maintainer's Stage 5 decisions): one listing, then
+     * [MeshcoreContacts.plan] makes the table the taught set — removals, then overwrites, then fresh writes, one a tick,
+     * bounded per Ready. A taught key listed as Knit's record is pinned as read. A listing that failed or came short leaves
+     * the Ready re-assert (a pin per taught key) as it was, and removes nothing.
+     */
+    private suspend fun reconcile(c: Conn) {
+        val listing = listContacts(c)
+        if (listing == null || !listing.complete) {
+            counters.reconcilesSkipped.incrementAndGet()
+            log("meshcore reconcile skipped: the board's contacts could not be listed whole")
+            return
+        }
+        planFrom(c, listing.records, listing.count)
+    }
+
+    /** Queues [MeshcoreContacts.plan] over [records] (the board's count [count]) as this connection's steps. */
+    private fun planFrom(
+        c: Conn,
+        records: List<ContactRecord>,
+        count: Int,
+    ) {
+        val capacity = requireNotNull(c.info).maxContactsHalf * 2
+        val plan = MeshcoreContacts.plan(pins.taughtKeys(), records, count, capacity)
+        c.contacts = maxOf(count, records.size)
+        plan.verified.forEach { key -> MeshcorePins.addrOf(key)?.let(pins::onPinned) }
+        // This listing's contests replace the last connection's, which held until now (lora N3).
+        pins.setContested(plan.contested.mapNotNull(MeshcorePins::addrOf))
+        counters.prefixContests.addAndGet(plan.contested.size.toLong())
+        counters.reconcileDeferred.addAndGet(plan.deferred.toLong())
+        // The plan covers every taught key: what it verified, overwrites or writes needs no separate pin.
+        c.reassert.clear()
+        c.steps.clear()
+        plan.removals.forEach { c.steps += Step.Remove(it) }
+        plan.overwrites.forEach { c.steps += Step.Write(it, fresh = false, blockedBy = plan.blockedBy[ByteBuffer.wrap(it)]) }
+        plan.teaches.forEach { c.steps += Step.Write(it, fresh = true, blockedBy = plan.blockedBy[ByteBuffer.wrap(it)]) }
+        counters.reconciles.incrementAndGet()
+        log("meshcore reconcile listed=${records.size} $plan")
+        if (c.steps.isNotEmpty()) poke.trySend(Unit)
+    }
+
+    /** One reconcile step. A write whose prefix sharer did not go is contested instead: nothing is sent to that prefix. */
+    private suspend fun runStep(
+        c: Conn,
+        step: Step,
+    ) {
+        when (step) {
+            is Step.Remove -> removeStep(c, step)
+            is Step.Write -> writeStep(c, step)
+        }
+    }
+
+    private suspend fun removeStep(
+        c: Conn,
+        step: Step.Remove,
+    ) {
+        // Taught again since the plan (lora N1): its contact stays.
+        if (pins.teaches(step.key)) return
+        when (runRemove(c, step.key)) {
+            ContactWrite.WRITTEN, ContactWrite.NOT_FOUND -> {
+                counters.reconcileRemoved.incrementAndGet()
+            }
+
+            else -> {
+                c.removalFailed += ByteBuffer.wrap(step.key)
+                counters.reconcileFailed.incrementAndGet()
+            }
+        }
+    }
+
+    private suspend fun writeStep(
+        c: Conn,
+        step: Step.Write,
+    ) {
+        val addr = MeshcorePins.addrOf(step.key) ?: return
+        // The taught set may have moved since the plan: a key no longer taught is not written.
+        if (!pins.teaches(step.key)) return
+        if (step.blockedBy?.let { ByteBuffer.wrap(it) in c.removalFailed } == true) {
+            pins.contest(addr)
+            counters.prefixContests.incrementAndGet()
+            return
+        }
+        val capacity = requireNotNull(c.info).maxContactsHalf * 2
+        if (step.fresh && (c.contacts ?: capacity) >= capacity) {
+            counters.reconcileDeferred.incrementAndGet()
+            return
+        }
+        val counter =
+            when {
+                writeKnitRecord(c, step.key, step.fresh) != ContactWrite.WRITTEN -> counters.reconcileFailed
+                step.fresh -> counters.reconcileTaught
+                else -> counters.reconcileOverwritten
+            }
+        counter.incrementAndGet()
     }
 
     private suspend fun runResetPath(
         c: Conn,
         key: ByteArray,
     ): ContactWrite {
+        if (!knitBoard(c)) return ContactWrite.NOT_SET_UP
         val bytes = MeshcoreProto.resetPath(key) ?: return ContactWrite.FAILED
         var err = 0
         when (writeAnswered(c, bytes) { err = it }) {
@@ -1611,15 +1910,21 @@ internal class MeshcoreSession(
 
     /**
      * Reads first — `DEVICE_INFO`, `SELF_INFO`, every slot, the default scope (reported, never written), the auto-add
-     * config — and refuses with nothing written when any fails or no slot is free. Then the writes, each read back:
-     * auto-add (chat and overwrite-oldest off), `[38, 1]`, the `Knit abcd` name, and the channel last. A failure puts
-     * back what was written ([runRestore]). The radio is never touched (ADR 045).
+     * config — and refuses with nothing written when any fails or the board has no slot but Public. Then the erase
+     * ([erase]: the board becomes Knit's), then the writes, each read back: auto-add (chat and overwrite-oldest off),
+     * `[38, 1]`, the `Knit abcd` name, and the channel last. A failed write puts back what was written ([runRestore]); what
+     * the erase removed stays removed. The radio is never touched (ADR 045), and nothing here can factory-reset the board.
      */
     private suspend fun runSetup(c: Conn): MeshcoreSetupResult {
         val plan =
             when (val read = setupReads(c)) {
                 is SetupRead.Planned -> read.plan
                 is SetupRead.Refused -> return read.result
+            }
+        val erased =
+            when (val e = erase(c)) {
+                is Erase.Done -> e
+                is Erase.Failed -> return MeshcoreSetupResult.Failed("could not erase the board's ${e.what}", left = null)
             }
         val record = plan.record
         val slot = record.slot
@@ -1649,8 +1954,62 @@ internal class MeshcoreSession(
         c.slots = c.slots.map { if (it.index == slot) MeshcoreSlot(slot, empty = false, knit = true) else it }
         slotReading = MeshcoreSlotReading(slot, knit = true, atMs = now())
         publishReady(c)
-        log("meshcore setup slot=$slot written=${record.slotWritten}")
-        return MeshcoreSetupResult.Done(slot, alreadyPresent = !record.slotWritten, record = record)
+        // The board is Knit's now and its table what the erase left: the reconcile teaches the taught set from it, no second
+        // listing needed.
+        planFrom(c, erased.kept, erased.kept.size)
+        log("meshcore setup slot=$slot written=${record.slotWritten} erased contacts=${erased.contacts} slots=${erased.slots}")
+        return MeshcoreSetupResult.Done(
+            slot,
+            alreadyPresent = !record.slotWritten,
+            record = record,
+            erasedContacts = erased.contacts,
+            clearedSlots = erased.slots,
+        )
+    }
+
+    /** What the erase did, or the read or write it could not make. */
+    private sealed interface Erase {
+        /** [contacts] removed and [slots] cleared; [kept] the taught Knit records left in place. */
+        class Done(
+            val contacts: Int,
+            val slots: Int,
+            val kept: List<ContactRecord>,
+        ) : Erase
+
+        class Failed(
+            val what: String,
+        ) : Erase
+    }
+
+    /**
+     * The setup's erase (the maintainer's Stage 5 decisions): `REMOVE_CONTACT` each contact on the board, then each channel
+     * slot other than Public (0) and Knit's cleared, one command at a time, each read back. A contact that is already Knit's
+     * record for a key Knit teaches is kept, so a setup run again writes no flash for it. A listing that fails or comes short
+     * erases nothing; a removal or a clear that does not read back ends it, leaving what it removed removed.
+     */
+    private suspend fun erase(c: Conn): Erase {
+        val listing = listContacts(c)
+        if (listing == null || !listing.complete) return Erase.Failed("contacts")
+        val (kept, gone) = listing.records.partition { MeshcoreContacts.isKnitRecord(it) && pins.teaches(it.key) }
+        var contacts = 0
+        for (record in gone) {
+            when (removeOn(c, record.key)) {
+                ContactWrite.WRITTEN, ContactWrite.NOT_FOUND -> contacts++
+                else -> return Erase.Failed("contacts")
+            }
+        }
+        c.contacts = kept.size
+        var slots = 0
+        for (slot in c.slots.filter { it.index != PUBLIC_SLOT && !it.knit && !it.empty }) {
+            if (!writeVerified(c, MeshcoreProto.clearChannel(slot.index)) { readSlot(c, slot.index)?.empty == true }) {
+                return Erase.Failed("channels")
+            }
+            c.slots = c.slots.map { if (it.index == slot.index) MeshcoreSlot(it.index, empty = true, knit = false) else it }
+            slots++
+        }
+        counters.setupErasedContacts.addAndGet(contacts.toLong())
+        counters.setupClearedSlots.addAndGet(slots.toLong())
+        return Erase.Done(contacts, slots, kept)
     }
 
     /** One setup write: needed or not, its bytes (null: not encodable), and the read that believes it. */
@@ -1689,8 +2048,10 @@ internal class MeshcoreSession(
         if (autoadd == null || self == null) return SetupRead.Refused(setupFailed(if (scanned) "settings" else "identity"))
         c.defaultScope = requireNotNull(scope).set
         val existing = c.slots.firstOrNull { it.knit }
+        // The erase clears every slot but Public and Knit's, so any other slot is Knit's to take: an empty one first.
         val slot =
             existing?.index ?: c.slots.firstOrNull { it.empty && it.index != PUBLIC_SLOT }?.index
+                ?: c.slots.firstOrNull { it.index != PUBLIC_SLOT }?.index
                 ?: return SetupRead.Refused(MeshcoreSetupResult.NoFreeSlot)
         val name = MeshcoreNames.forKey(self.key)
         val wantAutoadd = autoadd.config and KNIT_AUTOADD_OFF.inv()
@@ -1727,7 +2088,7 @@ internal class MeshcoreSession(
     ): MeshcoreSetupResult {
         log("meshcore setup failed writing $what; putting back what was written")
         // A value left as found is not Knit's: nothing of Knit's is left there. Only a failed put-back leaves something.
-        val back = runRestore(c, done) as? MeshcoreRestoreResult.Done
+        val back = runRestore(c, done, clearContacts = false) as? MeshcoreRestoreResult.Done
         val clean = back != null && back.failed.isEmpty()
         return MeshcoreSetupResult.Failed("the board did not take its $what", left = done.takeIf { !clean && it.changedAnything })
     }
@@ -1749,12 +2110,31 @@ internal class MeshcoreSession(
     /**
      * Puts back what [record] says a setup changed, each only while the board still shows Knit's value there: the slot
      * is cleared only if it still holds Knit's channel and key, the name restored only if it is still Knit's, and the
-     * same for the two settings. Anything else is reported, never overwritten.
+     * same for the two settings. Anything else is reported, never overwritten. With [clearContacts] (a Restore, not a
+     * setup's rollback) Knit's contacts go first ([removeKnitContacts]) and the taught set is forgotten.
      */
     private suspend fun runRestore(
         c: Conn,
         record: MeshcoreSetupRecord,
+        clearContacts: Boolean,
     ): MeshcoreRestoreResult {
+        val contactsRemoved = if (clearContacts) removeKnitContacts(c) else 0
+        val done = restoreSetup(c, record)
+        val failed = if (contactsRemoved == null) listOf("contacts") + done.failed else done.failed
+        if (clearContacts && failed.isEmpty()) {
+            pins.setTaught(emptyList())
+            c.steps.clear()
+            c.reassert.clear()
+        }
+        log("meshcore restore cleared=${done.slotCleared} contacts=${contactsRemoved ?: "failed"} left=${done.leftAsFound} failed=$failed")
+        return done.copy(failed = failed, contactsRemoved = contactsRemoved ?: 0)
+    }
+
+    /** What a setup changed, put back where it still reads as Knit's ([runRestore]'s part past the contacts). */
+    private suspend fun restoreSetup(
+        c: Conn,
+        record: MeshcoreSetupRecord,
+    ): MeshcoreRestoreResult.Done {
         val left = ArrayList<String>()
         val failed = ArrayList<String>()
         val slotCleared = record.slotWritten && restoreSlot(c, record.slot, left, failed)
@@ -1795,8 +2175,25 @@ internal class MeshcoreSession(
             slotReading = MeshcoreSlotReading(record.slot, knit = false, atMs = now())
             publishReady(c)
         }
-        log("meshcore restore cleared=$slotCleared left=$left failed=$failed")
         return MeshcoreRestoreResult.Done(slotCleared, left, failed)
+    }
+
+    /**
+     * Removes every contact that is Knit's — named `Knit xxxx` for its own key, or a key Knit teaches — each read back gone,
+     * from one listing; a contact anyone else wrote since is left. The count removed, or null when the listing failed or
+     * came short, or a removal did not read back.
+     */
+    private suspend fun removeKnitContacts(c: Conn): Int? {
+        val listing = listContacts(c)?.takeIf { it.complete } ?: return null
+        var removed = 0
+        for (record in listing.records) {
+            if (!record.named(MeshcoreNames.forKey(record.key)) && !pins.teaches(record.key)) continue
+            when (removeOn(c, record.key)) {
+                ContactWrite.WRITTEN, ContactWrite.NOT_FOUND -> removed++
+                else -> return null
+            }
+        }
+        return removed
     }
 
     /** Clears [slot] if it still holds Knit's channel and key, read back empty; true when it did. */
@@ -1917,6 +2314,18 @@ internal class MeshcoreSession(
         var lastUptime: Long? = null
         var lastPollAt = 0L
         val reassert = ArrayDeque<ByteArray>()
+
+        /** The board's contact count: the Ready listing's, kept as writes and removals read back; null before one. */
+        var contacts: Int? = null
+
+        /** The Ready reconcile is owed (one listing a Ready). */
+        var reconcileWanted = false
+
+        /** The reconcile's steps, one a tick. */
+        val steps = ArrayDeque<Step>()
+
+        /** Keys whose removal this connection did not read back: a taught key sharing their prefix is contested. */
+        val removalFailed = HashSet<ByteBuffer>()
     }
 
     /** One compact DM's attempts: the same [timestamp] and [text] each, a new attempt number each (Q14). */
@@ -2031,6 +2440,15 @@ internal class MeshcoreSession(
         // A count refused BAD_STATE (another client listing) is asked again after 0.5, 1 and 2 s.
         private const val COUNT_ATTEMPTS = 4
         private const val COUNT_BACKOFF_MS = 500L
+
+        /** The most contacts one listing keeps: past any companion's `MAX_CONTACTS` (a `DEVICE_INFO` byte, doubled). */
+        private const val MAX_LISTED = 1_024
+
+        /** Frames past the `CONTACTS_START` count a listing reads before it ends short: other clients' strays. */
+        private const val LISTING_SLACK = 8
+
+        /** The longest one listing may read, however steadily the frames come: then it ends short. */
+        private const val LISTING_DEADLINE_MS = 60_000L
 
         /** Poll the board every second while anything is queued or in flight, every minute otherwise (§6). */
         private const val BUSY_POLL_MS = 1_000L

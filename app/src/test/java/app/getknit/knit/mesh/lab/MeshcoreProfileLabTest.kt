@@ -259,19 +259,23 @@ class MeshcoreProfileLabTest {
             for (peer in listOf(bob, carol, dave)) assertTrue(lab.tryAwait(1) { if (holdsLatest(peer, alice)) 1 else 0 })
             assertNull(dave.peer(alice)?.meshcoreKey)
 
+            val marks = CopyOnWriteArrayList<String>()
+            alice.manager.onIntroMarked = { marks += it }
             val keylessAtDave = checkNotNull(dave.peer(alice)).updatedAt
+            val beforeAccept = IntroWatch.of(alice, dave, marks)
             alice.accept(alice.dmWith(dave))
             awaitKey(dave, alice, KEY)
             val keyedAtDave = checkNotNull(dave.peer(alice)).updatedAt
             assertTrue("the key came under a newer version", keyedAtDave > keylessAtDave)
             alice.heal()
-            assertSealedOnlyTo(copies, alice.meshcoreClaims.sealedVersion.first(), dave, carrier = frank)
+            assertSealedOnlyTo(copies, alice.meshcoreClaims.sealedVersion.first(), dave, carrier = frank, since = beforeAccept)
 
+            val beforeBlock = IntroWatch.of(alice, dave, marks)
             alice.block(dave)
             awaitKey(dave, alice, null)
             assertTrue("the block came under a newer version", checkNotNull(dave.peer(alice)).updatedAt > keyedAtDave)
             alice.heal()
-            assertSealedOnlyTo(copies, alice.meshcoreClaims.sealedVersion.first(), dave, carrier = frank)
+            assertSealedOnlyTo(copies, alice.meshcoreClaims.sealedVersion.first(), dave, carrier = frank, since = beforeBlock)
 
             for (contact in listOf(bob, carol)) {
                 assertEquals("${contact.name} keeps the key", KEY, contact.peer(alice)?.meshcoreKey)
@@ -421,29 +425,101 @@ class MeshcoreProfileLabTest {
     }
 
     /**
-     * The copies of [version] went to [changed] alone, and [carrier], who shares no session, holds that one in custody: an
-     * audience-only mint seals nobody whose answer did not change.
+     * The copies of [version] went to [changed] alone, and [carrier], who shares no session, holds one in custody: an
+     * audience-only mint seals nobody whose answer did not change. The one re-seal allowed is the fan-out's designed one:
+     * a session a contact-card intro marked owed is sealed at the next fan-out whatever it was last sent (ADR
+     * 2026-11.gsqu, 5b-1), so [changed] may be sealed [version] once more per intro mark [since] counts — never for no
+     * mark, and never anyone else.
      */
     private suspend fun assertSealedOnlyTo(
         copies: List<MeshManager.SealedProfileSend>,
         version: Long,
         changed: LabNode,
         carrier: LabNode,
+        since: IntroWatch,
     ) {
         assertTrue("${changed.name} was never sealed v$version", lab.tryAwait(1) { copies.count { it.version == version } })
         // The caller healed first: the heal's fan-out waits on the mint's under the same lock, so every copy of the
-        // version is recorded by now, and the heal itself seals nobody (every session is at it, sealed or spared).
-        val id = checkNotNull(copies.first { it.version == version }.frameId)
+        // version is recorded by now. The heal seals only a session an intro marked since that fan-out read the marks.
+        val atVersion = copies.filter { it.version == version }
+        val id = checkNotNull(atVersion.first().frameId)
         assertTrue("${carrier.name} never held the copy", lab.tryAwait(1) { if (id in carrier.custodyIds()) 1 else 0 })
-        assertEquals("sealed beyond the changed peer", listOf(changed.nodeId), copies.filter { it.version == version }.map { it.peerId })
+        val trigger = since.describe()
+        assertEquals("sealed beyond the changed peer; $trigger", setOf(changed.nodeId), atVersion.map { it.peerId }.toSet())
+        val allowed = 1 + since.marksOf(changed)
+        assertTrue(
+            "${changed.name} sealed v$version ${atVersion.size} times, allowed $allowed (1 + its intro marks); $trigger",
+            atVersion.size <= allowed,
+        )
+    }
+
+    /**
+     * What may make [owner]'s fan-out seal [peer] again at one version, read at [of] and described against now: the intro
+     * marks since (`MeshManager.onIntroMarked`), the intros answered and sent (`MeshMetrics`), and the session's root and
+     * era on both sides — a moved root is a reset, an unmoved one an intro answered twice or re-sent. Named in a failure.
+     */
+    private class IntroWatch(
+        private val owner: LabNode,
+        private val peer: LabNode,
+        private val marks: List<String>,
+        private val marksAt: Int,
+        private val answered: Long,
+        private val sent: Long,
+        private val root: String?,
+        private val peerEra: Long?,
+    ) {
+        fun marksOf(node: LabNode): Int = marks.drop(marksAt).count { it == node.nodeId }
+
+        suspend fun describe(): String {
+            val keys = owner.metrics.keys()
+            val names = mapOf(peer.nodeId to peer.name)
+            val ours = owner.session(peer)
+            val theirs = peer.session(owner)
+            // An intro answered with the root unmoved is a second answer to an init, not a reset inside the window; how
+            // old the peer's era is says whether that init was a fresh one (a race's loser re-initiating) or the first.
+            return "intro marks since: ${marks.drop(marksAt).map { names[it] ?: it.take(6) }}, introsAnswered +" +
+                "${keys.introsAnswered - answered}, introsSent +${keys.introsSent - sent}, ${owner.name}↔${peer.name} root " +
+                "$root→${ours?.rootHash}, ${peer.name}'s era $peerEra→${theirs?.establishedAt} " +
+                "(${owner.now() - (theirs?.establishedAt ?: 0L)} ms old), initiator ${owner.name}=${ours?.weAreInitiator} " +
+                "${peer.name}=${theirs?.weAreInitiator}, ${peer.name}'s last reset sent at ${theirs?.lastResetSentAt}"
+        }
+
+        companion object {
+            suspend fun of(
+                owner: LabNode,
+                peer: LabNode,
+                marks: List<String>,
+            ): IntroWatch {
+                val keys = owner.metrics.keys()
+                return IntroWatch(
+                    owner,
+                    peer,
+                    marks,
+                    marks.size,
+                    keys.introsAnswered,
+                    keys.introsSent,
+                    owner.session(peer)?.rootHash,
+                    peer.session(owner)?.establishedAt,
+                )
+            }
+        }
     }
 
     /** [assertConverged]'s parity mode for [owner]'s profile: the newest version [owner] sealed each viewer ([copies]). */
     private fun sealedTo(
         owner: LabNode,
         copies: List<MeshManager.SealedProfileSend>,
-    ): suspend (LabNode, LabNode) -> Long? =
-        { holder, viewer -> if (holder === owner) copies.filter { it.peerId == viewer.nodeId }.maxOfOrNull { it.version } else null }
+    ): suspend (LabNode, LabNode) -> MeshLab.SealedCopy? =
+        { holder, viewer ->
+            if (holder === owner) {
+                copies
+                    .filter { it.peerId == viewer.nodeId }
+                    .maxByOrNull { it.version }
+                    ?.let { MeshLab.SealedCopy(it.version, it.content.pr?.meshcoreKey) }
+            } else {
+                null
+            }
+        }
 
     /** Never in a log line, in any spelling, on any node. */
     private fun assertNoLogCarriesTheKey() {
@@ -461,7 +537,7 @@ class MeshcoreProfileLabTest {
         a: LabNode,
         b: LabNode,
         atLeast: Int,
-        sealedTo: (suspend (LabNode, LabNode) -> Long?)? = null,
+        sealedTo: (suspend (LabNode, LabNode) -> MeshLab.SealedCopy?)? = null,
     ) {
         val before = b.decrypted(b.dmWith(a)).size
         assertTrue(a.sendDm(b, "hi ${b.name}"))

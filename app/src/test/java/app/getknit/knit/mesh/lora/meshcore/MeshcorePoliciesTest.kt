@@ -74,9 +74,48 @@ class MeshcorePoliciesTest {
         // A push for a key nobody taught keeps nothing: an advert flood costs no state.
         p.onPush(mallory, deleted = false, now = 0)
         assertNull(p.keyFor(MeshcorePins.addrOf(mallory)!!))
-        p.learn(bob)
+        p.noteTaught(bob)
         assertTrue(p.keyFor(MeshcorePins.addrOf(bob)!!)!!.contentEquals(bob))
         assertNull("a key of the wrong length is refused", p.learn(ByteArray(31)))
+    }
+
+    @Test
+    fun aPrefixAnotherTaughtKeyHoldsIsRefusedAndOnlyTaughtKeysAreSentTo() {
+        val p = MeshcorePins()
+        val sharer = bob.copyOf().also { it[31] = (it[31] + 1).toByte() }
+        p.setTaught(listOf(bob))
+        assertNull("the board would send to the first contact the prefix matches", p.learn(sharer))
+        assertNull(p.noteTaught(sharer))
+        assertFalse(p.prefixFree(sharer))
+        assertTrue(p.keyFor(MeshcorePins.addrOf(bob)!!)!!.contentEquals(bob))
+        assertEquals(2L, p.refusedPrefixes)
+        p.contest(MeshcorePins.addrOf(bob)!!)
+        assertNull("contested for the connection", p.keyFor(MeshcorePins.addrOf(bob)!!))
+        p.onReady(now = 0)
+        assertNull("a new Ready keeps the last listing's contests (lora N3)", p.keyFor(MeshcorePins.addrOf(bob)!!))
+        p.setContested(emptyList())
+        assertTrue("until a whole listing clears them", p.keyFor(MeshcorePins.addrOf(bob)!!)!!.contentEquals(bob))
+        p.setTaught(listOf(alice))
+        assertNull("a key dropped from the taught set is never sent to", p.keyFor(MeshcorePins.addrOf(bob)!!))
+        assertFalse(p.teaches(bob))
+    }
+
+    @Test
+    fun contestsAreKeptPerOwnBoardAndReplacedOnlyByAWholeListing() {
+        val p = MeshcorePins()
+        val boardA = MeshcorePins.addrOf(FakeMeshcoreAir.keyOf("a"))!!
+        val boardB = MeshcorePins.addrOf(FakeMeshcoreAir.keyOf("b"))!!
+        val addr = MeshcorePins.addrOf(bob)!!
+        p.setTaught(listOf(bob))
+        p.onReady(now = 0, board = boardA)
+        p.setContested(listOf(addr))
+        p.onReady(now = 1, board = boardA)
+        assertNull("the same board, no whole listing yet (a short or cut one replaces nothing): kept", p.keyFor(addr))
+        p.setContested(emptyList())
+        assertTrue("a whole listing replaces them", p.keyFor(addr)!!.contentEquals(bob))
+        p.setContested(listOf(addr))
+        p.onReady(now = 2, board = boardB)
+        assertTrue("a rebind to another board clears them", p.keyFor(addr)!!.contentEquals(bob))
     }
 
     @Test

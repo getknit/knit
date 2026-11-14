@@ -128,9 +128,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -515,8 +515,12 @@ val meshModule =
                         if (on && addr != null) LoraConfig(addr, MeshcoreHooks.NO_CONFIGURED_SLOT, dms, room) else null
                     }
                 },
-                // Until Stage 5b teaches the board its contacts, no peer is a MeshCore board holder: no DM goes.
-                boardMap = { flowOf(emptyMap()) },
+                // Until Stage 5b-2's second part feeds `MeshManager.meshcoreBoardMap` here, a map that never emits: an empty
+                // map would be a taught set of nothing (`MeshcoreHooks.onBoardMap` → `setKnitContacts(emptyList())`), and the
+                // Ready reconcile would remove every contact on any board passing its Knit check — one another client or
+                // another Knit install dressed up. With no map, nothing is taught, no reconcile runs and no DM goes. Part 2
+                // must also make sure the first map the plane sees is the real one, never a placeholder.
+                boardMap = { emptyFlow() },
             )
         }
         // The Internet (spool) plane's socket factory. Cleartext `ws://` is a debug-build affordance for a
