@@ -693,6 +693,45 @@ class MeshcoreHooksTest {
         assertNull("the withdrawal landed on the retry", edits.last())
     }
 
+    /** 2: claim edits are serialised: a stale grant retry paused mid-edit never lands after a newer withdrawal. */
+    @Test
+    fun aStaleGrantRetryNeverLandsAfterANewerWithdrawal() {
+        var grantFails = 1
+        val pause = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val edits = mutableListOf<ByteArray?>()
+        MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, _ ->
+            if (k != null) {
+                if (grantFails-- > 0) throw java.io.IOException("DataStore")
+                pause.await() // the retry is in its edit
+            }
+            edits += k
+        })
+        ops.consent.value = consent(granted = true) // G throws: owed, retried
+        scope.testScheduler.advanceTimeBy(MeshcoreHooks.CLAIM_RETRY_FIRST_MS + 1)
+        scope.testScheduler.runCurrent() // the retry holds the edit, paused
+        ops.consent.value = MeshcoreConsent(BOARD, MeshcoreHooks.digest(boardKey), granted = false, key = null) // W, waits
+        pause.complete(Unit)
+        scope.testScheduler.runCurrent()
+        assertNull("the last edit applied is the withdrawal ($edits)", edits.last())
+    }
+
+    /** 3 (M2b): a stale retry is dropped by the check inside the claim mutex, its one check. */
+    @Test
+    fun aStaleRetryIsDroppedByTheCheckInsideTheMutex() {
+        var grantFails = 1
+        val edits = mutableListOf<ByteArray?>()
+        MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, _ ->
+            if (k != null && grantFails-- > 0) throw java.io.IOException("DataStore")
+            edits += k
+        })
+        ops.consent.value = consent(granted = true) // G throws: owed, its retry due in a second
+        ops.consent.value = MeshcoreConsent(BOARD, MeshcoreHooks.digest(boardKey), granted = false, key = null) // W lands
+        assertNull(edits.last())
+        scope.testScheduler.advanceTimeBy(MeshcoreHooks.CLAIM_RETRY_FIRST_MS * 4)
+        scope.testScheduler.runCurrent()
+        assertTrue("the stale grant never reaches the store ($edits)", edits.none { it != null })
+    }
+
     @Test
     fun onlyTaughtHoldersAreOfferedAndACapacityCutMovesTheOffers() {
         val keys = List(3) { edKey() }

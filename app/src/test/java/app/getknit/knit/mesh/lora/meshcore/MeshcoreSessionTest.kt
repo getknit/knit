@@ -2415,7 +2415,9 @@ class MeshcoreSessionTest {
             runCurrent()
             assertTrue("the intent is written before any board write", checkNotNull(r.records.entryOf("AA:BB")).pending)
             assertFalse(r.consents.last().granted)
-            r.session.stop() // the process dies: the actor is dropped mid-Restore
+            // The process dies: the actor is dropped mid-Restore, and the unbind's call with it — only the journal crosses over.
+            unbind.cancel()
+            r.session.stop()
             val logs = mutableListOf<String>()
             val fresh =
                 MeshcoreSession(
@@ -2435,7 +2437,6 @@ class MeshcoreSessionTest {
             assertTrue("no consent granted, no key published", consents.none { it.granted || it.key != null })
             assertTrue(logs.any { it.startsWith("lora cleanup kind=meshcore done=true") })
             assertNull(r.records.entryOf("AA:BB"))
-            unbind.await()
         }
 
     /** N3: a plain Restore that fails partway is a pending cleanup with consent no; a refused proof answers `failed: proof`. */
@@ -2464,6 +2465,14 @@ class MeshcoreSessionTest {
             val r = rig(knitSlot = false, records = journal)
             up(r)
             assertTrue(r.session.setup() is MeshcoreSetupResult.Failed)
+            // The setup's board writes all landed before its grant failed: Knit's name and Knit's slot.
+            assertEquals(MeshcoreNames.forKey(r.alice.key), r.alice.advertName.decodeToString())
+            assertEquals(
+                KnitChannel.NAME,
+                r.alice.channels[1]
+                    .first
+                    .decodeToString(),
+            )
             val kept = checkNotNull(journal.inner.entryOf("AA:BB"))
             assertTrue(kept.pending)
             assertEquals("alice", kept.record.priorName?.decodeToString())
@@ -2494,6 +2503,7 @@ class MeshcoreSessionTest {
                 GattResult.Ok(Unit)
             }
             assertTrue(r.session.setup() !is MeshcoreSetupResult.Done)
+            assertEquals("the name was written before the cut", MeshcoreNames.forKey(r.alice.key), r.alice.advertName.decodeToString())
             assertTrue(checkNotNull(r.records.entryOf("AA:BB")).pending)
             advanceTimeBy(60_000)
             runCurrent()
@@ -2515,6 +2525,130 @@ class MeshcoreSessionTest {
             assertFalse(r.consents.last().granted)
             assertNull(r.consents.last().key)
             assertFalse(MemoryMeshcoreSetupJournal().markPending("AA:BB"))
+        }
+
+    // --- the 5b-2 tail (2026-11-14) ---
+
+    /** 6c: the write-ahead comes before the erase — a setup cut at the erase's first removal leaves a pending record. */
+    @Test
+    fun aSetupCutAtItsFirstErasureLeavesAPendingRecord() =
+        runTest {
+            val r = rig(knitSlot = false)
+            r.alice.addContact(r.air.board("carol"), name = "Carol Smith", flags = 0)
+            up(r)
+            r.ch.writeResult = { f ->
+                if (f[0].toInt() == MeshcoreProto.CMD_REMOVE_CONTACT) r.ch.disconnect()
+                GattResult.Ok(Unit)
+            }
+            assertTrue(r.session.setup() !is MeshcoreSetupResult.Done)
+            assertTrue("the intent was written before the first erasure", checkNotNull(r.records.entryOf("AA:BB")).pending)
+        }
+
+    /** 1: a re-setup of a board this connection consents for keeps the consent, so the taught set survives the erase. */
+    @Test
+    fun aReSetupOfAConsentedBoardKeepsItsConsentAndItsTaughtContacts() =
+        runTest {
+            val r = rig()
+            up(r)
+            assertTrue(r.consents.last().granted)
+            val before = r.consents.size
+            val writes = r.ch.writes.size
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Done)
+            assertTrue("never withdrawn on the way (${r.consents.drop(before)})", r.consents.drop(before).all { it.granted })
+            assertNotNull("bob, taught and Knit's, is kept", r.alice.contact(r.bob.key))
+            assertTrue(
+                r.ch.writes.drop(writes).none {
+                    it[0].toInt() == MeshcoreProto.CMD_REMOVE_CONTACT && it.copyOfRange(1, 33).contentEquals(r.bob.key)
+                },
+            )
+            assertFalse(checkNotNull(r.records.entryOf("AA:BB")).pending)
+        }
+
+    /** 3: a start's withdrawal is for the board still bound: a quick start of another board makes it moot. */
+    @Test
+    fun aStartsWithdrawalIsDroppedWhenAnotherBoardWasStartedSince() =
+        runTest {
+            val r = rig(consented = false)
+            r.session.start("AA:BB")
+            r.session.start("CC:DD")
+            runCurrent()
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertTrue(
+                "nothing published for the board started first (${r.consents.map { it.address }})",
+                r.consents.none {
+                    it.address ==
+                        "AA:BB"
+                },
+            )
+        }
+
+    // --- the tail's review (2026-11-14): a kept consent never outlives a setup that did not finish ---
+
+    /** 1 (b): a consented re-setup cut at its first erasure ends unconsented, its record pending. */
+    @Test
+    fun aConsentedReSetupCutMidEraseEndsUnconsented() =
+        runTest {
+            val r = rig()
+            r.alice.addContact(r.air.board("carol"), name = "Carol Smith", flags = 0)
+            r.session.setKnitContacts(listOf(r.bob.key))
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            r.alice.addContact(r.air.board("dave"), name = "Dave", flags = 0) // something left for the erase to remove
+            assertTrue(r.consents.last().granted)
+            r.ch.writeResult = { f ->
+                if (f[0].toInt() == MeshcoreProto.CMD_REMOVE_CONTACT) r.ch.disconnect()
+                GattResult.Ok(Unit)
+            }
+            assertTrue(r.session.setup() !is MeshcoreSetupResult.Done)
+            assertFalse("revoked on the way out", r.consents.last().granted)
+            assertNull(r.consents.last().key)
+            assertTrue(checkNotNull(r.records.entryOf("AA:BB")).pending)
+        }
+
+    /** 1 (a): a consented re-setup whose write-ahead put fails ends unconsented. */
+    @Test
+    fun aConsentedReSetupWhoseWriteAheadFailsEndsUnconsented() =
+        runTest {
+            val journal = CountingJournal()
+            val r = rig(records = journal)
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, false) }
+            up(r)
+            assertTrue(r.consents.last().granted)
+            journal.failPuts = true
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Failed)
+            assertFalse(r.consents.last().granted)
+            assertNull(r.consents.last().key)
+        }
+
+    /** 2 (M5): a consented re-setup that fails before any board change puts its granted prior back as a grant. */
+    @Test
+    fun aConsentedReSetupThatFailsBeforeAnyChangeKeepsItsConsent() =
+        runTest {
+            val r = rig()
+            up(r)
+            assertTrue(r.consents.last().granted)
+            val before = r.consents.size
+            // The erase's listing never answers: Erase.Failed, nothing on the board changed.
+            r.ch.swallow = { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACTS && MeshcoreProto.u32(it, 1) == 0L }
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Failed)
+            assertTrue("granted throughout (${r.consents.drop(before)})", r.consents.drop(before).all { it.granted })
+            assertFalse(checkNotNull(r.records.entryOf("AA:BB")).pending)
+        }
+
+    /** 2 (M6): the same with the record pending first: the pending cleanup never comes back as a consent. */
+    @Test
+    fun aReSetupOverAPendingRecordThatFailsBeforeAnyChangeLeavesItPending() =
+        runTest {
+            val r = rig()
+            up(r)
+            r.records.markPending("AA:BB")
+            val before = r.consents.size
+            r.ch.swallow = { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACTS && MeshcoreProto.u32(it, 1) == 0L }
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Failed)
+            assertTrue(r.consents.drop(before).none { it.granted })
+            assertTrue(checkNotNull(r.records.entryOf("AA:BB")).pending)
         }
 
     private companion object {

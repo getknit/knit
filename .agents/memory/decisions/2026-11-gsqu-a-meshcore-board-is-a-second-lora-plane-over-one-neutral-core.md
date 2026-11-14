@@ -1148,7 +1148,7 @@ consent again and republished the withdrawn key). Every record write goes throug
 failure handling is fixed by what the write was for; no call site maps a result to consent by hand:
 
 - **A write that removes or withdraws consent** (Restore's clear, an unbind's clear or pending mark, the cleanup's clear, a
-  failed setup's leftovers; `withdrawWrite`): consent is no on this connection whatever happens, published at once so the
+  failed setup's leftovers; `withdrawWrite`): consent is no on this connection whatever happens (one exception, the 5b-2 tail's `keepConsent`), published at once so the
   claim is withdrawn; a write that does not land, after `recordWrite`'s read-back, marks the record pending so the cleanup
   Restore runs at the next connection; only a mark that also fails is `FAILED`. It is never reported as success — a Restore
   answers `failed: record`, an unbind `PENDING`.
@@ -1180,7 +1180,28 @@ with one cause — the record was written after the board writes, so an interrup
   board; the revoke comes before the write.
 - **An unbind's writer** is chosen on a live inbox too, and an adapter-off session reads down only after its actor stopped.
 - **Owed by Stage 7:** the unbind's withdrawal must land before `meshcore_device_address` is cleared
-  (`setBoardKey(null, dialled)` is a no-op afterwards), or the pubkey is cleared in the same edit.
-- **Cost, by design:** a re-run setup withdraws and republishes the claim (its write-ahead revokes), so two sealed-profile
-  mints under 5b-1's fan-out.
+  (`setBoardKey(null, dialled)` is a no-op afterwards, and the hooks' claim retry counts that skip as landed), or the pubkey
+  is cleared in the same edit.
+- **Cost, by design:** a re-run setup of a board without consent withdraws and republishes the claim (its write-ahead
+  revokes), so two sealed-profile mints under 5b-1's fan-out. A re-setup of a consented board does not (the 5b-2 tail's
+  `keepConsent` exception, below).
+
+The 5b-2 tail (non-blocking follow-ups after the part 2 commit, 2026-11-14), applied:
+
+- **A re-setup of a consented board keeps its consent** through its write-ahead (`withdrawWrite(keepConsent)`, the rule's
+  one exception, only when this connection consents for a non-pending record of this board), so the hooks never empty the
+  taught set and the erase keeps Knit's taught records; the record is pending on disk all the same. A setup that leaves
+  nothing of its own puts a granted prior of this board back as a grant (`grantWrite`), and a rollback that put nothing
+  back but changed nothing restores the prior record instead of leaving the planned one pending. A kept consent never outlives a setup that did not finish (the tail's review):
+  a write-ahead that does not land revokes it, and a setup cut off after its write-ahead — a session end, a throw, a
+  cancellation — revokes it on the way out (`runSetup`'s `finally`, on `Conn.setupOpen`), leaving its record pending for the
+  next connection's cleanup; a process death is withdrawn at start (`withdrawAtStart`). The only window left is the
+  erase's own writes, while the setup runs, over the very board the user already consented to.
+- **Claim edits are serialised** (`claimMutex`), each checked inside it — its retry's one check — so a stale retry never
+  lands after a newer edit. The rollback's `!changedAnything` branch is a belt: every needed setup step carries its own
+  prior, so a rollback that changed nothing is unreachable today (no test can reach it).
+- **A start's withdrawal is for the board still bound**: re-checked against `boundAddress` under `consentLock`.
+- Tests: the write-ahead before the erase (a cut at the first erasure leaves a pending record), a re-setup keeping its
+  consent and taught contacts, a stale grant retry, a start of another board; the cut-off tests assert the setup's writes
+  landed before the cut, and the mid-Restore test drops its unbind with the actor.
 

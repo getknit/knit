@@ -36,6 +36,7 @@ import app.getknit.knit.mesh.lora.SlotCheck
 import app.getknit.knit.mesh.lora.WallShift
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
@@ -517,21 +518,31 @@ internal class MeshcoreHooks(
             claimRetry =
                 scope.launch {
                     var wait = CLAIM_RETRY_FIRST_MS
-                    while (owedClaim === owed) {
+                    // The one check of whether [owed] is still the edit owed is inside [tryClaim], under the mutex.
+                    while (true) {
                         kotlinx.coroutines.delay(wait)
-                        if (owedClaim !== owed || tryClaim(owed)) return@launch
+                        if (tryClaim(owed)) return@launch
                         wait = (wait * 2).coerceAtMost(CLAIM_RETRY_MAX_MS)
                     }
                 }
         }
     }
 
-    /** One attempt at [owed]: true when it landed (and is no longer owed). */
+    /** Claim edits, one at a time (security and lora, 5b-2 tail): a stale retry never lands after a newer edit. */
+    private val claimMutex = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * One attempt at [owed], under [claimMutex], re-checked inside it: true when it landed, or when a newer edit replaced
+     * it (nothing left to do for this one).
+     */
     private suspend fun tryClaim(owed: OwedClaim): Boolean {
         val landed =
-            runCatching { onBoardKey(owed.key, owed.address) }
-                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
-                .isSuccess
+            claimMutex.withLock {
+                if (owedClaim !== owed) return true
+                runCatching { onBoardKey(owed.key, owed.address) }
+                    .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                    .isSuccess
+            }
         if (landed) {
             if (owedClaim === owed) owedClaim = null
         } else {
