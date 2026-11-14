@@ -336,6 +336,13 @@ custody targeting is gone, and first sight has gained another route:
    - **A tag keyed by the group root** (`GroupKeyPayload.gr`). Unguessable, but it changes at every
      departure re-mint (`docs/SPOOL_PROTOCOL.md` §3.2), so a group's frames are linkable only within one
      root era, and custody must accept a group under more than one tag.
+
+   Stories already take the second shape (ADR 2026-11.7527): a story to contacts is a DM-form frame addressed to an
+   audience tag derived from its audience key's epoch. Choose one addressing form for both. Either a group's frames
+   become DM-form frames addressed to a tag too, so that with one scheme version and header a carrier cannot tell a
+   group frame from a story (custody's per-group bucket and the group gate then fall back to the sender's bucket),
+   or they keep the group form with an opaque tag in `group`. A story audience shares the addressing and the keys,
+   never the roster: its members do not learn each other.
 3. **Settle carried attachments from the row.** The carrier's attachment pull decides "is this group
    frame ours" from the frame's roster (`ForwardRepository.carriedAttachments`, the `member` flag in
    `InboundPipeline.onCarriedFrame`, ADR 2026-10.js2p). After the break it reads the local group row, which
@@ -351,6 +358,12 @@ signed `groupleave` that names its group, followed by a burst of N−1 seed DMs 
 what lets a member refuse a forged departure, and moving it inside the seal moves that check with it.
 Re-read ADR 2026-09.v6fu before touching either. The roster cap is a bound on storage and fan-out, so
 inbound first sight still enforces `MAX_MEMBERS`, now on the sealed roster.
+
+Hiding the form takes a story's lifetime with it. If the break goes further and gives DM, group and story frames one
+cleartext shape (the scheme version and header inside the seal), custody can no longer tell a story from a DM, so it
+cannot carry stories for less time than DMs (item 12's stories entry) unless every frame carries the same signed
+lifetime. ADR 2026-11.7527 leans towards keeping the story form visible: that someone posted a story is a small leak
+next to the `senderId` every carrier already reads.
 
 ### 12. Carry DMs and groups for 7 days, with quotas sized to match
 
@@ -406,12 +419,21 @@ on Android and iOS (`knit-ios`'s `KnitStore/Custody/CustodyLimits.swift`) in the
   DEFAULT_TTL_MS`, #195) all derive from the constant. That last one means a carrier pulls a DM's attachment
   for 7 days, so `CARRIER_BLOB_BUDGET_BYTES` (128 MiB) becomes the binding bound. Check that it is the bound
   you want.
+- **Stories (ADR 2026-11.7527).** To custody a story to contacts is a DM, so at 7 days every carrier holds each one
+  and pulls its picture or video for a week, while the app shows it for 24 h. Give the audience scheme version a
+  24 h class of its own: the version is cleartext and signed, so the class is frame-global and convergent, and the
+  `expiresAt` restamp below covers it with no new field. The audience key's skipped-key retention follows the
+  story's class, not the DM's. A signed lifetime on `RelayEnvelope` (expiry `sentAt + min(life, class TTL)`) would
+  do it too, and let a DM ask to be carried for less, at the cost of a new field that shows carriers the same
+  thing. Stories need no bucket of their own: each is one row. Item 11's watch-out says what hiding the form would
+  cost this class.
 
 **Watch out.** `forward_store.expiresAt` is stamped at store time from the local constant
 (`sentAt + ttl`), so rows stored before the upgrade keep their 24-hour expiry while the same frame stored
 after the upgrade gets 7 days. That is a digest divergence on exactly the frames that straddle the
 release. The break's DB migration must restamp `expiresAt` from `sentAt` and the row's TTL class. Leave the
-broadcast room's 6-hour `DEFAULT_BROADCAST_TTL_MS` alone unless there is a separate reason: it is ambient,
+broadcast room's 6-hour `DEFAULT_BROADCAST_TTL_MS` alone unless there is a separate reason (public stories, ADR
+2026-11.7527, are not one: they are shown for the room's 6 h): it is ambient,
 unencrypted chatter to strangers with no ack to purge it, and a week of it would crowd addressed traffic
 out of the global cap. Like every custody rule change, this one needs a `mesh/lab/` scenario that ends in
 `assertConverged` across a frame older than 24 hours, and `liveFingerprint` must match across the lab phones
@@ -507,6 +529,33 @@ recipient", signed.
 **At the break.** Put the relay intent in `RelayEnvelope` (signed), make a relay honour only the signed value, and
 drop the wrapper field. A point-to-point type never floods whatever its wrapper says. Vectors: every signed frame's
 `signed` bytes move, so this rides the same break as item 8 if that one goes.
+
+### 15. Let custody honour an author's retraction
+
+**What.** A retraction, signed by a frame's author, that every carrier applies: it drops the carried frame, keeps
+the frame's id as a tombstone for the frame's lifetime, and refuses the frame if the retraction lands first. It
+would serve deleting a story (ADR 2026-11.7527) and unsending a DM alike.
+
+**Why it is parked.** Custody drops a carried frame today only on a cleartext receipt signed by the DM's recipient
+(`ForwardSync.onAck`). Sealed receipts purge nothing, and otherwise the TTL and the quotas are the only bound. A build
+that applies retractions holds a different live set from one that does not, so a mixed pair's digests differ for the
+retracted frame's whole lifetime, the churn item 12 describes. Without a break a retraction can only hide the frame on
+the phones that read it, which is a ctl and needs no entry here.
+
+**At the break.**
+
+- The retraction is itself custodial: signed, naming the frame's id, and kept for the retracted frame's lifetime, so
+  it reaches carriers that meet the frame later. Every build of the break carries it, whether as a new custodial
+  type (legal at a break) or as a form of an existing one.
+- Only the author can retract: the retraction's `senderId` must be the carried frame's, so nobody evicts someone
+  else's message. Item 10 makes "the frame this names" unambiguous; without it, match on the id and the sender.
+- The live set must not depend on arrival order: a retraction that lands before its frame is remembered for the
+  tombstone's lifetime, as `ForwardSync`'s early-ack memo is (ADR 2026-09.adpz).
+- A mesh-lab scenario that ends in `assertConverged`, with the retraction arriving both before and after its frame.
+
+**Watch out.** It removes carried copies, never one a recipient already holds; the app says "removed from phones
+still carrying it", never "deleted". The retraction is readable by carriers, so they learn that this author withdrew
+this frame, and when. Weigh that against the feature before building it.
 
 ---
 
