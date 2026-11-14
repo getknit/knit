@@ -527,11 +527,17 @@ class MaliciousForkLabTest : StrandedLabBase() {
         assertEquals(1L, alice.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
     }
 
-    /** Alice, Mallory and Bob on a line, acquainted, with a confirmed DM session between Alice and Bob. */
+    /**
+     * Alice, Mallory and Bob on a line, acquainted, with a confirmed DM session between Alice and Bob. Board-less in a
+     * boards sweep (`KNIT_LAB_BOARDS=1`): each scenario on the line parks Mallory's pipe as Bob's only way in, and the
+     * sweep's one air is a second one around it. Alice's DM rides it as a compact copy straight to Bob, so Mallory's post
+     * under its id never lands first; and Mallory's own posts fan out over it in real time, so a copy can land after
+     * [takeIds] has moved the clock past the seen window.
+     */
     private suspend fun line(): Triple<LabNode, LabNode, LabNode> {
-        val alice = lab.node("alice").apply { setDisplayName("Alice") }
-        val mallory = lab.node("mallory").apply { setDisplayName("Mallory") }
-        val bob = lab.node("bob").apply { setDisplayName("Bob") }
+        val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+        val mallory = lab.node("mallory", board = false).apply { setDisplayName("Mallory") }
+        val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
         lab.linkAll(alice to mallory, mallory to bob)
         lab.awaitAcquainted(alice, mallory, bob)
         assertTrue(alice.sendDm(bob, "hello"))

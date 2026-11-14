@@ -442,6 +442,9 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   scenario whose subject is two islands no radio reaches (`DirectLinkLabTest`, `InternetLinkLabTest`,
   `LinkDownloadLimitLabTest`) builds those nodes `board = false`: otherwise a DM rides the air beside the link the
   scenario is about, and a stranger's room post heard over it parks for a key no island can bring (ADR 2026-10.rp3s).
+  So does a scenario that parks a carrier's pipe as a node's only way in (`MaliciousForkLabTest`'s `line`, 2026-11-14):
+  the author's compact DM rides the air around the hold, so the fork's copy under its id never lands first (3 of 3
+  boards runs), and the carrier's own posts fan out over it in real time, after a jump past the seen window.
 - **Behind a composite, a drain is counted at the router** (2026-11-01). A node with a board or a direct link plane
   runs its manager on `CompositeMeshTransport`, whose `merge` takes each plane's frames on a channel, so the plane's
   `emit` returns when the frame is queued, not when it is handled. `awaitInboundDrained` then counted a frame
