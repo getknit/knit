@@ -901,6 +901,24 @@ class LabTransport(
         return first
     }
 
+    /**
+     * Delivers the frames parked for [to] that [pick] answers true for, in send order, and keeps holding the rest and
+     * whatever parks meanwhile — for a scenario that lets one kind of frame overtake another (a group's frame ahead of
+     * the seed it needs) and must neither drop the frames it passed over nor open the pipe. Returns the frames delivered.
+     */
+    suspend fun releaseWhere(
+        to: LabTransport,
+        pick: (WireEnvelope) -> Boolean,
+    ): List<WireEnvelope> {
+        val pipe = pipe(to)
+        val picked =
+            synchronized(pipe.held) {
+                pipe.held.filter(pick).also { taken -> pipe.held.removeAll { held -> taken.any { it === held } } }
+            }
+        deliverHeld(pipe, picked)
+        return picked
+    }
+
     /** Takes what is parked; with [open], an empty take also stops holding, under the same lock. */
     private fun takeHeld(
         pipe: Pipe,
