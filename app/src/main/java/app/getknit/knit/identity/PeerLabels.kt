@@ -57,14 +57,20 @@ object PeerLabels {
      * look-alike that ground a contact's alias and then went quiet cannot settle on the label the contact wore
      * while both were live) and grows past every text that still matches, live texts held fixed. Empty, it is
      * exactly the index without it.
+     *
+     * **[presenter] decides what a peer's stored name is shown as** (ADR 2026-11.y4pc): with Content filtering on, a
+     * flagged name is presented blank, so it takes the alias path a blank name already takes. It is applied to every
+     * peer and never to [self], and [PeerLabelIndex.labelFor] applies it to the stored name a caller passes too.
      */
     fun index(
         peers: Iterable<Pair<String, String>>,
         self: Pair<String, String>? = null,
         stale: Set<String> = emptySet(),
+        presenter: NamePresenter = NamePresenter.AS_STORED,
+        groupPresenter: NamePresenter = NamePresenter.AS_STORED,
     ): PeerLabelIndex {
         val stored = LinkedHashMap<String, String>()
-        for ((id, name) in peers) stored[id] = name
+        for ((id, name) in peers) stored[id] = presenter.present(name)
         if (self != null) stored[self.first] = self.second
         val phrases = HashMap<String, List<String>>()
         val names = HashMap<String, String>()
@@ -81,7 +87,20 @@ object PeerLabels {
         val consumed = if (yielding.isEmpty()) full else universe.yielding(full, yielding)
         val idsByText = HashMap<String, MutableSet<String>>()
         for (id in stored.keys) idsByText.getOrPut(universe.text(id, consumed.getValue(id))) { LinkedHashSet() }.add(id)
-        return PeerLabelIndex(stored, idsByKey, idsByText, consumed, phrases)
+        return PeerLabelIndex(stored, idsByKey, idsByText, consumed, phrases, presenter, self?.first, groupPresenter)
+    }
+}
+
+/**
+ * What a stored name is shown as. [AS_STORED] shows it as it is; the name screen's presenter shows a flagged name as
+ * blank (ADR 2026-11.y4pc). A presenter is one long-lived instance per rule, so two indexes built under the same rule
+ * stay equal.
+ */
+fun interface NamePresenter {
+    fun present(storedName: String): String
+
+    companion object {
+        val AS_STORED = NamePresenter { it }
     }
 }
 
@@ -191,12 +210,20 @@ data class PeerLabelIndex(
     private val idsByText: Map<String, Set<String>>,
     private val consumed: Map<String, Int>,
     private val phrases: Map<String, List<String>>,
+    private val presenter: NamePresenter = NamePresenter.AS_STORED,
+    private val selfId: String? = null,
+    private val groupPresenter: NamePresenter = NamePresenter.AS_STORED,
 ) {
-    /** The label for [nodeId] given its stored profile name (defaults to the universe's own record of it). */
+    /**
+     * The label for [nodeId] given its stored profile name (defaults to the universe's own record of it). A name a
+     * caller passes goes through the index's [NamePresenter] first, as every member's did, so a raw row name and the
+     * universe's record agree.
+     */
     fun labelFor(
         nodeId: String,
-        storedName: String? = storedNames[nodeId],
+        rawName: String? = storedNames[nodeId],
     ): PeerLabel {
+        val storedName = if (nodeId == selfId) rawName else rawName?.let(presenter::present)
         val name = displayNameFor(storedName, nodeId)
         val words = phrases[nodeId] ?: Alias.tokens(nodeId)
         val k =
@@ -209,6 +236,15 @@ data class PeerLabelIndex(
             discriminator = discriminatorOf(words, storedName, k),
         )
     }
+
+    /**
+     * Another person's [text] as this index shows names: blank when its [NamePresenter] hides it. For what is not a
+     * profile name but is shown under the same rule: a status, a Meshtastic board's long name, a name a notice froze.
+     */
+    fun shown(text: String): String = presenter.present(text)
+
+    /** A group's stored [name] as this index shows group names: blank when hidden, so the members' title stands in. */
+    fun shownGroup(name: String): String = groupPresenter.present(name)
 
     /**
      * The tokens an id needs against the snapshot — an outside id, or a member asked about under a name

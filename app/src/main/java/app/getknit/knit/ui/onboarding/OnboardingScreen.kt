@@ -74,6 +74,7 @@ fun OnboardingScreen(
     // Null until the store has answered whether this phone has seen the intro; one blank frame at most.
     val step by viewModel.step.collectAsStateWithLifecycle()
     val name by viewModel.name.collectAsStateWithLifecycle()
+    val nameRefused by viewModel.nameRefused.collectAsStateWithLifecycle()
     val alias by viewModel.alias.collectAsStateWithLifecycle()
     val nodeId by viewModel.nodeId.collectAsStateWithLifecycle()
     val current = step ?: return
@@ -81,6 +82,7 @@ fun OnboardingScreen(
     OnboardingScreenContent(
         step = current,
         name = name,
+        nameRefused = nameRefused,
         alias = alias,
         nodeId = nodeId,
         rows = permissions.rows,
@@ -112,6 +114,7 @@ fun OnboardingScreen(
 internal fun OnboardingScreenContent(
     step: OnboardingStep,
     name: String,
+    nameRefused: Boolean = false,
     alias: String,
     nodeId: String,
     rows: PermissionRows,
@@ -169,6 +172,7 @@ internal fun OnboardingScreenContent(
                 OnboardingStep.NAME -> {
                     NamePage(
                         name = name,
+                        refused = nameRefused,
                         alias = alias,
                         nodeId = nodeId,
                         onNameChange = onNameChange,

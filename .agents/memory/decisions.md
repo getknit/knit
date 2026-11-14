@@ -325,4 +325,5 @@ carries; never renumber an old one.
 | [2026-11.u5je](decisions/2026-11-u5je-diagnostics-shows-link-encryption-and-presence-keys.md) | Diagnostics shows link encryption and presence keys | diagnostics, crypto |
 | [2026-11.vdx4](decisions/2026-11-vdx4-a-uri-another-app-hands-knit-is-read-only-through-someone-else-s-provider.md) | A URI another app hands Knit is read only through someone else's provider | security, attachments, privacy |
 | [2026-11.xp6d](decisions/2026-11-xp6d-a-bluetooth-advert-names-a-rotating-tag.md) | A Bluetooth advert names a rotating tag, not the node id | ble, mesh, privacy, wire, crypto |
+| [2026-11.y4pc](decisions/2026-11-y4pc-a-name-is-screened-by-the-word-lists-when-it-is-set-and-when-it-is-drawn.md) | A name is screened by the word lists when it is set and when it is drawn | moderation, identity, privacy, contacts |
 | [2026-11.zmc6](decisions/2026-11-zmc6-a-release-build-fails-on-an-r8-cast-to-a-class-newer-than-minsdk.md) | a release build fails on an R8 cast to a class newer than minSdk | build, release, r8 |

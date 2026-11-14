@@ -7,12 +7,15 @@ import app.getknit.knit.data.settings.InboundSettings
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.IdentitySource
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import app.getknit.knit.moderation.NameScreen
+import app.getknit.knit.moderation.ShownNames
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -38,12 +41,15 @@ class PeerRepositoryTest : RoomDbTest() {
     private fun repo(
         myName: String = "",
         maxPeers: Int = 2_000,
+        filtering: Flow<Boolean> = flowOf(true),
+        shown: ShownNames? = null,
     ): PeerRepository {
         val profile = mockk<InboundSettings>(relaxed = true)
         every { profile.displayName } returns flowOf(myName)
+        every { profile.contentFilteringEnabled } returns filtering
         val identity = mockk<IdentitySource>(relaxed = true)
         coEvery { identity.nodeId() } returns "me"
-        return PeerRepository(db.peerDao(), profile, identity, maxPeers)
+        return PeerRepository(db.peerDao(), profile, identity, maxPeers, shown = shown)
     }
 
     /** The inputs a [LabelFade] reads, held by the test: anchors, the clock and the tick. */
@@ -63,12 +69,17 @@ class PeerRepositoryTest : RoomDbTest() {
                 transact = { block -> db.withWriteTransaction { block() } },
             )
 
-        fun repo(myName: String = ""): PeerRepository {
+        fun repo(
+            myName: String = "",
+            filtering: Flow<Boolean> = flowOf(true),
+            shown: ShownNames? = null,
+        ): PeerRepository {
             val profile = mockk<InboundSettings>(relaxed = true)
             every { profile.displayName } returns flowOf(myName)
+            every { profile.contentFilteringEnabled } returns filtering
             val identity = mockk<IdentitySource>(relaxed = true)
             coEvery { identity.nodeId() } returns "me"
-            return PeerRepository(db.peerDao(), profile, identity, fade = labelFade)
+            return PeerRepository(db.peerDao(), profile, identity, fade = labelFade, shown = shown)
         }
     }
 
@@ -336,4 +347,57 @@ class PeerRepositoryTest : RoomDbTest() {
         /** How long a live query may take to answer a write before the test calls it lost. */
         const val WAIT_MS = 10_000L
     }
+
+    // ADR 2026-11.y4pc: with Content filtering on, a flagged name is labelled as its alias, and a flagged group
+    // name is shown blank; turning filtering off shows both as written, in the directory that is already open. Run
+    // over both of observeDirectory's branches: production always passes a fade.
+    @Test
+    fun `a flagged name is labelled as its alias while content filtering is on and as written once it is off`() =
+        runTest { assertNamesFollowTheToggle { filtering, shown -> repo(filtering = filtering, shown = shown) } }
+
+    @Test
+    fun `with a label fade a flagged name follows the toggle too`() =
+        runTest {
+            val fade = Fade(backgroundScope)
+            assertNamesFollowTheToggle { filtering, shown -> fade.repo(filtering = filtering, shown = shown) }
+        }
+
+    private suspend fun assertNamesFollowTheToggle(make: (Flow<Boolean>, ShownNames) -> PeerRepository) {
+        val dao = db.peerDao()
+        dao.upsert(PeerEntity(nodeId = "a", name = "Fuck69"))
+        dao.upsert(PeerEntity(nodeId = "b", name = "Alice", status = "fuck mondays"))
+        val filtering = MutableStateFlow(true)
+        val repo = make(filtering, ShownNames(NameScreen(listOf("kike"), listOf("fuck", "kike"), emptyList(), emptyList(), emptyList())))
+        assertEquals("the one-shot index hides it", Alias.aliasFor("a"), repo.labelIndex().labelFor("a", "Fuck69").name)
+
+        // One collection across the flip, so the toggle has to reach a directory that is already open.
+        var on: PeerDirectory? = null
+        val off =
+            withContext(Dispatchers.Default) {
+                withTimeout(WAIT_MS) {
+                    repo.observeDirectory().first { d ->
+                        if (on == null && d.peers.size == 2 && d.label("a").name == Alias.aliasFor("a")) {
+                            on = d
+                            filtering.value = false
+                        }
+                        on != null && d.label("a").name == "Fuck69"
+                    }
+                }
+            }
+        val hidden = on!!
+        assertEquals("Alice", hidden.label("b").name)
+        assertEquals("", hidden.shown("fuck mondays"))
+        assertEquals("", hidden.shownGroup("Kike club"))
+        assertEquals("Book club", hidden.shownGroup("Book club"))
+        assertEquals("fuck mondays", off.shown("fuck mondays"))
+        assertEquals("Kike club", off.shownGroup("Kike club"))
+        assertEquals("Fuck69", repo.labelIndex().labelFor("a").name)
+    }
+
+    @Test
+    fun `without a name screen nothing is hidden`() =
+        runTest {
+            db.peerDao().upsert(PeerEntity(nodeId = "a", name = "Fuck69"))
+            assertEquals("Fuck69", repo().labelIndex().labelFor("a").name)
+        }
 }

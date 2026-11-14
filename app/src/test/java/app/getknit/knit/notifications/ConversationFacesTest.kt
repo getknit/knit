@@ -8,6 +8,8 @@ import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.identity.Alias
+import app.getknit.knit.identity.NamePresenter
 import app.getknit.knit.identity.PeerLabels
 import io.mockk.coEvery
 import io.mockk.mockk
@@ -100,6 +102,29 @@ class ConversationFacesTest {
             assertNull("never a heard speaker's unverified name", meshtastic.title)
             assertEquals("Hilltop", commons.title)
             assertNull(commons.avatarBytes)
+        }
+
+    /**
+     * ADR 2026-11.y4pc: the shade and the launcher keep a conversation's title after the app moves on, so it is drawn
+     * from an index whose presenter hides a flagged name: the DM reads as the alias, and a flagged group name gives
+     * way to the members' title.
+     */
+    @Test
+    fun aHiddenNameOrGroupNameTitlesTheConversationAsTheAliasOrTheMembers() =
+        runTest {
+            val hiding =
+                PeerLabels.index(
+                    listOf(ALICE to "Alice", BOB to "Bob"),
+                    ME to "Me",
+                    presenter = NamePresenter { if (it == "Alice") "" else it },
+                    groupPresenter = NamePresenter { "" },
+                )
+            assertEquals(Alias.aliasFor(ALICE), faces.resolve(ALICE, ME, hiding).title)
+
+            coEvery { groups.find(GROUP) } returns group().copy(name = "Hidden club")
+            assertEquals("Hidden club", faces.resolve(GROUP, ME, labels).title)
+            val title = faces.resolve(GROUP, ME, hiding).title!!
+            assertTrue("the members title it: $title", title.contains("Bob"))
         }
 
     private companion object {

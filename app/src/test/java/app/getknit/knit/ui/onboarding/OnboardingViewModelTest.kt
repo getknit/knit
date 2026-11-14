@@ -6,6 +6,8 @@ import app.getknit.knit.TextLimits
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.moderation.NameScreen
+import app.getknit.knit.moderation.ShownNames
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -21,6 +23,8 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -145,5 +149,29 @@ class OnboardingViewModelTest {
             // A store that hasn't answered yet: the pager must not be built on a guess.
             every { settings.onboardingSeen } returns flow { awaitCancellation() }
             assertEquals(null, vm().step.value)
+        }
+
+    /** ADR 2026-11.y4pc: Continue refuses a flagged name, stays on the page and says why until the next keystroke. */
+    @Test
+    fun aFlaggedNameKeepsThePageAndIsNeverWritten() =
+        runTest {
+            val vm =
+                OnboardingViewModel(
+                    settings,
+                    identity,
+                    names = ShownNames(NameScreen(listOf("kike"), listOf("fuck", "kike"), emptyList(), emptyList(), emptyList())),
+                )
+            vm.next()
+            vm.setName("Fuck69")
+            vm.next()
+            assertEquals(OnboardingStep.NAME, vm.step.value)
+            assertTrue(vm.nameRefused.value)
+            coVerify(exactly = 0) { settings.setDisplayName(any()) }
+
+            vm.setName("Ada")
+            assertFalse("a keystroke clears the refusal", vm.nameRefused.value)
+            vm.next()
+            assertEquals(OnboardingStep.PERMISSIONS, vm.step.value)
+            coVerify(exactly = 1) { settings.setDisplayName("Ada") }
         }
 }

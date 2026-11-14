@@ -294,7 +294,7 @@ class ProfileDetailsViewModel(
             groupId = group.groupId,
             title =
                 groupTitle(
-                    storedName = group.name,
+                    storedName = dir.shownGroup(group.name),
                     memberIds = memberIds,
                     selfId = myNodeId,
                     fallback = context.getString(R.string.group_unnamed),
@@ -354,7 +354,7 @@ class ProfileDetailsViewModel(
                 displayName = label.text,
                 alias = label.alias,
                 discriminator = label.discriminator,
-                status = peer?.status.orEmpty(),
+                status = directory.shown(peer?.status.orEmpty()),
                 avatarHash = peer?.avatarHash,
                 reach = reach,
                 isBlocked = nodeId in blocked,

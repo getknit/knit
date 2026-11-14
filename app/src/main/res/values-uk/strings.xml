@@ -1444,6 +1444,8 @@
     <string name="moderation_link_hidden">Делікатний попередній перегляд — натисніть, щоб переглянути</string>
     <string name="moderation_preview_hidden">Повідомлення приховано</string>
     <string name="moderation_photo_refused">Це фото не можна використати: воно може містити відвертий вміст</string>
+    <string name="moderation_name_refused">Це ім’я не можна використати: воно може містити образливі слова</string>
+    <string name="moderation_status_refused">Цей статус не можна використати: він може містити образливі слова</string>
     <string name="relays_title">Інтернет-ретранслятори</string>
     <string name="settings_internet_relays_title">Використовувати інтернет-ретранслятори</string>
     <string name="settings_internet_relays_subtitle">Розмови тривають, навіть коли нікого немає в радіусі дії радіо: зашифровані копії зберігаються на серверах-ретрансляторах. Ретранслятори не можуть прочитати ваші повідомлення, але бачать, що розмова активна, та IP-адреси, які до неї підключаються.</string>

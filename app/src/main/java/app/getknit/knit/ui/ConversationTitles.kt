@@ -97,7 +97,7 @@ internal fun conversationTitle(
                 conversationId,
                 kind,
                 groupTitle(
-                    storedName = group?.name.orEmpty(),
+                    storedName = directory.shownGroup(group?.name.orEmpty()),
                     memberIds = memberIds,
                     selfId = me,
                     fallback = context.getString(R.string.group_unnamed),
@@ -195,7 +195,7 @@ internal fun speakerLabel(
 ): String? {
     message.originNode?.let { node ->
         val contact = message.originPeerId?.let { directory.label(it) }
-        return contact?.text ?: message.originName?.takeIf { it.isNotBlank() } ?: meshNodeLabel(node)
+        return contact?.text ?: message.originName?.let(directory::shown)?.takeIf { it.isNotBlank() } ?: meshNodeLabel(node)
     }
     val isOwn = message.senderId == me
     if (isDm && !isOwn) return null

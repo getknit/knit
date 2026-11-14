@@ -140,6 +140,18 @@ fun ProfileScreen(
             snackbarHostState.showSnackbar(message)
         }
     }
+    val nameRefused = stringResource(R.string.moderation_name_refused)
+    val statusRefused = stringResource(R.string.moderation_status_refused)
+    LaunchedEffect(Unit) {
+        viewModel.refused.collect { refusal ->
+            snackbarHostState.showSnackbar(
+                when (refusal) {
+                    ProfileRefusal.NAME -> nameRefused
+                    ProfileRefusal.STATUS -> statusRefused
+                },
+            )
+        }
+    }
 
     val picker =
         rememberLauncherForActivityResult(

@@ -4703,7 +4703,7 @@ class InboundPipeline(
         // channel is the one device that never notifies, because `incomingNotification` suppresses our own
         // messages. A resolved contact keys and wears exactly what their DM notification would, so Android
         // groups the two; a stranger wears no face at all.
-        val speaker = origin?.let { heardSpeaker(it) { id, name -> labels.labelFor(id, name).text } }
+        val speaker = origin?.let { heardSpeaker(it, labels::shown) { id, name -> labels.labelFor(id, name).text } }
         val incoming =
             incomingNotification(
                 senderId = speaker?.id ?: env.senderId,
@@ -4734,13 +4734,15 @@ class InboundPipeline(
      */
     private suspend fun heardSpeaker(
         origin: MeshPostOrigin,
+        // The board's long name as this phone shows names (ADR 2026-11.y4pc): blank while filtering hides it.
+        shown: (String) -> String = { it },
         label: (id: String, name: String?) -> String,
     ): HeardSpeaker {
         val contact = origin.peerId?.let { peers.find(it) }
         val id = origin.peerId ?: meshNodeLabel(origin.node)
         val name =
             origin.peerId?.let { label(it, contact?.name) }
-                ?: origin.name?.takeIf(String::isNotBlank)
+                ?: origin.name?.let(shown)?.takeIf(String::isNotBlank)
                 ?: meshNodeLabel(origin.node)
         return HeardSpeaker(id, name, contact?.avatarHash?.let { blobs.bytes(it) })
     }

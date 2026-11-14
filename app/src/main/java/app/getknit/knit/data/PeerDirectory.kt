@@ -30,6 +30,12 @@ data class PeerDirectory(
         return if (row != null) labels.labelFor(nodeId, row.name) else labels.labelFor(nodeId)
     }
 
+    /** Another person's [text] as names are shown now: blank while Content filtering hides it (ADR 2026-11.y4pc). */
+    fun shown(text: String): String = labels.shown(text)
+
+    /** A group's stored [name] as group names are shown now: blank while Content filtering hides it. */
+    fun shownGroup(name: String): String = labels.shownGroup(name)
+
     companion object {
         /** No peers, nothing discriminated — the state before the first emission. */
         val EMPTY = PeerDirectory(emptyList(), PeerLabelIndex.EMPTY)

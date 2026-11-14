@@ -1363,6 +1363,8 @@
     <string name="moderation_link_hidden">敏感预览，点按即可查看</string>
     <string name="moderation_preview_hidden">消息已隐藏</string>
     <string name="moderation_photo_refused">无法使用此照片：其中可能含有露骨内容</string>
+    <string name="moderation_name_refused">无法使用此名称：其中可能含有冒犯性词语</string>
+    <string name="moderation_status_refused">无法使用此状态：其中可能含有冒犯性词语</string>
     <string name="relays_title">互联网中继</string>
     <string name="settings_internet_relays_title">使用互联网中继</string>
     <string name="settings_internet_relays_subtitle">无人在无线覆盖范围内时，在中继服务器上存放密封副本，让对话继续进行。中继无法读取你的消息，但能看到某个对话处于活跃状态，以及连接到该对话的 IP 地址。</string>

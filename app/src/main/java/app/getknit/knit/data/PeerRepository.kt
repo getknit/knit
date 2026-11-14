@@ -9,10 +9,12 @@ import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.peer.PeerFace
 import app.getknit.knit.data.settings.InboundSettings
 import app.getknit.knit.identity.IdentitySource
+import app.getknit.knit.identity.NamePresenter
 import app.getknit.knit.identity.PeerLabelIndex
 import app.getknit.knit.identity.PeerLabels
 import app.getknit.knit.mesh.protocol.BadgeEntry
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import app.getknit.knit.moderation.ShownNames
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -28,7 +30,9 @@ import java.util.concurrent.ConcurrentHashMap
  * Single source of truth for cached peer profiles. [profile] and [identity] contribute this device's own
  * name and id to the name-collision universe ([observeDirectory] / [labelIndex]) — a peer who adopts our
  * name is discriminated too. With a [fade] (production), a stranger quiet for a week stops adding an alias to
- * anyone else's label (ADR 2026-10.k8ge); without one every known identity counts forever, as before.
+ * anyone else's label (ADR 2026-10.k8ge); without one every known identity counts forever, as before. With [shown]
+ * (production), a flagged name is labelled as its alias while Content filtering is on (ADR 2026-11.y4pc), in every
+ * index this builds and for every name a caller passes to one.
  */
 class PeerRepository(
     private val dao: PeerDao,
@@ -38,6 +42,7 @@ class PeerRepository(
     private val fade: LabelFade? = null,
     // Told each peer whose row a write here changed (`DataChange`); a no-op outside a debug build.
     private val changes: DataChangeSink = DataChangeSink.NONE,
+    private val shown: ShownNames? = null,
 ) {
     // The `lastSeenAt` stamps [noteSeen] collected since the last [flushSeen], the newest per sender.
     private val heard = ConcurrentHashMap<String, Long>()
@@ -63,17 +68,50 @@ class PeerRepository(
     fun observeDirectory(): Flow<PeerDirectory> {
         val myName = profile.displayName.distinctUntilChanged()
         val me = flow { emit(identity.nodeId()) }
+        val rows = combine(dao.observeAll(), filtering()) { peers, on -> peers to presenter(on) }
         val fade =
-            fade ?: return combine(dao.observeAll(), myName, me) { peers, name, id ->
-                PeerDirectory(peers, PeerLabels.index(peers.map { it.nodeId to it.name }, id to name))
+            fade ?: return combine(rows, myName, me) { (peers, presenter), name, id ->
+                PeerDirectory(
+                    peers,
+                    PeerLabels.index(
+                        peers.map {
+                            it.nodeId to it.name
+                        },
+                        id to name,
+                        presenter = presenter,
+                        groupPresenter = groupPresenter(presenter),
+                    ),
+                )
             }
-        return combine(dao.observeAll(), myName, me, fade.anchors.observe(), fade.ticks) { peers, name, id, anchors, _ ->
+        return combine(rows, myName, me, fade.anchors.observe(), fade.ticks) { (peers, presenter), name, id, anchors, _ ->
             val now = fade.clock()
             val stale = peers.filter { fade.fades(it.nodeId, it.verified, it.lastSeenAt, anchors, now) }.mapTo(HashSet()) { it.nodeId }
-            DirectoryInputs(peers, id to name, stale)
+            DirectoryInputs(peers, id to name, stale, presenter)
         }.distinctUntilChanged()
-            .map { PeerDirectory(it.peers, PeerLabels.index(it.peers.map { p -> p.nodeId to p.name }, it.self, it.stale)) }
+            .map {
+                PeerDirectory(
+                    it.peers,
+                    PeerLabels.index(
+                        it.peers.map { p ->
+                            p.nodeId to p.name
+                        },
+                        it.self,
+                        it.stale,
+                        it.presenter,
+                        groupPresenter(it.presenter),
+                    ),
+                )
+            }
     }
+
+    // Content filtering, as far as names go: never on without a name screen (tests, and builds that wire none).
+    private fun filtering(): Flow<Boolean> = if (shown == null) flowOf(false) else profile.contentFilteringEnabled.distinctUntilChanged()
+
+    private fun presenter(filtering: Boolean): NamePresenter = shown?.person?.takeIf { filtering } ?: NamePresenter.AS_STORED
+
+    // Group names follow the same toggle as people's: screened exactly when the person presenter is.
+    private fun groupPresenter(person: NamePresenter): NamePresenter =
+        shown?.group?.takeIf { person !== NamePresenter.AS_STORED } ?: NamePresenter.AS_STORED
 
     /**
      * The name and avatar of [ids] alone, as they change — the conversation-shortcut watch's read (ADR 2026-10.jbsa),
@@ -94,10 +132,13 @@ class PeerRepository(
                 val now = f.clock()
                 rows.filter { f.fades(it.nodeId, it.verified, it.lastSeenAt, anchors, now) }.mapTo(HashSet()) { it.nodeId }
             }
+        val presenter = presenter(filtering().first())
         return PeerLabels.index(
             rows.map { it.nodeId to it.name },
             identity.nodeId() to profile.displayName.first(),
             stale.orEmpty(),
+            presenter,
+            groupPresenter(presenter),
         )
     }
 
@@ -310,6 +351,7 @@ class PeerRepository(
         val peers: List<PeerEntity>,
         val self: Pair<String, String>,
         val stale: Set<String>,
+        val presenter: NamePresenter,
     )
 
     private companion object {

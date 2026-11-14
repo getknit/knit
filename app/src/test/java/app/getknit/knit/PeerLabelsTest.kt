@@ -1,6 +1,7 @@
 package app.getknit.knit
 
 import app.getknit.knit.identity.Alias
+import app.getknit.knit.identity.NamePresenter
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.identity.PeerLabelIndex
 import app.getknit.knit.identity.PeerLabels
@@ -278,5 +279,39 @@ class PeerLabelsTest {
          */
         const val GROUND_X = "jiuqkhusaqt3u25svz7rbvvwje"
         const val GROUND_Y = "p3ve2zdqk6ecz5dfofpywoobxa"
+    }
+
+    // ADR 2026-11.y4pc: a presenter decides what a stored name is shown as.
+    private val hideFlagged = NamePresenter { if (it.contains("Fuck")) "" else it }
+
+    @Test
+    fun aPresentedBlankNameIsLabelledAsItsAliasAndTwoOfThemStayApart() {
+        val idx = PeerLabels.index(listOf("a" to "Fuck69", "b" to "Fuck69", "c" to "Alice"), presenter = hideFlagged)
+        assertEquals(Alias.aliasFor("a"), idx.labelFor("a").name)
+        assertEquals("Alice", idx.labelFor("c").text)
+        assertNotEquals(idx.labelFor("a").text, idx.labelFor("b").text)
+    }
+
+    @Test
+    fun aRawNameACallerPassesGoesThroughThePresenterAndAgreesWithTheIndex() {
+        val idx = PeerLabels.index(listOf("a" to "Fuck69"), presenter = hideFlagged)
+        assertEquals(idx.labelFor("a"), idx.labelFor("a", "Fuck69"))
+        assertEquals(Alias.aliasFor("z"), idx.labelFor("z", "Fuck69").name) // an id outside the universe too
+    }
+
+    @Test
+    fun ourOwnNameIsNeverPresented() {
+        val idx = PeerLabels.index(emptyList(), self = "me" to "Fuck69", presenter = hideFlagged)
+        assertEquals("Fuck69", idx.labelFor("me").name)
+        assertEquals("Fuck69", idx.labelFor("me", "Fuck69").name)
+    }
+
+    @Test
+    fun shownAndShownGroupApplyTheirOwnPresenters() {
+        val idx = PeerLabels.index(emptyList(), presenter = hideFlagged, groupPresenter = NamePresenter { "" })
+        assertEquals("", idx.shown("Fuck you"))
+        assertEquals("hiking", idx.shown("hiking"))
+        assertEquals("", idx.shownGroup("Book club"))
+        assertEquals("Book club", PeerLabels.index(emptyList()).shownGroup("Book club"))
     }
 }

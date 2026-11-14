@@ -47,3 +47,14 @@ lines.
   attachment is dropped from its row and from custody's carrier column and is never pulled or carried, because its MIME is the author's claim and nothing
   screens audio or files. A new kind the room originates goes into `admits` in the same change. Regression:
   `RoomAttachmentsTest`, `InboundPipelineTest.aNearbyRoomPostsVoiceNoteOrFileIsDroppedFromItsRowAndNeverPulled`.
+- **When screening a display name, a status, a group name or a Meshtastic board's long name — `ProfileViewModel.save`,
+  `OnboardingViewModel`, `NameKey.isBlankName`'s consumers (`PeerLabels`, `displayNameFor`, `groupTitle`),
+  `groupNameForDisplay`, `ConversationShortcuts`, `NameScreen`, `ShownNames`, `NamePresenter`, `PeerLabelIndex.shown` /
+  `shownGroup`, `scripts/gen-name-screen-lists.py` or a `name_*_en.txt` list:** READ ADR 2026-11.y4pc and
+  `docs/CONTENT_MODERATION.md` §2's Names. Names take the word lists through `NameScreen` (split variants,
+  inside-word matching only for embeddable terms, real names allowed in plain letters, never a slur), never the
+  toxicity model; the verdict is decided where the name is drawn, through the presenter `PeerRepository` builds every
+  label index with, and a flagged name draws as the alias behind Content filtering. A surface that reads
+  `PeerEntity.name`, `.status`, `originName` or a group's name without the index draws a flagged one in full.
+  Regression: `NameScreenTest`, `NameListsTest`, `NameScreenVectorTest`, `PeerLabelsTest`, `PeerRepositoryTest`,
+  `ConversationFacesTest`.

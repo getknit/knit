@@ -7,6 +7,8 @@ import app.getknit.knit.clampToUtf16
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.moderation.NameScreen
+import app.getknit.knit.moderation.ShownNames
 import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.ui.whatsnew.WhatsNew
 import kotlinx.coroutines.NonCancellable
@@ -36,7 +38,14 @@ enum class OnboardingStep { WELCOME, NAME, PERMISSIONS }
 class OnboardingViewModel(
     private val settings: SettingsStore,
     identity: Identity,
+    // Screens the name before it is saved (ADR 2026-11.y4pc); null in tests that don't exercise it.
+    private val names: ShownNames? = null,
 ) : ViewModel() {
+    private val _nameRefused = MutableStateFlow(false)
+
+    /** True after Continue refused the typed name, until the next keystroke: the page says why it stayed. */
+    val nameRefused: StateFlow<Boolean> = _nameRefused.asStateFlow()
+
     // Null until the store has said whether this phone has seen the intro — the pager is built on a fact,
     // not a guess, so a returning phone never flashes "Welcome" before landing on the permissions page.
     private val _step = MutableStateFlow<OnboardingStep?>(null)
@@ -72,6 +81,7 @@ class OnboardingViewModel(
         // Hold exactly what's typed (capped) so a space *between* words isn't eaten mid-keystroke;
         // normalization happens on commit and on leaving the page.
         _name.value = value.clampToUtf16(TextLimits.DISPLAY_NAME)
+        _nameRefused.value = false
     }
 
     /** Snaps the visible field to its normalized form when it loses focus; nothing is persisted here. */
@@ -87,6 +97,11 @@ class OnboardingViewModel(
             }
 
             OnboardingStep.NAME -> {
+                // Screened before it is stored, as in Profile: everyone in range will see it.
+                if (names?.flagged(normalizeSingleLine(_name.value), NameScreen.Audience.PUBLIC) == true) {
+                    _nameRefused.value = true
+                    return
+                }
                 persistName()
                 _step.value = OnboardingStep.PERMISSIONS
             }

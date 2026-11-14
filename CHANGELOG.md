@@ -33,6 +33,9 @@ document:
   Priority conversations, which you'll need to set again.
 - The chat list and your chats show a thin scroll bar at the side while you scroll, so you can tell where you
   are in a long list or conversation. It fades a moment after you stop.
+- With Content filtering on, someone whose name or status uses slurs or profanity now shows under their alias,
+  and a group whose name has a slur shows its members' names instead. Knit won't let you set such a name or
+  status for yourself either.
 
 ### Changed
 

@@ -1417,6 +1417,8 @@
     <string name="moderation_link_hidden">Prévia sensível — toque para ver</string>
     <string name="moderation_preview_hidden">Mensagem oculta</string>
     <string name="moderation_photo_refused">Esta foto não pode ser usada: ela pode ter conteúdo explícito</string>
+    <string name="moderation_name_refused">Este nome não pode ser usado: ele pode ter palavras ofensivas</string>
+    <string name="moderation_status_refused">Este status não pode ser usado: ele pode ter palavras ofensivas</string>
     <string name="relays_title">Retransmissores pela internet</string>
     <string name="settings_internet_relays_title">Usar retransmissores pela internet</string>
     <string name="settings_internet_relays_subtitle">Mantenha as conversas fluindo quando ninguém estiver ao alcance do rádio, guardando cópias lacradas em servidores retransmissores. Os retransmissores não conseguem ler suas mensagens, mas veem que uma conversa está ativa e os endereços IP que se conectam a ela.</string>

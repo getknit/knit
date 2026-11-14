@@ -10,6 +10,19 @@ import java.io.File
 object ShippedWordList {
     const val PROFANITY = "profanity_en.txt"
     const val SLURS = "slurs_en.txt"
+    const val NAME_EMBEDDABLE = "name_embeddable_en.txt"
+    const val NAME_EXCLUSIONS = "name_exclusions_en.txt"
+    const val NAME_ALLOWED = "name_allowed_en.txt"
+
+    /** The [NameScreen] the app builds, from the shipped lists. */
+    fun nameScreen(): NameScreen =
+        NameScreen(
+            slurs = read(SLURS),
+            profanity = read(PROFANITY),
+            embeddable = read(NAME_EMBEDDABLE),
+            exclusions = read(NAME_EXCLUSIONS),
+            allowedNames = read(NAME_ALLOWED),
+        )
 
     fun read(name: String): List<String> {
         val file =

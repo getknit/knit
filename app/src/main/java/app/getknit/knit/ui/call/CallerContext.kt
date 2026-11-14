@@ -133,7 +133,12 @@ internal suspend fun callerContext(
     val groupNames =
         shared
             .map { g ->
-                groupTitle(g.name, GroupMembersStore.decode(g.members), me, fallback = unnamedGroup) { labels.labelFor(it).text }
+                groupTitle(
+                    labels.shownGroup(g.name),
+                    GroupMembersStore.decode(g.members),
+                    me,
+                    fallback = unnamedGroup,
+                ) { labels.labelFor(it).text }
             }.sortedBy { it.lowercase() }
     // A DM thread's id is the peer's node id. Status notices (a member left, …) are not messages anyone wrote.
     val newest =
@@ -150,7 +155,7 @@ internal suspend fun callerContext(
             anyMessages = newest != null,
         )
     return CallerContext(
-        status = peer?.status.orEmpty().trim(),
+        status = labels.shown(peer?.status.orEmpty()).trim(),
         relationship = relationshipText(context, relationship),
         namedRelationship = relationshipText(context, relationship, groupNames),
         lastMessage = newest?.let { LastMessage(fromMe = it.senderId == me, sentAt = it.sentAt, message = it) },

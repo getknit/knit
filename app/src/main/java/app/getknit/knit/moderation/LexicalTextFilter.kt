@@ -27,9 +27,9 @@ class LexicalTextFilter(
     category: TextVerdict.Category = TextVerdict.Category.PROFANITY,
 ) : TextModerator {
     private val blocked: Set<String> =
-        blockedWords.map(::normalize).filter { it.isNotEmpty() }.toSet()
-    private val blockedCollapsed: Set<String> = blocked.map(::collapseRuns).toSet()
-    private val allowed: Set<String> = allowedTerms.map(::normalize).filter { it.isNotEmpty() }.toSet()
+        blockedWords.map { normalize(it) }.filter { it.isNotEmpty() }.toSet()
+    private val blockedCollapsed: Set<String> = blocked.map { collapseRuns(it) }.toSet()
+    private val allowed: Set<String> = allowedTerms.map { normalize(it) }.filter { it.isNotEmpty() }.toSet()
     private val flagged = TextVerdict(allowed = false, category = category, score = 1f)
 
     override suspend fun classify(text: String): TextVerdict = check(text)
@@ -66,39 +66,44 @@ class LexicalTextFilter(
         return collapsed != token && collapsed in blockedCollapsed
     }
 
-    private fun normalize(raw: String): String {
-        val folded =
-            Normalizer
-                .normalize(raw.lowercase(), Normalizer.Form.NFKD)
-                .replace(COMBINING_MARKS, "")
-        val mapped = StringBuilder(folded.length)
-        for (ch in folded) mapped.append(LEET[ch] ?: ch)
-        return mapped.toString()
-    }
+    internal companion object {
+        private val SEPARATORS = Regex("[^a-z]+")
+        private val COMBINING_MARKS = Regex("\\p{Mn}+")
+        private const val MIN_RUN = 3
 
-    /**
-     * Collapses runs of [MIN_RUN]+ identical chars to one (`shiiit` → `shit`) while leaving doubles
-     * intact, so short words such as `ass` are unaffected (otherwise `as` could collide with it).
-     */
-    private fun collapseRuns(s: String): String {
-        val out = StringBuilder(s.length)
-        var i = 0
-        while (i < s.length) {
-            val ch = s[i]
-            var j = i
-            while (j < s.length && s[j] == ch) j++
-            val runLen = j - i
-            repeat(if (runLen >= MIN_RUN) 1 else runLen) { out.append(ch) }
-            i = j
+        /** Lowercase, NFKD-fold, strip combining marks, then map leet digits and symbols to letters. Shared with [NameScreen]. */
+        internal fun normalize(raw: String): String {
+            val folded =
+                Normalizer
+                    .normalize(raw.lowercase(), Normalizer.Form.NFKD)
+                    .replace(COMBINING_MARKS, "")
+            val mapped = StringBuilder(folded.length)
+            for (ch in folded) mapped.append(LEET[ch] ?: ch)
+            return mapped.toString()
         }
-        return out.toString()
-    }
 
-    private companion object {
-        val SEPARATORS = Regex("[^a-z]+")
-        val COMBINING_MARKS = Regex("\\p{Mn}+")
-        const val MIN_RUN = 3
-        val LEET =
+        /** The letter a leet digit stands for (`1` → `i`), or null; [NameScreen] reads a digit as one only between letters. */
+        internal fun leetLetter(ch: Char): Char? = LEET[ch]
+
+        /**
+         * Collapses runs of [MIN_RUN]+ identical chars to one (`shiiit` → `shit`) while leaving doubles
+         * intact, so short words such as `ass` are unaffected (otherwise `as` could collide with it).
+         */
+        internal fun collapseRuns(s: String): String {
+            val out = StringBuilder(s.length)
+            var i = 0
+            while (i < s.length) {
+                val ch = s[i]
+                var j = i
+                while (j < s.length && s[j] == ch) j++
+                val runLen = j - i
+                repeat(if (runLen >= MIN_RUN) 1 else runLen) { out.append(ch) }
+                i = j
+            }
+            return out.toString()
+        }
+
+        private val LEET =
             mapOf(
                 '0' to 'o',
                 '1' to 'i',

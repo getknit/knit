@@ -13,6 +13,7 @@ import app.getknit.knit.moderation.MlTextModerator
 import app.getknit.knit.moderation.ModelLoadGuard
 import app.getknit.knit.moderation.NsfwImageModerator
 import app.getknit.knit.moderation.ScopedTextModerator
+import app.getknit.knit.moderation.ShownNames
 import app.getknit.knit.moderation.TextVerdict
 import app.getknit.knit.moderation.WordList
 import app.getknit.knit.moderation.modelGuardStamp
@@ -67,6 +68,8 @@ val moderationModule =
                 direct = HybridTextModerator(lexical = slurs, ml = ml),
             )
         }
+        // Names, statuses and group names (ADR 2026-11.y4pc): the word lists through the name matcher, never the model.
+        single { ShownNames(WordList.nameScreen(androidContext())) }
         // Bound concretely as well as behind the interface so the debug bridge can read its residency.
         single { NsfwImageModerator(androidContext(), guard = get(), scope = get<CoroutineScope>()) }
         single<ImageModerator> { get<NsfwImageModerator>() }

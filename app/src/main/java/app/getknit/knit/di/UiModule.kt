@@ -176,9 +176,10 @@ val uiModule =
                 badges = if (ANYWHERE_WIRED) get<BadgeStore>() else null,
                 ticketKeys = get<TicketKeyStore>(),
                 pins = BadgeKeys.forBuild(BuildConfig.DEBUG),
+                names = get(),
             )
         }
-        viewModel { OnboardingViewModel(get(), get()) }
+        viewModel { OnboardingViewModel(get(), get(), names = get()) }
         viewModel { ChatSettingsViewModel(get(), reader = if (TRANSLATE_WIRED) get<ReaderLanguage>() else null) }
         viewModel {
             SettingsViewModel(

@@ -11,6 +11,8 @@ import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.moderation.NameScreen
+import app.getknit.knit.moderation.ShownNames
 import app.getknit.knit.ui.util.CropRect
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -280,5 +282,39 @@ class ProfileViewModelTest {
             advanceUntilIdle()
 
             coVerify { settings.setProfile("Bob", "on a hike") }
+        }
+
+    /** ADR 2026-11.y4pc: a name or status the screen flags is refused on Save and left in its field for an edit. */
+    @Test
+    fun aFlaggedNameOrStatusIsRefusedOnSaveAndNothingIsStored() =
+        runTest {
+            val vm =
+                ProfileViewModel(
+                    settings,
+                    identity,
+                    avatars,
+                    blobs,
+                    this,
+                    names = ShownNames(NameScreen(listOf("kike"), listOf("fuck", "kike"), emptyList(), emptyList(), emptyList())),
+                )
+            val refusals = mutableListOf<ProfileRefusal>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.refused.collect { refusals += it } }
+            advanceUntilIdle()
+
+            vm.setDisplayName("Fuck69")
+            vm.save()
+            advanceUntilIdle()
+            vm.setDisplayName("Ada")
+            vm.setStatus("fuck mondays")
+            vm.save()
+            advanceUntilIdle()
+            assertEquals(listOf(ProfileRefusal.NAME, ProfileRefusal.STATUS), refusals)
+            coVerify(exactly = 0) { settings.setProfile(any(), any()) }
+            assertEquals("the status stays as typed", "fuck mondays", vm.status.value)
+
+            vm.setStatus("Hiking")
+            vm.save()
+            advanceUntilIdle()
+            coVerify(exactly = 1) { settings.setProfile("Ada", "Hiking") }
         }
 }

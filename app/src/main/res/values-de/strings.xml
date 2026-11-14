@@ -1390,6 +1390,8 @@
     <string name="moderation_link_hidden">Sensible Vorschau – zum Ansehen tippen</string>
     <string name="moderation_preview_hidden">Nachricht ausgeblendet</string>
     <string name="moderation_photo_refused">Dieses Foto kann nicht verwendet werden: Es enthält möglicherweise explizite Inhalte</string>
+    <string name="moderation_name_refused">Dieser Name kann nicht verwendet werden: Er enthält möglicherweise anstößige Wörter</string>
+    <string name="moderation_status_refused">Dieser Status kann nicht verwendet werden: Er enthält möglicherweise anstößige Wörter</string>
     <string name="relays_title">Internet-Relays</string>
     <string name="settings_internet_relays_title">Internet-Relays nutzen</string>
     <string name="settings_internet_relays_subtitle">Hält Unterhaltungen am Laufen, wenn niemand in Funkreichweite ist, indem versiegelte Kopien auf Relay-Servern gespeichert werden. Relays können deine Nachrichten nicht lesen, sehen aber, dass eine Unterhaltung aktiv ist und welche IP-Adressen sich damit verbinden.</string>

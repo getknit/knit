@@ -16,6 +16,8 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.spool.TicketKeyJournal
+import app.getknit.knit.moderation.NameScreen
+import app.getknit.knit.moderation.ShownNames
 import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.ui.util.computeAvatarCrop
 import kotlinx.coroutines.CoroutineScope
@@ -49,6 +51,8 @@ class ProfileViewModel(
     ticketKeys: TicketKeyJournal? = null,
     pins: List<PinnedBadgeKey> = emptyList(),
     clock: () -> Long = System::currentTimeMillis,
+    // Screens the name and status before they are saved (ADR 2026-11.y4pc); null in tests that don't exercise it.
+    private val names: ShownNames? = null,
 ) : ViewModel() {
     val nodeId = MutableStateFlow("")
 
@@ -90,6 +94,10 @@ class ProfileViewModel(
     // write lands (popping the screen cancels viewModelScope, which would otherwise abort the write).
     private val _saved = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val saved = _saved.asSharedFlow()
+
+    // A one-shot signal that Save refused the name or the status, which stay in their fields, unsaved, for an edit.
+    private val _refused = MutableSharedFlow<ProfileRefusal>(extraBufferCapacity = 1)
+    val refused = _refused.asSharedFlow()
 
     /** Content hash of the current own avatar (keys the blob Coil renders), or null if none is set. */
     val avatarHash: StateFlow<String?> =
@@ -165,11 +173,29 @@ class ProfileViewModel(
         val status = normalizeSingleLine(_status.value)
         _displayName.value = name
         _status.value = status
+        // Screened before it is stored, like the photo (ADR 2026-11.y4pc): everyone in range sees both, strangers
+        // included. Not gated by Content filtering, which only decides what this phone shows of others.
+        refusal(name, status)?.let {
+            _refused.tryEmit(it)
+            return
+        }
         lastSavedName.value = name
         lastSavedStatus.value = status
         viewModelScope.launch {
             settings.setProfile(name, status)
             _saved.emit(Unit)
+        }
+    }
+
+    private fun refusal(
+        name: String,
+        status: String,
+    ): ProfileRefusal? {
+        val screen = names ?: return null
+        return when {
+            screen.flagged(name, NameScreen.Audience.PUBLIC) -> ProfileRefusal.NAME
+            screen.flagged(status, NameScreen.Audience.PUBLIC) -> ProfileRefusal.STATUS
+            else -> null
         }
     }
 
@@ -275,3 +301,6 @@ data class OwnBadgeRow(
 )
 
 private const val MS_PER_S = 1_000L
+
+/** What Save refused, so the screen can say which field to change. */
+enum class ProfileRefusal { NAME, STATUS }

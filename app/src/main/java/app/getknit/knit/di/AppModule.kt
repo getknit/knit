@@ -347,7 +347,7 @@ val appModule =
                     ticks = LabelFade.hourly(),
                     transact = { block -> db.withWriteTransaction { block() } },
                 )
-            PeerRepository(get(), get<SettingsStore>(), get<Identity>(), fade = fade, changes = get())
+            PeerRepository(get(), get<SettingsStore>(), get<Identity>(), fade = fade, changes = get(), shown = get())
         }
         // Crash reports. The capture-side CrashStore is built by hand in KnitApplication.onCreate BEFORE
         // startKoin, so a crash inside startup itself is still captured; this is the reader side over the

@@ -26,6 +26,7 @@ import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.LocalMessageDelete
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
+import app.getknit.knit.data.PeerDirectory
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.PinOutcome
 import app.getknit.knit.data.PinRepository
@@ -46,6 +47,7 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.PeerRename
 import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.TransferRecord
 import app.getknit.knit.data.message.groupFaces
@@ -1580,7 +1582,7 @@ class ChatViewModel(
                     // wears that contact's name and face; an unverified match unless the radio's signature
                     // checked out (`MeshOrigin.verified`), so the bubble keeps the muted name and the
                     // caveat-first avatar until it did.
-                    val origin = m.originNode?.let { node -> meshOriginFor(m, node) }
+                    val origin = m.originNode?.let { node -> meshOriginFor(m, node, directory) }
                     val mine = m.senderId == me && origin == null
                     val contact = origin?.peerId?.let { label(it) }
                     val senderLabel = if (mine || origin != null) null else label(m.senderId)
@@ -1601,7 +1603,7 @@ class ChatViewModel(
                     val heldBytes = m.attachmentHash?.let { blobSizes[it] }
                     ChatRow(
                         id = m.id,
-                        body = m.body,
+                        body = shownNoticeBody(m, directory),
                         mine = mine,
                         senderName = name,
                         senderNodeId = m.senderId,
@@ -1749,7 +1751,7 @@ class ChatViewModel(
                     when {
                         group != null -> {
                             groupTitle(
-                                storedName = group.name,
+                                storedName = directory.shownGroup(group.name),
                                 memberIds = members,
                                 selfId = me,
                                 fallback = context.getString(R.string.group_unnamed),
@@ -1848,13 +1850,46 @@ class ChatViewModel(
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom, isLoading = true))
 
+    /**
+     * A peer notice's body with any name it froze shown as names are shown now (ADR 2026-11.y4pc): a hidden earlier
+     * name reads as the person's alias, and a hidden new one or photo-notice name falls back to the live label, which
+     * is the alias too. Every other row's body is its own, screened as a message.
+     */
+    private fun shownNoticeBody(
+        m: MessageEntity,
+        directory: PeerDirectory,
+    ): String =
+        when (m.kind) {
+            MessageEntity.KIND_PEER_RENAMED -> {
+                val rename = PeerRename.decode(m.body)
+                val from = directory.shown(rename.from).ifBlank { Alias.aliasFor(m.senderId) }
+                val to = rename.to?.let(directory::shown).orEmpty()
+                if (from == rename.from && to == rename.to.orEmpty()) m.body else PeerRename.encode(from, to)
+            }
+
+            MessageEntity.KIND_PEER_AVATAR -> {
+                directory.shown(m.body)
+            }
+
+            // A hidden new group name reads as the title the members make, as a blank one does.
+            MessageEntity.KIND_GROUP_RENAMED -> {
+                directory.shownGroup(m.body)
+            }
+
+            else -> {
+                m.body
+            }
+        }
+
     /** The render shape of a heard post's attribution — the row's `origin*` columns, the `!hex` id derived. */
     private fun meshOriginFor(
         m: MessageEntity,
         node: Long,
+        directory: PeerDirectory,
     ) = MeshOrigin(
         nodeLabel = meshNodeLabel(node),
-        name = m.originName?.takeIf { it.isNotBlank() },
+        // The board's long name as names are shown (ADR 2026-11.y4pc): a hidden one falls back to the node label.
+        name = m.originName?.let(directory::shown)?.takeIf { it.isNotBlank() },
         peerId = m.originPeerId,
         hops = m.originHops,
         snrDeci = m.originSnrDeci,
@@ -1880,7 +1915,7 @@ class ChatViewModel(
                 .filter { it.message.senderId !in blocked }
                 .map { pin ->
                     val m = pin.message
-                    val origin = m.originNode?.let { node -> meshOriginFor(m, node) }
+                    val origin = m.originNode?.let { node -> meshOriginFor(m, node, directory) }
                     PinnedView(
                         messageId = m.id,
                         author = senderName(origin, m.senderId, me, selfName = selfLabel) { directory.label(it).text },

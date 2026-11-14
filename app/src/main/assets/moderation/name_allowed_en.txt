@@ -1,0 +1,35 @@
+# Profanity terms that are also real names, allowed as whole words in a name.
+# Read by the name screen (moderation/NameScreen.kt, ADR 2026-11.y4pc). One term per line; blank lines and
+# lines starting with '#' are ignored.
+#
+# GENERATED FILE -- DO NOT EDIT BY HAND. Regenerate with:  python3 scripts/gen-name-screen-lists.py --corpus <dir>
+#
+# Transform: terms of profanity_en.txt, minus slurs_en.txt, that are a given name with >= 100 SSA births
+# since 1950 or a surname with >= 100 people in the 2010 Census.
+# Inputs (sha256):
+#   american-english  9f513f1ceadb6a01c5485b7dbdfd5118dc66cd70b59cae2851292112d4066a32
+#   british-english  7424d6682301dc86f73b0a5c8c53f0ba4c9f0a41fb2d1cb7e5fe7f8a04f15fb0
+#   ssa/babynames.csv  9d22e9b1d50d8a45509e959132d4d2deff41b581d41494083c262be4c730642a
+#   census/Names_2010Census.csv  6b4933178060b4e5ac8dd9a611ec15472d35eab98fe9027474bc5ccc5b7a8708
+#   intl/common-forenames-by-country.csv  b55fbdd0cbc8ddfa7345322e9ebd479cc52fa1f90a5ee7e382a68b5487b01292
+#   intl/common-surnames-by-country.csv  32cb28bea558a9d353feeef097da03c6488a4e7ba9398e5983cee2f0b9caa91c
+
+boner
+cock
+coon
+coons
+cumming
+dick
+domme
+felch
+hadji
+haji
+negro
+poon
+porn
+rape
+shota
+skeet
+wank
+wanker
+wigger

@@ -1702,6 +1702,8 @@
          list's preview) while content filtering hides it in the thread. ADR 2026-10.9rh6. -->
     <string name="moderation_preview_hidden">Message hidden</string>
     <string name="moderation_photo_refused">This photo can\'t be used: it may contain explicit content</string>
+    <string name="moderation_name_refused">This name can\'t be used: it may contain offensive words</string>
+    <string name="moderation_status_refused">This status can\'t be used: it may contain offensive words</string>
 
     <!--
       Internet relays (the spool plane, docs/SPOOL_PROTOCOL.md).

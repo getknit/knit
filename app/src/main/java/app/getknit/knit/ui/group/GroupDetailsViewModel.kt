@@ -135,7 +135,7 @@ class GroupDetailsViewModel(
                 fsBlockers = fsBlockers,
                 title =
                     groupTitle(
-                        storedName = group?.name.orEmpty(),
+                        storedName = directory.shownGroup(group?.name.orEmpty()),
                         memberIds = members,
                         selfId = myId,
                         fallback = context.getString(R.string.group_unnamed),

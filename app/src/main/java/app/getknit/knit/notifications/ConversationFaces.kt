@@ -72,7 +72,7 @@ class ConversationFaces(
         for (id in memberIds) namesByNode[id] = labels.labelFor(id).text
         val title =
             group?.let {
-                groupTitle(it.name, memberIds, me, fallback = "") { id -> namesByNode[id] ?: id }.ifBlank { null }
+                groupTitle(labels.shownGroup(it.name), memberIds, me, fallback = "") { id -> namesByNode[id] ?: id }.ifBlank { null }
             }
         val photo = group?.photoShownHash?.let { blobs.bytes(it) }
         // Only a photo-less group draws its members, so the reads (at most four peer rows and four blobs) are skipped

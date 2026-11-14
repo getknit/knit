@@ -1,0 +1,167 @@
+{
+  "description": "NameScreen.check over the shipped word lists (ADR 2026-11.y4pc)",
+  "lists": {
+    "slurs_en.txt": "62bedd5804d0be5f8d1a1dade44a8ee707546e3321d180ba2d15c4a591570e40",
+    "profanity_en.txt": "0a3d3aa32b3996bd66b8bbc2c1358413a16464ebb8de3b7270e5d6c7f45f1f50",
+    "name_embeddable_en.txt": "525cf271b6073b805e0d6f4255b4d4c56360c7f6d6d778dea8557a54a3160ff4",
+    "name_exclusions_en.txt": "4814c6aa7226e94840ff4f30776196fa5162e72356f741b701de2ae3b9c035b5",
+    "name_allowed_en.txt": "b56ad5869f94dd1932853bf36db220019272dcf3a43eca8fbbc4e0ea0953bba4"
+  },
+  "cases": [
+    {
+      "name": "Alice Smith",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "Fuck",
+      "audience": "PUBLIC",
+      "verdict": "PROFANITY"
+    },
+    {
+      "name": "fuck_lord",
+      "audience": "PUBLIC",
+      "verdict": "PROFANITY"
+    },
+    {
+      "name": "Fuck69",
+      "audience": "PUBLIC",
+      "verdict": "PROFANITY"
+    },
+    {
+      "name": "BigShit",
+      "audience": "PUBLIC",
+      "verdict": "PROFANITY"
+    },
+    {
+      "name": "xXFuckXx",
+      "audience": "PUBLIC",
+      "verdict": "PROFANITY"
+    },
+    {
+      "name": "Sh1tHead",
+      "audience": "PUBLIC",
+      "verdict": "PROFANITY"
+    },
+    {
+      "name": "bigfuckboy",
+      "audience": "PUBLIC",
+      "verdict": "PROFANITY"
+    },
+    {
+      "name": "bigshit",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "pikeyboy",
+      "audience": "PUBLIC",
+      "verdict": "SLUR"
+    },
+    {
+      "name": "spikeyboy",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "darkeyes",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "stranny2004",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "Dildora",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "phonkyd",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "ash1tlord",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "ashish17tripathi",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "Dick Smith",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "BigDick",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "BigD1ck69",
+      "audience": "PUBLIC",
+      "verdict": "PROFANITY"
+    },
+    {
+      "name": "D!ck",
+      "audience": "PUBLIC",
+      "verdict": "PROFANITY"
+    },
+    {
+      "name": "Shota Tanaka",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "Mary Cumming",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "Dickson",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "Cassandra",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "Pikey",
+      "audience": "PUBLIC",
+      "verdict": "SLUR"
+    },
+    {
+      "name": "2 x 3",
+      "audience": "PUBLIC",
+      "verdict": "NONE"
+    },
+    {
+      "name": "Fuck Mondays",
+      "audience": "MEMBERS",
+      "verdict": "NONE"
+    },
+    {
+      "name": "Fuck Mondays",
+      "audience": "PUBLIC",
+      "verdict": "PROFANITY"
+    },
+    {
+      "name": "pikeyboys",
+      "audience": "MEMBERS",
+      "verdict": "SLUR"
+    }
+  ]
+}

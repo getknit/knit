@@ -136,7 +136,9 @@ class MessageRequestsViewModel(
         val title =
             if (isGroup) {
                 groupTitle(
-                    storedName = group?.name.orEmpty(),
+                    // A request's group was made by a stranger who added us without asking, so its name is read as
+                    // strangers' names are (both lists), not as members' (ADR 2026-11.y4pc).
+                    storedName = directory.shown(group?.name.orEmpty()),
                     memberIds = memberIds,
                     selfId = me,
                     fallback = context.getString(R.string.group_unnamed),

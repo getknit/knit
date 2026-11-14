@@ -1417,6 +1417,8 @@
     <string name="moderation_link_hidden">Aperçu sensible — appuyez pour l’afficher</string>
     <string name="moderation_preview_hidden">Message masqué</string>
     <string name="moderation_photo_refused">Impossible d’utiliser cette photo : elle contient peut-être du contenu explicite</string>
+    <string name="moderation_name_refused">Impossible d’utiliser ce nom : il contient peut-être des mots offensants</string>
+    <string name="moderation_status_refused">Impossible d’utiliser ce statut : il contient peut-être des mots offensants</string>
     <string name="relays_title">Relais Internet</string>
     <string name="settings_internet_relays_title">Utiliser des relais Internet</string>
     <string name="settings_internet_relays_subtitle">Faites circuler les conversations même quand personne n’est à portée radio, en stockant des copies scellées sur des serveurs relais. Les relais ne peuvent pas lire vos messages, mais ils voient qu’une conversation est active et les adresses IP qui s’y connectent.</string>

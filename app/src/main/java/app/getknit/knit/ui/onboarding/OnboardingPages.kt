@@ -47,8 +47,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -186,6 +188,7 @@ internal fun NamePage(
     onNameCommit: () -> Unit,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
+    refused: Boolean = false,
 ) {
     val focus = remember { FocusRequester() }
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -230,6 +233,15 @@ internal fun NamePage(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { onDone() }),
             )
+            if (refused) {
+                Text(
+                    text = stringResource(R.string.moderation_name_refused),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag("onboarding_name_refused"),
+                )
+            }
         }
     }
     LaunchedEffect(Unit) { focus.requestFocus() }

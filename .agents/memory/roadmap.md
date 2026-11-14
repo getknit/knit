@@ -6,6 +6,15 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Already shipped (was deferred)
 
+- **Screening names BUILT** (2026-11-14, ADR 2026-11.y4pc) — your own name and status are refused when set, and
+  everyone else's name, status, group name and board long name are drawn as the alias, blank or the members' title
+  while Content filtering hides them, through the word lists and `NameScreen` (no toxicity model). **Still owed:** the
+  knit-ios half (a paired change, against `vectors/name-screen-v1.json`). **Deferred from it:** a commons room's name
+  and names frozen into `@mention` text; recall on run-together lowercase handles built on terms a real word holds
+  (`bigshit`, `niggerbitch`), which needs a covering list per term rather than the embeddable rule; and turning
+  Content filtering on re-labelling notifications already posted, whose senders' names `MessageNotifier`'s history
+  keeps until they are dismissed (watch the toggle in `ConversationShortcutSync`).
+
 - **A screen-on lonely node relaxes its Bluetooth scan BUILT** (2026-09-21, ADR 2026-09.w3xk, work item #65) —
   past the three-minute window a screen-on node on battery idles 60 s between its 12 s BALANCED windows
   (≈ 4 % receiver duty from 12.5 %); charging never relaxes. **Still owed:** the device trial in the ADR (the
