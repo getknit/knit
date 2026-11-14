@@ -85,17 +85,37 @@ internal interface MeshcoreBoardOps {
     /** Sets the board up for Knit (§7); 5b adds the erase step and persists the record. */
     suspend fun setup(): MeshcoreSetupResult
 
-    /** Puts back what [record] says a setup changed, where it is still Knit's, and removes Knit's contacts. */
-    suspend fun restore(record: MeshcoreSetupRecord): MeshcoreRestoreResult
+    /**
+     * Puts back what the connected board's setup record says a setup changed, where it is still Knit's, and removes Knit's
+     * contacts — only for a record of this board, bonded ([MeshcoreRestoreResult.Mismatch] otherwise, nothing written); then
+     * the record goes and consent with it.
+     */
+    suspend fun restore(): MeshcoreRestoreResult
+
+    /** Unbinds the board at an address: its Restore now if it is the connected one, else its record left pending. */
+    suspend fun unbind(address: String): MeshcoreUnbind
+
+    /** This phone's consent for the board each Ready is on, from its setup record: the actor's alone, in its order. */
+    val consent: kotlinx.coroutines.flow.StateFlow<MeshcoreConsent?>
 
     /** The keys Knit teaches the board, ranked (`MeshcoreContacts`, Stage 5b-2): the only keys sent to or pinned. Any thread. */
-    fun setKnitContacts(ranked: List<ByteArray>)
+    fun setKnitContacts(
+        ranked: List<ByteArray>,
+        withdrawn: Boolean = false,
+    )
 
     /** Writes [key]'s Knit contact into a free slot, read back, and marks it taught. */
     suspend fun teach(key: ByteArray): ContactWrite
 
     /** Removes [key]'s contact, read back gone, unless it is taught again by then (lora N1). */
     suspend fun removeUntaught(key: ByteArray): ContactWrite
+
+    /**
+     * Whether our board's contact for [from] is a key Knit taught, its zero-hop pin read back on this connection: then our
+     * board answers a DM from it along that path, never by flood (`sendAckTo`). Only an air price reads it; no route,
+     * hearing or delivery keys on a prefix. Any thread.
+     */
+    fun pinnedZeroHop(from: app.getknit.knit.mesh.lora.BoardAddr.MeshCore): Boolean = false
 }
 
 /** One channel slot as the session keeps it: never a foreign slot's name or secret (binding rule "contacts" 4). */
@@ -262,6 +282,9 @@ internal sealed interface MeshcoreSetupResult {
         val record: MeshcoreSetupRecord,
         val erasedContacts: Int = 0,
         val clearedSlots: Int = 0,
+        /** The board this setup ran on: its address and its own key's digest, the record's key (security S1). */
+        val address: String? = null,
+        val digest: String? = null,
     ) : MeshcoreSetupResult
 
     /** The board has no channel slot but Public: nothing was written. */
@@ -274,6 +297,9 @@ internal sealed interface MeshcoreSetupResult {
     data class Failed(
         val reason: String,
         val left: MeshcoreSetupRecord?,
+        /** The board [left] is on, as in [Done]. */
+        val address: String? = null,
+        val digest: String? = null,
     ) : MeshcoreSetupResult
 
     data object NotReady : MeshcoreSetupResult
@@ -292,6 +318,54 @@ internal sealed interface MeshcoreRestoreResult {
     ) : MeshcoreRestoreResult
 
     data object NotReady : MeshcoreRestoreResult
+
+    /** The connected board is not the one the record is for (another board at that address), or not bonded: nothing written. */
+    data object Mismatch : MeshcoreRestoreResult
+
+    /** This phone keeps no setup record for the connected board. */
+    data object NoRecord : MeshcoreRestoreResult
+}
+
+/**
+ * This phone's consent for one board (the second part; the maintainer's decisions, 2026-11-13): its [address] and key
+ * [digest], [granted] from a non-pending record of that board on a bonded link, and the board's own [key] — what the
+ * profile's claim publishes while [granted]. Its [toString] names no key.
+ */
+internal class MeshcoreConsent(
+    val address: String,
+    val digest: String,
+    val granted: Boolean,
+    key: ByteArray?,
+    /**
+     * The record could not be read this connection (security N2): the offers close, and the claim stays as the last consent
+     * left it; [granted] is false. Read again on the actor with a backoff.
+     */
+    val unread: Boolean = false,
+) {
+    private val bytes = key?.copyOf()
+
+    /** The board's key, null for a withdrawal published with the board away (an unbind). */
+    val key: ByteArray? get() = bytes?.copyOf()
+
+    override fun toString(): String = "MeshcoreConsent(granted=$granted)"
+}
+
+/** What an unbind did with the board's setup record ([MeshcoreBoardOps.unbind]). */
+internal enum class MeshcoreUnbind {
+    /** Restore's clearing read back, and the record is gone. */
+    CLEARED,
+
+    /** The board was not reachable, or its Restore did not finish: the cleanup runs at its next connection. */
+    PENDING,
+
+    /** No record for that board: nothing to clean up. */
+    NOTHING,
+
+    /**
+     * The record could not be marked pending (a failed or timed-out write, lora N3): its next connection would read it as
+     * consent again. The caller keeps the binding and asks again.
+     */
+    FAILED,
 }
 
 /** The outcome of a contact write ([MeshcoreSession.teach], [MeshcoreSession.removeContact], [MeshcoreSession.resetPath]). */
@@ -430,6 +504,33 @@ internal class MeshcoreCounters {
 
     /** Taught keys whose prefix a listed contact of another key shares, kept from sends for the connection (security B3). */
     val prefixContests = AtomicLong()
+
+    /** A Restore or cleanup refused: the connected board is not the one its record is for, or not bonded (security S1). */
+    val restoreMismatches = AtomicLong()
+
+    /** A record at the connected board's address for another board's key: no consent, never acted on. */
+    val consentMismatches = AtomicLong()
+
+    /** A handshake whose record read kept failing: no consent that connection. */
+    val consentReadFailures = AtomicLong()
+
+    /** A board not bonded at its consent read or setup: inert for Knit (no consent, no Restore, no cleanup). */
+    val unbondedInert = AtomicLong()
+
+    /** A board whose signature of the consent challenge does not verify under its key (a clone), or whose key changed after. */
+    val keyUnproven = AtomicLong()
+
+    /** A `SELF_INFO` mid-connection reporting another key than the connection identified with: the session ended. */
+    val keyChanged = AtomicLong()
+
+    /** A consent challenge the board did not answer (a lost notify, BAD_STATE, no such command): asked again later. */
+    val proofUnanswered = AtomicLong()
+
+    /** A setup record read for a Restore or an unbind that failed: answered as no answer, never as "no record". */
+    val recordReadFailures = AtomicLong()
+
+    /** A setup record write or clear that failed: no consent rests on it. */
+    val recordWriteFailures = AtomicLong()
 
     /** Contacts a setup's erase removed. */
     val setupErasedContacts = AtomicLong()

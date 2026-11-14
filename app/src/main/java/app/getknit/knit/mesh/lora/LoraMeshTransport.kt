@@ -258,6 +258,10 @@ internal class LoraMeshTransport(
 
             override fun onBoardKeyHeard(from: BoardAddr) = this@LoraMeshTransport.onBoardKeyHeard(from)
 
+            override fun holdersMoved() {
+                rawBoardMap?.let { raw -> scope.launch { applyBoardMap(raw) } }
+            }
+
             override fun holdForLaw(untilMs: Long?) {
                 pace.holdForLaw(untilMs)
                 wake.trySend(Unit)
@@ -388,6 +392,10 @@ internal class LoraMeshTransport(
     /** [boardHolders]' entry for [peerId], for the `mesh/lab` harness to wait on the board map's hand-off (as [linkIds]). */
     internal fun boardHolderOf(peerId: String): LoraBoardHolder? = boardHolders?.get(peerId)
 
+    /** The last board map as its source gave it, before [BoardKindHooks.offered]: what a [PlaneCore.holdersMoved] re-reads. */
+    @Volatile
+    private var rawBoardMap: Map<String, LoraBoardHolder>? = null
+
     /** [boardHolders] the other way round, for the hearing hook: which pinned peer a board on the air belongs to. */
     @Volatile
     private var peerByBoard: Map<BoardAddr, String> = emptyMap()
@@ -510,13 +518,26 @@ internal class LoraMeshTransport(
      * cannot both be in a map built with the newest-claim rule; should they be, the hearing hook takes the first.
      */
     private fun onBoardMap(map: Map<String, LoraBoardHolder>) {
-        val previous = boardHolders
-        map.forEach { (peer, holder) -> if (previous?.get(peer) != holder) direct.onProfileChanged(peer) }
-        boardHolders = map
-        peerByBoard = buildMap { map.forEach { (peer, holder) -> putIfAbsent(holder.addr, peer) } }
+        rawBoardMap = map
         hooks.onBoardMap(map)
+        applyBoardMap(map)
+    }
+
+    /** Keeps the holders the kind offers from [raw] ([BoardKindHooks.offered]); a holder that moved has its refusal lifted. */
+    private fun applyBoardMap(raw: Map<String, LoraBoardHolder>) {
+        synchronized(boardMapLock) {
+            if (raw !== rawBoardMap) return // a newer map has landed: it is applied in its own turn
+            val map = hooks.offered(raw)
+            val previous = boardHolders
+            map.forEach { (peer, holder) -> if (previous?.get(peer) != holder) direct.onProfileChanged(peer) }
+            boardHolders = map
+            peerByBoard = buildMap { map.forEach { (peer, holder) -> putIfAbsent(holder.addr, peer) } }
+        }
         publishStatus()
     }
+
+    /** One board map applied at a time ([applyBoardMap]); held over no wait, the status lock taken after it. */
+    private val boardMapLock = Any()
 
     override fun stop() {
         jobs.forEach { it.cancel() }

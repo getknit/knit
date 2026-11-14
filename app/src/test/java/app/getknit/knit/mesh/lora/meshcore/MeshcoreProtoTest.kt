@@ -203,7 +203,27 @@ class MeshcoreProtoTest {
             MeshcoreProto.getAutoadd(),
             MeshcoreProto.setAutoadd(0),
             MeshcoreProto.setAdvertName("Knit abcd"),
+            MeshcoreProto.signStart(),
+            MeshcoreProto.signData(MeshcoreSession.CONSENT_DOMAIN + ByteArray(32) { 9 }),
+            MeshcoreProto.signFinish(),
         )
+
+    /** The signed challenge's frames, as `companion-v1.18.0` takes and writes them (`MyMesh.cpp:1781-1815`). */
+    @Test
+    fun theSignCommandsAndTheirAnswersAreTheFirmwaresFrames() {
+        assertArrayEquals(byteArrayOf(33), MeshcoreProto.signStart())
+        val message = MeshcoreSession.CONSENT_DOMAIN + ByteArray(32) { it.toByte() }
+        assertArrayEquals(byteArrayOf(34) + message, MeshcoreProto.signData(message))
+        assertNull("nothing to sign", MeshcoreProto.signData(ByteArray(0)))
+        assertNull("one write only", MeshcoreProto.signData(ByteArray(MeshcoreProto.MAX_NOTIFY)))
+        assertArrayEquals(byteArrayOf(35), MeshcoreProto.signFinish())
+        // RESP_CODE_SIGN_START: a reserved byte, then the u32 limit (8 KiB).
+        assertEquals(McFrame.SignStart(8192), MeshcoreProto.decode(byteArrayOf(19, 0, 0, 0x20, 0, 0)))
+        val sig = ByteArray(64) { (it * 3).toByte() }
+        val decoded = MeshcoreProto.decode(byteArrayOf(20) + sig) as McFrame.Signature
+        assertArrayEquals(sig, decoded.value)
+        assertTrue("a short one is refused", MeshcoreProto.decode(byteArrayOf(20) + ByteArray(63)) !is McFrame.Signature)
+    }
 
     @Test
     fun theEncodersEmitOnlyTheBriefedCommandsAndNeverTheForbiddenOnes() {
@@ -213,7 +233,8 @@ class MeshcoreProtoTest {
         val emitted = everyEncoderOnce(FakeMeshcoreAir.keyOf("bob")).map { it[0].toInt() and 0xFF }.toSet()
         assertEquals("every allowed command is exercised, and nothing else is emitted", MeshcoreProto.ENCODED_COMMANDS, emitted)
         assertTrue(forbidden.none { it in MeshcoreProto.ENCODED_COMMANDS })
-        val briefed = setOf(1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 15, 20, 22, 30, 31, 32, 38, 54, 56, 58, 59, 62, 64)
+        // 33-35: the consent's signed challenge (the maintainer's decision, 2026-11-13).
+        val briefed = setOf(1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 15, 20, 22, 30, 31, 32, 33, 34, 35, 38, 54, 56, 58, 59, 62, 64)
         assertEquals(briefed, MeshcoreProto.ENCODED_COMMANDS)
     }
 

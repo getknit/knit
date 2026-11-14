@@ -14,7 +14,6 @@ import app.getknit.knit.mesh.lora.DirectDm
 import app.getknit.knit.mesh.lora.DirectKind
 import app.getknit.knit.mesh.lora.LORA_DIRECT_TAG
 import app.getknit.knit.mesh.lora.LoraAuthorCheck
-import app.getknit.knit.mesh.lora.LoraBoardHolder
 import app.getknit.knit.mesh.lora.LoraConfig
 import app.getknit.knit.mesh.lora.LoraDirectCrypto
 import app.getknit.knit.mesh.lora.LoraDirectOpen
@@ -77,6 +76,7 @@ class MeshcoreHearingTest {
                         slots = emptyList(),
                         namedForKnit = true,
                         manualAdd = 1,
+                        dialled = BOARD_ADDRESS,
                     ),
             )
         override val state = MutableStateFlow<BoardState>(BoardState.Down(TransportHealth.Unavailable, MeshcoreLinkState.Idle))
@@ -117,9 +117,20 @@ class MeshcoreHearingTest {
 
         override suspend fun setup(): MeshcoreSetupResult = MeshcoreSetupResult.NotReady
 
-        override suspend fun restore(record: MeshcoreSetupRecord): MeshcoreRestoreResult = MeshcoreRestoreResult.NotReady
+        override suspend fun restore(): MeshcoreRestoreResult = MeshcoreRestoreResult.NotReady
 
-        override fun setKnitContacts(ranked: List<ByteArray>) = Unit
+        override suspend fun unbind(address: String): MeshcoreUnbind = MeshcoreUnbind.NOTHING
+
+        // This phone set the board up (Stage 5b-2 part 2): the session's consent, which the offers need.
+        override val consent =
+            MutableStateFlow<MeshcoreConsent?>(
+                MeshcoreConsent(BOARD_ADDRESS, MeshcoreHooks.digest(ByteArray(32) { 1 }), true, ByteArray(32) { 1 }),
+            )
+
+        override fun setKnitContacts(
+            ranked: List<ByteArray>,
+            withdrawn: Boolean,
+        ) = Unit
 
         override suspend fun teach(key: ByteArray): ContactWrite = ContactWrite.NOT_READY
 
@@ -209,12 +220,33 @@ class MeshcoreHearingTest {
                 selfId = { "alice" },
                 plane =
                     BoardPlane(MeshcoreTraits, board) { core ->
-                        MeshcoreHooks(ops, core, backgroundScope, { testScheduler.currentTime }, { logs += it }).also { made = it }
+                        MeshcoreHooks(
+                            ops,
+                            core,
+                            backgroundScope,
+                            { testScheduler.currentTime },
+                            { logs += it },
+                        ).also { made = it }
                     },
                 config = MutableStateFlow(LoraConfig("AA:1", 0, dms = true)),
                 crypto = Seal,
                 source = Source,
-                boardMap = flowOf(mapOf(BOB to LoraBoardHolder(BOB_BOARD, direct = true))),
+                boardMap =
+                    flowOf(
+                        MeshcoreContacts.holdersOf(
+                            mapOf(
+                                BOB to
+                                    app.getknit.knit.mesh.MeshcoreBoardHolder(
+                                        java.util.Base64
+                                            .getEncoder()
+                                            .encodeToString(BOB_KEY),
+                                        app.getknit.knit.mesh.MeshcoreRank.ACCEPTED,
+                                        1,
+                                        false,
+                                    ),
+                            ),
+                        ),
+                    ),
                 scope = backgroundScope,
                 metrics = MeshMetrics(),
                 clock = { testScheduler.currentTime },
@@ -442,6 +474,11 @@ class MeshcoreHearingTest {
         const val BOB = "bob"
         const val HONEST: Byte = 7
         const val WALL = 1_800_000_000_000L
-        val BOB_BOARD = BoardAddr.MeshCore(ByteArray(6) { 0x42 })
+
+        /** Bob's MeshCore key: a real point, as the board map carries only those (Stage 5b-2: only taught keys are offered). */
+        const val BOARD_ADDRESS = "AA:1"
+
+        val BOB_KEY: ByteArray = FakeMeshcoreAir.keyOf("bob")
+        val BOB_BOARD: BoardAddr.MeshCore = checkNotNull(MeshcorePins.addrOf(BOB_KEY))
     }
 }

@@ -279,7 +279,18 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   **`--es kind meshcore`** dumps the MeshCore plane instead (ADR 2026-11.gsqu's Stage 5a-2 amendment; debug builds, where
   `MESHCORE_PLANE` builds one, else `built: false`): counts and the own board's state only — never a key, a prefix, a
   contact's name, a DM's text or a setup record. `--es address <MAC>` binds a MeshCore board (`BoardBindPolicy`, which keeps
-  no name for it; an address that is not a Bluetooth one is answered `error`), `--ez on` flips the shared plane switch. Keys: `built`, `enabled`, `dms`, `bound`, `state`, `version`
+  no name for it; an address that is not a Bluetooth one is answered `error`), `--ez on` flips the shared plane switch.
+  `--es prov setup --ez erase true` sets the board up for Knit (Stage 5b-2 part 2): it **erases** every contact and every
+  slot but Public and Knit's, so without `--ez erase true` it is answered `refused`; the reply adds `prov`, `result` and
+  the counts `erasedContacts` / `clearedSlots`. `--es prov restore` runs Restore (`result`), `--es prov unbind` runs
+  `MeshcoreHooks.unbind` (`result`: `CLEARED`, `PENDING` for a board not reachable now, `NOTHING`; the binding itself is
+  left). The `counters` block also carries the contacts' and the reconcile's counts (`meshcoreTeachWritten`,
+  `meshcoreKeysWanted`, `meshcoreKeysSkipped`, `meshcoreRemovedUntaught`, `meshcoreAcksBookedDirect`, `meshcoreContactListings`,
+  `meshcoreListingsShort`, `meshcoreReconciles`, `meshcoreReconcilesSkipped`, `meshcoreReconcileRemoved`, `…Overwritten`,
+  `…Taught`, `…Failed`, `…Deferred`, `meshcorePrefixContests`, `meshcoreSetupErasedContacts`, `meshcoreSetupClearedSlots`) and the consent's refusals (`meshcoreKeyUnproven`,
+  `meshcoreProofUnanswered`, `meshcoreUnbondedInert`, `meshcoreConsentMismatches`, `meshcoreConsentReadFailures`,
+  `meshcoreRecordReadFailures`, `meshcoreRecordWriteFailures`, `meshcoreRestoreMismatches`, `meshcoreConsentApplyFailures`).
+  `--es prov unbind` may also answer `FAILED`: the record could not be marked pending, so the binding is to stay. Keys: `built`, `enabled`, `dms`, `bound`, `state`, `version`
   (cleaned), `versionCode`, `slot` (the board's Knit slot), `radio`, `multiAcks`, `defaultScope`, `queued`, `queueFree`,
   `heard` (fresh-frame authors at any hop count, unverified), `boardsHeard` (radios counted by verified pinned zero-hop author:
   on MeshCore compare it with `meshcoreZeroHopKnitPosts`, not `heard`), `direct`, `airtime` (`known`, `usedMs`, `allowanceMs`,

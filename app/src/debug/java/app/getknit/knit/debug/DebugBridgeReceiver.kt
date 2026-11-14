@@ -2797,6 +2797,7 @@ class DebugBridgeReceiver :
                 .put("bound", settings.meshcoreDeviceAddress.first() != null)
         if (plane == null || session == null) return result
         val hooks = plane.kindHooks as? app.getknit.knit.mesh.lora.meshcore.MeshcoreHooks
+        intent.getStringExtra("prov")?.let { prov -> return meshcoreProv(prov, intent, plane, session, hooks, result) }
         val status = plane.status.value
         val ready = session.state.value as? app.getknit.knit.mesh.lora.BoardState.Ready
         val detail = ready?.detail as? app.getknit.knit.mesh.lora.meshcore.MeshcoreDetail
@@ -2861,6 +2862,33 @@ class DebugBridgeReceiver :
                     .put("meshcoreLawHolds", c?.lawHolds?.get() ?: 0)
                     .put("meshcoreZeroHopKnitPosts", c?.zeroHopKnitPosts?.get() ?: 0)
                     .put("meshcoreTeachRefused", c?.teachRefused?.get() ?: 0)
+                    .put("meshcoreTeachWritten", c?.teachWritten?.get() ?: 0)
+                    .put("meshcoreKeysWanted", c?.keysWanted?.get() ?: 0)
+                    .put("meshcoreKeysSkipped", c?.keysSkipped?.get() ?: 0)
+                    .put("meshcoreRemovedUntaught", c?.removedUntaught?.get() ?: 0)
+                    .put("meshcoreAcksBookedDirect", c?.acksBookedDirect?.get() ?: 0)
+                    .put("meshcoreContactListings", sc.contactListings.get())
+                    .put("meshcoreListingsShort", sc.listingsShort.get())
+                    .put("meshcoreReconciles", sc.reconciles.get())
+                    .put("meshcoreReconcilesSkipped", sc.reconcilesSkipped.get())
+                    .put("meshcoreReconcileRemoved", sc.reconcileRemoved.get())
+                    .put("meshcoreReconcileOverwritten", sc.reconcileOverwritten.get())
+                    .put("meshcoreReconcileTaught", sc.reconcileTaught.get())
+                    .put("meshcoreReconcileFailed", sc.reconcileFailed.get())
+                    .put("meshcoreReconcileDeferred", sc.reconcileDeferred.get())
+                    .put("meshcorePrefixContests", sc.prefixContests.get())
+                    .put("meshcoreSetupErasedContacts", sc.setupErasedContacts.get())
+                    .put("meshcoreSetupClearedSlots", sc.setupClearedSlots.get())
+                    // The consent's refusals (security F2): counts only.
+                    .put("meshcoreKeyUnproven", sc.keyUnproven.get())
+                    .put("meshcoreProofUnanswered", sc.proofUnanswered.get())
+                    .put("meshcoreUnbondedInert", sc.unbondedInert.get())
+                    .put("meshcoreConsentMismatches", sc.consentMismatches.get())
+                    .put("meshcoreConsentReadFailures", sc.consentReadFailures.get())
+                    .put("meshcoreRecordReadFailures", sc.recordReadFailures.get())
+                    .put("meshcoreRecordWriteFailures", sc.recordWriteFailures.get())
+                    .put("meshcoreRestoreMismatches", sc.restoreMismatches.get())
+                    .put("meshcoreConsentApplyFailures", c?.consentApplyFailures?.get() ?: 0)
                     .put("meshcoreDirectFlooded", sc.directFlooded.get())
                     .put("meshcorePinFailures", sc.pinFailures.get())
                     .put("meshcorePacketsDropped", sc.packetsDropped.get())
@@ -2868,6 +2896,55 @@ class DebugBridgeReceiver :
                     .put("meshcoreUnexpected", sc.unexpected.get())
                     .put("meshcoreRejected", sc.rejected.get()),
             )
+    }
+
+    /**
+     * The MeshCore board's setup, Restore and unbind (`…debug.LORA --es kind meshcore --es prov setup|restore|unbind`, ADR
+     * 2026-11.gsqu's Stage 5b-2 amendment). A setup **erases** the board — every contact and every channel slot but Public
+     * and Knit's — so it is refused unless `--ez erase true` says so, and its reply names what the erase removed, as counts.
+     * Restore removes Knit's contacts and puts back what the setup changed; unbind runs that Restore now if the board is up,
+     * else leaves it pending for the board's next connection (the binding itself is left: Stage 7 clears it). Counts and
+     * outcomes only, never a key, a name or a record field.
+     */
+    private suspend fun meshcoreProv(
+        prov: String,
+        intent: Intent,
+        plane: app.getknit.knit.mesh.lora.LoraMeshTransport,
+        session: app.getknit.knit.mesh.lora.meshcore.MeshcoreSession,
+        hooks: app.getknit.knit.mesh.lora.meshcore.MeshcoreHooks?,
+        result: JSONObject,
+    ): JSONObject {
+        val sc = session.counters
+        return when (prov.lowercase(Locale.ROOT)) {
+            "setup" -> {
+                if (!intent.getBooleanExtra("erase", false)) {
+                    return reply("refused", "a MeshCore setup erases every contact and every slot but Public: add --ez erase true")
+                }
+                val contacts = sc.setupErasedContacts.get()
+                val slots = sc.setupClearedSlots.get()
+                val r = plane.provisionKnitChannel(app.getknit.knit.mesh.lora.ProvisionMode.Setup, null)
+                result
+                    .put("prov", "setup")
+                    .put("result", r::class.simpleName)
+                    .put("erasedContacts", sc.setupErasedContacts.get() - contacts)
+                    .put("clearedSlots", sc.setupClearedSlots.get() - slots)
+            }
+
+            "restore" -> {
+                val r = plane.provisionKnitChannel(app.getknit.knit.mesh.lora.ProvisionMode.Restore, null)
+                result.put("prov", "restore").put("result", r::class.simpleName)
+            }
+
+            "unbind" -> {
+                val address = settings.meshcoreDeviceAddress.first() ?: return reply("error", "no MeshCore board bound")
+                val r = hooks?.unbind(address) ?: return reply("error", "no MeshCore plane")
+                result.put("prov", "unbind").put("result", r.name)
+            }
+
+            else -> {
+                reply("error", "--es prov setup|restore|unbind")
+            }
+        }
     }
 
     /**

@@ -17,6 +17,7 @@ import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.forward.ForwardRepository
+import app.getknit.knit.data.meshcore.MeshcoreSetupStore
 import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.RelayStatusRepository
@@ -128,7 +129,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
-import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
@@ -476,6 +476,8 @@ val meshModule =
         // claim are Stage 5b's, so no DM goes yet (an empty board map) and `bindMeshcoreDirect` stays unbound.
         if (BoardKind.MESHCORE in BUILT_BOARD_KINDS) {
             single<MeshcoreDialer> { MeshcoreGatt(androidContext(), get()) }
+            // The setup records under SQLCipher (ADR 2026-11.gsqu's Stage 5b-2 amendment): the consent gate's half on this phone.
+            single { MeshcoreSetupStore(get<KnitDatabase>().meshcoreSetupDao()) }
             single(loraPlane(BoardKind.MESHCORE)) {
                 MeshcoreSession(
                     dialer = get(),
@@ -483,6 +485,8 @@ val meshModule =
                     now = SystemClock::elapsedRealtime,
                     wallClock = System::currentTimeMillis,
                     log = { line -> Log.d("MeshcoreSession", line) },
+                    // The setup records, the single source of consent, read and written by the session's actor alone.
+                    records = get<MeshcoreSetupStore>(),
                 )
             }
             loraPlaneOf(
@@ -496,10 +500,12 @@ val meshModule =
                         log = log,
                         wallClock = System::currentTimeMillis,
                         // The board's public key under the address its session dialled, while that is still the bound
-                        // one (`MeshcoreClaimStore.setBoardKey`'s rule): never in a log or the bridge.
+                        // one (`MeshcoreClaimStore.setBoardKey`'s rule), only while this phone's setup record consents for
+                        // that board; null withdraws it (a board never set up, a Restore, an unbind: security S2). Never in a
+                        // log or the bridge.
                         onBoardKey = { key, dialled ->
                             bindingAddress(dialled, get<LoraMeshTransport>(loraPlane(BoardKind.MESHCORE)).configuredAddress)?.let {
-                                get<MeshcoreClaimStore>().setBoardKey(b64(key), dialled = it)
+                                get<MeshcoreClaimStore>().setBoardKey(key?.let(::b64), dialled = it)
                             }
                         },
                     )
@@ -515,12 +521,10 @@ val meshModule =
                         if (on && addr != null) LoraConfig(addr, MeshcoreHooks.NO_CONFIGURED_SLOT, dms, room) else null
                     }
                 },
-                // Until Stage 5b-2's second part feeds `MeshManager.meshcoreBoardMap` here, a map that never emits: an empty
-                // map would be a taught set of nothing (`MeshcoreHooks.onBoardMap` → `setKnitContacts(emptyList())`), and the
-                // Ready reconcile would remove every contact on any board passing its Knit check — one another client or
-                // another Knit install dressed up. With no map, nothing is taught, no reconcile runs and no DM goes. Part 2
-                // must also make sure the first map the plane sees is the real one, never a placeholder.
-                boardMap = { emptyFlow() },
+                // The direct contacts' MeshCore keys (`MeshManager.meshcoreBoardMap`), in the core's form. Its first emission
+                // is the stores' real state (Room and DataStore flows, combined), never a placeholder: an empty map is a taught
+                // set of nothing, which the Ready reconcile turns into removals (`meshcoreBoardHolders` adds no start value).
+                boardMap = { meshcoreBoardHolders(flow { emitAll(get<MeshManager>().meshcoreBoardMap()) }) },
             )
         }
         // The Internet (spool) plane's socket factory. Cleartext `ws://` is a debug-build affordance for a
@@ -645,6 +649,11 @@ val meshModule =
                 if (BuildConfig.LORA_PLANE) {
                     manager.bindLoraDirect(sinkFor = { peerId -> get<LoraDirectRouter>().sinkFor(peerId) }, seal = get())
                 }
+                // The MeshCore DM door (ADR 2026-11.gsqu, Stage 5b-2), bound here, before anything starts the manager
+                // (`bindMeshcoreDirect`'s KDoc: bound after `start()` every start mints twice), and only where the MeshCore
+                // child is built. This is what lets our sealed profile claim the door — and makes Stage 5b-1's accepted leak
+                // live: an audience-only mint seals only the peers whose answer changed (the maintainer, 2026-11-13).
+                if (bindsMeshcoreDirect(BUILT_BOARD_KINDS)) manager.bindMeshcoreDirect()
             }
         }
         // UI ViewModels, MeshService, and the notification/debug entry points bind this narrow facade (not

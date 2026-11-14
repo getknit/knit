@@ -5,6 +5,7 @@ import app.getknit.knit.mesh.lora.AckProof
 import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.BoardPacket
 import app.getknit.knit.mesh.lora.BoardState
+import app.getknit.knit.mesh.lora.BondState
 import app.getknit.knit.mesh.lora.GattResult
 import app.getknit.knit.mesh.lora.KnitChannel
 import app.getknit.knit.mesh.lora.PacketIdSource
@@ -54,6 +55,9 @@ class MeshcoreSessionTest {
         val airs: MutableList<MeshcoreAir>,
         val headroom: MutableList<Int>,
         val logs: MutableList<String>,
+        val records: MeshcoreSetupJournal,
+        val consents: MutableList<MeshcoreConsent>,
+        val nonces: MutableList<ByteArray>,
     ) {
         val ch: FakeNusChannel get() = dialer.channel
         val bobAddr = BoardAddr.MeshCore(bob.key.copyOf(6))
@@ -65,6 +69,10 @@ class MeshcoreSessionTest {
         knitSlot: Boolean = true,
         // Set up for Knit (its slot and `Knit abcd`): nothing is sent, pinned or taught on any other board (5b-2 review B1).
         knitBoard: Boolean = knitSlot,
+        // This phone's setup record for the board (part 2's consent gate): the record, not the board's own word, is consent.
+        consented: Boolean = knitBoard,
+        // The session's setup records: a fresh journal holding a record of alice's board when [consented].
+        records: MeshcoreSetupJournal = MemoryMeshcoreSetupJournal(),
         taught: Boolean = true,
         collectPackets: Boolean = true,
         callDeadlineMs: Long = 30_000,
@@ -73,6 +81,7 @@ class MeshcoreSessionTest {
         val air = FakeMeshcoreAir(backgroundScope) { testScheduler.currentTime }
         val alice = air.board("alice")
         val bob = air.board("bob")
+        val nonces = mutableListOf<ByteArray>()
         air.link("alice", "bob")
         alice.addContact(bob, if (pinned) 0 else MeshcoreProto.PATH_UNKNOWN)
         bob.addContact(alice, 0)
@@ -95,7 +104,20 @@ class MeshcoreSessionTest {
                 log = { logs += it },
                 callDeadlineMs = callDeadlineMs,
                 setupDeadlineMs = setupDeadlineMs,
+                records = records,
+                nonce = { ByteArray(32) { n -> (nonces.size * 31 + n).toByte() }.also { nonces += it } },
             )
+        // This phone set the board up before: its record, which the handshake reads as consent (one owner, part 2).
+        if (consented) {
+            kotlinx.coroutines.runBlocking {
+                records.put(
+                    "AA:BB",
+                    MeshcoreHooks.digest(alice.key),
+                    SETUP_RECORD,
+                    pending = false,
+                )
+            }
+        }
         if (taught) session.setKnitContacts(listOf(bob.key))
         val outcomes = mutableListOf<PacketOutcome>()
         val packets = mutableListOf<BoardPacket>()
@@ -106,7 +128,9 @@ class MeshcoreSessionTest {
         if (collectPackets) backgroundScope.launch(collect) { session.packets.collect { packets += it } }
         backgroundScope.launch(collect) { session.air.collect { airs += it } }
         backgroundScope.launch(collect) { session.headroom.collect { headroom += it } }
-        return Rig(air, alice, bob, dialer, session, outcomes, packets, airs, headroom, logs)
+        val consents = mutableListOf<MeshcoreConsent>()
+        backgroundScope.launch(collect) { session.consent.collect { it?.let(consents::add) } }
+        return Rig(air, alice, bob, dialer, session, outcomes, packets, airs, headroom, logs, records, consents, nonces)
     }
 
     private fun TestScope.up(r: Rig) {
@@ -769,7 +793,7 @@ class MeshcoreSessionTest {
             val again = r.session.setup() as MeshcoreSetupResult.Done
             assertTrue("a re-run finds it set up and changes nothing", again.alreadyPresent && !again.record.changedAnything)
 
-            val back = r.session.restore(done.record) as MeshcoreRestoreResult.Done
+            val back = r.session.restore() as MeshcoreRestoreResult.Done
             assertTrue(back.slotCleared)
             assertTrue(back.leftAsFound.isEmpty() && back.failed.isEmpty())
             assertTrue(
@@ -792,7 +816,7 @@ class MeshcoreSessionTest {
             val app = FakeForeignClient(r.alice)
             app.send(requireNotNull(MeshcoreProto.setChannel(done.slot, "Hiking", ByteArray(16) { 3 })))
             app.send(requireNotNull(MeshcoreProto.setAdvertName("Mine")))
-            val back = r.session.restore(done.record) as MeshcoreRestoreResult.Done
+            val back = r.session.restore() as MeshcoreRestoreResult.Done
             assertFalse(back.slotCleared)
             assertEquals(listOf("slot", "name"), back.leftAsFound)
             assertEquals(
@@ -1450,10 +1474,10 @@ class MeshcoreSessionTest {
             r.alice.addContact(carol, name = "Carol Smith", flags = 0)
             r.alice.setChannel(2, "family", ByteArray(16) { 7 })
             up(r)
-            val done = r.session.setup() as MeshcoreSetupResult.Done
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Done)
             advanceTimeBy(30_000)
             runCurrent()
-            val back = r.session.restore(done.record) as MeshcoreRestoreResult.Done
+            val back = r.session.restore() as MeshcoreRestoreResult.Done
             assertTrue("${back.failed}", back.failed.isEmpty())
             assertEquals(1, back.contactsRemoved)
             assertTrue("no contact is left", r.alice.contacts.isEmpty())
@@ -1523,10 +1547,12 @@ class MeshcoreSessionTest {
         runTest {
             val r = rig(knitSlot = false)
             up(r)
-            val done = r.session.setup() as MeshcoreSetupResult.Done
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Done)
             advanceTimeBy(30_000)
             runCurrent()
-            assertTrue((r.session.restore(done.record) as MeshcoreRestoreResult.Done).failed.isEmpty())
+            assertTrue(
+                (r.session.restore() as MeshcoreRestoreResult.Done).failed.isEmpty(),
+            )
             // The user adds bob back by hand, then the process restarts: a new session, taught bob again.
             r.alice.addContact(r.bob, outPathLen = 3, name = "Bob", flags = 0)
             val before = r.bobRecord()
@@ -1625,8 +1651,878 @@ class MeshcoreSessionTest {
             r.assertListingCutAndNothingRemoved()
         }
 
+    /**
+     * Part 2's consent gate: a board another client (or another Knit install) dressed up with Knit's slot and `Knit abcd`
+     * name, which this phone holds no setup record for, is never touched — no removal, overwrite, pin, path reset or DM, the
+     * user's records byte for byte; the same board with the record is reconciled as a Knit board.
+     */
+    @Test
+    fun aDressedUpBoardWithNoSetupRecordIsNeverTouchedAndTheRecordMakesItKnits() =
+        runTest {
+            val r = rig(consented = false)
+            val carol = r.air.board("carol")
+            r.alice.addContact(carol, name = "Carol Smith", flags = 0)
+            r.alice.contacts.removeAll { it.key.contentEquals(r.bob.key) }
+            r.alice.addContact(r.bob, outPathLen = 3, name = "Bob", flags = 0)
+            val before = r.alice.contacts.map { listOf(it.key.toList(), it.type, it.flags, it.outPathLen, it.name.toList(), it.lastmod) }
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertTrue(r.dm().isNoRecord())
+            r.ch.inject(byteArrayOf(0x81.toByte()) + r.bob.key)
+            advanceTimeBy(120_000)
+            runCurrent()
+            assertEquals(ContactWrite.NOT_SET_UP, r.session.teach(r.bob.key))
+            assertEquals(ContactWrite.NOT_SET_UP, r.session.resetPath(r.bob.key))
+            assertEquals(ContactWrite.NOT_SET_UP, r.session.removeContact(carol.key))
+            val after = r.alice.contacts.map { listOf(it.key.toList(), it.type, it.flags, it.outPathLen, it.name.toList(), it.lastmod) }
+            assertEquals("the user's records, byte for byte", before, after)
+            assertTrue(r.noContactWrites(0))
+            assertEquals("no listing without consent", 0, r.listings())
+            assertTrue(r.sendTexts().isEmpty())
+            // The record arrives (this phone set the board up before): read at the next connection, the board is Knit's.
+            r.records.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, pending = false)
+            r.ch.disconnect()
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertEquals(1, r.listings())
+            assertNull("carol is not taught: removed", r.alice.contact(carol.key))
+            assertTrue(
+                "bob is overwritten to Knit's record",
+                MeshcoreNames.forKey(r.bob.key) ==
+                    r.alice
+                        .contact(r.bob.key)
+                        ?.name
+                        ?.decodeToString(),
+            )
+        }
+
+    // --- consent has one owner: the session's actor (the maintainer's decision, 2026-11-13) ---
+
+    /** A journal that counts its reads, and can be made to fail them. */
+    private class CountingJournal : MeshcoreSetupJournal {
+        val inner = MemoryMeshcoreSetupJournal()
+        var reads = 0
+        var failReads = false
+        var failFirstReads = 0
+        var slowReads = false
+        var failWrites = false
+        var failClears = false
+        var failPuts = false
+        var failMarks = false
+
+        /** Puts that succeed before [failPuts] behaviour starts (a write-ahead lands, the grant after it fails); -1: none. */
+        var putsBeforeFailing = -1
+
+        /** Reads that suspend on [gate] (after reading the inner entry) until it completes; [holding] while one waits. */
+        var holdReads = 0
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var holding = false
+
+        override suspend fun entryOf(address: String): MeshcoreSetupEntry? {
+            reads++
+            if (failReads) error("SQLCipher is not open")
+            if (failFirstReads > 0) {
+                failFirstReads--
+                error("SQLCipher is not open")
+            }
+            if (slowReads) delay(60_000)
+            val entry = inner.entryOf(address)
+            if (holdReads > 0) {
+                holdReads--
+                holding = true
+                gate.await()
+                holding = false
+            }
+            return entry
+        }
+
+        override suspend fun put(
+            address: String,
+            digest: String,
+            record: MeshcoreSetupRecord,
+            pending: Boolean,
+        ) {
+            if (putsBeforeFailing == 0) error("SQLCipher is not open")
+            if (putsBeforeFailing > 0) putsBeforeFailing--
+            if (failWrites || failPuts) error("SQLCipher is not open")
+            inner.put(address, digest, record, pending)
+        }
+
+        override suspend fun markPending(address: String): Boolean {
+            if (failWrites || failMarks) error("SQLCipher is not open")
+            return inner.markPending(address)
+        }
+
+        override suspend fun clear(address: String) {
+            if (failWrites || failClears) error("SQLCipher is not open")
+            inner.clear(address)
+        }
+    }
+
+    @Test
+    fun aRestoreClearsTheRecordAndTheConsentAndANewReadyNeverGrantsItAgain() =
+        runTest {
+            val r = rig(knitSlot = false)
+            up(r)
+            r.session.setup()
+            assertTrue(r.consents.last().granted)
+            assertTrue((r.session.restore() as MeshcoreRestoreResult.Done).failed.isEmpty())
+            assertNull(r.records.entryOf("AA:BB"))
+            assertFalse(r.consents.last().granted)
+            r.ch.disconnect()
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertFalse("the next Ready reads no record", r.consents.last().granted)
+            assertEquals("never granted again", 1, r.consents.count { it.granted })
+            assertEquals(MeshcoreRestoreResult.NoRecord, r.session.restore())
+        }
+
+    @Test
+    fun anUnbindClearsTheRecordWithTheBoardUpAndLeavesItPendingWithTheBoardAway() =
+        runTest {
+            val r = rig()
+            up(r)
+            assertEquals(MeshcoreUnbind.CLEARED, r.session.unbind("AA:BB"))
+            assertNull(r.records.entryOf("AA:BB"))
+            assertFalse(r.consents.last().granted)
+            assertEquals(MeshcoreUnbind.NOTHING, r.session.unbind("AA:BB"))
+            // Away: the session is stopped, the record of the board stays as a pending cleanup.
+            r.records.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, pending = false)
+            r.session.stop()
+            assertEquals(MeshcoreUnbind.PENDING, r.session.unbind("AA:BB"))
+            assertTrue(checkNotNull(r.records.entryOf("AA:BB")).pending)
+            // The board comes back: no consent, and the cleanup runs as the connection's first job.
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertFalse(r.consents.last().granted)
+            assertTrue(r.logs.any { it.startsWith("lora cleanup kind=meshcore done=true") })
+            assertNull(r.records.entryOf("AA:BB"))
+        }
+
+    @Test
+    fun aRecordReadThatKeepsFailingPublishesReadyWithNoConsent() =
+        runTest {
+            val journal = CountingJournal().apply { failReads = true }
+            val r = rig(records = journal)
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, false) }
+            up(r)
+            assertTrue("the plane is not stalled", r.session.state.value is BoardState.Ready)
+            assertFalse(r.consents.single().granted)
+            assertEquals(
+                1L,
+                r.session.counters.consentReadFailures
+                    .get(),
+            )
+            assertEquals("three tries at start, three in the handshake", 6, journal.reads)
+            assertTrue(
+                "a room post never waits on consent",
+                r.session.send(ByteArray(40) { 1 }, SendPurpose.KnitFrame(1)).result is SendResult.Queued,
+            )
+        }
+
+    /** The maintainer's decision (2026-11-13): an unbonded board is inert for Knit — no consent, no Restore, no cleanup. */
+    @Test
+    fun anUnbondedBoardIsInertForKnit() =
+        runTest {
+            val r = rig()
+            r.dialer.bond = BondState.NONE
+            r.records.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, pending = true)
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertFalse(r.consents.last().granted)
+            assertFalse("no cleanup", r.logs.any { it.startsWith("lora cleanup") })
+            assertEquals(MeshcoreRestoreResult.Mismatch, r.session.restore())
+            assertTrue(
+                r.session.counters.unbondedInert
+                    .get() >= 1,
+            )
+            assertTrue(checkNotNull(r.records.entryOf("AA:BB")).pending)
+        }
+
+    /** Security S1: a record of another board at this address is no consent, no Restore and no cleanup. */
+    @Test
+    fun aRecordForAnotherBoardAtTheAddressIsNeverActedOn() =
+        runTest {
+            val r = rig(consented = false)
+            val other = MeshcoreHooks.digest(FakeMeshcoreAir.keyOf("someone else"))
+            r.records.put("AA:BB", other, SETUP_RECORD, pending = true)
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertFalse(r.consents.last().granted)
+            assertFalse(r.logs.any { it.startsWith("lora cleanup") })
+            assertEquals(MeshcoreRestoreResult.Mismatch, r.session.restore())
+            assertEquals(MeshcoreNames.forKey(r.alice.key), r.alice.advertName.decodeToString())
+            assertTrue(checkNotNull(r.records.entryOf("AA:BB")).pending)
+            assertEquals(
+                1L,
+                r.session.counters.consentMismatches
+                    .get(),
+            )
+        }
+
+    /** Lora L1: a second setup keeps the first's priors, so Restore puts back the original name. */
+    @Test
+    fun aSecondSetupKeepsTheFirstsPriorsAndRestorePutsBackTheOriginal() =
+        runTest {
+            val r = rig(knitSlot = false)
+            up(r)
+            r.session.setup()
+            val again = r.session.setup() as MeshcoreSetupResult.Done
+            assertFalse("the re-run changed nothing", again.record.changedAnything)
+            val kept = checkNotNull(r.records.entryOf("AA:BB")).record
+            assertEquals("alice", kept.priorName?.decodeToString())
+            assertTrue(kept.slotWritten)
+            assertTrue((r.session.restore() as MeshcoreRestoreResult.Done).failed.isEmpty())
+            assertEquals("alice", r.alice.advertName.decodeToString())
+        }
+
+    // --- the signed challenge, and one writer of the record (the maintainer's decision, 2026-11-13; security B1, B2) ---
+
+    /** Security B2: a clone that reports the real board's key (it is in its adverts) but cannot sign with it is inert. */
+    @Test
+    fun aCloneReportingTheRealKeyButUnableToSignGetsNoConsentRestoreCleanupOrTaughtSet() =
+        runTest {
+            val r = rig()
+            r.alice.canSign = false
+            val carol = r.air.board("carol")
+            r.alice.addContact(carol, name = "Carol Smith", flags = 0)
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertFalse(r.consents.last().granted)
+            assertTrue(
+                r.session.counters.keyUnproven
+                    .get() >= 1,
+            )
+            assertTrue("no taught set reaches it", r.dm().isNoRecord())
+            val restore = r.session.restore()
+            assertTrue(
+                "a signature that fails is no answer, never a Restore: $restore",
+                restore is MeshcoreRestoreResult.Done && "proof" in restore.failed,
+            )
+            assertTrue("never a setup on an unproven link", r.session.setup() is MeshcoreSetupResult.Failed)
+            assertNotNull("nothing removed", r.alice.contact(carol.key))
+            assertEquals(
+                "alice's name is still Knit's: no prior name written to the clone",
+                MeshcoreNames.forKey(r.alice.key),
+                r.alice.advertName.decodeToString(),
+            )
+            // A pending cleanup is not run against it either.
+            r.records.markPending("AA:BB")
+            r.ch.disconnect()
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertFalse(r.logs.any { it.startsWith("lora cleanup") })
+            assertTrue(checkNotNull(r.records.entryOf("AA:BB")).pending)
+        }
+
+    /** Each B1 interleaving ends the same: no consent, the claim withdrawn, and no contact write after the unbind returns. */
+    private suspend fun TestScope.assertUnbound(r: Rig) {
+        assertFalse(r.consents.last().granted)
+        val after = r.ch.writes.size
+        advanceTimeBy(120_000)
+        runCurrent()
+        val writes =
+            r.ch.writes
+                .drop(after)
+                .map { it[0].toInt() }
+        assertTrue("$writes", writes.none { it in setOf(MeshcoreProto.CMD_ADD_UPDATE_CONTACT, MeshcoreProto.CMD_REMOVE_CONTACT) })
+        assertTrue(r.dm().isNoRecord() || r.session.state.value !is BoardState.Ready)
+    }
+
+    @Test
+    fun anUnbindDuringASlowSetupWaitsForItAndThenUndoesIt() =
+        runTest {
+            val r = rig(knitSlot = false, setupDeadlineMs = 5_000)
+            up(r)
+            r.ch.delayFrame = { f -> if (f[0].toInt() == MeshcoreProto.RESP_CHANNEL_INFO) 2_500L else 0L }
+            val setup = async { r.session.setup() }
+            runCurrent()
+            val unbind = async { r.session.unbind("AA:BB") }
+            advanceTimeBy(120_000)
+            runCurrent()
+            assertTrue(setup.await() is MeshcoreSetupResult.Done)
+            assertEquals("the actor ran it after the setup, held past the setup deadline", MeshcoreUnbind.CLEARED, unbind.await())
+            assertNull(r.records.entryOf("AA:BB"))
+            r.ch.delayFrame = { 0L }
+            assertUnbound(r)
+        }
+
+    @Test
+    fun anUnbindWithTheBoardAwayWithdrawsTheConsentAtOnceAndLeavesTheCleanupPending() =
+        runTest {
+            val r = rig()
+            up(r)
+            assertTrue(r.consents.last().granted)
+            r.session.stop()
+            assertEquals(MeshcoreUnbind.PENDING, r.session.unbind("AA:BB"))
+            assertTrue(checkNotNull(r.records.entryOf("AA:BB")).pending)
+            val last = r.consents.last()
+            assertFalse(last.granted)
+            assertNull("the claim's key is withdrawn with it", last.key)
+            assertEquals("AA:BB", last.address)
+        }
+
+    /** Security N2: a failed read keeps the claim as it was, closes the offers, and is read again on the actor. */
+    @Test
+    fun aFailedRecordReadIsReadAgainLaterAndNeverWithdrawsTheClaim() =
+        runTest {
+            val journal = CountingJournal()
+            val r = rig(records = journal)
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, false) }
+            journal.failReads = true
+            up(r)
+            assertTrue("the claim is left as it was", r.consents.last().unread)
+            assertFalse(r.consents.last().granted)
+            journal.failReads = false
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertTrue("read again on the actor", r.consents.last().granted)
+            assertFalse(r.consents.last().unread)
+        }
+
+    // --- withdraw only the bound board (the maintainer's decision, 2026-11-14), and the batch's follow-ups ---
+
+    @Test
+    fun anUnbindOfAnotherBoardsAddressLeavesTheReadyBoardsConsentAlone() =
+        runTest {
+            val r = rig()
+            up(r)
+            assertTrue(r.consents.last().granted)
+            // Switched to board B (another address), set up there.
+            r.session.start("CC:DD")
+            runCurrent()
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Done)
+            val before = r.consents.last()
+            assertEquals("CC:DD", before.address)
+            assertTrue(before.granted)
+            assertEquals(MeshcoreUnbind.PENDING, r.session.unbind("AA:BB"))
+            assertTrue("A's record is pending", checkNotNull(r.records.entryOf("AA:BB")).pending)
+            assertTrue("nothing published for A", r.consents.last() === before)
+            assertTrue("B's DMs still go", r.dm() is SendResult.Queued)
+        }
+
+    /** Lora N1: a proof nobody answered is asked again later, never read as a clone. */
+    @Test
+    fun anUnansweredProofIsAskedAgainLaterAndNeverMakesTheBoardInert() =
+        runTest {
+            val r = rig()
+            r.alice.dropSignFinish = 1
+            up(r)
+            assertTrue(r.consents.first().unread)
+            assertFalse("an unanswered proof is never a consent", r.consents.first().granted)
+            assertEquals(
+                1L,
+                r.session.counters.proofUnanswered
+                    .get(),
+            )
+            assertEquals(
+                0L,
+                r.session.counters.keyUnproven
+                    .get(),
+            )
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertTrue("granted at the re-ask", r.consents.last().granted)
+        }
+
+    /** Lora N3: an unbind whose mark did not land says so, so the binding stays and it is asked again. */
+    @Test
+    fun anUnbindWhoseMarkFailsAnswersFailed() =
+        runTest {
+            val journal = CountingJournal()
+            val r = rig(records = journal)
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, false) }
+            up(r)
+            r.session.stop()
+            journal.failWrites = true
+            assertEquals(MeshcoreUnbind.FAILED, r.session.unbind("AA:BB"))
+            assertFalse("still withdrawn for the bound board", r.consents.last().granted)
+        }
+
+    /** Security S1: a board that never answers the proof is never treated as proven, whatever path it takes. */
+    @Test
+    fun aBoardThatNeverAnswersTheProofGetsNoConsentRestoreSetupOrCleanup() =
+        runTest {
+            val r = rig()
+            r.alice.dropSignFinish = Int.MAX_VALUE
+            val carol = r.air.board("carol")
+            r.alice.addContact(carol, name = "Carol Smith", flags = 0)
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertFalse(r.consents.last().granted)
+            assertTrue("no taught set reaches it", r.dm().isNoRecord())
+            val restore = r.session.restore()
+            assertTrue("no answer, never a Restore: $restore", restore is MeshcoreRestoreResult.Done && "proof" in restore.failed)
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Failed)
+            assertNotNull(r.alice.contact(carol.key))
+            r.records.markPending("AA:BB")
+            r.ch.disconnect()
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertFalse(r.logs.any { it.startsWith("lora cleanup") })
+            assertTrue(checkNotNull(r.records.entryOf("AA:BB")).pending)
+        }
+
+    /** Lora L1: an empty set handed over for want of consent is no taught set; the re-read's reconcile waits for the real one. */
+    @Test
+    fun aReconcileAfterAnUnansweredProofWaitsForTheRealTaughtSet() =
+        runTest {
+            val r = rig()
+            r.alice.dropSignFinish = 1
+            up(r)
+            assertTrue(r.consents.last().unread)
+            // What the hooks do for want of consent.
+            r.session.setKnitContacts(emptyList(), withdrawn = true)
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertTrue("granted at the re-ask", r.consents.last().granted)
+            assertEquals("no listing against nothing", 0, r.listings())
+            assertNotNull("bob, Knit's, is kept", r.alice.contact(r.bob.key))
+            // The hooks' real set lands: the reconcile runs, and bob stays.
+            r.session.setKnitContacts(listOf(r.bob.key))
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertEquals(1, r.listings())
+            assertNotNull(r.alice.contact(r.bob.key))
+            assertEquals(
+                0L,
+                r.session.counters.reconcileRemoved
+                    .get(),
+            )
+        }
+
+    // --- the unit-test review's round (2026-11-14) ---
+
+    @Test
+    fun everyReadyCarriesAKnownConsentReadInTheHandshakeBeforeTheReady() =
+        runTest {
+            val r = rig()
+            val events = mutableListOf<String>()
+            val collect = UnconfinedTestDispatcher(testScheduler)
+            backgroundScope.launch(collect) { r.session.consent.collect { if (it != null) events += "consent:${it.granted}" } }
+            backgroundScope.launch(collect) { r.session.state.collect { if (it is BoardState.Ready) events += "ready" } }
+            up(r)
+            assertEquals("the consent precedes the Ready it rides ($events)", listOf("consent:true", "ready"), events.take(2))
+            val none = rig(consented = false)
+            up(none)
+            // A bound board with no record is withdrawn at start too (security N2), then its Ready's consent: never granted.
+            assertTrue(none.consents.none { it.granted })
+            assertTrue(none.dm().isNoRecord())
+        }
+
+    @Test
+    fun theChallengeIsTheConsentTagAndAFreshNonceAndEveryProofHasItsOwn() =
+        runTest {
+            val r = rig()
+            up(r)
+            assertTrue((r.session.restore() as MeshcoreRestoreResult.Done).failed.isEmpty())
+            val data =
+                r.ch.writes
+                    .filter { it[0].toInt() == MeshcoreProto.CMD_SIGN_DATA }
+                    .map { it.copyOfRange(1, it.size) }
+            assertEquals("the handshake's proof and the Restore's", 2, data.size)
+            assertEquals(2, r.nonces.size)
+            data.forEachIndexed { i, sent -> assertArrayEquals(MeshcoreSession.CONSENT_DOMAIN + r.nonces[i], sent) }
+            assertFalse("a fresh nonce each", r.nonces[0].contentEquals(r.nonces[1]))
+        }
+
+    /** U1 (a): the handshake forced slow; the unbind marks the record, and the cleanup is the connection's first job. */
+    @Test
+    fun anUnbindWhileTheBoardHandshakesMarksTheRecordAndTheCleanupRunsFirst() =
+        runTest {
+            val r = rig()
+            r.dialer.onOpen = { ch -> ch.delayFrame = { f -> if (f[0].toInt() == MeshcoreProto.RESP_CHANNEL_INFO) 2_500L else 0L } }
+            r.session.start("AA:BB")
+            runCurrent()
+            assertEquals(MeshcoreLinkState.Handshaking, (r.session.state.value as BoardState.Down).detail)
+            val unbind = async { r.session.unbind("AA:BB") }
+            runCurrent()
+            assertEquals(MeshcoreUnbind.PENDING, unbind.await())
+            advanceTimeBy(120_000)
+            runCurrent()
+            assertTrue(r.logs.any { it.startsWith("lora cleanup kind=meshcore done=true") })
+            assertNull(r.records.entryOf("AA:BB"))
+            assertTrue(r.consents.none { it.granted })
+            val writes = r.ch.writes.map { it[0].toInt() }
+            assertTrue(
+                "no teach before the cleanup",
+                writes.takeWhile { it != MeshcoreProto.CMD_REMOVE_CONTACT }.none {
+                    it ==
+                        MeshcoreProto.CMD_ADD_UPDATE_CONTACT
+                },
+            )
+        }
+
+    /** U1 (b): the handshake held inside its consent read, under the lock: the unbind waits for the Ready, then the actor runs it. */
+    @Test
+    fun anUnbindWaitsForAHandshakeHeldInItsConsentReadThenUndoesItOnTheActor() =
+        runTest {
+            val journal = CountingJournal().apply { holdReads = 1 }
+            val r = rig(records = journal)
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, false) }
+            r.session.start("AA:BB")
+            runCurrent()
+            assertTrue("the handshake is held in its read", journal.holding)
+            val unbind = async { r.session.unbind("AA:BB") }
+            runCurrent()
+            assertFalse("the unbind waits on the lock", unbind.isCompleted)
+            val before = r.consents.size
+            journal.gate.complete(Unit)
+            runCurrent()
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertEquals(MeshcoreUnbind.CLEARED, unbind.await())
+            // The handshake's consent (granted), then the unbind's withdrawal: never a grant after the first withdrawal.
+            val after = r.consents.drop(before)
+            val firstNo = after.indexOfFirst { !it.granted }
+            assertTrue("the unbind withdrew it ($after)", firstNo >= 0)
+            assertTrue("no grant after the withdrawal", after.drop(firstNo).none { it.granted })
+        }
+
+    /**
+     * U2: the production order — a pending cleanup owed by a backoff re-read and a setup queued while that read is held.
+     * The setup runs first and supersedes the cleanup: no cleanup after the setup's line, the record kept and not pending.
+     */
+    @Test
+    fun aSetupQueuedBehindAReReadSupersedesTheCleanupItFound() =
+        runTest {
+            // The start's own read (three tries) and the handshake's (three more) all fail.
+            val journal = CountingJournal().apply { failFirstReads = 6 }
+            val r = rig(knitSlot = false, records = journal)
+            val digest = MeshcoreHooks.digest(r.alice.key)
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:BB", digest, SETUP_RECORD, pending = true) }
+            up(r)
+            assertTrue("the handshake's reads failed", r.consents.last().unread)
+            journal.holdReads = 1
+            repeat(120) { if (!journal.holding) advanceTimeBy(1_000) }
+            assertTrue("the backoff re-read is held", journal.holding)
+            val setup = async { r.session.setup() }
+            runCurrent()
+            journal.gate.complete(Unit)
+            runCurrent()
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertTrue(setup.await() is MeshcoreSetupResult.Done)
+            val setupAt = r.logs.indexOfFirst { it.startsWith("meshcore setup slot=") }
+            assertTrue("no cleanup after the setup (${r.logs})", r.logs.drop(setupAt).none { it.startsWith("lora cleanup") })
+            val kept = checkNotNull(journal.inner.entryOf("AA:BB"))
+            assertFalse(kept.pending)
+            assertTrue(r.consents.last().granted)
+        }
+
+    @Test
+    fun aRecordReadThatHangsIsBoundedAndReadAgainLater() =
+        runTest {
+            val journal = CountingJournal().apply { slowReads = true }
+            val r = rig(records = journal)
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, false) }
+            up(r)
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertTrue(r.session.state.value is BoardState.Ready)
+            assertEquals(
+                1L,
+                r.session.counters.consentReadFailures
+                    .get(),
+            )
+            val reads = journal.reads
+            journal.slowReads = false
+            advanceTimeBy(70_000)
+            runCurrent()
+            assertTrue("read again later", journal.reads > reads)
+            assertTrue(r.consents.last().granted)
+        }
+
+    /**
+     * Security S2 and F1 in one: a key that changes on the connection ends the session (the setup answers `NotReady`), and
+     * reconnected as the new key, which the board cannot sign as, the setup is `Failed`. No record is written for either key.
+     * F1's own guard in `runSetup` stays as a belt, reached by nothing while [takeSelf] ends the session first.
+     */
+    @Test
+    fun aKeyChangedOnTheConnectionEndsTheSessionAndTheNewKeyCannotSetUp() =
+        runTest {
+            val r = rig(knitSlot = false)
+            up(r)
+            val other = FakeMeshcoreAir.keyOf("imported")
+            r.alice.reportedKey = other
+            assertEquals(MeshcoreSetupResult.NotReady, r.session.setup())
+            assertTrue(
+                r.session.counters.keyChanged
+                    .get() >= 1,
+            )
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Failed)
+            assertNull(r.records.entryOf("AA:BB"))
+            assertTrue(r.consents.none { it.granted })
+            assertTrue(r.consents.none { it.key?.contentEquals(other) == true })
+        }
+
+    /** Security (the round's Blocking): a Restore or unbind after a lost proof answers the claim now, never unread. */
+    @Test
+    fun aRestoreAfterALostProofWithdrawsTheClaimAtOnce() =
+        runTest {
+            val r = rig()
+            r.alice.dropSignFinish = 1
+            up(r)
+            assertTrue(r.consents.last().unread)
+            assertTrue((r.session.restore() as MeshcoreRestoreResult.Done).failed.isEmpty())
+            assertFalse(r.consents.last().unread)
+            assertFalse(r.consents.last().granted)
+            assertNull(r.consents.last().key)
+        }
+
+    @Test
+    fun anUnbindAfterALostProofWithdrawsTheClaimAtOnce() =
+        runTest {
+            val r = rig()
+            r.alice.dropSignFinish = 1
+            up(r)
+            assertTrue(r.consents.last().unread)
+            assertEquals(MeshcoreUnbind.CLEARED, r.session.unbind("AA:BB"))
+            assertFalse(r.consents.last().unread)
+            assertNull(r.consents.last().key)
+        }
+
+    /** Lora L: a signature that fails on a board re-keyed mid-connection ends the session; the next identify withdraws the claim. */
+    @Test
+    fun aRefusedProofOnABoardReKeyedMidConnectionEndsTheSession() =
+        runTest {
+            val r = rig()
+            r.alice.canSign = false
+            r.alice.reportedKey = FakeMeshcoreAir.keyOf("imported")
+            r.alice.reportedKeyFrom = 2 // identify's APP_START reports the real key, the proof's re-read the new one
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertTrue(
+                r.session.counters.keyChanged
+                    .get() >= 1,
+            )
+            assertTrue(
+                r.session.counters.consentMismatches
+                    .get() >= 1,
+            )
+            assertFalse(r.consents.last().unread)
+            assertFalse(r.consents.last().granted)
+        }
+
+    /** U10: no line names the record's prior name or its digest, across setup, Restore, unbind and cleanup. */
+    @Test
+    fun noLineNamesTheRecordsPriorNameOrDigest() =
+        runTest {
+            val r = rig(knitSlot = false)
+            up(r)
+            r.session.setup()
+            r.session.restore()
+            r.session.setup()
+            r.records.markPending("AA:BB")
+            r.ch.disconnect()
+            advanceTimeBy(30_000)
+            runCurrent()
+            r.session.setup()
+            r.session.unbind("AA:BB")
+            assertTrue(r.logs.any { it.startsWith("lora cleanup") })
+            val digest = MeshcoreHooks.digest(r.alice.key)
+            assertTrue(r.logs.none { "alice" in it || digest in it })
+            val entry = MeshcoreSetupEntry(SETUP_RECORD, digest, pending = true)
+            // The exact custom lines: a ByteArray would print as [B@… even unredacted, so a name check alone proves nothing.
+            assertEquals("MeshcoreSetupEntry(pending=true)", entry.toString())
+            assertEquals("MeshcoreSetupRecord(slot=1, slotWritten=false, name=true, manualAdd=0, autoadd=null)", SETUP_RECORD.toString())
+            assertFalse(SETUP_RECORD.toString().contains("priorName"))
+        }
+
+    // --- the record write rule (the maintainer's decision, 2026-11-14) ---
+
+    /**
+     * The security Blocking: a Restore whose record clear does not land is no success. It answers `failed: record`, the
+     * record is pending, consent is withdrawn at once, an unbind is `PENDING`, and no reconnect grants it again.
+     */
+    @Test
+    fun aWithdrawWriteThatFailsLeavesTheRecordPendingAndNeverReGrants() =
+        runTest {
+            val journal = CountingJournal()
+            val r = rig(records = journal)
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, false) }
+            up(r)
+            assertTrue(r.consents.last().granted)
+            val granted = r.consents.size
+            journal.failClears = true
+            val restore = r.session.restore() as MeshcoreRestoreResult.Done
+            assertTrue("never a success: ${restore.failed}", "record" in restore.failed)
+            assertTrue(checkNotNull(journal.inner.entryOf("AA:BB")).pending)
+            assertFalse(r.consents.last().granted)
+            assertNull(r.consents.last().key)
+            assertEquals(MeshcoreUnbind.PENDING, r.session.unbind("AA:BB"))
+            r.ch.disconnect()
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertTrue(
+                "never granted again, and the key never published again",
+                r.consents.drop(granted).none {
+                    it.granted ||
+                        it.key != null
+                },
+            )
+            assertTrue(checkNotNull(journal.inner.entryOf("AA:BB")).pending)
+        }
+
+    /** The rule for a grant write: a setup whose record does not land is Failed, with no consent and no record. */
+    @Test
+    fun aGrantWriteThatFailsLeavesNoConsentAndTheSetupFails() =
+        runTest {
+            val journal = CountingJournal().apply { failPuts = true }
+            val r = rig(knitSlot = false, records = journal)
+            up(r)
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Failed)
+            assertNull(journal.inner.entryOf("AA:BB"))
+            assertTrue(r.consents.none { it.granted })
+        }
+
+    /** The rule for a withdraw write whose pending mark fails too: `FAILED`, so the caller keeps the binding; consent no. */
+    @Test
+    fun aWithdrawWriteAndItsMarkFailingIsFailed() =
+        runTest {
+            val journal = CountingJournal()
+            val r = rig(records = journal)
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, false) }
+            up(r)
+            journal.failClears = true
+            journal.failMarks = true
+            assertEquals(MeshcoreUnbind.FAILED, r.session.unbind("AA:BB"))
+            assertFalse(r.consents.last().granted)
+            assertNull(r.consents.last().key)
+        }
+
+    // --- write the intent before acting (the security enumeration, 2026-11-14) ---
+
+    /** B1: an unbind cut off in the middle of its Restore leaves a pending cleanup, never a consent, at the next start. */
+    @Test
+    fun anUnbindCutOffMidRestoreLeavesAPendingCleanupNeverAConsent() =
+        runTest {
+            val r = rig()
+            up(r)
+            r.ch.swallow = { it[0].toInt() == MeshcoreProto.CMD_REMOVE_CONTACT } // the Restore stops at its first removal
+            val unbind = async { r.session.unbind("AA:BB") }
+            runCurrent()
+            assertTrue("the intent is written before any board write", checkNotNull(r.records.entryOf("AA:BB")).pending)
+            assertFalse(r.consents.last().granted)
+            r.session.stop() // the process dies: the actor is dropped mid-Restore
+            val logs = mutableListOf<String>()
+            val fresh =
+                MeshcoreSession(
+                    dialer = r.dialer,
+                    scope = backgroundScope,
+                    now = { testScheduler.currentTime },
+                    wallClock = { epochMs + testScheduler.currentTime },
+                    log = { logs += it },
+                    records = r.records,
+                )
+            val consents = mutableListOf<MeshcoreConsent>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { fresh.consent.collect { it?.let(consents::add) } }
+            fresh.start("AA:BB")
+            runCurrent()
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertTrue("no consent granted, no key published", consents.none { it.granted || it.key != null })
+            assertTrue(logs.any { it.startsWith("lora cleanup kind=meshcore done=true") })
+            assertNull(r.records.entryOf("AA:BB"))
+            unbind.await()
+        }
+
+    /** N3: a plain Restore that fails partway is a pending cleanup with consent no; a refused proof answers `failed: proof`. */
+    @Test
+    fun aRestoreThatFailsPartwayIsAPendingCleanupAndARefusedProofIsNoAnswer() =
+        runTest {
+            val r = rig()
+            up(r)
+            r.ch.swallow = { it[0].toInt() == MeshcoreProto.CMD_REMOVE_CONTACT }
+            val failed = r.session.restore() as MeshcoreRestoreResult.Done
+            assertTrue("${failed.failed}", failed.failed.isNotEmpty())
+            assertTrue(checkNotNull(r.records.entryOf("AA:BB")).pending)
+            assertFalse(r.consents.last().granted)
+            assertNull(r.consents.last().key)
+            r.ch.swallow = { false }
+            r.alice.canSign = false
+            val refused = r.session.restore() as MeshcoreRestoreResult.Done
+            assertTrue("a signature that fails is no answer here: ${refused.failed}", "proof" in refused.failed)
+        }
+
+    /** N1: a first setup whose grant write fails leaves the write-ahead's pending record; the next connection restores. */
+    @Test
+    fun aSetupWhoseGrantFailsLeavesAPendingRecordThatTheNextConnectionRestores() =
+        runTest {
+            val journal = CountingJournal().apply { putsBeforeFailing = 1 }
+            val r = rig(knitSlot = false, records = journal)
+            up(r)
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Failed)
+            val kept = checkNotNull(journal.inner.entryOf("AA:BB"))
+            assertTrue(kept.pending)
+            assertEquals("alice", kept.record.priorName?.decodeToString())
+            journal.putsBeforeFailing = -1
+            r.ch.disconnect()
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertTrue(r.logs.any { it.startsWith("lora cleanup kind=meshcore done=true") })
+            assertEquals("alice", r.alice.advertName.decodeToString())
+            assertTrue(
+                "the slot is cleared",
+                r.alice.channels[1]
+                    .first
+                    .isEmpty(),
+            )
+            assertTrue(r.consents.none { it.granted })
+        }
+
+    /** N1: a setup cut off by a disconnect after its name write is put back by the next connection's cleanup. */
+    @Test
+    fun aSetupCutOffAfterItsNameWriteIsPutBackAtTheNextConnection() =
+        runTest {
+            val r = rig(knitSlot = false)
+            up(r)
+            r.ch.writeResult = { f ->
+                // The link drops the moment the name is written: the setup is cut off before its channel and its grant.
+                if (f[0].toInt() == MeshcoreProto.CMD_SET_ADVERT_NAME) r.ch.disconnect()
+                GattResult.Ok(Unit)
+            }
+            assertTrue(r.session.setup() !is MeshcoreSetupResult.Done)
+            assertTrue(checkNotNull(r.records.entryOf("AA:BB")).pending)
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertTrue(r.logs.any { it.startsWith("lora cleanup kind=meshcore done=true") })
+            assertEquals("alice", r.alice.advertName.decodeToString())
+            assertNull(r.records.entryOf("AA:BB"))
+        }
+
+    /** N2: an unbind of the bound board with no record still publishes a withdrawal; a mark of no row is not a mark. */
+    @Test
+    fun anUnbindWithNoRecordStillWithdrawsAndAMarkOfNoRowIsNoMark() =
+        runTest {
+            val r = rig(consented = false)
+            up(r)
+            r.session.stop()
+            val before = r.consents.size
+            assertEquals(MeshcoreUnbind.NOTHING, r.session.unbind("AA:BB"))
+            assertTrue("a withdrawal published", r.consents.size > before)
+            assertFalse(r.consents.last().granted)
+            assertNull(r.consents.last().key)
+            assertFalse(MemoryMeshcoreSetupJournal().markPending("AA:BB"))
+        }
+
     private companion object {
         /** `CMD_FACTORY_RESET` (`MyMesh.cpp`): formats the board, a new identity and the radio reset (ADR 045). */
         const val CMD_FACTORY_RESET = 51
+
+        /** A setup record as this phone would have kept it for alice's board. */
+        val SETUP_RECORD =
+            MeshcoreSetupRecord(1, slotWritten = false, priorName = "alice".encodeToByteArray(), priorManualAdd = 0, priorAutoadd = null)
     }
 }

@@ -116,12 +116,30 @@ internal class FakeMeshcoreAir(
     }
 
     companion object {
-        /** A board key: 32 bytes from [name], never starting with the reserved `0x00` / `0xFF`. */
-        fun keyOf(name: String): ByteArray {
-            val k = MessageDigest.getInstance("SHA-256").digest(("meshcore-fake:$name").encodeToByteArray())
-            if (k[0].toInt() == 0 || k[0].toInt() == -1) k[0] = 0x42
-            return k
-        }
+        private val pairs = java.util.concurrent.ConcurrentHashMap<String, com.google.crypto.tink.subtle.Ed25519Sign.KeyPair>()
+
+        /**
+         * A board key: a real Ed25519 public key whose private half is seeded from [name] (so a fake board signs, as a
+         * companion does, `MyMesh.cpp:1801`), never starting with the reserved `0x00` / `0xFF`.
+         */
+        fun keyOf(name: String): ByteArray = pairOf(name).publicKey.copyOf()
+
+        private fun pairOf(name: String): com.google.crypto.tink.subtle.Ed25519Sign.KeyPair =
+            pairs.getOrPut(name) {
+                generateSequence(0) { it + 1 }
+                    .map { n ->
+                        val seed = MessageDigest.getInstance("SHA-256").digest(("meshcore-fake:$name:$n").encodeToByteArray())
+                        com.google.crypto.tink.subtle.Ed25519Sign.KeyPair
+                            .newKeyPairFromSeed(seed)
+                    }.first { it.publicKey[0].toInt() != 0 && it.publicKey[0].toInt() != -1 }
+            }
+
+        /** The signer for [key] when it is a [keyOf] key; null for any other (a clone that reports a key it does not hold). */
+        fun signerOf(key: ByteArray): com.google.crypto.tink.subtle.Ed25519Sign? =
+            pairs.values.firstOrNull { it.publicKey.contentEquals(key) }?.let {
+                com.google.crypto.tink.subtle
+                    .Ed25519Sign(it.privateKey)
+            }
 
         /** `PUBLIC_GROUP_PSK` (`MyMesh.cpp:110`). */
         val PUBLIC_PSK: ByteArray = Base64.getDecoder().decode("izOH6cXN6mrJ5e26oRXNcg==")
@@ -172,6 +190,22 @@ internal class FakeMeshcoreBoard(
     var uptimeBaseMs = 0L
 
     val channels = Array(maxChannels) { ByteArray(0) to ByteArray(MeshcoreProto.SECRET_BYTES) }
+
+    /** The board's sign buffer (`sign_data`), null when none is open. */
+    var signBuffer: ByteArray? = null
+
+    /** False: a clone at the address that reports this board's key (it is in the board's adverts) but cannot sign with it. */
+    var canSign = true
+
+    /** `SIGN_FINISH`es left unanswered (a lost notify): each one drops its answer. */
+    var dropSignFinish = 0
+
+    /** A key `SELF_INFO` reports instead of [key] (another client imported one): signing stays [key]'s. */
+    var reportedKey: ByteArray? = null
+
+    /** From which `APP_START` answer (1-based, counted over the board's life) [reportedKey] applies; null: from the first. */
+    var reportedKeyFrom: Int? = null
+    private var appStarts = 0
     val contacts = mutableListOf<FakeContact>()
     val offline = ArrayDeque<ByteArray>()
     var offlineCap = 256
@@ -350,6 +384,43 @@ internal class FakeMeshcoreBoard(
                 sendText(frame)
             }
 
+            // `MyMesh.cpp:1781-1815`: one buffer for every client; SIGN_FINISH signs it with the board's own key.
+            MeshcoreProto.CMD_SIGN_START -> {
+                signBuffer = ByteArray(0)
+                writeAll(byteArrayOf(MeshcoreProto.RESP_SIGN_START.toByte(), 0) + u32(8 * 1024L))
+            }
+
+            MeshcoreProto.CMD_SIGN_DATA -> {
+                val buf = signBuffer
+                if (buf == null) err(MeshcoreProto.ERR_BAD_STATE) else ok().also { signBuffer = buf + frame.copyOfRange(1, frame.size) }
+            }
+
+            MeshcoreProto.CMD_SIGN_FINISH -> {
+                if (dropSignFinish > 0) {
+                    dropSignFinish--
+                    return
+                }
+                val buf = signBuffer
+                val signer = if (canSign) FakeMeshcoreAir.signerOf(key) else null
+                signBuffer = null
+                when {
+                    buf == null -> {
+                        err(MeshcoreProto.ERR_BAD_STATE)
+                    }
+
+                    // A clone at the address reporting a key it does not hold: whatever it answers, it is no signature by it.
+                    signer == null -> {
+                        writeAll(
+                            byteArrayOf(MeshcoreProto.RESP_SIGNATURE.toByte()) + ByteArray(MeshcoreProto.SIGNATURE_BYTES),
+                        )
+                    }
+
+                    else -> {
+                        writeAll(byteArrayOf(MeshcoreProto.RESP_SIGNATURE.toByte()) + signer.sign(buf))
+                    }
+                }
+            }
+
             MeshcoreProto.CMD_SEND_CHANNEL_DATA -> {
                 sendChannelData(frame)
             }
@@ -381,7 +452,9 @@ internal class FakeMeshcoreBoard(
         out[1] = 1
         out[2] = 20
         out[3] = 20
-        key.copyInto(out, 4)
+        appStarts++
+        val rekeyed = reportedKey?.takeIf { reportedKeyFrom?.let { from -> appStarts >= from } ?: true }
+        (rekeyed ?: key).copyInto(out, 4)
         out[44] = multiAcks.toByte()
         out[47] = manualAdd.toByte()
         u32(freqKhz).copyInto(out, 48)

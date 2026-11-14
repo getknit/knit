@@ -48,10 +48,17 @@ internal object MeshcoreProto {
     const val CMD_SEND_CHANNEL_DATA = 62
     const val CMD_GET_DEFAULT_FLOOD_SCOPE = 64
 
+    /** The board's own signer (`MyMesh.cpp:1781-1815`, since 2025-03): start, data (up to 8 KiB in all), finish. */
+    const val CMD_SIGN_START = 33
+    const val CMD_SIGN_DATA = 34
+    const val CMD_SIGN_FINISH = 35
+
     /**
      * Every command code an encoder here can emit — the pinned allowlist. `CMD_GET_CONTACTS` (4) is a count read (its
      * `since` past every `lastmod`, so the board lists none: teaching a key needs a free slot confirmed first) or, from
-     * Stage 5b-2, the one listing a Ready's reconcile, a setup's erase and a restore read ([listContacts]).
+     * Stage 5b-2, the one listing a Ready's reconcile, a setup's erase and a restore read ([listContacts]). The three sign
+     * commands are the consent's signed challenge (the maintainer's decision, 2026-11-13): a nonce behind a Knit domain tag,
+     * never anything else ([signData]).
      */
     val ENCODED_COMMANDS: Set<Int> =
         setOf(
@@ -78,6 +85,9 @@ internal object MeshcoreProto {
             CMD_GET_AUTOADD_CONFIG,
             CMD_SEND_CHANNEL_DATA,
             CMD_GET_DEFAULT_FLOOD_SCOPE,
+            CMD_SIGN_START,
+            CMD_SIGN_DATA,
+            CMD_SIGN_FINISH,
         )
 
     // --- response codes (MyMesh.cpp:73-101) ---
@@ -102,6 +112,11 @@ internal object MeshcoreProto {
     const val RESP_AUTOADD_CONFIG = 25
     const val RESP_CHANNEL_DATA_RECV = 27
     const val RESP_DEFAULT_FLOOD_SCOPE = 28
+    const val RESP_SIGN_START = 19
+    const val RESP_SIGNATURE = 20
+
+    /** An Ed25519 signature (`SIGNATURE_SIZE`). */
+    const val SIGNATURE_BYTES = 64
 
     // --- pushes, written to every connected interface at any time (MyMesh.cpp:113-129) ---
     const val PUSH_ADVERT = 0x80
@@ -250,6 +265,7 @@ internal object MeshcoreProto {
     private const val CONFIRMED_SIZE = 9
     private const val KEY_PUSH_SIZE = 1 + KEY_BYTES
     private const val CURR_TIME_SIZE = 5
+    private const val SIGN_START_SIZE = 6
     private const val BATT_SIZE = 11
     private const val AUTOADD_SIZE = 3
     private const val COUNT_SIZE = 5
@@ -368,6 +384,16 @@ internal object MeshcoreProto {
         return out
     }
 
+    /** `SIGN_START`: the board answers `SIGN_START` with its data limit and opens an empty buffer, shared by every client. */
+    fun signStart(): ByteArray = byteArrayOf(CMD_SIGN_START.toByte())
+
+    /** `SIGN_DATA` of [data], appended to the board's buffer; null for nothing, or more than one write carries. */
+    fun signData(data: ByteArray): ByteArray? =
+        if (data.isEmpty() || data.size > MAX_NOTIFY - 1) null else byteArrayOf(CMD_SIGN_DATA.toByte()) + data
+
+    /** `SIGN_FINISH`: the board signs its buffer with its own key (`ed25519_sign`) and answers `SIGNATURE`. */
+    fun signFinish(): ByteArray = byteArrayOf(CMD_SIGN_FINISH.toByte())
+
     /** `GET_CONTACTS` past every `lastmod`: answers `CONTACTS_START` with the board's count, then `END_OF_CONTACTS`. */
     fun countContacts(): ByteArray = byteArrayOf(CMD_GET_CONTACTS.toByte()) + u32(SINCE_NONE)
 
@@ -452,6 +478,8 @@ internal object MeshcoreProto {
                 RESP_CONTACT_MSG_RECV, RESP_CONTACT_MSG_RECV_V3 -> contactMessage(frame, code == RESP_CONTACT_MSG_RECV_V3)
                 RESP_CHANNEL_MSG_RECV, RESP_CHANNEL_MSG_RECV_V3 -> channelMessage(frame, code == RESP_CHANNEL_MSG_RECV_V3)
                 RESP_CURR_TIME -> exact(frame, CURR_TIME_SIZE) { McFrame.CurrTime(u32(frame, 1)) }
+                RESP_SIGN_START -> exact(frame, SIGN_START_SIZE) { McFrame.SignStart(u32(frame, 2)) }
+                RESP_SIGNATURE -> exact(frame, 1 + SIGNATURE_BYTES) { McFrame.Signature(frame.copyOfRange(1, 1 + SIGNATURE_BYTES)) }
                 RESP_NO_MORE_MESSAGES -> exact(frame, 1) { McFrame.NoMore }
                 RESP_BATT_AND_STORAGE -> exact(frame, BATT_SIZE) { McFrame.Battery(u16(frame, 1)) }
                 RESP_DEVICE_INFO -> deviceInfo(frame)
@@ -789,6 +817,23 @@ internal sealed interface McFrame {
     data class CurrTime(
         val epochSecs: Long,
     ) : McFrame
+
+    /** `SIGN_START`: the board's buffer is open, [maxLen] bytes at most. */
+    data class SignStart(
+        val maxLen: Long,
+    ) : McFrame
+
+    /** `SIGNATURE`: the board's Ed25519 signature over its buffer. */
+    class Signature(
+        signature: ByteArray,
+    ) : McFrame {
+        private val bytes = signature.copyOf()
+
+        /** The 64 signature bytes. */
+        val value: ByteArray get() = bytes.copyOf()
+
+        override fun toString(): String = "Signature"
+    }
 
     data object NoMore : McFrame
 

@@ -4,6 +4,7 @@ import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.mesh.LoraDoorClaim
 import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.protocol.Protocol
+import kotlinx.coroutines.flow.toList
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -48,4 +49,37 @@ class LoraPlaneWiringTest {
         assertFalse(LoraDoorClaim.claims(BoardKind.MESHTASTIC, keyOnly))
         assertFalse(LoraDoorClaim.claims(BoardKind.MESHCORE, PeerEntity(nodeId = "carol")))
     }
+
+    @Test
+    fun aReleaseBuildBindsNoMeshcoreDoorAndADebugBuildBindsIt() {
+        assertFalse("release: no MeshCore child, no seam", bindsMeshcoreDirect(builtBoardKinds(loraPlane = true, meshcorePlane = false)))
+        assertFalse(bindsMeshcoreDirect(builtBoardKinds(loraPlane = false, meshcorePlane = false)))
+        assertTrue(bindsMeshcoreDirect(builtBoardKinds(loraPlane = true, meshcorePlane = true)))
+        assertEquals(app.getknit.knit.BuildConfig.MESHCORE_PLANE, bindsMeshcoreDirect(BUILT_BOARD_KINDS))
+    }
+
+    @Test
+    fun theMeshcorePlanesFirstBoardMapIsTheStoresFirstNeverAnEmptyPlaceholder() =
+        kotlinx.coroutines.test.runTest {
+            val key =
+                java.util.Base64.getEncoder().encodeToString(
+                    com.google.crypto.tink.subtle.Ed25519Sign.KeyPair
+                        .newKeyPair()
+                        .publicKey,
+                )
+            val real =
+                mapOf(
+                    "bob" to
+                        app.getknit.knit.mesh
+                            .MeshcoreBoardHolder(key, app.getknit.knit.mesh.MeshcoreRank.ACCEPTED, 1, false),
+                )
+            val seen = meshcoreBoardHolders(kotlinx.coroutines.flow.flowOf(real)).toList()
+            assertEquals("one emission, the real one", 1, seen.size)
+            assertEquals(setOf("bob"), seen.single().keys)
+            assertEquals(
+                "a source that has not emitted gives nothing",
+                emptyList<Any>(),
+                meshcoreBoardHolders(kotlinx.coroutines.flow.emptyFlow()).toList(),
+            )
+        }
 }

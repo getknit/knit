@@ -35,6 +35,7 @@ import app.getknit.knit.mesh.lora.SlotCheck
 import app.getknit.knit.mesh.lora.WallShift
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -53,6 +54,7 @@ import java.util.Locale
  * persisted ring, the setup through the session, and that no line it writes names a key, a prefix or a text.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
+@Suppress("LargeClass") // the kind's whole seam over one fake session and core, as MeshcoreSessionTest is the session's
 class MeshcoreHooksTest {
     private class Ops : MeshcoreBoardOps {
         override val air = MutableSharedFlow<MeshcoreAir>(extraBufferCapacity = 8)
@@ -60,15 +62,22 @@ class MeshcoreHooksTest {
         override var observer: MeshcoreSessionObserver? = null
         var reading: MeshcoreSlotReading? = MeshcoreSlotReading(KNIT_SLOT, knit = true, atMs = 0)
         var setupResult: MeshcoreSetupResult = MeshcoreSetupResult.NotReady
-        val restored = mutableListOf<MeshcoreSetupRecord>()
 
         override fun slotReading(): MeshcoreSlotReading? = reading
 
         override suspend fun setup(): MeshcoreSetupResult = setupResult
 
-        override suspend fun restore(record: MeshcoreSetupRecord): MeshcoreRestoreResult {
-            restored += record
-            return MeshcoreRestoreResult.Done(slotCleared = true, leftAsFound = emptyList(), failed = emptyList())
+        var restoreResult: MeshcoreRestoreResult =
+            MeshcoreRestoreResult.Done(
+                slotCleared = true,
+                leftAsFound = emptyList(),
+                failed = emptyList(),
+            )
+        var restores = 0
+
+        override suspend fun restore(): MeshcoreRestoreResult {
+            restores++
+            return restoreResult
         }
 
         val taught = mutableListOf<List<ByteArray>>()
@@ -76,14 +85,28 @@ class MeshcoreHooksTest {
         val removals = mutableListOf<ByteArray>()
         var teachResult = ContactWrite.WRITTEN
 
-        override fun setKnitContacts(ranked: List<ByteArray>) {
+        val withdrawals = mutableListOf<Boolean>()
+
+        override fun setKnitContacts(
+            ranked: List<ByteArray>,
+            withdrawn: Boolean,
+        ) {
             taught += ranked
+            withdrawals += withdrawn
         }
 
         override suspend fun teach(key: ByteArray): ContactWrite {
             teaches += key
             return teachResult
         }
+
+        var pinned = false
+
+        override fun pinnedZeroHop(from: BoardAddr.MeshCore): Boolean = pinned
+
+        override val consent = MutableStateFlow<MeshcoreConsent?>(null)
+
+        override suspend fun unbind(address: String): MeshcoreUnbind = MeshcoreUnbind.NOTHING
 
         override suspend fun removeUntaught(key: ByteArray): ContactWrite {
             removals += key
@@ -93,7 +116,7 @@ class MeshcoreHooksTest {
 
     private class Core : PlaneCore {
         override val airtime = LoraAirtime(traits = MeshcoreTraits)
-        override val config: LoraConfig? = LoraConfig("AA:1", 0)
+        override val config: LoraConfig? = LoraConfig(BOARD, 0)
         override val maxPayload = MeshcoreProto.CHANNEL_DATA_CAP
         override val restored = true
         val holds = mutableListOf<Long?>()
@@ -116,13 +139,20 @@ class MeshcoreHooksTest {
         override fun holdForLaw(untilMs: Long?) {
             holds += untilMs
         }
+
+        var holdersMoved = 0
+
+        override fun holdersMoved() {
+            holdersMoved++
+        }
     }
 
     private val now = 10_000L
     private val ops = Ops()
     private val core = Core()
     private val logs = mutableListOf<String>()
-    private val keys = mutableListOf<Pair<ByteArray, String?>>()
+    private val keys = mutableListOf<Pair<ByteArray?, String?>>()
+
     private val scope = TestScope(UnconfinedTestDispatcher())
     private val hooks = hooks(ops, core)
 
@@ -142,6 +172,7 @@ class MeshcoreHooksTest {
         version: String? = "v1.18.0",
         key: ByteArray = boardKey,
         capacity: Int = 100,
+        dialled: String = "DD:DD",
     ) = MeshcoreDetail(
         publicKey = key,
         versionCode = 11,
@@ -155,7 +186,7 @@ class MeshcoreHooksTest {
         namedForKnit = true,
         manualAdd = 1,
         // The session's own address, deliberately not the plane's configured one ("AA:1"): the key goes out under this.
-        dialled = "DD:DD",
+        dialled = dialled,
     )
 
     private fun ready(
@@ -245,6 +276,22 @@ class MeshcoreHooksTest {
     }
 
     // --- our board's answers, booked from one place ---
+
+    /** Part 2: a sender Knit taught and pinned zero-hop is answered along that path, so only the path's acks are booked. */
+    @Test
+    fun aDirectDmFromATaughtPinnedSenderBooksOnlyTheAcksAlongItsPath() {
+        hooks.beforeReady(ready(detail = detail(multiAcks = 3)))
+        val air = core.airtime
+
+        fun ms(
+            payload: Int,
+            flooded: Boolean,
+        ) = air.airMsOfPhy(MeshcoreTraits.ackPhyBytes(payload, flooded))
+        ops.pinned = true
+        hooks.route(packet(MeshcorePacket.Type.CONTACT_TEXT, slot = null, payload = seal, cobs = true, pathLen = 0xFF), null)
+        assertEquals(ms(7, flooded = false) + ms(6, flooded = false), air.usedMs(now))
+        assertEquals(1L, hooks.counters.acksBookedDirect.get())
+    }
 
     @Test
     fun everyLiveContactDmKnitsOrNotBooksTheAnswerOurBoardAiredAndAReplayBooksNothing() {
@@ -506,19 +553,6 @@ class MeshcoreHooksTest {
     // --- setup, teaching, the face ---
 
     @Test
-    fun setupRunsThroughTheSessionAndARestoreNeedsTheRecordItLeft() =
-        runTest {
-            val record = MeshcoreSetupRecord(KNIT_SLOT, slotWritten = true, priorName = null, priorManualAdd = 0, priorAutoadd = null)
-            assertTrue(hooks.provision(ProvisionMode.Restore, null) is ProvisionResult.Failed)
-            ops.setupResult = MeshcoreSetupResult.Done(KNIT_SLOT, alreadyPresent = false, record = record)
-            assertEquals(ProvisionResult.Provisioned(KNIT_SLOT, false), hooks.provision(ProvisionMode.Setup, null))
-            assertEquals(ProvisionResult.Restored, hooks.provision(ProvisionMode.Restore, null))
-            assertEquals(listOf(record), ops.restored)
-            assertTrue(hooks.provision(ProvisionMode.SetupDedicated, null) is ProvisionResult.Failed)
-            assertFalse(hooks.provisioning)
-        }
-
-    @Test
     fun teachingIsRefusedUntilStage5b() {
         val holder = LoraBoardHolder(BoardAddr.MeshCore(ByteArray(6) { 7 }), direct = true)
         assertEquals(KeyTeach.Refused, hooks.teachKey("bob", holder, BoardAddr.MeshCore(ByteArray(6)), 0))
@@ -534,15 +568,6 @@ class MeshcoreHooksTest {
         assertNull(status.boardNodeNum)
         val down = hooks.statusOf(BoardState.Down(TransportHealth.Degraded, MeshcoreLinkState.Connecting), LoraStatus())
         assertEquals(LinkState.Connecting, down.state)
-    }
-
-    @Test
-    fun theReadyLineSaysTheInboxIsKnitsAndTheKeyGoesOutUnderTheDialledAddress() {
-        hooks.beforeReady(ready())
-        hooks.onReady(ready())
-        assertTrue(logs.any { it.startsWith("lora ready kind=meshcore ") && it.contains("inbox=knit-only") })
-        assertEquals("the address the session dialled, never the plane's configured one", "DD:DD", keys.single().second)
-        assertTrue(keys.single().first.contentEquals(boardKey))
     }
 
     /**
@@ -570,6 +595,124 @@ class MeshcoreHooksTest {
         assertFalse(everything.contains(base64.encodeToString(boardKey.copyOf(6)).trimEnd('=')))
         assertFalse(everything.contains(base64.encodeToString(prefix).trimEnd('=')))
         assertFalse(everything.contains(text))
+    }
+
+    // --- the consent, observed from the session (Stage 5b-2, second part) ---
+
+    private fun consent(granted: Boolean) = MeshcoreConsent(BOARD, MeshcoreHooks.digest(boardKey), granted, boardKey)
+
+    @Test
+    fun setupAndRestoreRunThroughTheSessionWhichOwnsTheRecord() =
+        runTest {
+            val record = MeshcoreSetupRecord(KNIT_SLOT, slotWritten = true, priorName = null, priorManualAdd = 0, priorAutoadd = null)
+            ops.setupResult =
+                MeshcoreSetupResult.Done(KNIT_SLOT, alreadyPresent = false, record = record, erasedContacts = 3, clearedSlots = 1)
+            assertEquals(ProvisionResult.Provisioned(KNIT_SLOT, false), hooks.provision(ProvisionMode.Setup, null))
+            assertTrue(logs.any { it == "lora setup kind=meshcore slot=$KNIT_SLOT erased contacts=3 slots=1" })
+            assertEquals(ProvisionResult.Restored, hooks.provision(ProvisionMode.Restore, null))
+            ops.restoreResult = MeshcoreRestoreResult.NoRecord
+            assertTrue(hooks.provision(ProvisionMode.Restore, null) is ProvisionResult.Failed)
+            ops.restoreResult = MeshcoreRestoreResult.Mismatch
+            assertTrue(hooks.provision(ProvisionMode.Restore, null) is ProvisionResult.Failed)
+            assertTrue(hooks.provision(ProvisionMode.SetupDedicated, null) is ProvisionResult.Failed)
+            assertFalse(hooks.provisioning)
+        }
+
+    /** The maintainer's decision (2026-11-13): the claim, the offers and the taught set follow the actor's consent, in order. */
+    @Test
+    fun theClaimTheOffersAndTheTaughtSetFollowTheSessionsConsentInItsOrder() {
+        val bob = edKey()
+        val map = holders("bob" to bob)
+        hooks.onBoardMap(map)
+        assertTrue("nothing offered before any consent", hooks.offered(map).values.none { it.direct })
+        assertTrue("no claim before any consent", keys.isEmpty())
+        ops.consent.value = consent(granted = true)
+        assertTrue(keys.last().first!!.contentEquals(boardKey))
+        assertEquals(BOARD, keys.last().second)
+        assertTrue(hooks.offered(map).values.all { it.direct })
+        assertEquals(1, ops.taught.last().size)
+        val moved = core.holdersMoved
+        ops.consent.value = consent(granted = false)
+        assertNull("withdrawn", keys.last().first)
+        assertTrue(hooks.offered(map).values.none { it.direct })
+        assertTrue("nothing taught without consent", ops.taught.last().isEmpty())
+        assertTrue("and said so: no taught set the reconcile could list against (lora L1)", ops.withdrawals.last())
+        assertEquals(KeyTeach.Refused, hooks.teachKey("bob", map.getValue("bob"), checkNotNull(MeshcorePins.addrOf(boardKey)), 0))
+        assertEquals(moved + 1, core.holdersMoved)
+    }
+
+    /** The maintainer's decision (2026-11-14), the belt: a consent for any board but the bound one is never applied. */
+    @Test
+    fun aConsentForAnotherAddressThanTheBoundBoardIsIgnored() {
+        val map = holders("bob" to edKey())
+        hooks.onBoardMap(map)
+        ops.consent.value = consent(granted = true)
+        ops.consent.value = MeshcoreConsent("ZZ:ZZ", "00", granted = false, key = null)
+        assertTrue("the bound board's claim stands", keys.last().first!!.contentEquals(boardKey))
+        assertTrue(hooks.offered(map).values.all { it.direct })
+        assertEquals(1, ops.taught.last().size)
+    }
+
+    /** Security N2 (the hooks' half): an unread consent leaves the claim as it was and closes the offers. */
+    @Test
+    fun anUnreadConsentKeepsTheClaimAndClosesTheOffers() {
+        val map = holders("bob" to edKey())
+        hooks.onBoardMap(map)
+        ops.consent.value = consent(granted = true)
+        ops.consent.value = MeshcoreConsent(BOARD, MeshcoreHooks.digest(boardKey), granted = false, key = null, unread = true)
+        assertTrue("the claim is left as it was", keys.last().first!!.contentEquals(boardKey))
+        assertTrue(hooks.offered(map).values.none { it.direct })
+    }
+
+    /** Security (the 6-item round's Blocking): a finished Restore or unbind is never unread, so the claim store hears null. */
+    @Test
+    fun aRestoreOrUnbindConsentWithdrawsTheClaimFromTheStore() {
+        ops.consent.value = consent(granted = true)
+        ops.consent.value = MeshcoreConsent(BOARD, MeshcoreHooks.digest(boardKey), granted = false, key = null, unread = false)
+        assertNull("onBoardKey(null, …) reached the claim store", keys.last().first)
+        assertEquals(BOARD, keys.last().second)
+    }
+
+    /** Security N2: a withdrawal whose claim edit throws is retried until it lands. */
+    @Test
+    fun aWithdrawalWhoseClaimEditFailsIsRetried() {
+        var failures = 1
+        val edits = mutableListOf<ByteArray?>()
+        val h =
+            MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, _ ->
+                if (k == null && failures-- > 0) throw java.io.IOException("DataStore")
+                edits += k
+            })
+        ops.consent.value = consent(granted = true)
+        assertTrue(edits.last()!!.contentEquals(boardKey))
+        ops.consent.value = MeshcoreConsent(BOARD, MeshcoreHooks.digest(boardKey), granted = false, key = null)
+        assertTrue("the first edit threw", edits.last() != null)
+        assertEquals(1L, h.counters.consentApplyFailures.get())
+        scope.testScheduler.advanceTimeBy(MeshcoreHooks.CLAIM_RETRY_FIRST_MS + 1)
+        scope.testScheduler.runCurrent()
+        assertNull("the withdrawal landed on the retry", edits.last())
+    }
+
+    @Test
+    fun onlyTaughtHoldersAreOfferedAndACapacityCutMovesTheOffers() {
+        val keys = List(3) { edKey() }
+        val map = holders("a" to keys[0], "b" to keys[1], "c" to keys[2])
+        hooks.onBoardMap(map)
+        ops.consent.value = consent(granted = true)
+        assertTrue(hooks.offered(map).values.all { it.direct })
+        val moved = core.holdersMoved
+        hooks.beforeReady(ready(detail = detail(capacity = 2)))
+        assertEquals("the capacity moved: the core re-asks", moved + 1, core.holdersMoved)
+        assertEquals("one cut at the capacity is never offered", 1, hooks.offered(map).values.count { !it.direct })
+        hooks.beforeReady(ready(detail = detail(capacity = 2)))
+        assertEquals("no move, no re-ask", moved + 1, core.holdersMoved)
+    }
+
+    @Test
+    fun theReadyLineSaysTheInboxIsKnits() {
+        hooks.beforeReady(ready())
+        hooks.onReady(ready())
+        assertTrue(logs.any { it.startsWith("lora ready kind=meshcore ") && it.contains("inbox=knit-only") })
     }
 
     // --- the taught set (Stage 5b-2) ---
@@ -656,27 +799,6 @@ class MeshcoreHooksTest {
         }
 
     @Test
-    fun afterARestoreNothingIsTaughtUntilTheNextSetup() =
-        runTest {
-            val record = MeshcoreSetupRecord(KNIT_SLOT, slotWritten = true, priorName = null, priorManualAdd = 0, priorAutoadd = null)
-            ops.setupResult =
-                MeshcoreSetupResult.Done(KNIT_SLOT, alreadyPresent = false, record = record, erasedContacts = 3, clearedSlots = 1)
-            val bob = edKey()
-            val map = holders("bob" to bob)
-            hooks.onBoardMap(map)
-            hooks.provision(ProvisionMode.Setup, null)
-            assertTrue(logs.any { it == "lora setup kind=meshcore slot=$KNIT_SLOT erased contacts=3 slots=1" })
-            assertEquals(ProvisionResult.Restored, hooks.provision(ProvisionMode.Restore, null))
-            assertTrue(ops.taught.last().isEmpty())
-            hooks.onBoardMap(map)
-            assertTrue("a map after the Restore teaches nothing", ops.taught.last().isEmpty())
-            val own = BoardAddr.MeshCore(ByteArray(6))
-            assertEquals(KeyTeach.Refused, hooks.teachKey("bob", map.getValue("bob"), own, 0))
-            hooks.provision(ProvisionMode.Setup, null)
-            assertEquals(1, ops.taught.last().size)
-        }
-
-    @Test
     fun noLineOfTheTeachingNamesAKeyAPrefixOrAKnitName() =
         runTest {
             hooks.onIdentified(boardKey)
@@ -701,6 +823,7 @@ class MeshcoreHooksTest {
     private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(Locale.ROOT, it) }
 
     private companion object {
+        const val BOARD = "DD:DD"
         const val WALL_NOW = 1_800_000_000_000L
         const val KNIT_SLOT = 1
         const val SIGNED_PLAIN = 2

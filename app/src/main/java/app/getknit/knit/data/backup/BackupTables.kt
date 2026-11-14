@@ -77,7 +77,14 @@ object BackupTables {
      * URIs into this phone's storage, readable only through grants this install holds (ADR 2026-09.7ad3). On
      * another phone they name nothing; a restored file bubble asks where to save, as it did the first time.
      */
-    val DEVICE_LOCAL: List<String> = listOf("saved_files")
+    val DEVICE_LOCAL: List<String> =
+        listOf(
+            "saved_files",
+            // A MeshCore setup's record (ADR 2026-11.gsqu's Stage 5b-2 amendment): the user's own board's prior name and
+            // settings, and this phone's consent to touch it. About that board and this phone alone (`BoardKeys`' rule for
+            // the setup records, ADR 2026-09.6mj7): a restored phone sets its board up again.
+            "meshcore_setup",
+        )
 
     /** Never copied: an index over `messages.body` that Room's content-sync triggers refill as the rows land. */
     val DERIVED: List<String> = listOf("messages_fts")

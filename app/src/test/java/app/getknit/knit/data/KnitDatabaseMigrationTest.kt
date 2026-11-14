@@ -1326,12 +1326,45 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 36 to 37 keeps every peer and adds an empty MeshCore setup table`() =
+        runTest {
+            helper.createDatabase(36).use { c ->
+                c.execSQL(
+                    "INSERT INTO peers (nodeId, name, status, verified, updatedAt, openToChat, lastSeenAt, advertisedKnown) " +
+                        "VALUES ('peer-1','Ann','',1,7,0,9,1)",
+                )
+            }
+            helper.runMigrationsAndValidate(37, listOf(KnitMigrations.MIGRATION_36_37)).use { c ->
+                c.prepare("SELECT name FROM peers").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("Ann", s.getText(0))
+                }
+                c.prepare("SELECT COUNT(*) FROM meshcore_setup").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("no build before this persisted one", 0L, s.getLong(0))
+                }
+                // The writer's shape (ADR 2026-11.gsqu's Stage 5b-2 amendment): a setup's record, then an unbind's pending mark.
+                c.execSQL(
+                    "INSERT INTO meshcore_setup (address, boardDigest, slot, slotWritten, priorName, priorManualAdd, priorAutoadd, " +
+                        "pendingCleanup) VALUES ('AA:BB', '0123456789abcdef', 1, 1, x'416e6e', 0, NULL, 0)",
+                )
+                c.execSQL("UPDATE meshcore_setup SET pendingCleanup = 1 WHERE address = 'AA:BB'")
+                c.prepare("SELECT slot, pendingCleanup, priorAutoadd FROM meshcore_setup WHERE address = 'AA:BB'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(1L, s.getLong(0))
+                    assertEquals(1L, s.getLong(1))
+                    assertTrue(s.isNull(2))
+                }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 36
+        const val CURRENT_VERSION = 37
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

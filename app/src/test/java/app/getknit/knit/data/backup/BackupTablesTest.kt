@@ -6,6 +6,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -38,5 +39,12 @@ class BackupTablesTest {
         val listed = BackupTables.CARRIED + BackupTables.TRANSIENT + BackupTables.DEVICE_LOCAL + BackupTables.DERIVED
         assertEquals("a table is listed twice", listed.size, listed.toSet().size)
         assertEquals(inSchema, listed.toSet())
+    }
+
+    @Test
+    fun theMeshcoreSetupRecordNeverRidesABackup() {
+        // The user's board's prior name and this phone's consent to touch it (ADR 2026-11.gsqu's Stage 5b-2 amendment).
+        assertTrue("meshcore_setup" in BackupTables.DEVICE_LOCAL)
+        assertFalse("meshcore_setup" in BackupTables.CARRIED)
     }
 }

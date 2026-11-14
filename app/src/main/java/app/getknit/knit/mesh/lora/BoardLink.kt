@@ -310,6 +310,14 @@ internal interface BoardKindHooks {
     fun onBoardMap(map: Map<String, LoraBoardHolder>) = Unit
 
     /**
+     * The holders the core may offer a compact DM to, from the board map [map] (Stage 5b-2 part 2, lora-reviewer N2): a kind
+     * that teaches its board a set answers `direct` false for a holder it does not teach (MeshCore: cut at capacity, over the
+     * daily cap, contested), so nothing is offered that our board would only refuse. Meshtastic offers the map as it is.
+     * Pure; returns at once.
+     */
+    fun offered(map: Map<String, LoraBoardHolder>): Map<String, LoraBoardHolder> = map
+
+    /**
      * The destination's board lacks our key ([RefusalClass.PEER_LACKS_KEY]), and ours answers it on its own (Meshtastic:
      * our `NodeInfo`): books that air at [now]. Called on the outcomes collector.
      */
@@ -440,6 +448,12 @@ internal interface PlaneCore {
      * kind's to keep (MeshCore, `MeshcoreDutyLaw`; ADR 2026-11.gsqu's Stage 5a-1 amendment). The core wakes its pacer.
      */
     fun holdForLaw(untilMs: Long?) = Unit
+
+    /**
+     * The kind's answer to [BoardKindHooks.offered] moved without a new board map (MeshCore: a board's capacity read at Ready
+     * cut or grew the taught set): the core asks it again over the last map. Never called from inside a core callback.
+     */
+    fun holdersMoved() = Unit
 }
 
 /**

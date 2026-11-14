@@ -10,6 +10,7 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.MeshcoreBoardHolder
 import app.getknit.knit.mesh.PublicChannelSink
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
 import app.getknit.knit.mesh.crypto.MessageCrypto
@@ -18,6 +19,7 @@ import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.BoardPlane
 import app.getknit.knit.mesh.lora.DirectDm
 import app.getknit.knit.mesh.lora.LoraAuthorCheck
+import app.getknit.knit.mesh.lora.LoraBoardHolder
 import app.getknit.knit.mesh.lora.LoraBoardMap
 import app.getknit.knit.mesh.lora.LoraConfig
 import app.getknit.knit.mesh.lora.LoraDirectInbox
@@ -25,7 +27,9 @@ import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPlaneStatus
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreContacts
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import org.koin.core.module.Module
 import org.koin.core.qualifier.Qualifier
 import org.koin.core.qualifier.named
@@ -164,3 +168,15 @@ internal fun Module.loraPlaneOf(
         face() ?: if (BuildConfig.LORA_PLANE) get<LoraMeshTransport>(loraPlane(kind)) else LoraPlaneStatus.Dark
     }
 }
+
+/**
+ * The MeshCore plane's board map, in the core's form ([MeshcoreContacts.holdersOf]), from [source]
+ * (`MeshManager.meshcoreBoardMap`). Adds no start value: the first map the plane sees is [source]'s first, the stores' real
+ * state — an empty placeholder would be a taught set of nothing, which the Ready reconcile turns into removals (ADR
+ * 2026-11.gsqu's Stage 5b-2 amendment).
+ */
+internal fun meshcoreBoardHolders(source: Flow<Map<String, MeshcoreBoardHolder>>): Flow<Map<String, LoraBoardHolder>> =
+    source.map(MeshcoreContacts::holdersOf)
+
+/** Whether the MeshCore DM door is bound ([MeshManager.bindMeshcoreDirect]): only where the MeshCore child is built. */
+internal fun bindsMeshcoreDirect(kinds: List<BoardKind>): Boolean = BoardKind.MESHCORE in kinds

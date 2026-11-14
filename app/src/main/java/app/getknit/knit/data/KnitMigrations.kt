@@ -825,6 +825,24 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v36 → v37 (ADR 2026-11.gsqu's Stage 5b-2 amendment): the empty `meshcore_setup` table, a MeshCore setup's record per
+     * board address. No build before this persisted one (5a-2 held it in memory), so there is nothing to fill. Its own
+     * version, as v33 to v36 were: fold them all into the next release's single bump. The SQL must stay byte-equivalent
+     * to what Room generates for `app/schemas/**/37.json`.
+     */
+    val MIGRATION_36_37 =
+        object : Migration(36, 37) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `meshcore_setup` (`address` TEXT NOT NULL, `boardDigest` TEXT NOT NULL, " +
+                        "`slot` INTEGER NOT NULL, " +
+                        "`slotWritten` INTEGER NOT NULL, `priorName` BLOB, `priorManualAdd` INTEGER, `priorAutoadd` INTEGER, " +
+                        "`pendingCleanup` INTEGER NOT NULL, PRIMARY KEY(`address`))",
+                )
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -863,5 +881,6 @@ object KnitMigrations {
             MIGRATION_33_34,
             MIGRATION_34_35,
             MIGRATION_35_36,
+            MIGRATION_36_37,
         )
 }

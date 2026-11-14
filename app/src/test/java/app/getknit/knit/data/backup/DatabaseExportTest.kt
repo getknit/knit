@@ -86,6 +86,19 @@ class DatabaseExportTest {
         live.dmScopeAnchorDao().put(
             DmScopeAnchorEntity("bob", ByteArray(32) { 1 }, ByteArray(32) { 2 }, ByteArray(32) { 3 }, armedUntil = 0L, updatedAt = 4L),
         )
+        // A MeshCore setup record, with the board's prior name: never in a backup (DEVICE_LOCAL, ADR 2026-11.gsqu 5b-2).
+        live.meshcoreSetupDao().put(
+            app.getknit.knit.data.meshcore.MeshcoreSetupEntity(
+                address = "AA:BB",
+                boardDigest = "0123456789abcdef",
+                slot = 1,
+                slotWritten = true,
+                priorName = "Ann Smith".encodeToByteArray(),
+                priorManualAdd = 0,
+                priorAutoadd = 7,
+                pendingCleanup = false,
+            ),
+        )
     }
 
     @Test

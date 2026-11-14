@@ -393,7 +393,8 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   background's place (only the hourly direct net), and a board without NUS twice in a row is terminal. An opened DM is a
   hearing only fresh. Release gate: presence on MeshCore is unverified (#283). A session's
   Ready carries the address it dialled and the binding is written under it. An offer reads the door claim of its sink's
-  kind. Until 5b-2's second part: an empty board map in the app, `bindMeshcoreDirect` unbound, no device name stored.
+  kind. Since 5b-2's second part the plane is fed `meshcoreBoardMap` (`di/meshcoreBoardHolders`, no placeholder first) and
+  `bindMeshcoreDirect` is bound before start where the child is built (`bindsMeshcoreDirect`); no device name is stored.
 
 - **Before touching MeshCore's contacts — `MeshcoreContacts` (`holdersOf`, `wanted`, `judgeTeach`, `plan`, `isKnitRecord`,
   `MAX_REMOVALS_PER_READY`, `MAX_OVERWRITES_PER_READY`), `MeshcorePins.keyFor` / `learn` / `contest` / `teaches`,
@@ -401,8 +402,13 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   contact clearing, `BoardKindHooks.onBoardMap`, `LoraBoardHolder.rank`, or `MeshcoreSetupResult.Done.erasedContacts`:** READ
   ADR 2026-11.gsqu's Stage 5b-2 amendment (and the maintainer's Stage 5 decisions), then "MeshCore's contacts" in
   `lora-bridge.md`. The board is Knit's: its table is the taught set. The session sends to and pins only taught keys
-  (security B1), and nothing at all — no DM, pin, teach or removal — off a board set up for Knit (part 2 adds the persisted
-  setup record to that gate); a prefix two keys share is taught to neither and refused at `learn` (B3); the Ready reconcile runs only on
+  (security B1), and nothing at all — no DM, pin, teach or removal — off a board set up for Knit, which needs this phone's
+  `meshcore_setup` record for the dialled address and the board's key digest, not pending (the single source of consent,
+  read and written by the session's actor alone — in its handshake before Ready, and in its own setup, Restore and unbind —
+  and only on a bonded link whose board signed a fresh challenge with the key it reports (`MeshcoreProto.signStart` /
+  `signData` / `signFinish`, `MeshcoreSession.CONSENT_DOMAIN`; a clone of the address can report the key, never sign); the hooks observe `MeshcoreBoardOps.consent` for the offers and the claim; `MeshcoreSetupJournal`,
+  `MeshcoreHooks.unbind`, the 5b-2 second part's amendment) besides the board's Knit slot and name; a holder the taught set
+  lacks is never offered (`BoardKindHooks.offered`, `PlaneCore.holdersMoved`); a prefix two keys share is taught to neither and refused at `learn` (B3); the Ready reconcile runs only on
   a board set up for Knit and once the taught set is known, from **one** `GET_CONTACTS` listing a Ready (never one per key),
   bounded per Ready; setup erases before it writes, never `CMD_FACTORY_RESET`; Restore removes Knit's contacts and brings
   back nothing the erase removed. No key, prefix or `Knit xxxx` name in any line (`BoardAddr.MeshCore` and

@@ -59,8 +59,11 @@ import java.util.concurrent.atomic.AtomicLong
  * for a key in the set, once per (board, key) until a DM to it is acked ([teachKey]). After a Restore nothing is taught
  * until the next setup.
  *
- * Not yet: the persisted setup record and the inbox claim are Stage 5b-2's second part (`bindMeshcoreDirect` stays
- * unbound), two-part room posts 5c's, the Public mirror Stage 6's.
+ * **Consent is the session's** (Stage 5b-2, second part; the maintainer's decision, 2026-11-13): the actor reads the setup
+ * record in its handshake and moves it in its own setup, Restore and unbind; these hooks only observe it
+ * ([MeshcoreBoardOps.consent]) and derive the taught set, the offers and the profile's claim from it.
+ *
+ * Not yet: two-part room posts are 5c's, the Public mirror Stage 6's.
  *
  * State: the duty law ([MeshcoreDutyLaw], `@Synchronized`), the board its ring is for and the band's duty, guarded by
  * [lock], which is never held across a call into the core; the contact policy is `@Synchronized`; counters are atomics;
@@ -79,7 +82,7 @@ internal class MeshcoreHooks(
      * The bound board reported its 32-byte public key, from the session that dialled [dialled] (the `dialled` race, Stage
      * 5a-2): what `MeshcoreClaimStore.setBoardKey` writes, only while that address is still the bound one.
      */
-    private val onBoardKey: suspend (key: ByteArray, dialled: String?) -> Unit = { _, _ -> },
+    private val onBoardKey: suspend (key: ByteArray?, dialled: String?) -> Unit = { _, _ -> },
 ) : BoardKindHooks,
     MeshcoreSessionObserver {
     override val kind: BoardKind get() = BoardKind.MESHCORE
@@ -115,10 +118,6 @@ internal class MeshcoreHooks(
     @Volatile
     private var multiAcks = 0
 
-    /** What this process's last setup changed, for a Restore in the same process; persisted in 5b-2's second part. */
-    @Volatile
-    private var setupRecord: MeshcoreSetupRecord? = null
-
     /** Which contacts the board is taught (Stage 5b-2). */
     private val contacts = MeshcoreContacts()
 
@@ -137,9 +136,13 @@ internal class MeshcoreHooks(
     @Volatile
     private var capacity: Int? = null
 
-    /** A Restore succeeded: nothing is taught until the next setup. */
+    /**
+     * This phone's consent for the Ready board, as the session's actor decided it ([MeshcoreBoardOps.consent], the
+     * maintainer's decision of 2026-11-13: one owner): the offers ([offered]), the taught set and the profile's claim
+     * ([onBoardKey]) follow it, applied in the actor's order. Null before the first Ready.
+     */
     @Volatile
-    private var restored = false
+    private var consent: Boolean? = null
 
     @Volatile
     override var provisioning = false
@@ -149,6 +152,18 @@ internal class MeshcoreHooks(
         session.observer = this
         // Our board's floods of a DM of ours (the pin did not hold): the surcharge over the direct airing booked at send.
         scope.launch { session.air.collect(::onAir) }
+        // The consent, in the order the actor decided it, the latest winning: nothing here reads or writes the record.
+        scope.launch {
+            session.consent.collect { c ->
+                // One throw (the claim's DataStore edit, a reteach) never ends the collector (security N3).
+                if (c != null) {
+                    runCatching { onConsent(c) }.onFailure {
+                        if (it is kotlinx.coroutines.CancellationException) throw it
+                        counters.consentApplyFailures.incrementAndGet()
+                    }
+                }
+            }
+        }
     }
 
     // --- the face ---
@@ -196,7 +211,7 @@ internal class MeshcoreHooks(
         val mc = packet.kind as? MeshcorePacket ?: return PacketRoute.DROPPED
         return when (mc.type) {
             MeshcorePacket.Type.CONTACT_TEXT -> {
-                bookAnswer(mc)
+                bookAnswer(mc, packet.from as? BoardAddr.MeshCore)
                 if (isCompactDm(packet, mc)) PacketRoute.DIRECT else discard(counters.foreignDms)
             }
 
@@ -275,7 +290,10 @@ internal class MeshcoreHooks(
      * Under [app.getknit.knit.mesh.lora.Ceiling.FULL]: an answer is no room post, and a foreign DM must not eat the room's
      * flood share.
      */
-    private fun bookAnswer(mc: MeshcorePacket) {
+    private fun bookAnswer(
+        mc: MeshcorePacket,
+        from: BoardAddr.MeshCore?,
+    ) {
         val txtType = mc.txtType ?: return
         if (txtType !in MeshcoreSession.ACKED_TXT_TYPES) return
         if (!mc.live) {
@@ -292,7 +310,12 @@ internal class MeshcoreHooks(
                         multiAcks,
                         txtType,
                     ).sumOf { airtime.airMsOfPhy(MeshcoreTraits.ackPhyBytes(it, flooded = false)) }
-            airtime.recordMs(maxOf(flooded, alongPath), now)
+            // A sender Knit taught and pinned zero-hop on this connection is answered along that path (Stage 5b-2 part 2);
+            // anyone else's record may hold no path, so the larger is booked. The prefix only prices air here: a forged one
+            // whose MAC fails draws no ack at all, and one whose MAC passes is answered on that very record.
+            val pinned = from != null && session.pinnedZeroHop(from)
+            airtime.recordMs(if (pinned) alongPath else maxOf(flooded, alongPath), now)
+            if (pinned) counters.acksBookedDirect.incrementAndGet()
             counters.acksBooked.incrementAndGet()
         } else {
             airtime.record(MeshcoreTraits.pathReturnPlaintext(mc.pathLen, txtType), now, airtime.price(AirPurpose.PATH_RETURN))
@@ -446,9 +469,79 @@ internal class MeshcoreHooks(
                 "duty=$duty allowanceMs=${air.allowanceMs} floodCeilingMs=${air.floodCeilingMs} multiAcks=${detail.multiAcks} " +
                 "scope=${detail.defaultScope} inbox=knit-only",
         )
-        val key = detail.publicKey
-        scope.launch { onBoardKey(key, detail.dialled) }
     }
+
+    /**
+     * The session's consent for the board on [c] (one owner: the actor resolved it before the Ready, or moved it in its own
+     * setup, Restore or unbind after the durable write). Applied whole, so the latest wins: the taught set, the core's offers
+     * ([PlaneCore.holdersMoved]) and the profile's claim — the board's key published while consented, withdrawn (null)
+     * otherwise (security S2).
+     */
+    private suspend fun onConsent(c: MeshcoreConsent) {
+        // Only the board this plane is bound to (the maintainer's decision, 2026-11-14): another address cannot hold the claim.
+        val bound = core.config?.address
+        if (bound != null && bound != c.address) return
+        consent = c.granted
+        // A withdrawal goes to the claim first (security N2): nothing after it can skip it. An unread record leaves the claim
+        // as the last consent left it.
+        if (!c.unread && !c.granted) claim(c.address, null)
+        if (holders != null) reteach()
+        core.holdersMoved()
+        if (!c.unread && c.granted) claim(c.address, c.key)
+    }
+
+    /** The claim edit owed, the latest winning, retried until it lands ([claim]). */
+    private class OwedClaim(
+        val address: String,
+        val key: ByteArray?,
+    )
+
+    @Volatile
+    private var owedClaim: OwedClaim? = null
+
+    private var claimRetry: kotlinx.coroutines.Job? = null
+
+    /**
+     * Publishes ([key]) or withdraws (null) the claim for [address]; an edit that throws (a DataStore I/O error) is owed and
+     * retried with a backoff until it lands or a newer one replaces it, so a withdrawal is never lost (security N2).
+     */
+    private suspend fun claim(
+        address: String,
+        key: ByteArray?,
+    ) {
+        val owed = OwedClaim(address, key)
+        owedClaim = owed
+        if (tryClaim(owed)) return
+        synchronized(lock) {
+            claimRetry?.cancel()
+            claimRetry =
+                scope.launch {
+                    var wait = CLAIM_RETRY_FIRST_MS
+                    while (owedClaim === owed) {
+                        kotlinx.coroutines.delay(wait)
+                        if (owedClaim !== owed || tryClaim(owed)) return@launch
+                        wait = (wait * 2).coerceAtMost(CLAIM_RETRY_MAX_MS)
+                    }
+                }
+        }
+    }
+
+    /** One attempt at [owed]: true when it landed (and is no longer owed). */
+    private suspend fun tryClaim(owed: OwedClaim): Boolean {
+        val landed =
+            runCatching { onBoardKey(owed.key, owed.address) }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                .isSuccess
+        if (landed) {
+            if (owedClaim === owed) owedClaim = null
+        } else {
+            counters.consentApplyFailures.incrementAndGet()
+        }
+        return landed
+    }
+
+    /** Unbinds the board at [address], through the session's actor ([MeshcoreBoardOps.unbind]). */
+    suspend fun unbind(address: String): MeshcoreUnbind = session.unbind(address)
 
     // --- the session's observer: on its actor, returns at once ---
 
@@ -492,9 +585,11 @@ internal class MeshcoreHooks(
         if (radio != null && duty != null) core.airtime.onRadio(radio, duty) else core.airtime.forgetRadio()
         synchronized(lock) { dutyPercent = duty?.dutyCyclePercent ?: MeshcoreTraits.fallbackDutyPercent }
         applyLaw()
-        // The taught set cut to this board's capacity before the Ready reconcile reads it.
+        // The taught set cut to this board's capacity before the Ready reconcile reads it, and the core's offers with it.
+        val moved = capacity != detail?.contactCapacity
         capacity = detail?.contactCapacity
         if (holders != null) reteach()
+        if (moved) core.holdersMoved()
     }
 
     /** One poll's sample: the law reads it, the pacer is held or released, and the ring is saved once a spacing. */
@@ -574,9 +669,10 @@ internal class MeshcoreHooks(
     // --- setup and restore, through the session (5b adds the erase step and keeps the record) ---
 
     /**
-     * [ProvisionMode.Setup] runs the session's own setup transaction ([MeshcoreSession.setup]); its record is held for a
-     * [ProvisionMode.Restore] in this process only, until Stage 5b persists it under SQLCipher. A restore with no record
-     * held fails, and the dedicated-slot modes have no MeshCore form (the radio is never Knit's, ADR 045).
+     * [ProvisionMode.Setup] runs the session's own setup transaction ([MeshcoreSession.setup]) and keeps its record under
+     * SQLCipher ([records]), merged into one a setup before left; [ProvisionMode.Restore] puts back what the record says, on
+     * the board it is for only. A restore with no record fails, and the dedicated-slot modes have no MeshCore form (the radio
+     * is never Knit's, ADR 045).
      */
     override suspend fun provision(
         mode: ProvisionMode,
@@ -597,10 +693,7 @@ internal class MeshcoreHooks(
     private suspend fun setup(): ProvisionResult =
         when (val r = session.setup()) {
             is MeshcoreSetupResult.Done -> {
-                if (r.record.changedAnything) setupRecord = r.record
-                restored = false
-                if (holders != null) reteach()
-                // What the erase removed, counted, never named: the oracle a setup trial greps.
+                // The record and the consent are the session's, written and granted inside its own transaction.
                 log("lora setup kind=meshcore slot=${r.slot} erased contacts=${r.erasedContacts} slots=${r.clearedSlots}")
                 ProvisionResult.Provisioned(r.slot, r.alreadyPresent)
             }
@@ -610,7 +703,6 @@ internal class MeshcoreHooks(
             }
 
             is MeshcoreSetupResult.Failed -> {
-                r.left?.let { setupRecord = it }
                 ProvisionResult.Failed(r.reason)
             }
 
@@ -619,15 +711,9 @@ internal class MeshcoreHooks(
             }
         }
 
-    private suspend fun restore(): ProvisionResult {
-        val record = setupRecord ?: return ProvisionResult.Failed(NO_RECORD)
-        return when (val r = session.restore(record)) {
+    private suspend fun restore(): ProvisionResult =
+        when (val r = session.restore()) {
             is MeshcoreRestoreResult.Done -> {
-                if (r.failed.isEmpty()) {
-                    setupRecord = null
-                    restored = true
-                    session.setKnitContacts(emptyList())
-                }
                 log("lora restore kind=meshcore contacts=${r.contactsRemoved} slotCleared=${r.slotCleared} failed=${r.failed.size}")
                 if (r.failed.isEmpty()) {
                     ProvisionResult.Restored
@@ -638,11 +724,18 @@ internal class MeshcoreHooks(
                 }
             }
 
+            MeshcoreRestoreResult.Mismatch -> {
+                ProvisionResult.Failed(NOT_THIS_BOARD)
+            }
+
+            MeshcoreRestoreResult.NoRecord -> {
+                ProvisionResult.Failed(NO_RECORD)
+            }
+
             MeshcoreRestoreResult.NotReady -> {
                 ProvisionResult.NotReady(LinkState.Idle)
             }
         }
-    }
 
     /**
      * The board map changed (Stage 5b-2): the taught set is decided again ([MeshcoreContacts.wanted]) and handed to the
@@ -652,6 +745,21 @@ internal class MeshcoreHooks(
     override fun onBoardMap(map: Map<String, LoraBoardHolder>) {
         holders = map
         reteach()
+    }
+
+    /**
+     * Offers a compact DM only to a holder whose key the taught set holds (lora-reviewer N2): one cut at the capacity, over
+     * its daily bound or contested would be refused `NO_RECORD` by our board every time. The core asks again when the set
+     * moves without a new map ([reteach] at Ready, through `PlaneCore.holdersMoved`).
+     */
+    override fun offered(map: Map<String, LoraBoardHolder>): Map<String, LoraBoardHolder> {
+        val wanted = contacts.current
+        // Nothing while the board is unconsented or its record not read yet (lora L2, N3): every offer would be refused.
+        val open = consent == true
+        return map.mapValues { (peer, holder) ->
+            val taught = holder.loraKey?.let(MeshcoreKey::bytesOrNull)?.let { wanted.teaches(peer, it) } == true
+            if (holder.direct && !(open && taught)) holder.copy(direct = false) else holder
+        }
     }
 
     /**
@@ -671,8 +779,9 @@ internal class MeshcoreHooks(
                 .sum()
                 .toLong(),
         )
-        if (restored) {
-            session.setKnitContacts(emptyList())
+        if (consent == false) {
+            // For want of consent, not a taught set: the session's reconcile waits for the real one (lora L1).
+            session.setKnitContacts(emptyList(), withdrawn = true)
             return
         }
         session.setKnitContacts(wanted.ranked)
@@ -699,7 +808,7 @@ internal class MeshcoreHooks(
         val refusal =
             when {
                 board == null || key == null -> "NO_KEY"
-                restored -> "RESTORED"
+                consent == false -> "NOT_SET_UP"
                 else -> contacts.judgeTeach(peerId, key, board)?.name
             }
         if (refusal != null || board == null || key == null) {
@@ -739,6 +848,10 @@ internal class MeshcoreHooks(
         /** How many boards' rings are kept (the current one included): a rebind back to a recent board keeps its baseline. */
         const val LAW_BOARDS = 4
 
+        /** The first and the longest wait before an owed claim edit is tried again. */
+        const val CLAIM_RETRY_FIRST_MS = 1_000L
+        const val CLAIM_RETRY_MAX_MS = 60_000L
+
         /** How far a hold's end may drift before the pacer is told again: under the spacing, over a poll's jitter. */
         const val HOLD_SLACK_MS = 10_000L
 
@@ -748,7 +861,8 @@ internal class MeshcoreHooks(
         private const val MS_PER_SECOND = 1_000L
         private const val DIGEST_BYTES = 8
         private const val NO_DEDICATED_SLOT = "a MeshCore board has no dedicated slot: Knit never moves its radio"
-        private const val NO_RECORD = "no setup record held: setup again first (persisted in Stage 5b-2's second part)"
+        private const val NOT_THIS_BOARD = "the connected board is not the one this phone set up at that address"
+        private const val NO_RECORD = "no setup record held for this board: set it up first"
 
         /**
          * What a teach's answer is to the core's held frame: taken, it goes again; present already or unconfirmed, once more
@@ -849,6 +963,12 @@ internal class MeshcorePlaneCounters {
     /** A live direct DM to us whose acks (the larger of one flooded ack, or a multi-ack and the ack) were booked. */
     val acksBooked = AtomicLong()
 
+    /** A consent the hooks could not apply (the claim's write, a reteach threw): the next one is applied whole. */
+    val consentApplyFailures = AtomicLong()
+
+    /** Of [acksBooked], those booked along the pinned path alone: the sender's contact taught and pinned zero-hop. */
+    val acksBookedDirect = AtomicLong()
+
     /** A live flooded DM to us whose PATH return was booked. */
     val pathReturnsBooked = AtomicLong()
 
@@ -887,7 +1007,8 @@ internal class MeshcorePlaneCounters {
         "MeshcorePlaneCounters(foreignDms=$foreignDms, foreignPosts=$foreignPosts, publicDiscarded=$publicDiscarded, " +
             "fragmentsRefused=$fragmentsRefused, acksBooked=$acksBooked, pathReturnsBooked=$pathReturnsBooked, " +
             "pathReturnsSeen=$pathReturnsSeen, answersReplayed=$answersReplayed, floodSurcharges=$floodSurcharges, " +
-            "lawHolds=$lawHolds, zeroHopKnitPosts=$zeroHopKnitPosts, teachRefused=$teachRefused, teachWritten=$teachWritten, " +
+            "lawHolds=$lawHolds, zeroHopKnitPosts=$zeroHopKnitPosts, acksBookedDirect=$acksBookedDirect, " +
+            "teachRefused=$teachRefused, teachWritten=$teachWritten, " +
             "keysWanted=$keysWanted, keysSkipped=$keysSkipped, removedUntaught=$removedUntaught)"
 }
 
@@ -902,7 +1023,7 @@ internal fun meshcorePlane(
     clock: () -> Long,
     log: (String) -> Unit,
     wallClock: () -> Long,
-    onBoardKey: suspend (key: ByteArray, dialled: String?) -> Unit,
+    onBoardKey: suspend (key: ByteArray?, dialled: String?) -> Unit,
 ): BoardPlane =
     BoardPlane(MeshcoreTraits, session) { core ->
         MeshcoreHooks(session, core, scope, clock, log, wallClock, onBoardKey)

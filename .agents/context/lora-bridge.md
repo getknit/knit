@@ -1134,9 +1134,9 @@ Debug builds only (`MESHCORE_PLANE`): `di/LoraWiring.loraPlaneOf` builds each ki
 - **Dialling.** An unbonded board is never dialled in the background's place: after its three direct dials it waits out the
   background window (its bond re-read each minute), so the hourly direct net is its only dial. A board without NUS twice in a
   row is terminal (`NusDialResult.ServiceAbsent`: `StaleBond` bonded, `NeedsPairing` not).
-- **Not yet.** The board map is empty in the app (no DM goes) and `bindMeshcoreDirect` stays unbound until 5b-2's second part,
-  a room post is one packet (`roomPartLimit` 1 until 5c), and the setup record is held in memory only (5b-2's second part
-  persists it). Teaching is built (below).
+- **The door** (5b-2's second part): the plane is fed `meshcoreBoardMap` and `bindMeshcoreDirect` is bound before start; the
+  setup record is `meshcore_setup` under SQLCipher, and it is the consent the session touches a board under. A room post is
+  still one packet (`roomPartLimit` 1 until 5c).
 - **Face.** `LoraFacts.floodSpent` (the room's saturated notice at 90 % of the flood share), `roomBodyBytes` (40 B on
   MeshCore, pinned by `CoordinationPlaneSizeBudgetTest`) and `directReach` (the acked boards a MeshCore DM notice reads,
   never the flood-fed `reachable`; a zero-hop hearing never marks one); the version string is cleaned before anything shows it. The dump is
@@ -1162,10 +1162,23 @@ restore: remove Knit's contacts (one listing) → slot → name, manual add, aut
 
 **Nothing of the user's is touched off a board set up for Knit** (Knit's slot and `Knit abcd`): no DM, pin, re-pin,
 teach, path reset or removal (`NO_RECORD` under the send's handle, `ContactWrite.NOT_SET_UP`); only setup's erase and
-Restore's own removals bypass it. Part 2 adds this phone's persisted setup record for the board to the gate. A listing's
+Restore's own removals bypass it. The gate also needs this phone's `meshcore_setup` record for the dialled address **and that board's key digest**, not
+pending, on a **bonded** link — the single source of consent, owned by the session's actor: read in the handshake before
+Ready (a read that keeps failing is no consent, `consentReadFailures`), moved only inside its own setup, Restore and unbind
+(durable write first), observed by the hooks (`MeshcoreBoardOps.consent`) for the offers and the profile's claim; Restore
+is refused on another board or an unbonded one (`Mismatch`), and an unbonded board is inert (`unbondedInert`) (a board's slot and name are a
+claim any client can write); an unbind with the board away leaves the record pending, and its Restore runs at that board's
+next connection (`lora cleanup kind=meshcore …`). Our board's ack of a DM from a taught, pinned sender is booked along its
+path alone. A listing's
 contests stand until the next whole listing on the same board of ours (a rebind clears them); a listing ends short past its
-count + 8 or 60 s. Until part 2 the plane's MeshCore board map never emits (`emptyFlow()`): an empty map would be a taught
-set of nothing, and the reconcile would empty the board. The firmware rewrites a
+count + 8 or 60 s. The plane's board map is `meshcoreBoardMap`, whose first emission is the stores' real state, never a
+placeholder: an empty map would be a taught set of nothing, and the reconcile would empty the board. Consent also needs the
+board to **sign a fresh challenge** with the key it reports (`knit-meshcore-consent/v1` ‖ 32 random bytes, `SIGN_START` /
+`SIGN_DATA` / `SIGN_FINISH`, `keyUnproven`), asked again before a Restore, a cleanup or a setup writes; the session's actor
+is the record's only writer while the board is up (an unbind waits for it, under `consentLock`), and an unbind with the board
+away withdraws the consent at once — for the plane's bound board only; another address's record is only marked pending. The
+consent publishes the key the board proved (`provenKey`), an unanswered proof is asked again later (`proofUnanswered`), and
+every record read or write on the actor is bounded at 2 s. The firmware rewrites a
 contact's name and type on every advert it hears and its `out_path` on every PATH (`BaseChatMesh.cpp:191-193`, `:357`), so a
 taught peer whose board is not named `Knit xxxx` is overwritten again at each Ready, and Restore counts it Knit's only while
 taught.

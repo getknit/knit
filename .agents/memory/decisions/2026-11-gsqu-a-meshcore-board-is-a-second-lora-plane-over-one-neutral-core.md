@@ -963,6 +963,224 @@ Review of Stage 5b-2's first part (lora- and security-reviewer, 2026-11-13), app
   (`DebugBridgeReceiver`'s `lora` is `loraPlane(BoardKind.MESHTASTIC)`), so it cannot reach, let alone erase, a MeshCore
   board. A MeshCore setup action, with an explicit erase extra and the counts in its reply, is part 2's.
 
-Owed to the second part: the SQLCipher setup record (DB 34 → 35), unbind / sign-out / cross-kind, the backup class, the door,
+Owed to the second part: the SQLCipher setup record (DB 36 → 37 after the rebase onto main), unbind / sign-out / cross-kind, the backup class, the door,
 `bookAnswer` priced direct for a taught and pinned sender, and a MeshCore setup action on the debug bridge naming what it
 erases. The lab's first MeshCore DM case needs 5c's `MeshLab.node(board = MESHCORE)`.
+
+## Amendment 2026-11-13 — Stage 5b-2, second part: the setup record, the consent gate and the door (draft)
+
+Built on the first part under its reviewers' obligations. A debug build (`MESHCORE_PLANE`) now teaches its MeshCore board,
+claims the door and sends compact DMs; a release build builds no MeshCore child and binds no seam (`bindsMeshcoreDirect`).
+
+- **The setup record** is the SQLCipher table `meshcore_setup` (DB 36 → 37, `MIGRATION_36_37`; v33–v37 fold into the next
+  release's single bump), keyed by board address: the slot and whether setup wrote it, the prior advert name (possibly the
+  user's real name), `manual_add_contacts`, `autoadd_config`, and `pendingCleanup`. No contacts snapshot. Never in a backup
+  (`BackupTables.DEVICE_LOCAL`, ADR 2026-09.6mj7); sign-out clears it with the whole database
+  (`clearApplicationUserData`); a cross-kind bind keeps it (`BoardBindPolicy` edits DataStore alone). Its `toString` names no
+  field. Every finished setup writes it, even one that changed nothing: it is the consent. A setup that failed and could not
+  put back what it wrote leaves it pending, never as consent.
+- **The consent gate** (security, first part's rounds): `knitBoard(c)` also needs this phone's record for the dialled
+  address (`MeshcoreBoardOps.setConsent` at the time — superseded by the maintainer's decisions below —, set by the hooks from the record at each connection and by a setup the session
+  ran). A board another client or another Knit install dressed up with Knit's slot and `Knit abcd` name gets no removal,
+  overwrite, pin, path reset, teach or DM. A consent that arrives after Ready re-arms that connection's one reconcile.
+  `MeshcoreHooks.unconsented` replaces the in-memory `restored`: it is read from the record at every connection.
+- **Unbind** (`MeshcoreHooks.unbind`): the board up now, Restore's clearing runs, verified, then the record goes (`CLEARED`);
+  not reachable, or a Restore that does not finish, the record is marked pending (`PENDING`) and its Restore runs at that
+  board's next connection (`lora cleanup kind=meshcore done=… contacts=…`), clearing the row only when it finishes. Nothing
+  in the app calls it yet but the debug bridge; Stage 7's screen will, then clear the binding.
+- **The door.** The MeshCore plane is fed `MeshManager.meshcoreBoardMap()` (`meshcoreBoardHolders`, which adds no start
+  value: the first map is the stores' real combined state, never a placeholder), and `bindMeshcoreDirect` is bound in
+  `di/MeshModule` before anything starts the manager, only where the MeshCore child is built. **Stage 5b-1's accepted leak is
+  live from here**: an audience-only mint seals only the peers whose answer changed (the maintainer, 2026-11-13); nothing
+  adds cover.
+- **Never offered what cannot go** (lora N2): `BoardKindHooks.offered` lets a kind say which holders the core may offer; on
+  MeshCore one whose key the taught set lacks (cut at capacity, over the daily cap, contested) reads `direct` false, and
+  `PlaneCore.holdersMoved` re-asks when the capacity a Ready reports moves the set.
+- **Our board's ack priced direct where it is** (5a-2's worst case narrowed): a live direct DM from a sender whose contact is
+  taught and pinned zero-hop on this connection (`MeshcoreBoardOps.pinnedZeroHop`) books only the path's multi-ack and ack;
+  anyone else's the larger as before. The prefix only prices air: a forged one whose MAC fails draws no ack at all, and one
+  whose MAC passes is answered on that very record.
+- **The bridge** (`…debug.LORA --es kind meshcore --es prov setup|restore|unbind`): a setup is refused without
+  `--ez erase true` and answers the erase's counts; the dump carries the contacts' and the reconcile's counters.
+
+Proposed defaults: a record written for every finished setup; a failed setup's leftovers kept pending; the unbind leaves the
+binding for its caller. Owed: Stage 7's unbind and consent UI; the first two-MeshCore-node lab DM scenario (5c's
+`MeshLab.node(board = MESHCORE)`); 5d's `meshcoreSig`.
+
+Review of Stage 5b-2's second part (security- and lora-reviewer, 2026-11-13), applied as one design: **the setup record,
+for that address and that board's key and not pending, is the single source of consent**, and the session gate, the offers,
+the profile's claim, Restore and the cleanup all read it.
+
+- **The record names its board** (security S1): `meshcore_setup.boardDigest`, the first bytes of the SHA-256 of the board's
+  own key (`MeshcoreHooks.digest`, the law ring's key), amended into v37 in place (unshipped). Consent counts only for the
+  board the digest names; the session's answer is per (address, digest) and **three-state** — yes, no, or unknown, which is
+  any address with no answer or an answer for another board. `MeshcoreSession.restore(address, digest, record)` refuses
+  (`MeshcoreRestoreResult.Mismatch`, `restoreMismatches`) unless the live connection is that address and that key, writing
+  nothing, so a replacement, reflashed or other-install board at the same address never gets another board's prior name,
+  Restore or cleanup (a spoofer is stopped by the bond, below, not the digest: a board's key is in its own adverts); a record for another board is no consent, stays as it was and is counted
+  (`consentMismatches`). The setup result carries the board it ran on (`MeshcoreSetupResult.Done` / `Failed`'s `address` and
+  `digest`), and the hooks' `readyBoard` is cleared the moment the board is down.
+- **The claim follows the record** (security S2): the board's key is published (`MeshcoreClaimStore.setBoardKey`) only once a
+  matching record consents — written by a setup or read back at a connection — and withdrawn (null) for a board never set
+  up, by a finished Restore and by an unbind; the claim watcher then mints the unclaimed version under 5b-1's fan-out rules,
+  unchanged.
+- **A second setup never forgets the first** (lora L1): the record a setup writes is merged into the one kept for the same
+  board (the slot written if any run wrote it; each prior the earliest known), and a failed setup's leftovers are merged
+  and written pending in one write (N1).
+- **No refusal before the record is read** (lora L2, N3): while consent is unknown the session answers a compact DM `Busy`
+  (the core requeues it) and a teach `NOT_READY`, never `NO_RECORD`, so no peer is held keyless for the re-probe's four hours;
+  the offers are closed (`direct` false) until consent is yes, and every consent move calls `PlaneCore.holdersMoved`.
+- **Consent only once durable** (security N2): a setup in the session no longer consents; the hooks grant it after the
+  record is written.
+- **Follow-up for Stage 7** (security): a backup restore onto the same phone empties `meshcore_setup`, so a pending cleanup
+  is lost and the board keeps Knit's name and taught contacts; the restore UI should say so.
+
+**The maintainer's decisions, 2026-11-13, after the review stop rule** (`.agents/rules/review-rounds.md` §5: the consent
+rework drew a new Blocking finding in a second round running — setup's and Restore's mid-transaction Ready launched an async
+record read in the hooks that could land after the transaction's own grant):
+
+1. **Consent has one owner: the session's actor**, as the plane core owns its own state. The session holds the setup journal
+   (`MeshcoreSession(records = …)`) and reads consent for (dialled address, board-key digest) inside its handshake, before
+   it publishes Ready, so every Ready carries a known yes or no; the three-state "unknown" and its `Busy` are gone. Setup,
+   Restore and unbind write or clear the record and then set consent inside their own actor operation (durable write first);
+   a failed setup's merged leftovers are written there, pending, in one write; a setup supersedes a cleanup still owed. A
+   Ready published inside a transaction never re-reads. The pending cleanup runs on the actor as the connection's first job,
+   only for a record whose digest names this board. The hooks never read or write the record: they observe
+   `MeshcoreBoardOps.consent` (a `StateFlow` of `MeshcoreConsent`, set by the actor in its order) and derive the taught set,
+   the offers (`holdersMoved`) and the profile's claim (the key published while yes, withdrawn otherwise) from it, the latest
+   winning. A record read that keeps failing in the handshake (three tries, 200 ms apart) publishes Ready with no consent and
+   a counter (`consentReadFailures`) — the owner's choice over ending the session, so room posts and the drain never wait on
+   SQLCipher; the next connection reads again.
+2. **A bond is required**, as belt and braces (the next decision is what stops a spoofer). Consent is granted, and Restore
+   and the pending cleanup run, only when the dialer reports the address `BONDED`; an unbonded board is inert for Knit
+   (`unbondedInert`). The digest stops a replaced or reflashed board. *(Corrected by the decision below: the bond is the
+   phone's bond table for the address, not proof the connected peer holds it — a clone asking for no encryption passes it.)*
+
+**The maintainer's decision, 2026-11-13: a signed challenge.** The full review of the session-owned design (security B1 and
+B2, lora's B1) found the bond check is the phone's bond table for the address, not proof the connected peer holds it, and an
+unbind with a second writer:
+
+- **Proof of possession.** Before the handshake may grant consent, and again before a Restore, a pending cleanup or a setup
+  writes, the board signs `knit-meshcore-consent/v1` ‖ a fresh 32-byte `SecureRandom` nonce through `CMD_SIGN_START` (33),
+  `CMD_SIGN_DATA` (34) and `CMD_SIGN_FINISH` (35) → `RESP_SIGN_START` (19) / `RESP_SIGNATURE` (20)
+  (`companion-v1.18.0` `MyMesh.cpp:1781-1815`; in the companion since 2025-03-15, long before `FIRMWARE_VER_CODE` 11 of
+  2026-04-15, so at every supported firmware), and the phone verifies it as RFC 8032 Ed25519 (Tink's strict verifier;
+  the firmware's `ed25519_sign`, `Identity.cpp:151`) under `SELF_INFO`'s key over exactly those bytes. The tag is distinct
+  from 5d's planned `knit-meshcore-bind/v1`. A board that fails or cannot sign is inert for Knit (`keyUnproven`). The
+  board's sign buffer is one for every client, so another's `SIGN_START` in between only fails a proof, never passes one.
+  The digest stops a replaced or reflashed board, the signed challenge stops a spoofer, the bond is belt and braces. The
+  simulator confirms the v1.18 firmware's `CMD_SIGN` output verifies as standard RFC 8032 Ed25519 under the `SELF_INFO` key
+  over exactly the bytes sent, for a one-write and a two-write message, and refuses a flipped byte
+  (`~/source/meshcore-spike/FINDINGS.md` Q16, 2026-11-14); a check on real hardware is still owed.
+- **One writer** (security B1). The actor is the record's only writer while the board is up: one session `Mutex`
+  (`consentLock`) covers a handshake's consent read through its Ready, and an unbind's choice — Ready on that address, then
+  the actor runs it, waiting with no start deadline however long it is busy (a setup erasing many contacts), else the record
+  is marked pending and a withdrawn consent (no key) published at once, so the hooks drop the claim and the offers.
+- **Setup is refused before any write** on a board that is not bonded or does not prove its key (security N1).
+- **A failed record read** keeps the claim as the hooks last had it and closes the offers (`MeshcoreConsent.unread`), and is
+  read again on the actor as an idle job with a backoff (10 s up to 10 min), never once per connection (N2). A Restore or an
+  unbind whose read fails is no answer (`failed: record`, `PENDING`), never "no record" (N4). The hooks' consent collector
+  survives a throw (`consentApplyFailures`, N3).
+- **Follow-ups (security):** `MeshcoreClaimStore.setBoardKey` withdraws nothing once the configured address is null, so
+  Stage 7's unbind must withdraw the key before clearing the binding; `restoreSetup` re-reads `selfOf(c)` without checking
+  the digest again (a key imported mid-connection by another client).
+
+**The maintainer's decision, 2026-11-14: withdraw only the bound board** (the review stop rule again: lora-reviewer's new
+Blocking finding). Consent is one `StateFlow` and one hooks field, so an unbind of address A while board B was Ready on
+another address published a withdraw that closed B's offers and emptied its taught set until B's next handshake. Now an
+unbind publishes a withdraw only for the board this plane is bound to (`MeshcoreSession.boundAddress`, the address it was
+last started on, kept across a stop), Ready or not; for any other address it only marks the record pending — that address
+cannot hold the claim, since `bindingAddress` drops an address that is not the configured one. As a belt, the hooks ignore a
+consent whose address is not the plane's configured one.
+
+Applied with it (security F1-F3, lora N1-N3):
+
+- **The key published is the key proven** (F1): the proof keeps its key on the connection (`provenKey`), the consent
+  publishes only it, and a setup whose `SELF_INFO` read after the proof reports another key is refused, nothing written.
+- **The refusals are on the dump** (F2): `meshcoreKeyUnproven`, `meshcoreProofUnanswered`, `meshcoreUnbondedInert`,
+  `meshcoreConsentMismatches`, `meshcoreConsentReadFailures`, `meshcoreRecordReadFailures`, `meshcoreRecordWriteFailures`,
+  `meshcoreRestoreMismatches`, `meshcoreConsentApplyFailures`.
+- **An unbind's op checks the address again** (F3), so a retarget in the window falls through to the away path.
+- **An unanswered proof is not a clone** (lora N1): no answer, `BAD_STATE` or no such command goes down the unread backoff
+  (`proofUnanswered`); only a signature that does not verify makes the board inert (`keyUnproven`).
+- **Record reads and writes are bounded** (lora N2): two seconds each on the actor, a timeout counting as a failure.
+- **A mark that did not land is said so** (lora N3): an unbind whose pending mark failed answers `MeshcoreUnbind.FAILED`, so
+  the caller keeps the binding and asks again. Known window: an adapter that goes off in the middle of a setup's record write
+  leaves whatever the journal kept (the write is one statement: the whole record, or none).
+
+Residuals, recorded (security):
+
+- The signed challenge stops a spoofer short of one holding the board's pairing: a live relay paired with the real board can
+  pass it, and such a party already controls the board. Like #274, the proof is not bound to the connection.
+- A setup can replace another board's record at the same address (trust on first use); a "different board" refusal or prompt
+  is a Stage 7 item.
+- For 5d: a bind statement the board signs proves only that some client holding the board's PIN asked for it.
+
+Follow-ups of the bound-board round (lora L1-L3, security S1-S3, 2026-11-14), applied:
+
+- **An empty set for want of consent is no taught set** (L1): the hooks hand it over marked `withdrawn`, which leaves the
+  session's taught set unknown, so a reconcile owed by a later consent waits for the hooks' real set and never lists against
+  nothing.
+- **A write that timed out is read back once** (L2): a timeout cancels the wait, not a statement already running, so the row
+  is checked before a write counts as failed; each failure is counted once.
+- **An unanswered proof is no answer everywhere** (L3): a Restore answers `failed: proof`, a cleanup is asked again on the
+  backoff; `Mismatch` and `keyUnproven` are for a signature that does not verify.
+- **A key that changes on the connection ends the session** (S2): a `SELF_INFO` read mid-connection with another key than
+  the one the connection identified with (`keyChanged`) is a new board at the next connection; the record a setup writes
+  names the proven key's digest.
+- **A non-verifying signature keeps the claim** (S3) when the record names this board: no consent, the offers closed, the
+  proof asked again on the backoff (another client's `SIGN_DATA` in the shared buffer fails a genuine board's proof); only
+  no record, a digest mismatch, a Restore or an unbind withdraws the claim. A clone still never gets consent.
+- Tests: a board that never answers the proof (S1), the reconcile after an unanswered proof (L1), a key changed on the
+  connection (S2).
+
+The unit-test review's round (2026-11-14), applied: a finished Restore or unbind clears an earlier lost proof's unread state,
+so its withdrawal reaches the claim at once; a consent publishes the proven key only while it consents; a signature that
+fails is followed by one `SELF_INFO` read, so a board re-keyed mid-connection ends the session (lora L). The interleaving
+tests now force their orders (a handshake held in its consent read under the lock, a setup queued behind a held backoff
+re-read, the consent ordered before its Ready), and the mutants that survived the round before — no supersede in
+`keepRecord`, no `consentLock` around the consent read and its Ready, the Ready published before its consent — each turn a
+test red. The setup store has a real-SQL test (`MeshcoreSetupStoreTest`).
+
+**The maintainer's decision, 2026-11-14: one failure rule for record writes** (the review stop rule a third time: a Restore
+whose record clear failed answered success, so an unbind read `CLEARED` with nothing marked, and the next connection granted
+consent again and republished the withdrawn key). Every record write goes through one place in `MeshcoreSession` whose
+failure handling is fixed by what the write was for; no call site maps a result to consent by hand:
+
+- **A write that removes or withdraws consent** (Restore's clear, an unbind's clear or pending mark, the cleanup's clear, a
+  failed setup's leftovers; `withdrawWrite`): consent is no on this connection whatever happens, published at once so the
+  claim is withdrawn; a write that does not land, after `recordWrite`'s read-back, marks the record pending so the cleanup
+  Restore runs at the next connection; only a mark that also fails is `FAILED`. It is never reported as success — a Restore
+  answers `failed: record`, an unbind `PENDING`.
+- **A write that grants consent** (a finished setup's record; `grantWrite`): consent yes only once it landed; one that did
+  not leaves consent no and the record as it was — which, since the write-ahead below, is the setup's own pending record —
+  and the setup reports `Failed`.
+
+Tests, one per purpose: a withdraw write that fails (Restore `failed: record`, the record pending, an unbind `PENDING`, no
+grant and no key after a reconnect), a grant write that fails, a withdraw write and its mark both failing (`FAILED`).
+
+**Write the intent before acting** (the security enumeration pass, 2026-11-14: one Blocking and four Non-blocking findings
+with one cause — the record was written after the board writes, so an interruption between them lost the intent):
+
+- **An unbind** marks the record pending (`withdrawWrite`, consent no and the claim withdrawn at once) before any board
+  write, then runs Restore, then clears the record: `CLEARED` only when the clear lands, `PENDING` when a mark landed,
+  `FAILED` when none did. A process death mid-Restore leaves a pending cleanup, never a consent.
+- **A Restore is a withdrawal** (the coordinator's decision, consistent with a finished Restore clearing the record): the
+  same mark comes first, so a Restore that fails partway is a pending cleanup with consent no. A proof that does not verify
+  in a Restore is `failed: proof`, as `readConsent` reads it (maybe another client's sign buffer); `Mismatch` is for another
+  board's record or an unbonded board.
+- **A setup** writes its planned record, merged, as pending before the erase or any write; the grant is the flip to
+  not-pending. A setup cut off anywhere (a failed grant, a session end, a process death) leaves that pending record, and the
+  next connection's cleanup puts the board back. A setup that leaves nothing of its own (an erase that failed, a write put
+  back whole) puts the record back as it was before.
+- **A pending mark of no row is no mark**: `MeshcoreSetupJournal.markPending` answers whether a row was there.
+- **A withdrawal is retried and goes first**: the hooks edit the claim before anything else on a withdrawal and retry an edit
+  that throws, with a backoff, until it lands or a newer one replaces it; an unbind with no record still withdraws for the
+  bound board; at start the session withdraws the bound board when its record is absent or pending, without waiting for the
+  board; the revoke comes before the write.
+- **An unbind's writer** is chosen on a live inbox too, and an adapter-off session reads down only after its actor stopped.
+- **Owed by Stage 7:** the unbind's withdrawal must land before `meshcore_device_address` is cleared
+  (`setBoardKey(null, dialled)` is a no-op afterwards), or the pubkey is cleared in the same edit.
+- **Cost, by design:** a re-run setup withdraws and republishes the claim (its write-ahead revokes), so two sealed-profile
+  mints under 5b-1's fan-out.
+

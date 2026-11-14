@@ -26,6 +26,8 @@ import app.getknit.knit.data.forward.ForwardEntity
 import app.getknit.knit.data.group.GroupDao
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMemberClockEntity
+import app.getknit.knit.data.meshcore.MeshcoreSetupDao
+import app.getknit.knit.data.meshcore.MeshcoreSetupEntity
 import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.MessageFtsEntity
@@ -74,7 +76,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 36
+internal const val KNIT_DB_SCHEMA_VERSION = 37
 
 @Database(
     entities = [
@@ -92,6 +94,7 @@ internal const val KNIT_DB_SCHEMA_VERSION = 36
         PinEntity::class, LoraDirectSeenEntity::class, PhotoRefusalEntity::class,
         OwnPresenceKeyEntity::class, PeerPresenceKeyEntity::class, LinkOwedResetEntity::class,
         DmScopeAnchorEntity::class, ReadMarkEntity::class,
+        MeshcoreSetupEntity::class,
     ],
     // v1: frozen launch baseline. The pre-1.0 alpha schema churn (the old destructive v2…v22 bumps that
     //     rode the wire/crypto breaks) is collapsed; docs/WIRE_COMPAT.md keeps the historical break record.
@@ -301,6 +304,12 @@ internal const val KNIT_DB_SCHEMA_VERSION = 36
     //     written only by the sealed profile writer. Carried in a backup with its row; null on existing rows (no profile
     //     before this carried one). Its own version because lab phones run Stage 4 before Stage 5's own bump; both fold
     //     into the next release's. Migrated by KnitMigrations.MIGRATION_35_36.
+    // v37: one `meshcore_setup` table — what a MeshCore setup changed on a board, keyed by its address (ADR 2026-11.gsqu's
+    //     Stage 5b-2 amendment), with a digest of the board's own key (the board the record is for): the prior
+    //     advert name (possibly the user's real name), `manual_add_contacts`, `autoadd_config`, the slot, and whether
+    //     an unbind left it a pending cleanup. The row is the consent the session touches a board's contacts under.
+    //     This phone's alone: never in a backup. Empty on arrival. Its own version because lab phones run v36; fold
+    //     v33–v37 into the next release's single bump. Migrated by KnitMigrations.MIGRATION_36_37.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
@@ -356,6 +365,7 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun dmScopeAnchorDao(): DmScopeAnchorDao
 
     abstract fun readMarkDao(): ReadMarkDao
+    abstract fun meshcoreSetupDao(): MeshcoreSetupDao
 
     companion object {
         /** The schema version the annotation above declares, for code that must compare against it. */

@@ -127,7 +127,10 @@ resets keep a row: never an unaccepted request or a blocked sender.
 **Device-local** (`BackupTables.DEVICE_LOCAL`), also empty in the copy: `saved_files`, where each received
 file was saved on this phone. Its document URIs name this phone's storage and are readable only through
 grants this install holds (ADR 2026-09.7ad3); after a restore a file bubble asks where to save, as it did
-the first time.
+the first time. And `meshcore_setup` (DB v37, ADR 2026-11.gsqu's Stage 5b-2 amendment): what a MeshCore setup changed
+on the user's own board — its prior advert name, which may be the user's real name — and this phone's consent to touch
+that board's contacts. A restored phone sets its board up again; a cleanup an unbind left pending is lost with it, so
+that board keeps Knit's name and taught contacts until it is set up and restored again.
 
 `BackupTablesTest` pins the four lists to the exported schema: a new table fails the build until it is
 classified.
