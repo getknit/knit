@@ -537,7 +537,9 @@ Second round (2026-11-13), applied:
   2026-11.xp6d pads `CTL_PRESENCE_KEY`. Additive: old builds and iOS skip an unknown label or key, and a receiver reads
   and discards it (nothing on the receive side changed). Vectors `messageContentV2ProfilePadded` and
   `messageContentProfilePadded`. **Accepted cost:** a burst on a contact-set change still dates "the contact set
-  changed" — a version minted with no visible field moved — though not whose membership moved.
+  changed" — a version minted with no visible field moved — though not whose membership moved. *(Superseded by the Stage 5b-1
+  amendment, the maintainer's decision of 2026-11-13: an audience-only mint now seals only the peers whose answer
+  changed, so whose membership moved is shown too.)*
 - **One version, one audience.** The audience carries the version it was read at under `profileLock`, and the fan-out and
   the intro seal and record that version, re-reading once if another was minted in between; before, they re-read
   `profileVersion()` after the lock and could seal the newer version for the older set.
@@ -814,3 +816,78 @@ Review of Stage 5a-2 (lora-, bluetooth- and security-reviewer, 2026-11-13), appl
 
 Owed to Stage 5b: narrow the audience-only mint's fan-out, memoize `MeshcoreKey`'s point check, then bind
 `bindMeshcoreDirect` before `start()` and feed the MeshCore plane `meshcoreBoardMap`.
+
+## Amendment 2026-11-13 — Stage 5b-1: an audience-only mint seals only whom it changed, the point check is memoized (draft)
+
+Three of the items the Stage 4 amendment owed Stage 5, built before 5b-2 binds the seam, under two crypto- and
+security-reviewer rounds (2026-11-13) and the maintainer's decision after the review stop rule. It amends Stage 4's
+"Republishing" and supersedes the second round's accepted-cost sentence. Nothing on the wire, in the vectors or in the
+schema moved, and nothing the iOS port mirrors (a sender's fan-out schedule is local; every receiver takes what it took
+before).
+
+- **An audience-only mint seals only the peers whose answer changed** (`MeshcoreFanOutRule.plan`, pure). While a key is
+  claimed, a change in the direct-contact set mints a fresh sealed-only version (one version, one audience, unchanged). A
+  full fan-out of it, one sealed `CHAT` frame per confirmed session under our own sender on every accept, verify, block
+  or removal, let custody's per-sender quota of 200 evict our own older DMs. It is now sealed to the owed sessions whose
+  `keyFor` answer changed — a new contact a strictly newer keyed version, a blocked peer a strictly newer keyless, padded
+  one, which clears it —, to those whose copy may be gone (below) and to those whose last copy is not known; every other
+  owed session is marked sent at the new version unsealed.
+- **The maintainer's decision (2026-11-13): accept the leak.** Sealing the changed peers alone names them: the recipient
+  is in the clear in the `RelayEnvelope`, `ChatContent.attachmentHash` is our avatar hash, also in the signed cleartext
+  profile, and every copy of a version is one padded length. So a relay, carrier, radio or the spool learns whose
+  direct-contact status we changed and when: an accept, verify, block or removal shows as one profile-sized sealed frame
+  to that peer. This **supersedes** the Stage 4 second round's "though not whose membership moved", marked so where it
+  stands. The review rounds' two designs to hide it both drew a new Blocking finding — a fixed-size burst padded with
+  random cover seals let the changed peer stand out at 65–85 % once stale re-seals took cover places —, which tripped
+  `review-rounds.md` §5; the options put to the maintainer were the corrected cover, the key to every session, a full
+  fan-out per change, and accepting the leak. `SECURITY.md` states the trade-off, scoped to builds that claim a MeshCore
+  key (debug builds behind `MESHCORE_PLANE` today).
+- **Marked sent only where provably safe** (`MeshcoreFanOutRule.spares`). A session is spared only when the copy it was
+  last sealed **in this process** is the new version's copy for it but for the number: the version is the claim
+  journal's own mint, the claim is the same key at both, every other field the copy shows (name, status, photo,
+  open-to-chat, LoRa board, badges; a fingerprint of the keyless payload with its version zeroed,
+  `SealedProfileEra.visible`) is equal, and the peer's answer is equal. Then the copy it holds carries the key exactly
+  when the new one would, and its length is the one its own version padded to. A key gained, dropped or changed, or any
+  visible field moved, fans out to all. A peer whose last copy is not known — nothing recorded, its era past the eight
+  kept (`MAX_SEALED_ERAS`), a contact-card intro sent it since (`sealedOutsideFanOut`, below), or a version two fan-outs
+  built different copies of (a field written before its edit's version bump, read by a heal in between;
+  `ambiguousEras`) — is sealed.
+- **"Last sealed" is not "held".** A copy sealed to a peer dark past custody's TTL (24 h, `ForwardRepository.DEFAULT_TTL_MS`)
+  or evicted by the quota is gone, and sparing that peer on the next contact change would leave it keyless until a
+  visible edit or a restart; the first claim at 5b-2 with half the contacts away is exactly this. The record keeps when
+  the copy a peer holds was sealed (`SealedRecord.sealedAt`, our wall clock, the clock custody expires by), a spare
+  carries that time on and never refreshes it (the 8e041ba9 re-park lesson), and a spare-eligible session whose copy was
+  sealed `SEALED_PROFILE_STALE_MS` or more ago — the custody TTL, the earlier of the two bounds a copy outlives (the spool
+  keeps it 48 h, `RatchetSessions.STRANDED_TAIL_MS`) — or is stamped in the future (a clock moved back) is sealed again.
+- **One writer of the record.** The fan-out holds `sealedFanOutLock` (outside `profileLock`, never inside), so the record
+  a spare reads cannot move between the decision and the mark: before, two fan-outs could overlap, and a slower one's
+  older seal landing after a newer one's mark would leave a peer holding a copy the record does not name. The intro never
+  takes it: it answers an init from inside the inbound pipeline, which must never wait behind a fan-out that may itself be
+  waiting on the ratchet. Instead the intro marks its peer, with a fresh token, before it seals (`sealedOutsideFanOut`); a
+  marked peer is owed the next fan-out's seal whatever the record says and is never spared, and the mark is cleared only
+  by a fan-out seal that read the same token before sealing.
+- **A reset or a restore needs no more.** A fresh root does not clear `sentProfileVersions`: a peer that wiped, restored
+  or reset re-forms the session with an init, which the intro answers with the current copy and a mark, so the next
+  fan-out seals it (the crypto-reviewer's answer, 2026-11-13; `MeshcoreProfileLabTest`'s reset scenario).
+- **A mint the intro makes is fanned out.** The intro reads the audience through the same minting path the fan-out does,
+  so a claim or badge change it reaches before the watcher is minted there, and the watcher's own pass then finds
+  nothing to publish and never fans out: the confirmed sessions waited for the next heal (the chaos sweep's find, on the
+  contact-set scenario; it predates 5b-1). The intro now launches a fan-out when its read moved the version.
+- **Counted, never logged.** The spares and the stale re-seals are `MeshMetrics` counters in the seals group
+  (`sealedProfilesSpared`, `sealedProfilesStale`, in the debug bridge's `STATE`). No log line names them: the version is
+  a wall-clock stamp, so a line would date a contact-set change and size our session list for whoever holds a bug report.
+- **Restart.** `sentProfileVersions` and the eras are in memory, as before: after a restart nothing is known, so the first
+  fan-out seals the current version to every confirmed session once (what it did before) and spares nobody, and
+  `meshcore_sealed_version` / `meshcore_published` keep a restart from minting at all.
+- **Accepted cost, besides the leak.** A spared peer keeps the older version number for our presentation
+  (`PeerEntity.updatedAt`, the board map's `latestProfileVersion`), which only ever orders presentations; the lab's
+  convergence oracle has a parity mode for it (`MeshLab.assertConverged`'s `sealedTo`). The badge mint's path is unchanged
+  and safe as built (the crypto-reviewer, 2026-11-13): it always fans out to every owed session.
+- **The point check is memoized** (`MeshcoreKey.bytesOrNull`): a bounded LRU (`MEMO_ENTRIES`, 256) of canonical key string
+  → verdict. Only a canonical spelling reaches it, and canonical text and its bytes are one to one; it caches a pure
+  function, so an eviction only costs the check again. `accepts` stays uncached.
+- **Bind before start.** `bindMeshcoreDirect`'s KDoc says it is bound before `MeshManager.start()`; a bind after it logs a
+  warning (the start then mints twice: unclaimed, then the claim).
+
+Owed to Stage 5b-2: bind the seam in `di/MeshModule` before `start()`, feed the plane `meshcoreBoardMap`, and the per-kind
+offer gate (`LoraDoorClaim`, built in 5a-2).

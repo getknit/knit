@@ -152,3 +152,102 @@ internal object MeshcoreBoardMap {
         val bytes: ByteBuffer,
     )
 }
+
+/**
+ * What one sealed profile version was sealed for (ADR 2026-11.gsqu, Stage 5b-1): its [version], the MeshCore claim it
+ * carried ([key], canonical, null unclaimed), the direct contacts that claim went to ([direct]), and a local fingerprint of
+ * every other field a recipient sees ([visible]: the keyless payload with its version zeroed). `MeshManager` keeps the
+ * eras of the versions it sealed this process, so a later fan-out can tell what a session already holds. Its [toString]
+ * names neither the key nor the set.
+ */
+internal class SealedProfileEra(
+    val version: Long,
+    val key: String?,
+    val direct: Set<String>,
+    val visible: String,
+) {
+    /** The key [peerId]'s copy of this version carried: `MeshcoreAudience.keyFor`'s answer at this version. */
+    fun keyFor(peerId: String): String? = key?.takeIf { peerId in direct }
+
+    /** Whether [other] gives every peer the same copy as this: the same claim, the same set and the same fields. */
+    fun sameCopiesAs(other: SealedProfileEra): Boolean = key == other.key && direct == other.direct && visible == other.visible
+
+    override fun toString(): String = "SealedProfileEra(v=$version, claimed=${key != null}, contacts=${direct.size})"
+}
+
+/**
+ * Which owed sessions an audience-only mint seals (ADR 2026-11.gsqu, Stage 5b-1). While a key is claimed, a change in the
+ * direct-contact set mints a fresh sealed-only version (the Stage 4 rule: one version, one audience), and a full fan-out
+ * of it is a burst of sealed `CHAT` frames under our own sender on every accept, verify, block or removal, which
+ * custody's per-sender quota of 200 can evict our own older DMs in. So it is sealed only to the sessions whose copy
+ * changed or may be gone, and every other owed session is marked sent at it unsealed. The accepted cost, the
+ * maintainer's decision of 2026-11-13: a relay, carrier, radio or the spool sees one profile-sized sealed frame to the
+ * peer whose direct-contact status we changed, and when.
+ *
+ * A session may be spared ([spares]) only when the copy it was last sealed is, field for field, the copy [next] would
+ * give it but for the version (and the pad that version's length sizes): all of
+ *
+ * - [held] is known: the era of the version this process last recorded for the peer, with no sealed profile sent it
+ *   outside the fan-out since (the contact-card intro), so it is the newest copy the peer can hold from us;
+ * - [claimMinted]: [next] is the claim journal's own version, so the newest mint was a claim or audience change;
+ * - the claim is the same key, and held at both (a mint that gained, dropped or changed the key fans out to all);
+ * - [SealedProfileEra.visible] is equal: no name, status, photo, open-to-chat, LoRa board or badge moved;
+ * - [SealedProfileEra.keyFor] answers the same for the peer at both.
+ *
+ * Then the peer's copy at [held] carries the key exactly when [next]'s would, so marking it sent leaves it holding what it
+ * should; the receiver's gate takes a newer version only, and a spared peer is sent nothing it would have to take. A peer
+ * that became a contact, or stopped being one, fails the last test and is sealed a strictly newer version: keyed for the
+ * one, keyless and padded for the other, which clears the key it held. Anything not provably equal is sealed. Pure.
+ */
+internal object MeshcoreFanOutRule {
+    fun spares(
+        peerId: String,
+        held: SealedProfileEra?,
+        next: SealedProfileEra,
+        claimMinted: Boolean,
+    ): Boolean =
+        claimMinted &&
+            held != null &&
+            held.version < next.version &&
+            held.key != null &&
+            held.key == next.key &&
+            held.visible == next.visible &&
+            held.keyFor(peerId) == next.keyFor(peerId)
+
+    /**
+     * What one fan-out of [next] does with each [owed] session, at [now] on our wall clock: a session [spares] refuses is
+     * sealed, and so is one it would spare whose copy may be gone ([OwedSeal.sealedAt] [staleAfterMs] or more ago, or in
+     * the future: a clock moved back). Custody drops a sealed frame at its TTL and evicts it under the per-sender quota,
+     * so "last sealed" is not "held" for a peer dark that long. Every other owed session is spared.
+     */
+    fun plan(
+        owed: List<OwedSeal>,
+        next: SealedProfileEra,
+        claimMinted: Boolean,
+        now: Long,
+        staleAfterMs: Long,
+    ): FanOutPlan {
+        val spareable = owed.filter { spares(it.peerId, it.held, next, claimMinted) }
+        val stale = spareable.filter { now - it.sealedAt !in 0 until staleAfterMs }.map { it.peerId }.toSet()
+        val spare = spareable.map { it.peerId }.toSet() - stale
+        return FanOutPlan(seal = owed.map { it.peerId }.toSet() - spare, spare = spare, stale = stale.size)
+    }
+}
+
+/**
+ * One owed session as [MeshcoreFanOutRule.plan] judges it: the era of the copy it was last sealed ([held], null when
+ * not known) and when that copy was sealed, on our wall clock ([sealedAt]: a spare never moves it).
+ */
+internal class OwedSeal(
+    val peerId: String,
+    val held: SealedProfileEra?,
+    val sealedAt: Long,
+)
+
+/** [MeshcoreFanOutRule.plan]'s answer: the sessions to seal and those to mark sent unsealed. */
+internal class FanOutPlan(
+    val seal: Set<String>,
+    val spare: Set<String> = emptySet(),
+    /** Of [seal], those sealed only because the copy they were last sealed may be gone. */
+    val stale: Int = 0,
+)

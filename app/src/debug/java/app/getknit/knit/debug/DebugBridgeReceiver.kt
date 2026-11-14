@@ -1812,6 +1812,10 @@ class DebugBridgeReceiver :
             // Group frames custody would not carry: a roster that does not derive, or a sender outside it (ADR 2026-10.7mqm).
             .put("groupCustodyRefused", snap.groups.groupCustodyRefused)
             .put("dmSealedV1Fallback", snap.seals.dmSealedV1Fallback)
+            // The sealed profile's audience-only mints (ADR 2026-11.gsqu, Stage 5b-1): sessions spared a seal, and those
+            // re-sealed because their copy may be gone.
+            .put("sealedProfilesSpared", snap.seals.sealedProfilesSpared)
+            .put("sealedProfilesStale", snap.seals.sealedProfilesStale)
             .put("receiptsSealed", snap.receipts.receiptsSealed)
             .put("receiptsSealedFallback", snap.receipts.receiptsSealedFallback)
             .put("receiptsCustodied", snap.receipts.receiptsCustodied)

@@ -221,6 +221,21 @@ LoRa plane (2026-09.ggq4).
   Reads never claim or record in `DmReAckLedger` (8hn6's qualification), and the standalone frame is an answer-only
   seal that never mints an init. Regression: `ReadMaskTest`, `ReadSyncTest`, `InboundPipelineTest`'s read cases,
   `MeshManagerTest`'s compact-mask cases, `GoldenVectorTest`, `ReadReceiptLabTest`.
+- **When touching `MeshManager.broadcastSealedProfile` / `sendIntroTo`'s dedupe (`sentProfileVersions`, `SealedRecord`,
+  `sealedEras`, `sealedOutsideFanOut`, `sealedFanOutLock`, `SEALED_PROFILE_STALE_MS`), `MeshcoreFanOutRule` (`spares`,
+  `plan`), `OwedSeal`, `FanOutPlan` or `SealedProfileEra`:** READ ADR 2026-11.gsqu's Stage 4 and Stage 5b-1 amendments.
+  An audience-only mint (a contact-set change while a MeshCore key is claimed) seals only the peers whose `keyFor` answer
+  changed, those whose last copy is not known, and those whose copy was sealed 24 h or more ago or in the future (a spare
+  never refreshes the seal time); every other owed session is marked sent unsealed. **A relay sees whose contact status
+  changed**: the maintainer accepted that leak (2026-11-13, `SECURITY.md`); don't add cover without a new decision. A
+  session is spared only when the copy it was last sealed this process is the new one's but for the version: the claim's
+  own mint, the same key at both, every visible field equal, its answer equal, and no intro since. Both maps are in
+  memory, so a restart seals every confirmed session once and mints nothing. The fan-out holds `sealedFanOutLock`
+  (outside `profileLock`); the intro never takes it (it runs inside the inbound pipeline), marks its peer with a token
+  before sealing, and a marked peer is owed and never spared until a fan-out seal clears that token; a mint the intro's
+  audience read makes is fanned out by the intro. Spares and stale re-seals are counters (`MeshMetrics` seals group,
+  `STATE`), never a log line. Regression: `MeshcoreClaimTest`'s fan-out cases, `MeshcoreProfileLabTest`'s contact-set,
+  dark-contact and reset scenarios (their oracle uses `assertConverged`'s `sealedTo` parity mode).
 - **When touching `MessageContent.styles` / `MessageContentV2` label 17, `MessageEntity.sealedContent`'s styles,
   `InboundPipeline.plaintextContent`'s styles or the normalise in `deliverChat`:** READ ADR 2026-10.p95v and
   `docs/WIRE_COMPAT.md`'s formatting precedent. A sealed message's styles come from its plaintext alone, never the

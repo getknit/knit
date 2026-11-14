@@ -205,6 +205,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.random.Random
 
 /** What one inline ack costs inside a DM's ciphertext (a 22-char frame id plus its CBOR header), ADR 054. */
@@ -569,8 +570,15 @@ class MeshManager(
      * a manager bound here. Nothing binds it in Stage 4: Stage 5 binds it from `di/MeshModule` once the MeshCore child, the
      * teaching and the inbox exist, so a build that cannot open a MeshCore DM never claims one, even when a backup brought
      * `meshcore_board_pubkey` into it. The tests and the lab bind it themselves.
+     *
+     * **Bind it before [start]** (ADR 2026-11.gsqu, Stage 5b-1). The claim is in the sealed profile's fingerprint, so bound
+     * after it every start mints twice: [watchMeshcoreClaim]'s first pass reads the seam unbound and mints an unclaimed
+     * version, a full fan-out to every confirmed session, then the bind mints the claim and fans out again. A bind after
+     * [start] still works, which is why the seam is a flow; it is logged, so a wiring that does it shows in the field log.
      */
     internal fun bindMeshcoreDirect() {
+        if (meshcoreDirectBound.value) return
+        if (started) Log.w(TAG, "MeshCore DM seam bound after start: this start mints the sealed profile twice")
         meshcoreDirectBound.value = true
     }
 
@@ -1304,8 +1312,43 @@ class MeshManager(
     // alone while we are linked, and served once our push's serve memo lapses ([sendAvatarIfNeeded], ADR 2026-11.4ckq).
     private val sentAvatarHashes = ConcurrentHashMap<String, String>()
 
-    /** Profile version last sealed to each peer — the per-(peer, version) dedupe of [broadcastSealedProfile]. */
-    private val sentProfileVersions = ConcurrentHashMap<String, Long>()
+    /**
+     * Profile version last sealed to each peer — the per-(peer, version) dedupe of [broadcastSealedProfile] — or marked
+     * sent to it unsealed, because the copy it holds is that version's but for the number ([MeshcoreFanOutRule]), with
+     * when the copy it holds was sealed (a spare carries it on). Written only under [sealedFanOutLock].
+     */
+    private val sentProfileVersions = ConcurrentHashMap<String, SealedRecord>()
+
+    /**
+     * What each version [broadcastSealedProfile] sealed this process was sealed for, the newest [MAX_SEALED_ERAS]: how a
+     * later audience-only mint tells which sessions already hold its copy (ADR 2026-11.gsqu, Stage 5b-1). In memory, as
+     * [sentProfileVersions] is: after a restart neither knows anything, and the first fan-out seals to every session.
+     */
+    private val sealedEras = ConcurrentHashMap<Long, SealedProfileEra>()
+
+    /** Versions [rememberEra] found two different copies of: never judged against. Under [sealedFanOutLock]. */
+    private val ambiguousEras = HashSet<Long>()
+
+    /**
+     * Peers sent a sealed profile outside the fan-out ([sendIntroTo]) since the fan-out last sealed them one, each with
+     * the token of its newest such send: what they hold is not what [sentProfileVersions] says, so [MeshcoreFanOutRule]
+     * never spares them, and the next fan-out owes them a seal whatever the record says. Marked before the intro's seal
+     * and cleared only by a fan-out seal that read the same token before it sealed, so an intro racing a fan-out always
+     * leaves its mark. Lock-free: the intro answers an init from inside the inbound pipeline, which must never wait on a
+     * fan-out that may itself be waiting on the ratchet.
+     */
+    private val sealedOutsideFanOut = ConcurrentHashMap<String, Long>()
+
+    /** The tokens [sealedOutsideFanOut] holds. */
+    private val outsideFanOutTokens = AtomicLong()
+
+    /**
+     * Serialises [broadcastSealedProfile] with itself: a session is spared a seal on what it was last sent, so that
+     * record must not move between the decision and the mark (a slower fan-out's older seal landing after a newer one's
+     * mark would leave a peer holding a copy the record does not name). Outside [profileLock], never inside it; never
+     * taken by [sendIntroTo] (see [sealedOutsideFanOut]).
+     */
+    private val sealedFanOutLock = Mutex()
 
     /**
      * Serializes every signer of our own profile against every writer of its publish stamp ([broadcastProfile],
@@ -5539,7 +5582,17 @@ class MeshManager(
      * being in-memory, the first heartbeat after a restart re-sends it once, which the receiver applies
      * idempotently.
      */
-    private suspend fun broadcastSealedProfile() {
+    private suspend fun broadcastSealedProfile() = sealedFanOutLock.withLock { broadcastSealedProfileLocked() }
+
+    /**
+     * [broadcastSealedProfile], under [sealedFanOutLock]. An audience-only mint (ADR 2026-11.gsqu, Stage 5b-1) is sealed
+     * only to the sessions whose copy changed — a peer that became a direct contact or stopped being one — and to those
+     * whose last copy is older than custody keeps it ([SEALED_PROFILE_STALE_MS]) ([MeshcoreFanOutRule.plan]). Every other
+     * owed session is marked sent at it unsealed, since the copy it holds already says what this version would, keeping the
+     * time that copy was sealed. Any other version, and any session whose last copy is not known, is sealed as before. The
+     * accepted cost (the maintainer's decision, 2026-11-13): a carrier sees whose direct-contact status we changed, and when.
+     */
+    private suspend fun broadcastSealedProfileLocked() {
         publishBadgesIfChanged()
         val audience = currentAudience()
         // Sealed and recorded at the version the audience was read with, never one read after it: a mint in between
@@ -5550,30 +5603,82 @@ class MeshManager(
         // five settings reads and its build are skipped, not just the sends.
         // Confirmed sessions only: our unanswered reset also exports (ADR 2026-10.j67x), and a profile sealed on it
         // would carry the reset's init unflagged (#90) — the peer's answer confirms it, and the next heal sends.
-        val owed = ratchet.exportedRoots().filter { it.confirmed && sentProfileVersions[it.peerId] != version }
+        val owed =
+            ratchet.exportedRoots().filter {
+                it.confirmed && (sentProfileVersions[it.peerId]?.version != version || sealedOutsideFanOut.containsKey(it.peerId))
+            }
         if (owed.isEmpty()) return
         val me = identity.nodeId()
         val avatarHash = settings.ownAvatarHash.first()
         val payload = currentProfilePayload(version, avatarHash, meshcoreKey = null)
-        owed.forEach { session ->
+        val era = SealedProfileEra(version, audience.key, audience.direct, visibleFingerprint(payload))
+        rememberEra(era)
+        val claimMinted = meshcoreClaims?.sealedVersion?.first() == version
+        val now = clock()
+        // What each owed session holds, as far as this process knows: an intro since, or no record, is nothing known.
+        val marks = owed.associate { it.peerId to sealedOutsideFanOut[it.peerId] }
+        val judged =
+            owed.map { session ->
+                val record = sentProfileVersions[session.peerId]?.takeIf { marks[session.peerId] == null }
+                OwedSeal(session.peerId, record?.let { sealedEras[it.version] }, record?.sealedAt ?: 0L)
+            }
+        val plan =
+            MeshcoreFanOutRule.plan(judged, era, claimMinted, now, SEALED_PROFILE_STALE_MS)
+        // A spare keeps the time its copy was sealed: only a seal makes a copy fresh (the 8e041ba9 re-park lesson).
+        judged.filter { it.peerId in plan.spare }.forEach { sentProfileVersions[it.peerId] = SealedRecord(version, it.sealedAt) }
+        metrics.onSealedProfilesPlanned(spared = plan.spare.size, stale = plan.stale)
+        owed.filter { it.peerId in plan.seal }.forEach { session ->
             // Per recipient: the MeshCore key to a direct contact of the set this version was minted for, to no one else,
             // and every other copy padded to the same length.
             var sealed: SealedProfileSend? = null
             val sent =
-                sendCtlDm(session.peerId, payload, avatarHash, me, CtlDmPurpose.PROFILE_FANOUT) { v3 ->
+                sendCtlDm(
+                    session.peerId,
+                    payload,
+                    avatarHash,
+                    me,
+                    CtlDmPurpose.PROFILE_FANOUT,
+                    onId = { id -> sealed = sealed?.withFrameId(id) },
+                ) { v3 ->
                     profileCopy(session.peerId, payload, audience, v3).also {
-                        if (onSealedProfile !=
-                            null
-                        ) {
+                        if (onSealedProfile != null) {
                             sealed = SealedProfileSend(session.peerId, version, it, it.sealBytes(v3).plaintext.size)
                         }
                     }
                 }
             if (sent) {
-                sentProfileVersions[session.peerId] = version
+                sentProfileVersions[session.peerId] = SealedRecord(version, now)
+                // Only the intro this seal supersedes: one sent since keeps its mark.
+                marks[session.peerId]?.let { sealedOutsideFanOut.remove(session.peerId, it) }
                 sealed?.let { onSealedProfile?.invoke(it) }
             }
         }
+    }
+
+    /**
+     * Keeps [era] for later fan-outs to judge against, and only the newest [MAX_SEALED_ERAS]. A version two fan-outs built
+     * different copies of (a field written in settings before its edit's version bump, read by a heal in between) has no
+     * single copy a peer can be said to hold: it is forgotten and never kept again, so a peer recorded at it is sealed.
+     * Under [sealedFanOutLock].
+     */
+    private fun rememberEra(era: SealedProfileEra) {
+        if (era.version in ambiguousEras) return
+        val kept = sealedEras.putIfAbsent(era.version, era)
+        if (kept != null && !kept.sameCopiesAs(era)) {
+            sealedEras.remove(era.version)
+            ambiguousEras += era.version
+        }
+        while (sealedEras.size > MAX_SEALED_ERAS) sealedEras.keys.minOrNull()?.let(sealedEras::remove) ?: break
+        sealedEras.keys.minOrNull()?.let { oldest -> ambiguousEras.removeAll { it < oldest } }
+    }
+
+    /**
+     * A local fingerprint of everything a sealed profile [keyless] shows its recipient but the version and the MeshCore
+     * key: [SealedProfileEra.visible]. Never sent, never logged.
+     */
+    private fun visibleFingerprint(keyless: MessageContent): String {
+        val unversioned = keyless.copy(pr = keyless.pr?.copy(version = 0L, meshcoreKey = null))
+        return hexOf(sha256("knit-sealed-visible".encodeToByteArray() + unversioned.encode()))
     }
 
     /**
@@ -5609,7 +5714,11 @@ class MeshManager(
         val content: MessageContent,
         /** The sealed plaintext's length, in the layout its recipient's seal picked. */
         val plaintextBytes: Int,
+        /** The `CHAT` frame's id, which a carrier's custody holds it under. */
+        val frameId: String? = null,
     ) {
+        fun withFrameId(id: String): SealedProfileSend = SealedProfileSend(peerId, version, content, plaintextBytes, id)
+
         override fun toString(): String = "SealedProfileSend($peerId, v=$version)"
     }
 
@@ -5818,9 +5927,18 @@ class MeshManager(
      */
     private suspend fun sendIntroTo(peerId: String): Boolean {
         val avatarHash = settings.ownAvatarHash.first()
+        val before = profileVersion()
         publishBadgesIfChanged()
         val audience = currentAudience()
+        // A mint made here (a badge or claim change the watcher had not reached yet) leaves the watcher's own pass finding
+        // nothing to publish, and so no fan-out: the confirmed sessions would wait for the next heal. Fan it out now, off
+        // this call, which may be answering an init inside the inbound pipeline. The chaos sweep's 2026-11-13 find.
+        if (audience.version != before) sessionScope?.launch { broadcastSealedProfile() }
         val payload = currentProfilePayload(audience.version, avatarHash, meshcoreKey = null)
+        // Marked before the seal: once it may have gone, what the peer holds is no longer what the fan-out's record says,
+        // and a fan-out deciding meanwhile must not spare it. Kept even when nothing went (it may have overwritten an
+        // earlier intro's mark): the cost is one seal the fan-out need not have made.
+        sealedOutsideFanOut[peerId] = outsideFanOutTokens.incrementAndGet()
         return sendCtlDm(peerId, payload, avatarHash, identity.nodeId(), CtlDmPurpose.INTRO) { v3 ->
             profileCopy(peerId, payload, audience, v3)
         }
@@ -6365,6 +6483,8 @@ class MeshManager(
         avatarHash: String?,
         me: String,
         purpose: CtlDmPurpose,
+        // Told the frame's id once its content is shaped: the sealed profile's test seam reports it.
+        onId: (String) -> Unit = {},
         // The content to seal once the recipient's layout is known: a sealed profile's padded copy needs it.
         shape: (v3: Boolean) -> MessageContent = { payload },
     ): Boolean {
@@ -6379,6 +6499,7 @@ class MeshManager(
         val sealed = ratchet.sealDm(peerId, bundle.dhPublicKey(), ratchetPrekeyOf(peer), plaintext, aad, now, scheme) ?: return false
         if (scheme == EncEnvelope.VERSION_DM_V3) metrics.onDmSealedV3()
         metrics.onCtlDmSealed(purpose)
+        onId(id)
         originateSigned(
             RelayEnvelope(
                 type = FrameType.CHAT,
@@ -7379,6 +7500,20 @@ class MeshManager(
         /** A capability bitfield's radix in a log line. */
         const val HEX_RADIX = 16
 
+        /**
+         * How many sealed versions' eras [sealedEras] keeps. A session whose last version has been pushed out is sealed,
+         * never spared, so this bounds memory and never correctness; a handful covers a burst of contact changes.
+         */
+        const val MAX_SEALED_ERAS = 8
+
+        /**
+         * How old a sealed profile copy may be before a spare no longer trusts the peer to hold it: custody's TTL
+         * ([ForwardRepository.DEFAULT_TTL_MS], 24 h), the earlier of the two bounds a copy outlives (the spool keeps it 48 h,
+         * `RatchetSessions.STRANDED_TAIL_MS`). Past it, our own custody has dropped the frame, so a peer dark that long
+         * never got it unless the spool carried it; a re-seal then is harmless.
+         */
+        const val SEALED_PROFILE_STALE_MS = ForwardRepository.DEFAULT_TTL_MS
+
         const val TAG = "MeshManager"
         const val TEXT_MODERATION_TAG = "TextModeration"
 
@@ -7470,6 +7605,12 @@ internal object ResetReseal {
     const val SECOND_PASS_MS = SeenSet.DEFAULT_TTL_MS + 60_000L
 }
 
+/** A sealed profile version recorded for a peer, and when the copy it holds was sealed, on our wall clock. */
+private class SealedRecord(
+    val version: Long,
+    val sealedAt: Long,
+)
+
 /** The own-profile fields whose edit republishes the profile (`watchProfileChanges`). */
 private data class OwnPresentation(
     val name: String,
@@ -7484,6 +7625,7 @@ private data class OwnPresentation(
  * contacts it goes to — the only recipients [keyFor] answers it for. [minted] when this version was minted just now.
  * Names neither when printed.
  */
+
 private class MeshcoreAudience(
     val key: String?,
     val direct: Set<String>,

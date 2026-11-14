@@ -599,6 +599,12 @@ class MeshLab {
      * design does not close: a relay carries only your own scopes, so a node on the far island never holds
      * the DM-form frames two near-island nodes mint to each other (a seed or root re-send on the 60 s
      * re-offer) until they meet by radio again.
+     *
+     * [sealedTo] is the profile leg's parity mode for a sender that spares sessions a sealed profile (ADR 2026-11.gsqu,
+     * Stage 5b-1): given (holder, viewer), the newest version the holder sealed the viewer, or null to ask for the holder's
+     * newest. A viewer that holds the holder's presentation at that version, every visible field equal, has converged: an
+     * audience-only mint marks an unchanged session sent without sealing it the newer number. Null, the default, keeps the
+     * oracle exact.
      */
     suspend fun assertConverged(
         nodes: List<LabNode>,
@@ -606,6 +612,7 @@ class MeshLab {
         carriers: List<LabNode> = emptyList(),
         timeoutMs: Long = AWAIT_MS,
         custodyAcross: List<LabNode> = nodes + carriers,
+        sealedTo: (suspend (holder: LabNode, viewer: LabNode) -> Long?)? = null,
         conversation: (LabNode) -> String,
     ) {
         val names = nodes.map { it.name }
@@ -653,7 +660,7 @@ class MeshLab {
             custodied,
         )
 
-        assertProfilesAgree(nodes, timeoutMs)
+        assertProfilesAgree(nodes, timeoutMs, sealedTo)
         assertSessionsAgree(nodes, timeoutMs)
 
         stores.forEach { n ->
@@ -733,9 +740,10 @@ class MeshLab {
     private suspend fun assertProfilesAgree(
         nodes: List<LabNode>,
         timeoutMs: Long,
+        sealedTo: (suspend (holder: LabNode, viewer: LabNode) -> Long?)?,
     ) {
         val pairs = nodes.flatMap { a -> nodes.filter { it !== a }.map { b -> a to b } }
-        val presented = tryAwait(1, timeoutMs) { if (pairs.all { (a, b) -> presentsAsItIs(a, b) }) 1 else 0 }
+        val presented = tryAwait(1, timeoutMs) { if (pairs.all { (a, b) -> presentsAsItIs(a, b, sealedTo?.invoke(b, a)) }) 1 else 0 }
         assertTrue(
             "profiles did not converge across ${nodes.map { it.name }} within ${timeoutMs}ms:\n" +
                 pairs
@@ -743,24 +751,6 @@ class MeshLab {
                     .joinToString("\n") + "\n${report(nodes)}",
             presented,
         )
-    }
-
-    /**
-     * Whether [a] presents [b] as [b] presents itself. The differences allowed are an avatar [a]'s screening refused with
-     * content filtering on (#109) and one longer than a receiver takes as a face (`FileIntake.MAX_AVATAR_BYTES`, #234):
-     * [a] must not show it, and keeps whatever it showed before.
-     */
-    private suspend fun presentsAsItIs(
-        a: LabNode,
-        b: LabNode,
-    ): Boolean {
-        val held = a.presentationOf(b) ?: return false
-        val own = b.ownPresentation()
-        val avatar = own.avatarHash
-        val flagged = avatar != null && a.settings.contentFilteringEnabled.first() && a.imageFlagged(avatar)
-        val overCeiling = avatar != null && (b.blobs.sizes(listOf(avatar))[avatar] ?: 0L) > FileIntake.MAX_AVATAR_BYTES
-        val refused = flagged || overCeiling
-        return if (refused) held.avatarHash != avatar && held.copy(avatarHash = null) == own.copy(avatarHash = null) else held == own
     }
 
     private suspend fun assertSessionsAgree(
@@ -4045,3 +4035,24 @@ data class GroupShape(
     val photoUpdatedAt: Long,
     val left: Boolean,
 )
+
+/**
+ * Whether [a] presents [b] as [b] presents itself. The differences allowed are an avatar [a]'s screening refused with
+ * content filtering on (#109) and one longer than a receiver takes as a face (`FileIntake.MAX_AVATAR_BYTES`, #234):
+ * [a] must not show it, and keeps whatever it showed before.
+ */
+private suspend fun presentsAsItIs(
+    a: LabNode,
+    b: LabNode,
+    sealedVersion: Long? = null,
+): Boolean {
+    val held = a.presentationOf(b) ?: return false
+    // A spared session holds [b]'s presentation at the newest version [b] sealed it (ADR 2026-11.gsqu, Stage 5b-1).
+    val newest = b.ownPresentation()
+    val own = if (sealedVersion != null && sealedVersion < newest.version) newest.copy(version = sealedVersion) else newest
+    val avatar = own.avatarHash
+    val flagged = avatar != null && a.settings.contentFilteringEnabled.first() && a.imageFlagged(avatar)
+    val overCeiling = avatar != null && (b.blobs.sizes(listOf(avatar))[avatar] ?: 0L) > FileIntake.MAX_AVATAR_BYTES
+    val refused = flagged || overCeiling
+    return if (refused) held.avatarHash != avatar && held.copy(avatarHash = null) == own.copy(avatarHash = null) else held == own
+}

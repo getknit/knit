@@ -19,7 +19,8 @@ lines.
   coordinator's vectors are copied from its SHA, never recomputed. Never log or dump an `r`, a `sub` or a wrapper.
 - **When touching `ProfilePayload.meshcoreKey` / `ProfileV2` label 9, `PeerEntity.meshcoreKey` (`peers.meshcoreKey`, DB
   v36), `InboundPipeline.applySealedProfile`'s key line, `MeshcoreKey`, or `MeshManager.meshcoreBoardMap` /
-  `MeshcoreBoardMap`:** READ ADR 2026-11.gsqu's Stage 4 amendment and `docs/WIRE_COMPAT.md`'s MeshCore-key precedent. The
+  `MeshcoreBoardMap`, `MeshcoreKey.MEMO_ENTRIES`:** READ ADR 2026-11.gsqu's Stage 4 amendment (and its Stage 5b-1 one for the
+  point check's memo and the narrowed fan-out) and `docs/WIRE_COMPAT.md`'s MeshCore-key precedent. The
   MeshCore board a contact drives rides the sealed profile only, never `ProfileContent`, and our own goes only to direct
   contacts (each recipient's copy, with the contact set in the sealed version's fingerprint; every other copy padded to
   the keyed length with `MessageContent.pad`, `MeshcoreProfilePad`): the sealed writer stores it under
@@ -31,7 +32,9 @@ lines.
   taught, and a claimant this phone has not heard from for 30 days contests nothing; the version never decides), and **never** who an inbound DM is from — Stage 5 never attributes a DM by the
   board's 6-byte sender prefix; the compact door names its sender by the pair seal's tag and the AEAD alone
   (`LoraDirectSeal`'s trust boundary). Never in a log line, a field-log line, a debug-bridge or USB-control reply
-  (`MeshcoreBoardHolder.toString` names no key). Regression: `InboundPipelineTest`'s MeshCore-key cases,
+  (`MeshcoreBoardHolder.toString` names no key). `MeshcoreKey.bytesOrNull` memoizes the point check by canonical key string
+  (an LRU of `MEMO_ENTRIES`; a cache of a pure function, so no eviction changes an answer); `accepts` stays uncached.
+  `MeshManager.bindMeshcoreDirect` is bound before `start()` (bound after, every start mints twice; it logs). Regression: `InboundPipelineTest`'s MeshCore-key cases,
   `MeshcoreClaimTest`, `MeshcoreProfileLabTest`.
 - **When touching a presence dot or an online / offline label** (Profile Details, Diagnostics' node
   sections, `Avatar`'s `online` dot on the chat list, the DM header, contacts and group and commons members): the four evidence tiers live in `ui/Reach.kt` — `Direct` is

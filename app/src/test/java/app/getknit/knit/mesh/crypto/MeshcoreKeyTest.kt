@@ -1,9 +1,11 @@
 package app.getknit.knit.mesh.crypto
 
+import com.google.crypto.tink.subtle.Ed25519Sign
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Base64
 
@@ -80,6 +82,42 @@ class MeshcoreKeyTest {
         assertFalse("y = p + 1", MeshcoreKey.accepts(hex("ee" + "ff".repeat(30) + "7f")))
         // x = 0 with the sign bit set: negative zero.
         assertFalse("negative zero", MeshcoreKey.accepts(hex("01" + "00".repeat(30) + "80")))
+    }
+
+    /**
+     * The memo (ADR 2026-11.gsqu, Stage 5b-1) answers as the uncached check does, asked once or again, for valid, invalid,
+     * low-order and non-canonical keys, and still does once more distinct keys than it holds have pushed the first ones
+     * out: it caches a pure function, so no eviction can change an answer.
+     */
+    @Test
+    fun theMemoAnswersAsTheUncachedCheckDoes() {
+        val random = java.util.Random(7)
+        val valid =
+            List(MeshcoreKey.MEMO_ENTRIES) { Ed25519Sign.KeyPair.newKeyPairFromSeed(ByteArray(32).also(random::nextBytes)).publicKey }
+        val arbitrary = List(MeshcoreKey.MEMO_ENTRIES) { ByteArray(32).also(random::nextBytes) }
+        val lowOrder = listOf("01" + "00".repeat(31), "ec" + "ff".repeat(30) + "7f", "00".repeat(32)).map(::hex)
+        val rfc = listOf(hex(RFC8032_TEST1), hex(RFC8032_TEST2))
+        // The RFC keys asked again right after the first MEMO_ENTRIES keys: eviction has begun, so each answer is checked
+        // whether it is a hit or the check run again.
+        val keys = rfc + lowOrder + valid + rfc + arbitrary
+        assertTrue("the arbitrary keys hold some that are not points", arbitrary.any { !MeshcoreKey.accepts(it) })
+        repeat(2) { pass ->
+            for (raw in keys) {
+                val text = b64(raw)
+                val expected = if (MeshcoreKey.accepts(raw)) raw else null
+                assertArrayEquals("pass $pass, ${text.take(8)}", expected, MeshcoreKey.bytesOrNull(text))
+                assertEquals("pass $pass, ${text.take(8)}", expected?.let { text }, MeshcoreKey.canonicalOrNull(text))
+            }
+        }
+        // A non-canonical spelling of a key the memo holds as valid is still refused: it never reaches the memo.
+        val held = b64(hex(RFC8032_TEST2))
+        assertArrayEquals(hex(RFC8032_TEST2), MeshcoreKey.bytesOrNull(held))
+        assertNull("unpadded", MeshcoreKey.bytesOrNull(held.trimEnd('=')))
+        assertNull("URL-safe", MeshcoreKey.bytesOrNull(b64(hex(RFC8032_TEST3)).replace('/', '_')))
+        assertNull("whitespace", MeshcoreKey.bytesOrNull(" $held"))
+        // The bytes handed back are the caller's own: changing them changes nothing the memo answers next.
+        MeshcoreKey.bytesOrNull(held)!!.fill(0)
+        assertArrayEquals(hex(RFC8032_TEST2), MeshcoreKey.bytesOrNull(held))
     }
 
     private fun b64(bytes: ByteArray): String = Base64.getEncoder().encodeToString(bytes)

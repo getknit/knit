@@ -18,6 +18,12 @@ import java.math.BigInteger
  *
  * This is a validity check over field arithmetic, never a signature or an agreement: it adds no primitive (ADR 016) and
  * holds no secret. Pure JVM; never throws.
+ *
+ * The point check is a few hundred microseconds of `BigInteger` per key, and `MeshManager.meshcoreBoardMap` runs it on
+ * every row of every `observePeers` emission, so [bytesOrNull] memoizes its verdict by canonical key string (ADR
+ * 2026-11.gsqu, Stage 5b-1). Only a canonical spelling reaches the memo, and canonical text and its 32 bytes are one to
+ * one, so the string is the bytes' key. The memo caches a pure function: an eviction only costs the check again, and
+ * never changes an answer. It holds public keys only, the same ones `peers.meshcoreKey` stores.
  */
 internal object MeshcoreKey {
     /** A MeshCore board's public key is a raw 32-byte Ed25519 key (`SELF_INFO`, `ADV_PUB_KEY`). */
@@ -26,10 +32,39 @@ internal object MeshcoreKey {
     /** [text] itself when it passes, which is then its canonical spelling; null otherwise. */
     fun canonicalOrNull(text: String?): String? = text?.takeIf { bytesOrNull(it) != null }
 
-    /** The 32 bytes behind [text] when it is a canonical, full-order Ed25519 public key; null otherwise. */
-    fun bytesOrNull(text: String): ByteArray? = CanonicalText.base64BytesOrNull(text)?.takeIf(::accepts)
+    /**
+     * The 32 bytes behind [text] when it is a canonical, full-order Ed25519 public key; null otherwise. The point check's
+     * verdict is memoized by [text] once the canonical check passed; the bytes are decoded afresh, so a caller may keep or
+     * change them.
+     */
+    fun bytesOrNull(text: String): ByteArray? {
+        val raw = CanonicalText.base64BytesOrNull(text) ?: return null
+        return raw.takeIf { memoized(text) { accepts(raw) } }
+    }
 
-    /** Whether [raw] is exactly [BYTES] bytes of an Ed25519 point that is not of low order. */
+    /** How many canonical keys' verdicts [bytesOrNull] keeps: a few hundred, past any contact list's board count. */
+    const val MEMO_ENTRIES = 256
+
+    /** A bounded, least-recently-used memo of canonical key → [accepts], under its own monitor. */
+    private val verdicts =
+        object : LinkedHashMap<String, Boolean>(MEMO_ENTRIES, LOAD_FACTOR, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean = size > MEMO_ENTRIES
+        }
+
+    /** [key]'s memoized verdict, or [check]'s, run outside the lock: two callers racing on one key agree, it is pure. */
+    private fun memoized(
+        key: String,
+        check: () -> Boolean,
+    ): Boolean {
+        synchronized(verdicts) { verdicts[key] }?.let { return it }
+        val verdict = check()
+        synchronized(verdicts) { verdicts[key] = verdict }
+        return verdict
+    }
+
+    private const val LOAD_FACTOR = 0.75f
+
+    /** Whether [raw] is exactly [BYTES] bytes of an Ed25519 point that is not of low order. Never memoized. */
     fun accepts(raw: ByteArray): Boolean {
         if (raw.size != BYTES) return false
         val point = decode(raw) ?: return false

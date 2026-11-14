@@ -222,7 +222,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   parity across the nodes plus any `carriers = listOf(bob)` that relayed but are not party to the thread — the
   soak oracle for the "digests diverge, NAN churns" class), and no parked seed that never replayed. The
   oracle is what catches the bug the scenario's author did not think to assert; add a per-node invariant
-  there, not in individual scenarios. `createGroup` mirrors `ContactsViewModel.createGroup` (the ViewModel
+  there, not in individual scenarios. It also checks every pair's profile and DM session; a scenario whose sender spares
+  sessions a sealed profile (an audience-only mint with a MeshCore key claimed, ADR 2026-11.gsqu Stage 5b-1) passes
+  `sealedTo` (holder, viewer → the newest version sealed that viewer), which accepts the presentation at that version,
+  every visible field equal; without it the profile leg stays exact. `createGroup` mirrors `ContactsViewModel.createGroup` (the ViewModel
   needs a Main dispatcher) — if that body changes, change both.
 - **The group-tick debounce is shortened, not bypassed.** A group tick toward an absent author batches 45 s
   before escalating into custody (`AckSync.TICK_BATCH_DEBOUNCE_MS`); a tick crossing a relay would never

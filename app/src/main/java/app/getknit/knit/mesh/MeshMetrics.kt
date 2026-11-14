@@ -586,6 +586,8 @@ class MeshMetrics {
     private val receiptsResent = AtomicLong()
     private val dmSealedV2 = AtomicLong()
     private val dmSealedV3 = AtomicLong()
+    private val sealedProfilesSpared = AtomicLong()
+    private val sealedProfilesStale = AtomicLong()
     private val ticksUnsigned = AtomicLong()
     private val dmSealedV1Fallback = AtomicLong()
     private val receiptsSealed = AtomicLong()
@@ -1052,6 +1054,19 @@ class MeshMetrics {
     /** An outbound DM-form frame sealed under crypto scheme v3 (derived nonce, compact plaintext — ADR 059). */
     fun onDmSealedV3() {
         dmSealedV3.incrementAndGet()
+    }
+
+    /**
+     * One sealed-profile fan-out's plan (ADR 2026-11.gsqu, Stage 5b-1): sessions marked sent unsealed, and sessions sealed
+     * because their last copy may be gone. Counters only, never a log line: a line would date a contact-set change by its
+     * version and size our session list.
+     */
+    fun onSealedProfilesPlanned(
+        spared: Int,
+        stale: Int,
+    ) {
+        sealedProfilesSpared.addAndGet(spared.toLong())
+        sealedProfilesStale.addAndGet(stale.toLong())
     }
 
     /** A live-link delivery tick sent unsigned (v3, `relay = false`) — the one-packet form on every fast plane. */
@@ -2113,6 +2128,8 @@ class MeshMetrics {
             dmSealedV2 = dmSealedV2.get(),
             dmSealedV3 = dmSealedV3.get(),
             dmSealedV1Fallback = dmSealedV1Fallback.get(),
+            sealedProfilesSpared = sealedProfilesSpared.get(),
+            sealedProfilesStale = sealedProfilesStale.get(),
             reactionsSealed = reactionsSealed.get(),
             reactionsSealedFallback = reactionsSealedFallback.get(),
             ctlDmSealedBy = ctlDmsByPurpose.mapValues { it.value.get() }.filterValues { it > 0 },
@@ -2442,6 +2459,9 @@ class MeshMetrics {
             val dmSealedV2: Long = 0,
             val dmSealedV3: Long = 0,
             val dmSealedV1Fallback: Long = 0,
+            // The sealed profile's audience-only mints (ADR 2026-11.gsqu, Stage 5b-1).
+            val sealedProfilesSpared: Long = 0,
+            val sealedProfilesStale: Long = 0,
             val reactionsSealed: Long = 0,
             val reactionsSealedFallback: Long = 0,
             // Sealed ctl DMs by what they carried, and the profile watcher's republishes by why (measurement only, the

@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
@@ -124,6 +125,20 @@ class MeshcoreProfileLabTest {
             assertTrue("log lines carrying the key: $leaks", leaks.isEmpty())
         }
 
+    /**
+     * Whether [viewer] holds [holder]'s presentation at the newest version [holder] sealed to it ([copies]): what an
+     * unaffected session holds after an audience-only mint, which marks it sent without sealing it the newer version.
+     */
+    private suspend fun holdsNewestSealedTo(
+        viewer: LabNode,
+        holder: LabNode,
+        copies: List<MeshManager.SealedProfileSend>,
+    ): Boolean {
+        val newest = copies.filter { it.peerId == viewer.nodeId }.maxOfOrNull { it.version } ?: return false
+        val own = holder.ownPresentation()
+        return viewer.presentationOf(holder) == own.copy(version = newest)
+    }
+
     /** Whether [viewer] holds [holder]'s presentation at the version [holder] last published: its newest sealed profile. */
     private suspend fun holdsLatest(
         viewer: LabNode,
@@ -184,14 +199,303 @@ class MeshcoreProfileLabTest {
             alice.accept(alice.dmWith(dave))
             awaitKey(dave, alice, KEY_2)
             assertTrue("the key came under a newer version", checkNotNull(dave.peer(alice)).updatedAt > keylessAtDave)
+            val accepted = alice.meshcoreClaims.sealedVersion.first()
+            assertTrue(lab.tryAwait(1) { copies.count { it.peerId == dave.nodeId && it.version == accepted } })
             alice.heal()
-            assertTrue(lab.tryAwait(1) { if (holdsLatest(eve, alice)) 1 else 0 })
+            // The accept is an audience-only mint (Stage 5b-1): Eve's answer did not change, so she is spared it — never
+            // sealed the accept's version — and holds the older one Alice sealed her at the rebind, every field the same.
+            assertTrue("Eve was sealed the accept", copies.none { it.peerId == eve.nodeId && it.version == accepted })
+            val sealedEve = copies.filter { it.peerId == eve.nodeId }.maxOf { it.version }
+            assertTrue("Eve's newest copy is not older than the accept", sealedEve < accepted)
+            assertTrue(lab.tryAwait(1) { if (holdsNewestSealedTo(eve, alice, copies)) 1 else 0 })
+            assertEquals(sealedEve, eve.presentationOf(alice)?.version)
             assertNull("Eve, never accepted, still holds none", eve.peer(alice)?.meshcoreKey)
 
             assertOneLengthPerVersion(copies, bob)
             assertTrue(alice.sendDm(dave, "welcome"))
             lab.assertConverged(listOf(alice, dave), atLeast = 2) { it.dmWith(if (it === alice) dave else alice) }
         }
+
+    /**
+     * An audience-only mint seals only the peer whose answer changed (ADR 2026-11.gsqu, Stage 5b-1, the maintainer's
+     * decision of 2026-11-13): Alice accepting Dave seals him one copy, keyed and strictly newer, which a carrier with no
+     * session holds; blocking him seals him one keyless and strictly newer. Bob and Carol, unchanged, are sent no new copy
+     * and keep the key and the newest version sealed them; no node logs the key; a restart mints nothing and seals each
+     * session at most once.
+     */
+    @Test
+    fun aContactSetChangeSealsTheChangedPeerAndSparesTheRest() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            val dave = lab.node("dave").apply { setDisplayName("Dave") }
+            val frank = lab.node("frank").apply { setDisplayName("Frank") }
+            val copies = CopyOnWriteArrayList<MeshManager.SealedProfileSend>()
+            alice.manager.onSealedProfile = { copies += it }
+            lab.linkAll(
+                alice to bob,
+                alice to carol,
+                alice to dave,
+                alice to frank,
+                bob to carol,
+                bob to dave,
+                carol to dave,
+                frank to bob,
+                frank to carol,
+                frank to dave,
+            )
+            lab.awaitAcquainted(alice, bob, carol, dave, frank)
+            // Bob and Carol are Alice's contacts (she wrote to them); Dave DMs her once and is not answered; Frank, the
+            // carrier, never writes her.
+            listOf(bob, carol).forEach { exchange(alice, it, atLeast = 2) }
+            assertTrue(dave.sendDm(alice, "hello?"))
+
+            alice.driveMeshcoreBoard(KEY)
+            awaitKey(bob, alice, KEY)
+            awaitKey(carol, alice, KEY)
+            alice.heal()
+            // The claim's mint is a full fan-out: everyone holds the newest version before the contact set moves.
+            for (peer in listOf(bob, carol, dave)) assertTrue(lab.tryAwait(1) { if (holdsLatest(peer, alice)) 1 else 0 })
+            assertNull(dave.peer(alice)?.meshcoreKey)
+
+            val keylessAtDave = checkNotNull(dave.peer(alice)).updatedAt
+            alice.accept(alice.dmWith(dave))
+            awaitKey(dave, alice, KEY)
+            val keyedAtDave = checkNotNull(dave.peer(alice)).updatedAt
+            assertTrue("the key came under a newer version", keyedAtDave > keylessAtDave)
+            alice.heal()
+            assertSealedOnlyTo(copies, alice.meshcoreClaims.sealedVersion.first(), dave, carrier = frank)
+
+            alice.block(dave)
+            awaitKey(dave, alice, null)
+            assertTrue("the block came under a newer version", checkNotNull(dave.peer(alice)).updatedAt > keyedAtDave)
+            alice.heal()
+            assertSealedOnlyTo(copies, alice.meshcoreClaims.sealedVersion.first(), dave, carrier = frank)
+
+            for (contact in listOf(bob, carol)) {
+                assertEquals("${contact.name} keeps the key", KEY, contact.peer(alice)?.meshcoreKey)
+                assertTrue("${contact.name} holds an older version than its newest copy", holdsNewestSealedTo(contact, alice, copies))
+            }
+            assertTrue(alice.metrics.seals().sealedProfilesSpared >= 4)
+            assertNoLogCarriesTheKey()
+            for (contact in listOf(bob, carol)) exchange(alice, contact, atLeast = 4, sealedTo = sealedTo(alice, copies))
+
+            assertRestartMintsNothingAndSealsOnce(alice, listOf(bob, carol, dave, frank), blocked = dave)
+            assertNull(dave.peer(alice)?.meshcoreKey)
+            for (contact in listOf(bob, carol)) {
+                exchange(alice, contact, atLeast = 6)
+                assertEquals(KEY, contact.peer(alice)?.meshcoreKey)
+            }
+        }
+
+    /**
+     * A copy sealed to a contact dark past custody's TTL is gone, so the next contact-set change seals it again rather
+     * than spare it (the 5b-1 review): Erin is away across the claim's mint and a day past it, every carrier's copy of it
+     * gone, comes back holding no key, and gets it with the next accept, which would otherwise have sealed Dave alone.
+     */
+    @Test
+    fun aContactDarkPastCustodysTtlGetsTheKeyAtTheNextContactChange() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val erin = lab.node("erin").apply { setDisplayName("Erin") }
+            val dave = lab.node("dave").apply { setDisplayName("Dave") }
+            lab.linkAll(alice to bob, alice to erin, alice to dave, bob to erin, bob to dave, dave to erin)
+            lab.awaitAcquainted(alice, bob, erin, dave)
+            listOf(bob, erin).forEach { exchange(alice, it, atLeast = 2) }
+            assertTrue(dave.sendDm(alice, "hello?"))
+            lab.assertConverged(listOf(alice, dave), atLeast = 1) { it.dmWith(if (it === alice) dave else alice) }
+
+            val copies = CopyOnWriteArrayList<MeshManager.SealedProfileSend>()
+            alice.manager.onSealedProfile = { copies += it }
+            lab.unlink(alice, erin)
+            lab.unlink(bob, erin)
+            lab.unlink(dave, erin)
+            // Alice's DMs to Erin stay in her own custody alone while Erin is away: no carrier relays them on, so the
+            // eviction below takes every copy there is.
+            val toErinChat = { frame: WireEnvelope ->
+                WireCodec.decodeEnvelope(frame.signed)?.let {
+                    it.type == FrameType.CHAT && it.senderId == alice.nodeId && it.recipientId == erin.nodeId
+                } == true
+            }
+            alice.transport.lossy(bob.transport, toErinChat)
+            alice.transport.lossy(dave.transport, toErinChat)
+            alice.driveMeshcoreBoard(KEY)
+            awaitKey(bob, alice, KEY)
+            alice.heal()
+
+            // A day and more, and the claim's seal to Erin gone with it (its TTL, or the quota).
+            assertTrue(lab.tryAwait(1) { copies.count { it.peerId == erin.nodeId } })
+            evictEverySealTo(alice, erin, copies)
+            alice.transport.lossy(bob.transport)
+            alice.transport.lossy(dave.transport)
+            // 25 h, past custody's 24 h TTL (`ForwardRepository.DEFAULT_TTL_MS`) and the stale bound, in two steps with a
+            // heal between: past the 12 h republish floor, the heal restamps Alice's cleartext profile at its version, so
+            // its custody row never expires — an expired one would read as an edit, and the version that edit mints
+            // fans out to everyone, Erin's keyed copy among them, before the accept. Under 48 h before a sweep.
+            lab.clock.advance(13 * 60 * 60_000L)
+            alice.heal()
+            lab.clock.advance(12 * 60 * 60_000L)
+            alice.heal()
+            lab.link(alice, erin)
+            lab.link(bob, erin)
+            lab.link(dave, erin)
+            lab.awaitCustodyParity(alice, bob, dave, erin)
+            alice.heal()
+            assertNull("the claim's copy reached Erin after all", erin.peer(alice)?.meshcoreKey)
+
+            alice.accept(alice.dmWith(dave))
+            awaitKey(dave, alice, KEY)
+            awaitKey(erin, alice, KEY)
+            // The profile Alice republished across the jump is a custody row Erin lacks, offered again only on a link's
+            // digest exchange: relink, so the stores settle before the oracle compares them.
+            lab.unlink(alice, erin)
+            lab.link(alice, erin)
+            exchange(alice, erin, atLeast = 4, sealedTo = sealedTo(alice, copies))
+        }
+
+    /**
+     * A contact that restores from a backup re-forms its session with an init, which Alice answers with a contact-card
+     * intro; the intro marks the contact, so the next audience-only mint seals it beside the changed peer, though its
+     * answer did not change, and it ends holding the keyed current copy.
+     */
+    @Test
+    fun aContactThatResetsHoldsTheKeyedCurrentCopyAfterTheNextContactChange() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            val dave = lab.node("dave").apply { setDisplayName("Dave") }
+            val copies = CopyOnWriteArrayList<MeshManager.SealedProfileSend>()
+            alice.manager.onSealedProfile = { copies += it }
+            lab.linkAll(alice to bob, alice to carol, alice to dave, bob to carol, carol to dave, bob to dave)
+            lab.awaitAcquainted(alice, bob, carol, dave)
+            listOf(bob, carol).forEach { exchange(alice, it, atLeast = 2) }
+            assertTrue(dave.sendDm(alice, "hello?"))
+            alice.driveMeshcoreBoard(KEY)
+            awaitKey(bob, alice, KEY)
+            awaitKey(carol, alice, KEY)
+            alice.heal()
+            for (peer in listOf(bob, carol, dave)) assertTrue(lab.tryAwait(1) { if (holdsLatest(peer, alice)) 1 else 0 })
+
+            bob.restoreFromBackup()
+            // As `RestoreLabTest` does: Alice writes while Bob is away, under the session his restore wiped; his restore's
+            // reset re-forms it with an init, which Alice answers with the intro, and re-seals what she sent.
+            assertTrue(alice.sendDm(bob, "while you were away"))
+            lab.link(alice, bob)
+            lab.assertConverged(listOf(alice, bob), atLeast = 3) { it.dmWith(if (it === alice) bob else alice) }
+            lab.link(bob, carol)
+            lab.link(bob, dave)
+            assertTrue(bob.sendDm(alice, "back"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 4) { it.dmWith(if (it === alice) bob else alice) }
+
+            alice.accept(alice.dmWith(dave))
+            awaitKey(dave, alice, KEY)
+            assertTrue("Bob never held the current version", lab.tryAwait(1) { if (holdsLatest(bob, alice)) 1 else 0 })
+            assertEquals(KEY, bob.peer(alice)?.meshcoreKey)
+            exchange(alice, bob, atLeast = 6, sealedTo = sealedTo(alice, copies))
+        }
+
+    /**
+     * Every DM [owner] sealed [peer] while it was away, the claim's copy and any other, leaves [owner]'s custody: none
+     * reached a carrier, so [owner]'s holds all there are. Evicted before a clock jump, which would hide the rows from the
+     * live read the eviction goes by.
+     */
+    private suspend fun evictEverySealTo(
+        owner: LabNode,
+        peer: LabNode,
+        copies: List<MeshManager.SealedProfileSend>,
+    ) {
+        val rows = ":${FrameType.CHAT}:${owner.nodeId.take(6)}→${peer.nodeId.take(6)}@"
+        val ids =
+            owner
+                .custodyFrames()
+                .filter { rows in it }
+                .map { it.substringBefore(':') }
+                .toSet()
+        val sealed = copies.filter { it.peerId == peer.nodeId }.map { it.frameId }
+        assertTrue("a sealed profile to ${peer.name} is not in ${owner.name}'s custody", sealed.all { it in ids })
+        owner.forgetCustody { it in ids }
+        assertTrue(lab.tryAwait(1) { if (owner.custodyFrames().none { rows in it }) 1 else 0 })
+    }
+
+    /**
+     * The copies of [version] went to [changed] alone, and [carrier], who shares no session, holds that one in custody: an
+     * audience-only mint seals nobody whose answer did not change.
+     */
+    private suspend fun assertSealedOnlyTo(
+        copies: List<MeshManager.SealedProfileSend>,
+        version: Long,
+        changed: LabNode,
+        carrier: LabNode,
+    ) {
+        assertTrue("${changed.name} was never sealed v$version", lab.tryAwait(1) { copies.count { it.version == version } })
+        // The caller healed first: the heal's fan-out waits on the mint's under the same lock, so every copy of the
+        // version is recorded by now, and the heal itself seals nobody (every session is at it, sealed or spared).
+        val id = checkNotNull(copies.first { it.version == version }.frameId)
+        assertTrue("${carrier.name} never held the copy", lab.tryAwait(1) { if (id in carrier.custodyIds()) 1 else 0 })
+        assertEquals("sealed beyond the changed peer", listOf(changed.nodeId), copies.filter { it.version == version }.map { it.peerId })
+    }
+
+    /** [assertConverged]'s parity mode for [owner]'s profile: the newest version [owner] sealed each viewer ([copies]). */
+    private fun sealedTo(
+        owner: LabNode,
+        copies: List<MeshManager.SealedProfileSend>,
+    ): suspend (LabNode, LabNode) -> Long? =
+        { holder, viewer -> if (holder === owner) copies.filter { it.peerId == viewer.nodeId }.maxOfOrNull { it.version } else null }
+
+    /** Never in a log line, in any spelling, on any node. */
+    private fun assertNoLogCarriesTheKey() {
+        val lines = ShadowLog.getLogs().map { "${it.tag}: ${it.msg} ${it.throwable ?: ""}" }
+        val leaks = lines.filter { line -> listOf(KEY, KEY.take(16), KEY_HEX, KEY_HEX.take(16)).any { it in line } }
+        assertTrue("log lines carrying the key: $leaks", leaks.isEmpty())
+    }
+
+    /**
+     * [a] writes [b], [b] answers once it has opened it, and the thread converges on both with at least [atLeast]
+     * messages. In turn, so [b]'s answer rides [a]'s session rather than racing an init of its own: a raced init's frames
+     * carry it until answered, and each is answered with a contact-card intro, a sealed profile outside the fan-out.
+     */
+    private suspend fun exchange(
+        a: LabNode,
+        b: LabNode,
+        atLeast: Int,
+        sealedTo: (suspend (LabNode, LabNode) -> Long?)? = null,
+    ) {
+        val before = b.decrypted(b.dmWith(a)).size
+        assertTrue(a.sendDm(b, "hi ${b.name}"))
+        lab.await(before + 1) { b.decrypted(b.dmWith(a)).size }
+        assertTrue(b.sendDm(a, "hi ${a.name}"))
+        lab.assertConverged(listOf(a, b), atLeast = atLeast, sealedTo = sealedTo) { it.dmWith(if (it === a) b else a) }
+    }
+
+    /**
+     * [owner] restarts and heals twice: the claim and its audience are the fingerprint published last, so nothing is
+     * minted; nothing is known of what any session holds, so each is sealed the current version at most once, and
+     * [blocked]'s copy carries no key.
+     */
+    private suspend fun assertRestartMintsNothingAndSealsOnce(
+        owner: LabNode,
+        others: List<LabNode>,
+        blocked: LabNode,
+    ) {
+        val sealedVersion = owner.meshcoreClaims.sealedVersion.first()
+        owner.restart()
+        val copies = CopyOnWriteArrayList<MeshManager.SealedProfileSend>()
+        owner.manager.onSealedProfile = { copies += it }
+        others.forEach { lab.link(owner, it) }
+        owner.heal()
+        owner.heal()
+        assertEquals("a restart minted a version", sealedVersion, owner.meshcoreClaims.sealedVersion.first())
+        val perPeer = copies.groupBy { it.peerId }
+        assertTrue("a session was sealed twice after the restart: $perPeer", perPeer.values.all { it.size == 1 })
+        assertTrue("a copy after the restart was not the current version", copies.all { it.version == sealedVersion })
+        assertTrue(
+            "a key went to the blocked peer after the restart",
+            copies.none { it.peerId == blocked.nodeId && it.content.pr?.meshcoreKey != null },
+        )
+    }
 
     /**
      * [owner] blocks [contact] between a fan-out's audience read and its seal, and waits there for the mint the block

@@ -61,6 +61,12 @@ they are documented and out of scope for reports:
   build ships). Outside links, the adverts, the Wi-Fi Aware discovery messages and the Bluetooth side
   channel stay readable.
 
+- **A build that names your MeshCore board shows who you change as a contact.** On a build that claims a
+  MeshCore board (today only debug builds, behind `MESHCORE_PLANE`), your sealed profile carries the board's key to
+  your direct contacts only. When you accept, verify, block or remove someone, the updated profile goes to that one
+  person, as one sealed frame that names them as its recipient. A relay, a carrier or the Internet relay can't read it,
+  but sees whose contact status you changed and when.
+
 See the README's *Security note* and [`docs/`](docs/) for the full threat model and design detail. Novel
 issues **beyond** these documented trade-offs — key handling, the crypto envelope, signature
 verification, the CBOR wire parser, at-rest encryption, memory-safety in the radio layer — are in scope

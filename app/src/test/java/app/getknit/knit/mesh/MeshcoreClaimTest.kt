@@ -8,8 +8,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The two pure rules of ADR 2026-11.gsqu's Stage 4: what our sealed profile claims about MeshCore ([MeshcoreClaimRule]),
- * and which contacts' MeshCore boards Stage 5 may teach ours ([MeshcoreBoardMap]).
+ * The pure rules of ADR 2026-11.gsqu's Stage 4 and 5b-1: what our sealed profile claims about MeshCore
+ * ([MeshcoreClaimRule]), which contacts' MeshCore boards Stage 5 may teach ours ([MeshcoreBoardMap]), and which owed
+ * sessions an audience-only mint need not seal ([MeshcoreFanOutRule]).
  */
 class MeshcoreClaimTest {
     // --- The claim ---
@@ -174,8 +175,257 @@ class MeshcoreClaimTest {
         assertTrue(peer("ann", null).toString().contains("meshcoreKey=unset"))
     }
 
+    // --- The fan-out (Stage 5b-1) ---
+
+    private fun era(
+        version: Long,
+        key: String? = KEY_A,
+        direct: Set<String> = setOf("ann", "ben"),
+        visible: String = "Alice",
+    ) = SealedProfileEra(version, key, direct, visible)
+
+    private fun spares(
+        peer: String,
+        held: SealedProfileEra?,
+        next: SealedProfileEra,
+        claimMinted: Boolean = true,
+    ) = MeshcoreFanOutRule.spares(peer, held, next, claimMinted)
+
+    @Test
+    fun anAudienceOnlyMintSparesExactlyThePeersWhoseAnswerDidNotChange() {
+        val held = era(1, direct = setOf("ann", "ben"))
+        // Ben blocked, Cid accepted: their answers changed, Ann's (a contact) and Dee's (a stranger) did not.
+        val next = era(2, direct = setOf("ann", "cid"))
+        val spared = listOf("ann", "ben", "cid", "dee").filter { spares(it, held, next) }
+        assertEquals(listOf("ann", "dee"), spared)
+    }
+
+    @Test
+    fun aMintThatMovedAnythingElseSparesNobody() {
+        val held = era(1)
+        val peers = listOf("ann", "ben", "dee")
+        val moved =
+            mapOf(
+                "a visible field" to era(2, visible = "Alice Again"),
+                "the key changed" to era(2, key = KEY_B),
+                "the key dropped" to era(2, key = null),
+            )
+        for ((what, next) in moved) assertTrue(what, peers.none { spares(it, held, next) })
+        assertTrue("the key gained", peers.none { spares(it, era(1, key = null), era(2)) })
+        assertTrue("unclaimed at both", peers.none { spares(it, era(1, key = null), era(2, key = null)) })
+        assertTrue("not the claim's own mint", peers.none { spares(it, held, era(2), claimMinted = false) })
+    }
+
+    @Test
+    fun aPeerWhoseLastCopyIsNotKnownIsSealed() {
+        assertFalse("nothing recorded, or its era gone, or an intro since", spares("ann", null, era(2)))
+        assertFalse("the version it holds is not older", spares("ann", era(2), era(2)))
+        assertFalse(spares("ann", era(3), era(2)))
+    }
+
+    private fun owedAll(
+        ids: List<String>,
+        held: SealedProfileEra,
+        sealedAt: Long = NOW - 1,
+    ) = ids.map { OwedSeal(it, held, sealedAt) }
+
+    private fun plan(
+        owed: List<OwedSeal>,
+        next: SealedProfileEra,
+        now: Long = NOW,
+        claimMinted: Boolean = true,
+    ) = MeshcoreFanOutRule.plan(owed, next, claimMinted, now, STALE)
+
+    @Test
+    fun anAudienceOnlyMintSealsTheChangedPeersAndSparesTheRest() {
+        val peers = (1..10).map { "p$it" }
+        // p3 accepted and p2 blocked: the only answers that changed.
+        val plan = plan(owedAll(peers, era(1, direct = setOf("p1", "p2"))), era(2, direct = setOf("p1", "p3")))
+        assertEquals(setOf("p2", "p3"), plan.seal)
+        assertEquals(peers.toSet() - setOf("p2", "p3"), plan.spare)
+        assertEquals(0, plan.stale)
+    }
+
+    @Test
+    fun theStaleBoundIsHalfOpenAndAFutureStampIsStale() {
+        val held = era(1, direct = setOf("p1"))
+        val next = era(2, direct = setOf("p1"))
+        val cases =
+            mapOf(
+                "exactly the bound ago" to (NOW - STALE to true),
+                "a millisecond inside it" to (NOW - STALE + 1 to false),
+                "sealed now" to (NOW to false),
+                "a millisecond in the future" to (NOW + 1 to true),
+            )
+        for ((what, case) in cases) {
+            val (sealedAt, stale) = case
+            val plan = plan(listOf(OwedSeal("p1", held, sealedAt)), next)
+            assertEquals(what, if (stale) 1 else 0, plan.stale)
+            assertEquals(what, if (stale) setOf("p1") else emptySet<String>(), plan.seal)
+            assertEquals(what, if (stale) emptySet<String>() else setOf("p1"), plan.spare)
+        }
+    }
+
+    @Test
+    fun aStaleCopyIsSealedBesideTheChangedPeerAndOnlyThose() {
+        val held = era(1, direct = setOf("p1", "p2", "p3", "p4"))
+        val next = era(2, direct = setOf("p1", "p2", "p3", "p4", "p5"))
+        val owed =
+            listOf(
+                OwedSeal("p1", held, sealedAt = NOW - 2 * DAY),
+                OwedSeal("p2", held, sealedAt = NOW - 1),
+                OwedSeal("p3", held, sealedAt = NOW - 1),
+                OwedSeal("p4", held, sealedAt = NOW + DAY),
+                OwedSeal("p5", held, sealedAt = NOW - 1),
+                OwedSeal("p6", held, sealedAt = NOW - 1),
+            )
+        val plan = plan(owed, next)
+        assertEquals("dark past the TTL, a clock moved back, and the changed peer", setOf("p1", "p4", "p5"), plan.seal)
+        assertEquals(setOf("p2", "p3", "p6"), plan.spare)
+        assertEquals(2, plan.stale)
+    }
+
+    @Test
+    fun aMintThatCanSpareNobodySealsEveryOwedSession() {
+        val peers = (1..10).map { "p$it" }
+        val held = era(1)
+        assertEquals("a visible field moved", peers.toSet(), plan(owedAll(peers, held), era(2, visible = "Al")).seal)
+        assertEquals("not the claim's mint", peers.toSet(), plan(owedAll(peers, held), era(2), claimMinted = false).seal)
+        assertEquals("nothing known", peers.toSet(), plan(peers.map { OwedSeal(it, null, NOW) }, era(2)).seal)
+        assertTrue(plan(owedAll(peers, held), era(2, visible = "Al")).spare.isEmpty())
+    }
+
+    /**
+     * The invariant the rule exists to keep, over random runs of mints, intros, restarts and time against the same loop
+     * `MeshManager.broadcastSealedProfileLocked` runs ([FanOutModel]): after every fan-out, each confirmed peer holds a
+     * copy whose key presence and visible fields are the current version's for it — never a stale key, never a missing
+     * one — and an audience-only mint seals exactly the peers whose answer changed and those whose copy is stale. Each run
+     * has its own seed, named in every failure with the step and its kind.
+     */
+    @Test
+    fun noRunOfMintsLeavesAPeerHoldingTheWrongCopy() {
+        repeat(200) { run ->
+            val seed = 11L * 1000 + run
+            val random = java.util.Random(seed)
+            val model = FanOutModel()
+            model.fanOut("seed $seed, start")
+            repeat(30) { step ->
+                val kind = model.step(random)
+                model.fanOut("seed $seed, step $step ($kind)")
+            }
+        }
+    }
+
+    /** One sender's sealed profile state and five peers', and what each peer actually holds. */
+    private class FanOutModel {
+        val peers = listOf("ann", "ben", "cid", "dee", "eve")
+        var version = 0L
+        var key: String? = KEY_A
+        var direct = setOf("ann", "ben")
+        var visible = "v0"
+        var claimVersion = 0L
+        var now = NOW
+
+        /** The manager's record: the version recorded for each peer, and when the copy it holds was sealed. */
+        val record = HashMap<String, Pair<Long, Long>>()
+        val eras = HashMap<Long, SealedProfileEra>()
+        val outside = HashSet<String>()
+
+        /** What each peer actually holds: the newest copy it was sealed. */
+        val holds = HashMap<String, SealedProfileEra>()
+
+        fun current() = SealedProfileEra(version, key, direct, visible)
+
+        /** One random event; returns its kind for the failure label. */
+        fun step(random: java.util.Random): String =
+            when (random.nextInt(8)) {
+                // The contact set moves: an accept, a block, a removal. Unclaimed, it mints nothing.
+                0, 1, 2 -> {
+                    val who = peers[random.nextInt(peers.size)]
+                    direct = if (who in direct) direct - who else direct + who
+                    if (key != null) claimVersion = ++version
+                    "contact $who"
+                }
+
+                3 -> {
+                    visible = "v${random.nextInt(4)}"
+                    version++
+                    "visible edit"
+                }
+
+                4 -> {
+                    key = listOf(KEY_A, KEY_B, null)[random.nextInt(3)]
+                    claimVersion = ++version
+                    "claim $key"
+                }
+
+                // The intro: a copy of the current version outside the fan-out.
+                5 -> {
+                    val who = peers[random.nextInt(peers.size)]
+                    holds[who] = current()
+                    outside += who
+                    "intro $who"
+                }
+
+                6 -> {
+                    now += random.nextInt(2 * STALE.toInt())
+                    "time"
+                }
+
+                else -> {
+                    record.clear()
+                    eras.clear()
+                    outside.clear()
+                    "restart"
+                }
+            }
+
+        fun fanOut(label: String) {
+            val next = current()
+            eras.putIfAbsent(version, next)
+            // Every peer's last copy known, all at one older version: the case the sealed set is exact for.
+            val prior = peers.map { record[it]?.first }.distinct().singleOrNull()
+            val was = prior?.takeIf { p -> peers.none { it in outside } && p < version }?.let(eras::get)
+            val owed = peers.filter { record[it]?.first != version || it in outside }
+            val judged =
+                owed.map {
+                    val known = record[it]?.takeIf { _ -> it !in outside }
+                    OwedSeal(it, known?.let { r -> eras[r.first] }, known?.second ?: 0L)
+                }
+            val plan = MeshcoreFanOutRule.plan(judged, next, claimVersion == version, now, STALE)
+            assertEquals("$label: every owed session sealed or spared", owed.toSet(), plan.seal + plan.spare)
+            assertTrue("$label: sealed and spared", plan.seal.none { it in plan.spare })
+            if (was != null && isAudienceOnly(was)) {
+                val changed = peers.filter { was.keyFor(it) != next.keyFor(it) }
+                val stale = peers.filter { now - record.getValue(it).second !in 0 until STALE }
+                assertEquals("$label: the sealed set", (changed + stale).toSet(), plan.seal)
+            }
+            for (peer in owed) {
+                // A spare keeps the time the copy it holds was sealed.
+                record[peer] = version to if (peer in plan.seal) now else record.getValue(peer).second
+                if (peer in plan.seal) {
+                    holds[peer] = next
+                    outside.remove(peer)
+                }
+            }
+            for (peer in peers) {
+                val copy = checkNotNull(holds[peer]) { "$label: $peer holds nothing" }
+                assertEquals("$label: $peer's key", next.keyFor(peer), copy.keyFor(peer))
+                assertEquals("$label: $peer's fields", next.visible, copy.visible)
+            }
+        }
+
+        private fun isAudienceOnly(was: SealedProfileEra): Boolean =
+            claimVersion == version && key != null && was.key == key && was.visible == visible
+    }
+
     private companion object {
         const val DAY = 24L * 60 * 60 * 1000
+
+        const val STALE = DAY
+
+        /** The plan's wall clock, past every stale bound a case subtracts. */
+        const val NOW = 100L * DAY
 
         // RFC 8032 §7.1's public keys, TESTs 1, 2 and 3: full-order points, as a MeshCore board's are.
         const val KEY_A = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
