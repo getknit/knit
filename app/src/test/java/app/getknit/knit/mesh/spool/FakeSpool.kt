@@ -330,6 +330,69 @@ class FakeSpool(
         due.forEach { (socket, scope) -> socket.completeSub(scope) }
     }
 
+    /** A LIST [holdLists] took and has not answered: the live set as it stood when the LIST arrived. */
+    private class HeldList(
+        val socket: FakeSocket,
+        val list: SpoolList,
+        val live: List<ByteArray>,
+        val tombstones: List<ByteArray>,
+    )
+
+    // Scopes whose LIST answers are held back ([holdLists]), the LISTs parked meanwhile, and every LIST seen.
+    private val heldListScopes = mutableSetOf<String>()
+    private val parkedLists = mutableListOf<HeldList>()
+    private val listCounts = mutableMapOf<String, Int>()
+
+    /**
+     * From now on a LIST for [scopeHex] is snapshotted when it arrives but not answered — a spool slow to
+     * answer, with a client's heal round suspended on it. Whatever lands meanwhile ([plantGarbage], a push) and
+     * any digest said about it reach the client first; [releaseLists] then answers each parked LIST with the
+     * live set it was asked about, so the answer is older than the digest the client already holds (#322).
+     */
+    @Synchronized
+    fun holdLists(scopeHex: String) {
+        heldListScopes.add(scopeHex)
+    }
+
+    /** How many LISTs [holdLists] has parked and not yet answered. */
+    @Synchronized
+    fun heldLists(): Int = parkedLists.size
+
+    /** Stops holding LISTs and answers every parked one, in arrival order, with its arrival-time snapshot. */
+    @Synchronized
+    fun releaseLists() {
+        heldListScopes.clear()
+        val due = parkedLists.toList()
+        parkedLists.clear()
+        due.forEach { it.socket.answerList(it.list, it.live, it.tombstones) }
+    }
+
+    /** How many LISTs this spool was sent for [scopeHex], held or answered — proves a client looked again. */
+    @Synchronized
+    fun listsFor(scopeHex: String): Int = listCounts[scopeHex] ?: 0
+
+    /**
+     * Says a digest no state of this spool matches: a cue that wakes every subscriber's heal round for
+     * [scopeHex] (its anchor moved) without changing what the spool holds. With [holdLists], it is how a
+     * scenario gets each member's LIST in flight at a moment of its choosing.
+     */
+    fun gossipDigest(
+        scopeHex: String,
+        value: Long,
+    ) {
+        val real = digestRecord(unhex(scopeHex))
+        val cue =
+            SpoolDigest(
+                t = real.t,
+                scope = real.scope,
+                digest = ScopeCrypto.digestBytes(value),
+                count = real.count,
+                full = real.full,
+                bounds = real.bounds,
+            )
+        gossip(SpoolCodec.encode(cue))
+    }
+
     /**
      * Says the current digest again, unprompted (S-7.2-3 style) — the cue that makes a client look at the
      * live set without anything having changed at the spool, e.g. after [plantGarbage].
@@ -693,15 +756,32 @@ class FakeSpool(
         }
 
         private fun onList(list: SpoolList) {
-            val state = scopes[hex(list.scope)] ?: ScopeState()
+            val scopeHex = hex(list.scope)
+            listCounts.merge(scopeHex, 1, Int::plus)
+            val state = scopes[scopeHex] ?: ScopeState()
+            val live = state.live.keys.map(::unhex)
+            val tombstones = state.tombstones.map(::unhex)
+            if (scopeHex in heldListScopes) {
+                parkedLists.add(HeldList(this, list, live, tombstones))
+                return
+            }
+            answerList(list, live, tombstones)
+        }
+
+        /** The LIST answer over [live] and [tombstones] — now, or later from [releaseLists]'s snapshot. */
+        fun answerList(
+            list: SpoolList,
+            live: List<ByteArray>,
+            tombstones: List<ByteArray>,
+        ) {
             emit(
                 SpoolCodec.encode(
                     SpoolList(
                         t = SpoolRecordType.LIST,
                         q = list.q,
                         scope = list.scope,
-                        blobIds = state.live.keys.map(::unhex) + synthetic(listingPadding, salt = 1),
-                        tombstones = state.tombstones.map(::unhex) + synthetic(tombstonePadding, salt = 2),
+                        blobIds = live + synthetic(listingPadding, salt = 1),
+                        tombstones = tombstones + synthetic(tombstonePadding, salt = 2),
                     ),
                 ),
             )

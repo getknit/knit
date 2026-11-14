@@ -58,6 +58,8 @@ document:
   example right after you restored Knit from a backup. It now starts as soon as its message arrives.
 - Posts to the Nearby and Meshtastic rooms with a lone "x" in them, like "2 x 3" or a kiss at the end, were
   blocked as profanity, and hidden when you received one. They now go through.
+- If a message reached your relay while your phone was checking it, your phone could miss it until it next
+  reconnected, sometimes hours later. It now checks again straight away.
 
 ## [2.11.1](https://github.com/getknit/knit/releases/tag/v2.11.1) — 2026-11-11T07:27:26Z
 

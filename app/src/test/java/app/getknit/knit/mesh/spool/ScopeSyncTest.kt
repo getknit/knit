@@ -1525,6 +1525,42 @@ class ScopeSyncTest {
         }
 
     @Test
+    fun `a digest that lands while a listing is in flight survives the round and the next round lists again`() =
+        runTest {
+            // #322: the pump stores a digest off the round's lock. One that lands while the LIST is in flight
+            // counts a blob the listing predates; re-anchoring over it on the listing's fold left the anchor
+            // equal to our own, and no round — the tick included — ever listed that blob.
+            val spool = FakeSpool()
+            val member = member(spool, alice, bob)
+            val scope = scopeHex(alice, bob)
+            member.custody.store(dmFrame(fid("m1"), from = alice, to = bob, sentAt = now), ForwardStore.ORIGIN_SELF, now)
+            member.sync.start(backgroundScope)
+            pump(rounds = 8)
+            assertEquals("converged before the race", 1, spool.liveIds(scope).size)
+
+            spool.holdLists(scope)
+            spool.gossipDigest(scope, 0x5eedL) // the anchor moves, so the next round lists
+            pump(rounds = 3)
+            assertEquals("the round's LIST is in flight", 1, spool.heldLists())
+            val listsBefore = spool.listsFor(scope)
+
+            // A blob the member takes no event for lands behind the LIST, and the spool says so.
+            val id = spool.plantGarbage(scope, "not a sealed frame".toByteArray())
+            spool.announce(scope)
+            pump(rounds = 1)
+            spool.releaseLists() // answered with the live set from before the plant
+            pump(rounds = 10)
+
+            assertTrue("the round after the stale listing lists again", spool.listsFor(scope) > listsBefore)
+            assertEquals("the blob the digest counted is pulled, inside the tick", 1, spool.pulled.count { it == id })
+            assertEquals("and quarantined", 1L, member.metrics.spool().spoolInvalid)
+
+            pump(rounds = 70) // past a timed round
+            assertEquals("asked for exactly once", 1, spool.pulled.count { it == id })
+            member.sync.stop()
+        }
+
+    @Test
     fun `a dead relay backs off to fifteen minutes and a new network starts it over`() =
         runTest {
             // ~1,440 dials a day at the old 60 s ceiling, each a DNS lookup, a TCP connect and a TLS handshake

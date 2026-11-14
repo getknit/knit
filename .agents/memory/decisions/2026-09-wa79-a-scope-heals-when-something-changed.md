@@ -98,3 +98,26 @@ still floors the long tier; no route means no dial until one appears; an offline
 last verdict. `SpoolBackoffPolicyTest` pins the curve, `AndroidInternetGateTest` the route kinds. Device
 oracle: a converged relay's logcat goes quiet between ticks, and `dumpsys netstats` shows the socket's
 keepalive at four-minute spacing on cellular.
+
+## Amendment 2026-11-14 — a round re-anchors only over the anchor it listed against (#322)
+
+`handleDigest` stores a digest on the pump, off the `round` mutex, so one can land while a round's `list` is in
+flight. `reanchor` used to write the listing's fold over it unconditionally. The listing predates whatever that
+digest counted, so the anchor then equalled the local fold over a blob the spool held and we had never listed, and
+the rule above ("a round is for what changed") meant no later round, the 60 s tick included, ever listed the scope
+again. A blob whose live event we did not take (garbage for §9.3, an event dropped on validation) sat unpulled until
+a reconnect: CI medic case 1114-7c6d, `InternetPlaneLabTest`'s garbage scenario under chaos.
+
+`reconcileListing` now reads the anchor before the `list`, and `reanchor` writes its fold and count with a
+compare-and-set against that value (`ConcurrentHashMap.replace`). When a newer digest won, it is kept, and the scope
+is already marked: `handleDigest` marked it when the anchor moved, after the round's drain, so the next round compares
+the kept digest and lists again only if it still disagrees. That is one extra `list` per digest that crosses a round,
+never a spin, and no more than a spool could already ask for by sending a new digest value. An anchor cleared
+meanwhile (session end, a scope that left) is not re-created. The pump never waits on a round, and `pushDirect`'s fold
+still serialises with rounds under `round` (ADR 2026-09.y5f3). An A→B→A digest during a round passes the set, which
+is right: an equal XOR fold is the listed set again. The count is written after the set, outside it; a digest landing
+between the two costs the status a stale count and at most one more round.
+
+Regressions: `ScopeSyncTest`'s "a digest that lands while a listing is in flight survives the round and the next
+round lists again", and `SpoolAnchorLabTest.aDigestThatCrossesAListingIsNotReanchoredAway`, both forced through
+`FakeSpool.holdLists` / `releaseLists`.

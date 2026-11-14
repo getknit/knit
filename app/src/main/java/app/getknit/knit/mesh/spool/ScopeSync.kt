@@ -1948,6 +1948,9 @@ class ScopeSync(
             local: Map<String, Held>,
             accountedHere: Map<String, Long>,
         ) {
+            // The anchor this round lists against. The pump stores a newer digest off the round's lock
+            // while the LIST is in flight (#322); `reanchor` writes only over this value, never over that.
+            val listedAgainst = spoolDigests[scope.idHex]
             val listing = conn.list(scope.id)
             if (listing == null) {
                 // Unanswered on a live connection: ask again straight away, so a spool that went quiet
@@ -1975,7 +1978,10 @@ class ScopeSync(
                     .toList()
             val pulled = pullMissing(conn, scope, wanted)
             val pushed = pushMissing(conn, scope, local, spoolIds.keys, tombstoned, quarantined)
-            reanchor(scope, spoolIds, pulled.gone, pushed)
+            // A digest that moved while the round ran outranks the listing, which may predate a blob only that
+            // digest counts — one whose event we did not take. `reanchor` keeps it, and the next round needs no
+            // mark of ours: `handleDigest` marked the scope when the anchor moved, after this round's drain.
+            reanchor(scope, listedAgainst, spoolIds, pulled.gone, pushed)
             // A round that moved the local view — frames pulled into custody, frames pushed, a tombstone
             // learnt for a frame we hold, an accounted or quarantined id the spool no longer lists — gets
             // one more look: the local fold above predates every one of those, and
@@ -2248,9 +2254,17 @@ class ScopeSync(
          * Re-anchor after a heal round without a second round trip: the spool's live set, minus the ids it
          * reported gone, plus what we pushed. Exact because the digest is an XOR fold of per-id hashes —
          * and an unsolicited `digest` overwrites it the moment the spool knows better.
+         *
+         * Written only over [listedAgainst], the anchor the round held when it sent the LIST (#322). The pump
+         * stores digests off the round's lock, so one that lands while the LIST is in flight is newer than
+         * the listing: overwriting it would leave the anchor equal to our fold over a blob the spool holds
+         * and we never listed, and no later round — the tick included — would list again. A session that
+         * ended, or a scope that left, cleared the anchor; that is not re-created either. When the round's
+         * fold is not written, the anchor and the count stay the newer writer's.
          */
         private fun reanchor(
             scope: Scope,
+            listedAgainst: Long?,
             spoolIds: Map<String, ByteArray>,
             gone: Set<String>,
             pushed: List<ByteArray>,
@@ -2258,7 +2272,10 @@ class ScopeSync(
             val remaining = spoolIds.filterKeys { it !in gone }.values
             var fold = ScopeCrypto.scopeDigest(remaining)
             pushed.forEach { fold = fold xor ScopeCrypto.fnv64(it) }
-            spoolDigests[scope.idHex] = fold
+            if (listedAgainst == null || !spoolDigests.replace(scope.idHex, listedAgainst, fold)) return
+            // Not under the set: a digest landing between the two writes leaves its anchor with our count. That
+            // costs the status a stale count and, at worst, one more round when the spool repeats the digest
+            // (`grew`), so the two stay separate maps.
             spoolCounts[scope.idHex] = remaining.size + pushed.size
         }
 
@@ -2892,7 +2909,8 @@ class ScopeSync(
          * can never be one we would hold. An event that then fails validation is released and dropped,
          * never quarantined ([Source.EVENT]) — §9.3 is written for a *pulled* blob, and an id we never
          * pulled cannot drive the re-pull loop the invalid set exists to stop. If the spool really holds
-         * it, the next listing names it and the pull path quarantines it properly.
+         * it, the next listing names it and the pull path quarantines it properly — and the digest that
+         * counts it is what brings that listing, so a round's re-anchor never writes over one ([reanchor]).
          */
         private suspend fun handleEvent(event: SpoolEvent) {
             val scope = mine(scopes, connection).firstOrNull { it.idHex == hex(event.scope) } ?: return

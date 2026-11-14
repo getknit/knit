@@ -73,6 +73,12 @@ lines.
   delivery survives only because `MeshRouter.handleInbound` finishes what it admitted under `NonCancellable`. Don't
   move a delivery off that door, and don't bound it with a timeout that fires before custody, commit and receipt
   (`SpoolWorkerStopLabTest`).
+- **When touching the heal round's anchor — `ScopeSync.reanchor`, `reconcileListing`, `handleDigest`, `spoolDigests` /
+  `spoolCounts`:** READ ADR 2026-09.wa79 and its 2026-11-14 amendment (#322; `SpoolAnchorLabTest`). The pump writes
+  the anchor off the `round` mutex, so a round's re-anchor is a compare-and-set against the anchor it listed against:
+  a digest that moved mid-round wins, and its own mark brings the next round. Never write the anchor unconditionally
+  from a round, and never take the pump's write under `round` (it would hold events and replies behind a whole heal).
+  `pushDirect` folds under `round` (ADR 2026-09.y5f3).
 - **When touching `mesh/crypto/scope/`, `mesh/spool/`, or the spool/internet-relay plane:** READ
   `docs/SPOOL_PROTOCOL.md` (the normative public spec; its §13 vectors are pinned by
   `ScopeVectorTest`/`SpoolRecordsTest` — change them only together), then the `ScopeSync` invariants in
