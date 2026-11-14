@@ -4,12 +4,18 @@ import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.mesh.AcceptanceSnapshot
 import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.CarrierPullPolicy
+import app.getknit.knit.mesh.RequestHold
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.sha256Hex
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -210,6 +216,89 @@ class BlockAndRequestLabTest {
             assertEquals("and ravi fed mona once", 1, ravi.filesTo(mona, hash))
             lab.assertConverged(listOf(stranger, ravi, mona), atLeast = 1) { groupId }
             assertTrue(picture.contentEquals(mona.attachmentPlain(groupId, id)))
+        }
+
+    /**
+     * #315, the two sites #291 made read one rule (`RequestHold.carriedForOthers`) run together across a re-arm, under the
+     * Bluetooth limit the lab keeps as shipped. A stranger founds a group with Carol and Sock — one of the stranger's own
+     * identities — and posts a picture well under the limit. The group frame reaches Carol ahead of its seed: she carries
+     * it unopened, and `InboundPipeline.onCarriedFrame` wants the picture plain, as the third member's carrier copy. A
+     * re-arm reads that unopened frame and no row naming its hash (`MeshManager.unopenedForUs`), then waits before its
+     * apply while the seed lands, the frame opens and Carol's own row is written held (`onRequestHeld`). The re-arm's
+     * verdict must leave the carrier pull plain: before #291 it counted the frame as ours and held the pull to Wi-Fi Aware,
+     * which the lab does not have, so nothing was asked. The bytes land counted against the carrier budget (`carrierBytes`,
+     * as request-only bytes), the row stays a request's — the inbox renders no attachment and offers no download — and
+     * Accept shows the picture with no second copy.
+     */
+    @Test
+    fun aRequestGroupNamingAThirdMemberKeepsItsCarrierPullPlainAcrossAReArm() =
+        runBlocking {
+            // No boards, whatever the run: the compact LoRa copy would carry the seed around the held pipe. Carol queries
+            // before she asks (ADR 2026-10.6e5t), so the carrier pull's first step parks on her held pipe and the re-arm's
+            // apply decides how it goes on. Her real-time re-offer round is pushed out of the run, so the re-arm the scenario
+            // parks is the one it launches, never a periodic one whose trailing pass would re-read the row and hide a regression.
+            val stranger = lab.node("stranger", board = false).apply { setDisplayName("Stranger") }
+            val sock = lab.node("sock", board = false).apply { setDisplayName("Sock") }
+            val carolLimits = LabLimits(blobQuery = true, reofferIntervalMs = HOUR_MS)
+            val carol = lab.node("carol", carolLimits, board = false).apply { setDisplayName("Carol") }
+            lab.linkAll(stranger to carol, stranger to sock)
+            lab.awaitAcquainted(stranger, carol, sock)
+            lab.befriend(stranger, sock)
+
+            // Everything the stranger sends Carol parks: the group's seed and roots, then its frame.
+            stranger.transport.hold(carol.transport)
+            val groupId = stranger.createGroup(carol, sock)
+            val picture = Random(315).nextBytes(4_096)
+            assertTrue(stranger.sendImage(picture, "for the three of us", groupId = groupId))
+            val id = stranger.ownMessageId(groupId, "for the three of us")
+            val hash = checkNotNull(stranger.attachmentHash(groupId, id))
+            lab.await(1) { stranger.transport.held(carol.transport).count { it.isFrameOf(id) } }
+
+            // Carol's frames to the stranger park too, the carrier pull's query among them, so no copy crosses yet.
+            carol.transport.hold(stranger.transport)
+            // The frame alone overtakes the seed: carried, wanted plain, dropped unopened for want of its key.
+            stranger.transport.releaseWhere(carol.transport) { it.isFrameOf(id) }
+            lab.await(1) { if (id in carol.custodyIds()) 1 else 0 }
+            carol.transport.awaitInboundDrained()
+            assertNull("the frame opened without its seed", carol.row(id))
+            assertTrue("the carrier pull is wanted", hash in carol.manager.wantedBlobs())
+            // Every re-arm already queued ends before this one, on the re-arm lock: the one parked below read this state.
+            carol.reoffer()
+
+            val holds = carol.metrics.files().requestHolds
+            val parked = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            carol.manager.beforeRewantApplies = {
+                carol.manager.beforeRewantApplies = null
+                parked.complete(Unit)
+                release.await()
+            }
+            coroutineScope {
+                val tick = launch { carol.reoffer() } // reads the unopened frame and no row, then parks under the lock
+                parked.await()
+                // The seed crosses; the custody replay opens the frame, and Carol's own row of the picture is held.
+                stranger.transport.release(carol.transport, keepHolding = true)
+                lab.await(1) { if (carol.row(id) != null && carol.metrics.files().requestHolds > holds) 1 else 0 }
+                release.complete(Unit) // the re-arm applies what it read before the row
+                tick.join()
+            }
+            carol.transport.release(stranger.transport)
+            stranger.transport.release(carol.transport)
+
+            if (!lab.tryAwait(1) { if (carol.holdsBlob(hash)) 1 else 0 }) {
+                throw AssertionError(
+                    "the carrier pull never landed: wanted ${hash in carol.manager.wantedBlobs()}, " +
+                        "fast-only held ${carol.metrics.files().blobFastOnlyHeld}, asked ${carol.asksFor(hash)}",
+                )
+            }
+            val asks = carol.asksFor(hash)
+            assertTrue("the carrier pull is asked plain: $asks", asks.isNotEmpty() && asks.none { it.fastOnly })
+            assertHeldAsARequestsCarrierBytes(carol, groupId, hash)
+
+            carol.accept(groupId)
+            lab.await(1) { if (picture.contentEquals(carol.attachmentPlain(groupId, id))) 1 else 0 }
+            assertEquals("the stranger fed carol once", 1, stranger.filesTo(carol, hash))
+            lab.assertConverged(listOf(stranger, carol, sock), atLeast = 1) { groupId }
         }
 
     /**
@@ -448,6 +537,31 @@ class BlockAndRequestLabTest {
     ) = transport.files.count { it == "${to.nodeId} ATTACHMENT $hash" }
 
     /**
+     * That [node] holds [hash] as a carrier's bytes of the message request [groupId]: counted against the carrier budget
+     * (`InboundPipeline.carrierBytes` adds the request-only blobs), the group still a request, so its inbox row renders no
+     * attachment and offers no download, and every row naming the hash held (`RequestHold.held`).
+     */
+    private suspend fun assertHeldAsARequestsCarrierBytes(
+        node: LabNode,
+        groupId: String,
+        hash: String,
+    ) {
+        val me = node.nodeId
+        assertTrue("the bytes count against the carrier budget", node.blobs.requestOnlyBlobs(listOf(groupId), me).any { it.hash == hash })
+        val acceptance = AcceptanceSnapshot.of(node.settings, node.peers, node.messages, me)
+        assertFalse("the group is still a request", acceptance.isAccepted(groupId))
+        val rows = node.messages.attachmentFetchRows(hash, me)
+        val accepted = acceptance.acceptedAmong(rows.map { it.conversationId })
+        assertTrue("${node.name}'s row is held: $rows", RequestHold.held(rows, accepted::contains))
+    }
+
+    /** The asks for [hash] this node sent that reached a peer: the oracle for whether a pull went out fast-only. */
+    private fun LabNode.asksFor(hash: String) = transport.blobAsks.filter { it.hash == hash }
+
+    /** Whether this wire frame is the one with message id [id]. */
+    private fun WireEnvelope.isFrameOf(id: String): Boolean = WireCodec.decodeEnvelope(signed)?.id == id
+
+    /**
      * Waits for [node] to hold [hash], over its ticks if need be: a want an echo declined may have backed off, and its next
      * cycle is due only on the lab's calendar, which a scenario moves by hand.
      */
@@ -575,6 +689,7 @@ class BlockAndRequestLabTest {
 
     private companion object {
         const val MINUTE_MS = 60_000L
+        const val HOUR_MS = 60 * MINUTE_MS
         const val HEAL_TICKS = 8
         const val TICK_WAIT_MS = 10_000L
     }
