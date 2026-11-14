@@ -5,7 +5,9 @@ package app.getknit.knit.usbcontrol
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SendLedgerTest {
@@ -63,6 +65,44 @@ class SendLedgerTest {
         assertNull("the least recently used went", ledger.replay("b"))
         assertEquals(reply("1"), ledger.replay("a"))
         assertEquals(reply("3"), ledger.replay("c"))
+    }
+
+    @Test
+    fun aTypingCueGoesOncePerThreadPerIntervalAndEachThreadKeepsItsOwn() {
+        val ledger = SendLedger({ now }, typingBurst = 10, typingPerMinute = 60, typingIntervalMs = 8_000)
+        assertTrue(ledger.takeTyping("a"))
+        assertTrue("b is not held by a's interval", ledger.takeTyping("b"))
+        now += 7_999
+        assertFalse(ledger.takeTyping("a"))
+        now += 1
+        assertTrue(ledger.takeTyping("a"))
+        assertTrue("b's interval has run out too", ledger.takeTyping("b"))
+    }
+
+    @Test
+    fun typingCuesDrawOnABucketOfTheirOwnAndARefusedCueSpendsNothing() {
+        val ledger = SendLedger({ now }, burst = 1, perMinute = 60, typingBurst = 2, typingPerMinute = 30, typingIntervalMs = 8_000)
+        assertTrue(ledger.takeTyping("a"))
+        assertTrue(ledger.takeTyping("b"))
+        assertFalse("the cue bucket is spent", ledger.takeTyping("c"))
+        assertNull("sends untouched", ledger.take())
+        now += 2_000 // one cue token back, at 30 a minute
+        assertFalse("a is inside its interval, and spends no token on it", ledger.takeTyping("a"))
+        assertTrue("c was not held by the empty bucket's refusal, and finds the token", ledger.takeTyping("c"))
+        assertFalse("that was the only token", ledger.takeTyping("d"))
+    }
+
+    @Test
+    fun aClockThatSteppedBackNeitherHoldsAThreadNorDrainsTheBuckets() {
+        val ledger = SendLedger({ now }, burst = 1, perMinute = 1, typingIntervalMs = 8_000)
+        now = 3_600_000
+        assertTrue(ledger.takeTyping("a"))
+        assertNull(ledger.take())
+        now = 60_000 // an hour back
+        assertTrue("a's last cue reads as long ago", ledger.takeTyping("a"))
+        assertEquals("the step back refilled nothing", 60_000L, ledger.take())
+        now += 60_000
+        assertNull("and drained nothing: a minute on, the send bucket has its token back", ledger.take())
     }
 
     private fun reply(id: String) = buildJsonObject { put("messageId", id) }

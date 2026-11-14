@@ -662,7 +662,10 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   (`usbcontrol/UsbControlServer`, debug builds only, protocol v1 in `docs/USB_CONTROL.md`): knit-cli drives the app
   over an Android Open Accessory stream, no adb, and only once paired (`knit pair`, a code on the phone's own screen);
   it reads attachment and avatar bytes, sends pictures through the chat picker's own pipeline (`UsbTransfers`), and
-  sets our status line (`profile`, the Profile screen's own setting: `MeshManager.watchProfileChanges` publishes it).
+  sets our status line (`profile`, the Profile screen's own setting: `MeshManager.watchProfileChanges` publishes it),
+  and carries typing both ways (`typing` sends `MeshManager.sendTyping` at the composer's 8 s cadence; the `typing`
+  event mirrors `TypingTracker` as the chat shows it). A peer's DM cue lands only where the receiver has accepted the
+  sender, so a cue oracle on a lab phone with no thread is `…debug.STATE`'s `typing.nearby`.
   Off until `enable` (it persists, and starts the change log the repositories report to); `open` picks up a knit-cli
   accessory that attached while it was off. `pairings` lists the paired computers (`paired.pairings[]`: an 8-character
   handle prefix, `name`, `pairedAt`, `lastUsedAt`, never a key); `forget --es handle <prefix of 4+|all>` forgets them

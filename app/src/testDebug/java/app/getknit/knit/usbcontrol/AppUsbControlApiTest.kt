@@ -17,6 +17,8 @@ import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.RoomDbTest
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.draft.DraftRepository
+import app.getknit.knit.data.group.GroupEntity
+import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
@@ -38,10 +40,16 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import org.junit.After
@@ -69,6 +77,7 @@ class AppUsbControlApiTest : RoomDbTest() {
     private val accepted = MutableStateFlow(emptySet<String>())
     private val lastRead = MutableStateFlow(emptyMap<String, Long>())
     private val status = MutableStateFlow("")
+    private val typingOn = MutableStateFlow(true)
     private val settings =
         mockk<SettingsStore>(relaxed = true) {
             every { blockedNodeIds } returns blocked
@@ -77,6 +86,7 @@ class AppUsbControlApiTest : RoomDbTest() {
             every { displayName } returns flowOf("Me")
             every { ownAvatarHash } returns flowOf(null)
             every { contentFilteringEnabled } returns flowOf(true)
+            every { typingIndicatorsEnabled } returns typingOn
             every { this@mockk.status } returns this@AppUsbControlApiTest.status
             coEvery { setStatus(any()) } answers {
                 this@AppUsbControlApiTest.status.value = firstArg()
@@ -512,6 +522,88 @@ class AppUsbControlApiTest : RoomDbTest() {
             relayFacts.value = RelayFacts(textOnlyRooms = setOf(ROOM))
             assertEquals(Codes.REFUSED, refused { api.send(SendRequest(ROOM, "", picture = byteArrayOf(3))) })
             coVerify(exactly = 0) { attachments.ingestPicked(any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aTypingCueGoesOnlyWhereTheComposerSendsOne() =
+        runTest {
+            row("from-bob")
+            row("from-cy", conversation = CY, sender = CY) // a stranger's: a message request
+            row("from-mallory", conversation = MALLORY, sender = MALLORY)
+            accepted.value = setOf(BOB, MALLORY, "g-left")
+            blocked.value = setOf(MALLORY)
+            db.groupDao().upsert(
+                GroupEntity(
+                    groupId = "g-left",
+                    name = "Gone",
+                    members = GroupMembersStore.encode(listOf(ME, BOB)),
+                    createdBy = BOB,
+                    createdAt = 1L,
+                    left = true,
+                ),
+            )
+            coEvery { commons.find(ROOM) } returns mockk(relaxed = true)
+            assertEquals(Codes.REFUSED, refused { api.canType(Conversations.MESHTASTIC) })
+            assertEquals(Codes.REFUSED, refused { api.canType(ROOM) })
+            assertEquals(Codes.REFUSED, refused { api.canType(CY) })
+            assertEquals("a group this phone left", Codes.NOT_FOUND, refused { api.canType("g-left") })
+            assertEquals("a blocked peer's DM", Codes.NOT_FOUND, refused { api.canType(MALLORY) })
+            assertEquals(Codes.NOT_FOUND, refused { api.canType("nobody-at-all") })
+            assertEquals("this phone", Codes.NOT_FOUND, refused { api.canType(ME) })
+            assertTrue(api.canType(BOB))
+            assertTrue(api.canType(Conversations.NEARBY))
+            typingOn.value = false
+            assertFalse("typing indicators off stop every cue", api.canType(BOB))
+            assertTrue("asking sends nothing", mesh.sentTyping.isEmpty())
+            api.sendTyping(BOB)
+            assertEquals(listOf(BOB), mesh.sentTyping)
+        }
+
+    /** Each typer [api.typing] shows in [conversation], as (node, label). */
+    private fun JsonObject.typers(conversation: String): List<Pair<String, String>> =
+        getValue(conversation).jsonArray.map { typer ->
+            val fields = typer.jsonObject
+            fields.getValue("node").jsonPrimitive.content to fields.getValue("label").jsonPrimitive.content
+        }
+
+    @Test
+    fun typingShowsWhatTheChatShowsWithEachTypersLabel() =
+        runTest {
+            db.peerDao().upsert(PeerEntity(nodeId = BOB, name = "Bob"))
+            blocked.value = setOf(MALLORY)
+            mesh.typing.value = mapOf(Conversations.NEARBY to setOf(MALLORY, BOB), CY to setOf(MALLORY))
+            val shown = api.typing()
+            assertEquals("a thread whose only typer is blocked shows nobody", setOf(Conversations.NEARBY), shown.keys)
+            assertEquals(listOf(BOB to "Bob"), shown.typers(Conversations.NEARBY))
+            typingOn.value = false
+            assertEquals("typing indicators off show nobody", emptySet<String>(), api.typing().keys)
+        }
+
+    @OptIn(ExperimentalCoroutinesApi::class) // runCurrent: the trigger's combine runs on the test's scheduler
+    @Test
+    fun theTypingTriggerFiresWhenWhatTheChatShowsMovesAndOnlyThen() =
+        runTest {
+            var fired = 0
+            backgroundScope.launch { api.typingChanges().collect { fired++ } }
+            runCurrent()
+            assertEquals("the state at the start is no change", 0, fired)
+            mesh.typing.value = mapOf(Conversations.NEARBY to setOf(BOB))
+            runCurrent()
+            assertEquals(1, fired)
+            blocked.value = setOf(MALLORY)
+            runCurrent()
+            mesh.typing.value = mapOf(Conversations.NEARBY to setOf(BOB, MALLORY))
+            runCurrent()
+            assertEquals("a blocked typer moves nothing the chat shows", 1, fired)
+            typingOn.value = false
+            runCurrent()
+            assertEquals(2, fired)
+            typingOn.value = true
+            runCurrent()
+            assertEquals(3, fired)
+            blocked.value = setOf(MALLORY, BOB)
+            runCurrent()
+            assertEquals("blocking the typer hides the cue at once", 4, fired)
         }
 
     private companion object {

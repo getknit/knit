@@ -95,6 +95,7 @@ internal class UsbControlSession(
             "attachment" -> serveAttachment(request)
             "avatar" -> serveAvatar(request)
             "fetch" -> api.fetch(request.need("messageId"))
+            "typing" -> serveTyping(request)
             "upload" -> serveUpload(request)
             "upload.chunk" -> serveUploadChunk(request)
             "subscribe" -> serveSubscribe(request)
@@ -275,6 +276,19 @@ internal class UsbControlSession(
         return mapOf("changed" to JsonPrimitive(true), "self" to api.identity())
     }
 
+    /**
+     * The person at the computer is typing in a thread: a "now typing" cue goes there, as the composer sends one on a
+     * keystroke. Best effort, so a client may ask on every keystroke: `sent` is false, and nothing refused, when a cue
+     * went to this thread within `typingIntervalMs` (it still shows on the far side), when the cue budget is spent
+     * ([SendLedger.takeTyping]), and while the person has typing indicators off. A thread that takes no cue is refused.
+     */
+    private suspend fun serveTyping(request: JsonObject): Map<String, JsonElement> {
+        val conversation = request.need("conv")
+        val sent = api.canType(conversation) && ledger.takeTyping(conversation)
+        if (sent) api.sendTyping(conversation)
+        return mapOf("conv" to JsonPrimitive(conversation), "sent" to JsonPrimitive(sent))
+    }
+
     /** One token from the send budget, or a refusal saying when the next one comes. */
     private fun spend() = refuseUntil(ledger.take(), "too many sends")
 
@@ -397,6 +411,7 @@ internal class UsbControlSession(
                 "attachment",
                 "avatar",
                 "fetch",
+                "typing",
                 "upload",
                 "upload.chunk",
                 "subscribe",
@@ -428,6 +443,7 @@ internal class UsbControlSession(
                 put("maxList", MAX_LIST)
                 put("maxChunk", UsbTransfers.MAX_CHUNK)
                 put("maxUpload", UsbTransfers.MAX_UPLOAD)
+                put("typingIntervalMs", SendLedger.TYPING_INTERVAL_MS)
             }
 
         private val RANDOM = SecureRandom()

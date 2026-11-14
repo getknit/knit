@@ -333,6 +333,7 @@ internal object UsbControlServer : KoinComponent {
         private val inbound = Channel<Inbound>(REQUEST_BUFFER)
         private val control = Channel<Inbound>(Channel.UNLIMITED)
         private val statusSignal = Channel<Unit>(Channel.CONFLATED)
+        private val typingSignal = Channel<Unit>(Channel.CONFLATED)
         private val jobs = mutableListOf<Job>()
         private val openedAt = System.currentTimeMillis()
         private val framesIn = AtomicLong()
@@ -375,6 +376,7 @@ internal object UsbControlServer : KoinComponent {
             jobs += scope.launch(Dispatchers.IO) { readLoop() }
             jobs += scope.launch(Dispatchers.IO) { workLoop() }
             jobs += scope.launch { api.statusChanges().collect { statusSignal.trySend(Unit) } }
+            jobs += scope.launch { api.typingChanges().collect { typingSignal.trySend(Unit) } }
         }
 
         fun shutdown() {
@@ -463,6 +465,7 @@ internal object UsbControlServer : KoinComponent {
                         if (feed.active) {
                             logSignal.onReceive { feed.pull() }
                             statusSignal.onReceive { feed.touch(ChangeKey.Status) }
+                            typingSignal.onReceive { feed.touch(ChangeKey.Typing) }
                         }
                         if (due != null) {
                             onTimeout((due - System.currentTimeMillis()).coerceAtLeast(0)) { sendDue() }

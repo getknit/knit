@@ -61,6 +61,11 @@ class ChangeFeedTest {
         override suspend fun identity(): JsonObject = buildJsonObject { put("node", "me") }
 
         override suspend fun status(): JsonObject = buildJsonObject { put("health", "Healthy") }
+
+        /** Who the app shows typing: each thread to its typers. */
+        val typers = mutableMapOf<String, String>()
+
+        override suspend fun typing(): JsonObject = buildJsonObject { typers.forEach { (conv, node) -> put(conv, node) } }
     }
 
     private var now = 0L
@@ -90,11 +95,11 @@ class ChangeFeedTest {
         error("the feed never settled")
     }
 
-    /** Subscribes and takes the opening status event. */
+    /** Subscribes and takes the opening status and typing events. */
     private suspend fun subscribe(since: ChangeCursor? = null): SubscribeResult {
         val result = feed.start(since)
         val opening = feed.runDue()
-        assertEquals(listOf("status"), opening.map { it.name })
+        assertEquals(CURRENT, opening.map { it.name })
         return result
     }
 
@@ -240,7 +245,7 @@ class ChangeFeedTest {
             repeat(9) { log.record(ChangeKey.Chat("c$it")) }
             feed.pull()
             val sent = feed.runDue()
-            assertEquals(listOf("gap"), sent.map { it.name })
+            assertEquals(listOf("gap") + CURRENT, sent.map { it.name })
             assertEquals(log.latest(), feed.watermark())
             assertNull("nothing left waiting", feed.nextDueAt())
         }
@@ -253,11 +258,11 @@ class ChangeFeedTest {
             log.record(ChangeKey.Resync("the blocked set changed"))
             feed.pull()
             val sent = feed.runDue()
-            assertEquals(listOf("gap"), sent.map { it.name })
+            assertEquals(listOf("gap") + CURRENT, sent.map { it.name })
             assertEquals(
                 "the blocked set changed",
                 sent
-                    .single()
+                    .first()
                     .getValue("reason")
                     .jsonPrimitive.content,
             )
@@ -292,6 +297,48 @@ class ChangeFeedTest {
         }
 
     @Test
+    fun aTypingTouchSendsWhoIsTypingNowAndNeverHoldsTheWatermark() =
+        runTest {
+            subscribe()
+            app.typers["bob"] = "bob-node"
+            feed.touch(ChangeKey.Typing)
+            assertEquals(log.latest(), feed.watermark())
+            val sent = feed.runDue().single()
+            assertEquals("typing", sent.name)
+            assertEquals(
+                "bob-node",
+                sent
+                    .getValue("typing")
+                    .jsonObject
+                    .getValue("bob")
+                    .jsonPrimitive.content,
+            )
+            assertNull("read once, at once", feed.nextDueAt())
+        }
+
+    @Test
+    fun aTypingChangeAGapDroppedIsSentAfterTheGapAsItStandsThen() =
+        runTest {
+            subscribe()
+            app.typers["bob"] = "stale"
+            feed.touch(ChangeKey.Typing)
+            repeat(9) { log.record(ChangeKey.Chat("c$it")) }
+            app.typers["bob"] = "fresh"
+            feed.pull()
+            val sent = feed.runDue()
+            assertEquals(listOf("gap") + CURRENT, sent.map { it.name })
+            assertEquals(
+                "fresh",
+                sent
+                    .last()
+                    .getValue("typing")
+                    .jsonObject
+                    .getValue("bob")
+                    .jsonPrimitive.content,
+            )
+        }
+
+    @Test
     fun aReconnectWithinTheRingReplaysWhatItMissed() =
         runTest {
             val cursor = subscribe().cursor
@@ -320,7 +367,7 @@ class ChangeFeedTest {
             log.setRecording(false)
             log.setRecording(true)
             feed.pull()
-            assertEquals(listOf("gap"), feed.runDue().map { it.name })
+            assertEquals(listOf("gap") + CURRENT, feed.runDue().map { it.name })
         }
 
     @Test
@@ -393,9 +440,14 @@ class ChangeFeedTest {
             app.reads = 0
             log.record(ChangeKey.Attachment("over"))
             val over = roomy.drainAll()
-            assertEquals(listOf("gap"), over.map { it.name }.distinct())
+            assertEquals(listOf("gap") + CURRENT, over.map { it.name }.distinct())
             assertEquals("no message was read for it", 0, app.reads)
         }
+
+    private companion object {
+        /** The current state the log never holds, which opens every subscribe and follows every gap. */
+        val CURRENT = listOf("status", "typing")
+    }
 
     /** Runs [this] feed's reads until nothing is due; everything it sent. */
     private suspend fun ChangeFeed.drainAll(): List<JsonObject> {

@@ -42,6 +42,12 @@ internal sealed interface ChangeKey {
     /** Transport health and who is reachable. Never logged: it is current state, read again on every subscribe. */
     data object Status : ChangeKey
 
+    /**
+     * Who the chat shows typing, in every thread. Never logged, like [Status]: a cue lives seconds, so a reconnect has
+     * nothing to replay, only the state as it stands, sent on every subscribe and after every gap.
+     */
+    data object Typing : ChangeKey
+
     /** Something no key can say (the blocked set moved): the client reads everything again. */
     data class Resync(
         val reason: String,

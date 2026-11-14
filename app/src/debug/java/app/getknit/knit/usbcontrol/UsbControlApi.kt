@@ -80,6 +80,16 @@ internal interface UsbControlApi {
 
     /** The chat's Tap to download for message [id]'s attachment: `held` when it is already here, else `asked`. */
     suspend fun fetch(id: String): JsonObject
+
+    /**
+     * Whether a "now typing" cue may go into [conversation]: refuses a thread the chat's composer sends none from (the
+     * Meshtastic room, a commons, a message request) and one the chat list does not show (a group this phone left, a
+     * blocked peer's DM), and answers false while the person has typing indicators off, which stops cues on every plane.
+     */
+    suspend fun canType(conversation: String): Boolean
+
+    /** Sends one "now typing" cue into [conversation], as the composer does on a keystroke. */
+    suspend fun sendTyping(conversation: String)
 }
 
 /**

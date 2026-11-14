@@ -27,6 +27,9 @@ internal interface Hydrator {
     suspend fun identity(): JsonObject
 
     suspend fun status(): JsonObject
+
+    /** Who the chat shows typing now: each thread with someone typing in it, to `[{node, label}]`. */
+    suspend fun typing(): JsonObject
 }
 
 /** What a subscribe answered: where the feed starts, and whether the client must read everything again first. */
@@ -64,6 +67,11 @@ internal class ChangeFeed(
         var sent: String? = null,
     )
 
+    init {
+        // A restart touches the current state (two keys) into a cleared map: with less room it would overflow again.
+        require(maxPending >= CURRENT_KEYS) { "maxPending must hold the current state's $CURRENT_KEYS keys" }
+    }
+
     private val pending = LinkedHashMap<ChangeKey, Entry>()
     private var cursor: ChangeCursor? = null
     private val gaps = ArrayDeque<String>()
@@ -84,9 +92,14 @@ internal class ChangeFeed(
             if (restarts != before) return SubscribeResult(from, resync = true)
             cursor = from.copy(seq = seq)
         }
-        // Presence is current state, never logged: every subscribe begins with it.
-        touch(ChangeKey.Status)
+        touchCurrent()
         return SubscribeResult(from, resync = since != null && replay == null)
+    }
+
+    /** Presence and typing are current state, never logged: every subscribe and every gap begins with them. */
+    private fun touchCurrent() {
+        touch(ChangeKey.Status)
+        touch(ChangeKey.Typing)
     }
 
     /** Marks [key] for a read without a log position: current state the log never holds, such as [ChangeKey.Status]. */
@@ -188,12 +201,17 @@ internal class ChangeFeed(
         if (key is ChangeKey.Thread) take(seq, ChangeKey.Chat(key.conversation))
     }
 
-    /** Drops what was waiting and tells the client to read everything again, from the log as it stands. */
+    /**
+     * Drops what was waiting and tells the client to read everything again, from the log as it stands. The current
+     * state the drop may have taken (a presence or typing change not yet sent) follows the gap, as at a subscribe:
+     * typing has no read of its own to start again from.
+     */
     private fun restart(reason: String) {
         restarts++
         pending.clear()
         gaps.addLast(reason)
         cursor = log.latest()
+        touchCurrent()
     }
 
     private suspend fun read(
@@ -264,6 +282,10 @@ internal class ChangeFeed(
                 changed(entry, found.toString())?.let { event("status", "status" to found) }
             }
 
+            ChangeKey.Typing -> {
+                event("typing", "typing" to hydrator.typing())
+            }
+
             is ChangeKey.Resync -> {
                 null
             }
@@ -295,6 +317,9 @@ internal class ChangeFeed(
         const val MAX_PENDING = 4_096
         const val MAX_PER_RUN = 32
 
+        /** The keys [touchCurrent] adds: [ChangeKey.Status] and [ChangeKey.Typing]. */
+        private const val CURRENT_KEYS = 2
+
         /** The most messages one attachment's change reads again before it becomes a `gap`. */
         const val MAX_NAMING = 64
 
@@ -305,7 +330,8 @@ internal class ChangeFeed(
         private fun scheduleOf(key: ChangeKey): LongArray =
             when (key) {
                 is ChangeKey.Message, is ChangeKey.Chat, is ChangeKey.Contact, ChangeKey.Self -> READS
-                ChangeKey.Status, ChangeKey.Contacts, is ChangeKey.Thread, is ChangeKey.Attachment, is ChangeKey.Resync -> ONCE
+                ChangeKey.Status, ChangeKey.Typing, ChangeKey.Contacts -> ONCE
+                is ChangeKey.Thread, is ChangeKey.Attachment, is ChangeKey.Resync -> ONCE
             }
     }
 }

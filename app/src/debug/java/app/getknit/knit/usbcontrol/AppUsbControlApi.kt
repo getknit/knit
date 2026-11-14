@@ -65,6 +65,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -208,6 +209,46 @@ internal class AppUsbControlApi :
             .drop(1)
             .debounce(STATUS_DEBOUNCE_MS)
             .map { }
+
+    override suspend fun typing(): JsonObject {
+        val shown = shownTyping(mesh.typing.value, settings.typingIndicatorsEnabled.first(), blocked())
+        if (shown.isEmpty()) return JsonObject(emptyMap())
+        val directory = peers.observeDirectory().first()
+        return buildJsonObject {
+            shown.toSortedMap().forEach { (conversation, nodes) ->
+                putJsonArray(conversation) {
+                    nodes.sorted().forEach { node ->
+                        addJsonObject {
+                            put("node", node)
+                            put("label", directory.label(node).text)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Fires when who the chat shows typing changes, the switch and the blocked set included: the `typing` event's trigger. */
+    fun typingChanges(): Flow<Unit> =
+        combine(mesh.typing, settings.typingIndicatorsEnabled, settings.blockedNodeIds, ::shownTyping)
+            .distinctUntilChanged()
+            .drop(1)
+            .map { }
+
+    override suspend fun canType(conversation: String): Boolean {
+        val kind = Conversations.kindFor(conversation)
+        // The bridged room and a commons carry no typing frame: a cue minted for one would land as a Nearby cue (§7.4).
+        if (kind == ConversationKind.MESHTASTIC || kind == ConversationKind.COMMONS) {
+            fail(Codes.REFUSED, "this thread carries no typing cue")
+        }
+        // The chat list shows no group this phone left and no blocked peer's DM.
+        val state = chatList().entries.firstOrNull { it.first.id == conversation }?.second ?: fail(Codes.NOT_FOUND, "no such thread")
+        // A cue would tell whoever asked that someone is there before the person has said yes to them.
+        if (state == STATE_REQUEST) fail(Codes.REFUSED, "a message request gets no typing cue until it is accepted")
+        return settings.typingIndicatorsEnabled.first()
+    }
+
+    override suspend fun sendTyping(conversation: String) = mesh.sendTyping(conversation)
 
     override suspend fun send(request: SendRequest): JsonObject {
         val conversation = request.conversation
@@ -684,3 +725,13 @@ internal class AppUsbControlApi :
         const val STATUS_DEBOUNCE_MS = 1_000L
     }
 }
+
+/**
+ * Who the chat shows typing (`ChatViewModel`'s typing combine): nobody while typing indicators are off, and never a
+ * blocked sender, whose cue the tracker may still hold for a few seconds after the block.
+ */
+internal fun shownTyping(
+    typing: Map<String, Set<String>>,
+    on: Boolean,
+    blocked: Set<String>,
+): Map<String, Set<String>> = if (!on) emptyMap() else typing.mapValues { (_, nodes) -> nodes - blocked }.filterValues { it.isNotEmpty() }

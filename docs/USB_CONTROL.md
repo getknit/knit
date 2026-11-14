@@ -6,8 +6,8 @@
 > compatibility promise yet. Changes stay additive where they can: a client ignores fields and events it does not know.
 
 A workstation drives Knit on a phone plugged in over USB, with no adb: it reads chats, contacts and threads, saves
-attachments and photos, sends text and pictures, reacts, marks read and handles message requests, and follows what
-changes through an event feed. This document is
+attachments and photos, sends text and pictures, reacts, marks read, handles message requests and shows typing both
+ways, and follows what changes through an event feed. This document is
 the contract a desktop client is written against. The phone's side is `app/src/debug/java/app/getknit/knit/usbcontrol/`;
 `vectors/usb-control-v1.json` pins the pairing and the seal byte for byte.
 
@@ -159,7 +159,7 @@ time, in the order they arrive. Inside a session every request and reply is seal
 
 - **`hello {v: 1, nonce, client?}`**, the session's first sealed request, opens (or resets) it. The reply echoes `nonce` and carries `v`, `ops`,
   `self` (`node`, `name`, `alias`, `avatarHash`, `status`, `app`) and `limits` (`maxFrame`, `maxText`, `maxReaction`,
-  `maxStatus`, `maxHistory`, `maxList`, `maxChunk`, `maxUpload`). A previous run that exited without reading can leave frames queued in the link, so a client
+  `maxStatus`, `maxHistory`, `maxList`, `maxChunk`, `maxUpload`, `typingIntervalMs`). A previous run that exited without reading can leave frames queued in the link, so a client
   drops every frame until the reply that carries its own nonce.
 - **`bye`** ends the session (back to the clear side) and stops the feed.
 
@@ -203,9 +203,17 @@ paging always moves past it.
   space, at most `maxStatus` characters, and an empty one clears it. The reply is `{changed, self}`. A change
   publishes our profile to the mesh and to every contact; the status we already have changes nothing and publishes
   nothing.
+- **`typing {conv}`** says the person at the computer is typing in a thread, as the chat's composer does on a
+  keystroke: the phone sends a "now typing" cue there, which the far side shows for about 12 s, or until our next
+  message lands. A client may ask on every keystroke: the phone sends at most one cue per thread every
+  `typingIntervalMs`, and answers `{conv, sent}`, with `sent: false` for a cue it did not send (inside that interval,
+  past the cue budget, or while the person has typing indicators off on the phone). The Meshtastic room, a commons and
+  a message request answer `refused`, and a thread the chat list does not show (a group this phone left, a blocked
+  peer's DM) `not_found`.
 
 Sends and reactions share one budget across sessions: a burst of 10, then 30 a minute. Status changes have their
-own, since each one reaches every contact: 2 at once, then 1 a minute.
+own, since each one reaches every contact: 2 at once, then 1 a minute. Typing cues have a third, beside the one cue per
+thread every `typingIntervalMs`: a burst of 4, then 20 a minute.
 
 ## Attachments
 
@@ -270,7 +278,9 @@ name}`, a heard Meshtastic post).
 **`subscribe {since?}`** starts the feed. The reply carries `cursor: {epoch, seq}` and `resync`. Every event carries
 `seq`: the newest position whose changes have all reached the client. Keep the latest `{epoch, seq}`; after a dropped
 link, `subscribe {since: cursor}` replays what changed since. When the phone can't (the app restarted, USB control was
-switched off, or too much changed), the reply says `resync: true` and the client reads everything again.
+switched off, or too much changed), the reply says `resync: true` and the client reads everything again. Presence
+(`status`) and typing (`typing`) are current state the feed never replays: each comes once at every subscribe and after
+every `gap`, then whenever it changes.
 
 Every event holds the object's state at the moment it was written, never a delta:
 
@@ -285,11 +295,18 @@ Every event holds the object's state at the moment it was written, never a delta
 | `contacts.reset` | — | reads `contacts` and `chats` again |
 | `self` | `self` | replaces its copy of `self` |
 | `status` | `status` | replaces its copy of `status` (presence: who is `reachable`) |
+| `typing` | `typing` | replaces its copy of who is typing: each thread with someone typing in it, to `[{node, label}]`; a thread it leaves out has nobody |
 | `gap` | `reason` | reads everything again |
 
 **Attachments.** Bytes landing or going, or a filter verdict, move `attachment.held` or `attachment.flagged`: the
 client gets a `message` event for each message naming them, or `gap` past 64 of them. Turning content filtering on
 or off sends `gap`.
+
+**Typing.** The phone keeps a cue showing for about 12 s after the last one, and a message from its sender clears it,
+so a client simply shows what the latest `typing` event says, with no clock of its own, and nobody while its link is
+down. It shows what the chat shows:
+nobody while typing indicators are off on the phone, never a blocked sender, never in a message request. A `label` is
+the name as of the event.
 
 **Ordering.** One worker on the phone builds and writes every frame, replies and events alike, so a later frame never
 carries older state than an earlier one: the client simply applies frames in order.
@@ -307,6 +324,6 @@ reported deleted: a client may see `message.deleted` for an id it never held, wh
 
 ## Deferred
 
-Sending video, voice notes and files, thumbnails and smaller reads of a picture, fetch progress, typing indicators, group create, leave and rename, search, notification suppression
+Sending video, voice notes and files, thumbnails and smaller reads of a picture, fetch progress, group create, leave and rename, search, notification suppression
 while a desktop is active, pairing from the phone's settings (today a computer asks and the phone's notice answers),
 and starting the mesh service on attach.
