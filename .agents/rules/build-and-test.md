@@ -13,16 +13,22 @@ Why the tooling is wired this way (detekt/ktlint/Kover Gradle plugins): `context
 - Run `./gradlew :app:assembleDebug` to validate a build; `./gradlew :app:compileDebugKotlin` for a fast
   main-sources compile check.
 
-## Never overlap Gradle runs in one worktree
+## Take turns at Gradle, in the worktree and on the machine
 
 Two `testDebugUnitTest` runs in one checkout rewrite each other's `app/build/test-results/testDebugUnitTest/binary/`,
 and the first dies with `NoSuchFileException` though every test passed; two compiles of a moved tree write the same
-intermediates. Chain your own runs in one command, never one in the background and one in the foreground. Anything
-that may run beside another Gradle user — a reviewer or owner persona, `lab-chaos.sh`, `unit-stress.sh` — goes through
-`scripts/gradle-turn.sh <command>`, a per-worktree `flock` in the git dir (re-entrant, so a script holding it can nest),
-so the reviewers the Stop hook spawns at once read in parallel and take turns at Gradle. It also runs the command in a
-systemd scope of CPU weight 20, so the daemon it starts and that daemon's test JVMs yield the CPU to the IDE and the
-terminals.
+intermediates. Runs in different worktrees write different outputs but share the memory: each brings a daemon and test
+JVMs of ~2.5 GB, and parallel worktree agents have run the 62 GB workstation out of memory. So every Gradle run an
+agent starts, the main session's included, goes through `scripts/gradle-turn.sh <command>`; a `PreToolUse` hook
+(`.claude/hooks/gradle-turn-gate.py`) blocks a bare `./gradlew`. The script takes this worktree's `flock` in the git
+dir, then the machine's slot in `~/.gradle/knit-gradle-turn/`, which every worktree shares: one agent build at a time,
+since the CI runners on the workstation build beside it outside the turn. `KNIT_GRADLE_SLOTS=<n>` allows more, and a
+build then starts beside another only while `KNIT_GRADLE_MIN_FREE_MB` (default 12288) of memory is free. A waiting run
+prints who holds the slots. Both locks are re-entrant, so a script holding the
+turn (`lab-chaos.sh`, `unit-stress.sh`) can nest, and the reviewers the Stop hook spawns at once read in parallel and
+take turns at Gradle. Still chain your own runs in one command, never one in the background and one in the foreground.
+The script also runs the command in a systemd scope of CPU weight 20, so the daemon it starts and that daemon's test
+JVMs yield the CPU to the IDE and the terminals.
 
 ## Code checks run before any review
 

@@ -76,7 +76,7 @@ while ((done_runs < runs)); do
   if [[ -n "$quota" ]]; then
     cmd=(systemd-run --user --scope -q -p "CPUQuota=${quota}%" taskset -c 0 "${cmd[@]}" --no-daemon)
   fi
-  # Take turns with any other Gradle run in this worktree (a sibling reviewer's), see scripts/gradle-turn.sh.
+  # Take turns with every other Gradle run here (a sibling reviewer's) and on the machine: scripts/gradle-turn.sh.
   cmd=(scripts/gradle-turn.sh "${cmd[@]}")
   rm -rf "$results"/unitStressShard*
   set +e

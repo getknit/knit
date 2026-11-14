@@ -82,7 +82,7 @@ content() { grep -v -e '^index ' -e '^@@ '; }
 # state dir, so `--checks` run by an agent, an owner or a reviewer satisfies the Stop hook and the hook never runs the
 # same check again on the same tree. Gradle reads the modules and build files, not the docs, the agent library, the hooks
 # or the store text, so an ADR written after a pass keeps it; lintorama reads everything. Gradle goes through
-# scripts/gradle-turn.sh, so it takes turns with every other Gradle run in this worktree instead of racing it.
+# scripts/gradle-turn.sh, so it takes turns with every other Gradle run in this worktree and on the machine.
 gradle_tree() {
   worktree_tree . ':(exclude)*.md' ':(exclude).agents' ':(exclude)docs' ':(exclude).claude' ':(exclude)fastlane' \
     ':(exclude).github'
@@ -114,7 +114,8 @@ run_checks() {
     if [ "$gradle_status" -eq 0 ]; then
       printf '%s\n' "$tree" >"$state/gradle-checks.pass"
     elif [ "$gradle_status" -eq 75 ]; then
-      out+="The Gradle checks did not run: another Gradle run held this worktree past the wait."$'\n'
+      out+="The Gradle checks did not run: other Gradle runs held the worktree or every machine slot past the"
+      out+=" wait."$'\n'
       [ "$status" -ne 0 ] || status=75
     else
       out+="\`./gradlew ktlintCheck detekt lint\` failed (exit $gradle_status). Most ktlint findings autocorrect with"
