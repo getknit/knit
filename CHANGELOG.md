@@ -53,6 +53,8 @@ document:
   They arrive after you tap Accept, so a stranger's attachments no longer take up space on your phone first.
 - A picture or file sent to you over Bluetooth could wait up to a minute before it started downloading, for
   example right after you restored Knit from a backup. It now starts as soon as its message arrives.
+- Posts to the Nearby and Meshtastic rooms with a lone "x" in them, like "2 x 3" or a kiss at the end, were
+  blocked as profanity, and hidden when you received one. They now go through.
 
 ## [2.11.1](https://github.com/getknit/knit/releases/tag/v2.11.1) — 2026-11-11T07:27:26Z
 

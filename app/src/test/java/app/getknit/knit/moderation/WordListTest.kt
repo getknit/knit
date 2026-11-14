@@ -78,6 +78,15 @@ class WordListTest {
         assertFalse(filter.check("hello there, friend").flagged)
     }
 
+    @Test
+    fun noSingleLetterIsBlocked() {
+        // A term's stretched-letter form can be one letter ("xxx" collapses to "x"); a lone letter must still pass.
+        val filter = LexicalTextFilter(terms)
+        ('a'..'z').forEach { letter ->
+            assertFalse("a lone '$letter' must not be blocked", filter.check("press the $letter key").flagged)
+        }
+    }
+
     private companion object {
         const val MIN_LEN = 3
         val TOKEN = Regex("^[a-z]+$")

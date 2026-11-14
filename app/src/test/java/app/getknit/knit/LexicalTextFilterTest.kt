@@ -48,6 +48,19 @@ class LexicalTextFilterTest {
     }
 
     @Test
+    fun aTermWhoseCollapsedFormIsOneLetterMatchesOnlyWhenWrittenOrStretched() {
+        // "xxx" collapses to "x", so comparing an unstretched token with the collapsed forms blocked every lone x.
+        val xxx = LexicalTextFilter(blockedWords = listOf("xxx"))
+        assertFalse(xxx.check("the room is 2 x 3 meters").flagged)
+        assertFalse(xxx.check("Malcolm X").flagged)
+        assertFalse(xxx.check("thanks x").flagged)
+        assertFalse(xxx.check("x").flagged)
+        assertTrue(xxx.check("xxx").flagged)
+        assertTrue(xxx.check("xxxxx").flagged)
+        assertTrue(xxx.check("x x x").flagged)
+    }
+
+    @Test
     fun spacedOutLettersAreRejoined() {
         assertTrue(flagged("f u c k you"))
         assertTrue(flagged("s.h.i.t"))

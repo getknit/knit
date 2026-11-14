@@ -54,9 +54,16 @@ class LexicalTextFilter(
         return TextVerdict.ALLOWED
     }
 
+    /**
+     * A token matches a term as written, or — only when it was itself stretched — the term's collapsed form. The
+     * collapsed set answers "is this a stretched term?", and a token with nothing to collapse is not stretched: asking
+     * it anyway made a lone `x` match `xxx`, whose collapsed form is `x`, so "2 x 3" was blocked in the room.
+     */
     private fun isBlocked(token: String): Boolean {
         if (token.isEmpty() || token in allowed) return false
-        return token in blocked || collapseRuns(token) in blockedCollapsed
+        if (token in blocked) return true
+        val collapsed = collapseRuns(token)
+        return collapsed != token && collapsed in blockedCollapsed
     }
 
     private fun normalize(raw: String): String {
