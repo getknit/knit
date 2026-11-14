@@ -143,7 +143,22 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Still deferred (by design)
 
-- **Stories, and the stitched ring that marks them** (2026-11-09, no ADR yet). Knit has no stories or status posts.
+- **Stories, and the stitched ring that marks them** (2026-11-09; designed 2026-11-14 in ADR 2026-11.7527, Proposed,
+  for GitHub #20). Knit has no stories or status posts yet. The design: a story to contacts is one DM-form `chat`
+  frame addressed to an audience tag and sealed under an audience sender key, which the poster hands each member
+  once; a story to people nearby is a Nearby room post with a cleartext marker. Both are shown for their custody
+  window (24 h and 6 h) and nothing self-deletes. Every wire change is additive, with no flag day, and is a paired
+  change with knit-ios.
+  - **Version 1:** one standing audience ("My story"), contacts with `CAP_STORIES` only, radio only, stories that go
+    either to contacts or to people nearby but not both, never on LoRa.
+  - **Later:** stories over the Internet relay (an audience spool scope) and over a contact's direct Internet link
+    (a `LinkPairFilter` rule); views; retraction; more than one audience; one story posted to both forms (a shared
+    story id).
+  - **At the next wire break** (`docs/NEXT_WIRE_BREAK.md`): item 12's 7-day DM custody gives stories a 24 h class
+    of their own; item 11 settles one addressing form for groups and stories; item 15 is retraction that carriers
+    honour.
+  - **Still to decide:** the items the ADR lists under "Still to decide", the seen ring among them.
+
   When it gets them, the avatar ring that says "this person posted one" is already chosen: the maintainer picked the
   *Stitched* ring from the supporter-ring mockups and set it aside for this, after the supporter badge went after the
   name instead (ADR 2026-10.r99s, amended 2026-11-09). Its design, from the Yarnworld logo's own colours:
