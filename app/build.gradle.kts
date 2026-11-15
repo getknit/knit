@@ -769,6 +769,21 @@ android {
                 // OutOfMemoryError in its last classes (CI run 41250619065); at 150 the fork holding the mesh lab
                 // still peaked at 876 MB live.
                 test.forkEvery = 100
+                // `-Pknit.meshSim=<seed>` runs the mobility simulator's outings (app/src/test/.../mesh/sim/*SimTest):
+                // each takes the minutes of wall clock it simulates and reports what the mesh did, so it is a
+                // measurement and no check, and every other run leaves it out. `knit.meshSimWalkers` and
+                // `knit.meshSimMinutes` size the outing; `knit.meshSimHeap` (say `4g`) lifts the fork's heap for a
+                // crowd the 1 GiB above cannot hold.
+                val meshSim = providers.gradleProperty("knit.meshSim").orNull
+                if (meshSim == null) {
+                    test.filter.excludeTestsMatching("app.getknit.knit.mesh.sim.*SimTest")
+                } else {
+                    test.systemProperty("knit.meshSim", meshSim)
+                    listOf("knit.meshSimWalkers", "knit.meshSimMinutes").forEach { key ->
+                        providers.gradleProperty(key).orNull?.let { test.systemProperty(key, it) }
+                    }
+                    providers.gradleProperty("knit.meshSimHeap").orNull?.let { test.maxHeapSize = it }
+                }
             }
         }
 
@@ -1159,6 +1174,10 @@ if (labChaosShards > 0) {
                 if (!providers.gradleProperty("knit.previewLayout").isPresent) {
                     excludeTestsMatching("app.getknit.knit.ui.preview.PreviewClippingTest")
                 }
+                // The simulator's outings run only under -Pknit.meshSim (as in unitTests.all).
+                if (!providers.gradleProperty("knit.meshSim").isPresent) {
+                    excludeTestsMatching("app.getknit.knit.mesh.sim.*SimTest")
+                }
             }
             outputs.upToDateWhen { false }
         }
@@ -1204,6 +1223,10 @@ if (unitStressShards > 0) {
                 }
                 if (!providers.gradleProperty("knit.previewLayout").isPresent) {
                     excludeTestsMatching("app.getknit.knit.ui.preview.PreviewClippingTest")
+                }
+                // The simulator's outings run only under -Pknit.meshSim (as in unitTests.all).
+                if (!providers.gradleProperty("knit.meshSim").isPresent) {
+                    excludeTestsMatching("app.getknit.knit.mesh.sim.*SimTest")
                 }
             }
             outputs.upToDateWhen { false }

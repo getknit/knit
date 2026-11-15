@@ -820,6 +820,43 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
 - Robolectric, so the Gradle 9.5 result-serialization race applies: tally the per-class XMLs under
   `app/build/test-results/testDebugUnitTest/` after `rm -rf`-ing the directory, not the console summary.
 
+## Mesh simulator (`app/src/test/…/mesh/sim/`, a spike)
+
+`MeshSim` puts lab nodes in a field and lets where they stand decide their links. A scripted lab scenario
+waits for the mesh between its steps; the simulator never does, so it asks the other question: what the mesh
+delivers, and how fast, while contacts come and go the way people's do. It is a measurement and no check.
+
+- **Three pure parts, then the driver.** `Mobility` is where each walker is at a simulated time
+  (`RandomWaypoint`: an open park, friends arriving together and wandering off). `DiscRadio` turns distance
+  into links, with a dial time and a drop range past the dial range so links do not flap. `Workload` is what
+  the walkers send, drawn ahead from the seed. `MeshSim` applies each radio step to the lab's transports at
+  once (`lab.link`, `LabTransport.disconnect`, none of `lab.unlink`'s settling) and reads delivery off the
+  recipient's own row (`arrivedAt` less `sentAt`).
+- **Run it with `-Pknit.meshSim=<seed>`**, which every other run leaves out:
+  `scripts/gradle-turn.sh ./gradlew :app:testDebugUnitTest --tests 'app.getknit.knit.mesh.sim.ParkWalkSimTest'
+  -Pknit.meshSim=1`. Always name `--tests`: the property alone runs the whole suite with the outing in it.
+  `-Pknit.meshSimWalkers`, `-Pknit.meshSimMinutes` and `-Pknit.meshSimHeap` size it. The
+  report lands in `app/build/mesh-sim/`: contacts made and how long they lasted, DM delivery and latency by
+  how the two ends stood at the send (linked, a path apart, partitioned), room reach, frames per plane of the
+  router, custody rows, and what the run cost the machine.
+- **A red run is a finding, not a flake.** It fails when the machine let scheduled sends fall past the end of
+  the run (an unfair run), when a DM is still missing once everyone has gathered, or when the lab's oracle
+  does not converge after it. The report is in the failure's message.
+- **Time is real: a simulated minute is a minute.** Every protocol timer in the stacks is a `delay`, so
+  walkers that moved faster than the timers ran would change the ratio under test. `LabClock` cannot help: it
+  moves decisions, never schedulers.
+- **A seed fixes the world, not the schedule.** The walks, the links and the sends repeat; the threads under
+  them race as they always do. Compare builds over several seeds, never one run with another.
+- **A crowd costs little until custody fills** (seed 1, 2026-11-14). Twelve walkers kept 0.16 cores busy,
+  twenty-four 0.33, forty-eight between one and two, each node a few MB of heap, the world never late. At
+  forty-eight the stores held about 700 of custody's 1,000 rows after two minutes; at a hundred they sat at
+  the cap, the machine spent fifteen cores in `ForwardDao.evictFairest`, and the run was stopped. Read the
+  custody line before the delivery lines, and pin a big run to half the machine: `taskset -c 0-11
+  scripts/gradle-turn.sh ./gradlew --no-daemon …`.
+- **What it leaves out.** One plane, no path loss, no link budget, none of the transports' own dial policies:
+  `LabTransport` stands in for the whole radio, so the topology is the geometry's, not what Bluetooth or
+  Wi-Fi Aware would have formed.
+
 ## JVM Room/DAO + migration tests (Robolectric)
 
 `app/src/test/java/app/getknit/knit/data/` runs the **real** DAO SQL — the eviction/orphan/GC queries that
