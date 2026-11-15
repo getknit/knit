@@ -2705,6 +2705,22 @@ class LabNode internal constructor(
         transport.send(WireEnvelope(sig = messageCrypto.signRaw(signed), signed = signed), null)
     }
 
+    /**
+     * Sends [envs] to [to] back to back, each signed by this node and none flooded (`relay = false`):
+     * `LabTransport.sendBurst`, for a scenario that needs many frames waiting at one node.
+     */
+    suspend fun burstSigned(
+        to: LabNode,
+        envs: List<RelayEnvelope>,
+    ) {
+        val frames =
+            envs.map { env ->
+                val signed = WireCodec.encodeEnvelope(env)
+                WireEnvelope(relay = false, sig = messageCrypto.signRaw(signed), signed = signed)
+            }
+        transport.sendBurst(to.transport, frames)
+    }
+
     /** Sends into a group this node holds, quoting [replyTo] when given; the frame the chat screen's composer would send. */
     suspend fun sendGroup(
         groupId: String,

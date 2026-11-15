@@ -176,8 +176,12 @@ class LabTransport(
 
     override val health = MutableStateFlow(TransportHealth.Healthy).asStateFlow()
 
-    // Under chaos each collector may be late to what it was handed — the router busy on the frame before.
-    private val _inbound = MutableSharedFlow<InboundFrame>(extraBufferCapacity = BUFFER)
+    // Without a bound, as the queue a phone's link keeps on the way out has none (`FramedLink.send` never waits): a
+    // `send` returns once the far end has the frame, however far behind its router is. Bounded, a `send` into a full
+    // queue waited on the far router, and two routers each sending the other a tick waited on each other for good
+    // (`InboundBurstLabTest`). Under chaos each collector may be late to what it was handed, the router busy on the
+    // frame before.
+    private val _inbound = MutableSharedFlow<InboundFrame>(extraBufferCapacity = Int.MAX_VALUE)
 
     /**
      * Frames handed to [inbound] against frames its collector has finished. A link frame is counted in [received]
@@ -1021,20 +1025,46 @@ class LabTransport(
         val out = claimsHeldBytes?.let { misstated(wire, it) } ?: wire
         val targets = if (to == null) pipes.values.toList() else listOfNotNull(pipes[to.nodeId])
         val key = FrameKey.ofSigned(out)
-        targets.forEach { pipe ->
-            when {
-                pipe.lossy(out) -> lost += out
-
-                // A held frame is judged by the memo at [release], not here.
-                pipe.park(out) -> Unit
-
-                !crosses(pipe, key, VIA_LINK) -> Unit
-
-                else -> pipe.target.deliver(out, nodeId, VIA_LINK)
-            }
-        }
+        targets.forEach { pipe -> write(pipe, out, key) }
         // The far end has the frame; the sender's own bookkeeping after `send` returns may come late.
         chaos?.jitter()
+    }
+
+    /**
+     * Sends [frames] to [to] back to back, as a custody reply's frames reach a link's queue: one lag ahead of the lot
+     * where [send] draws one on each side of every frame, for a scenario whose subject is how many frames wait at the
+     * far end and not how they interleave. Each frame meets the pipe as a [send]'s does (lost, parked, or skipped as
+     * a second crossing), in order, and the call returns once the far end has the last. A link that goes down on
+     * the way takes the rest with it.
+     */
+    suspend fun sendBurst(
+        to: LabTransport,
+        frames: List<WireEnvelope>,
+    ) {
+        pipe(to) // linked at all: a burst to nobody is the scenario's mistake
+        chaos?.jitter()
+        for (frame in frames) {
+            val pipe = pipes[to.nodeId] ?: return
+            write(pipe, frame, FrameKey.ofSigned(frame))
+        }
+    }
+
+    // One frame onto one pipe: lost, parked, skipped as a second crossing, or handed to the far end.
+    private suspend fun write(
+        pipe: Pipe,
+        out: WireEnvelope,
+        key: String?,
+    ) {
+        when {
+            pipe.lossy(out) -> lost += out
+
+            // A held frame is judged by the memo at [release], not here.
+            pipe.park(out) -> Unit
+
+            !crosses(pipe, key, VIA_LINK) -> Unit
+
+            else -> pipe.target.deliver(out, nodeId, VIA_LINK)
+        }
     }
 
     /**
@@ -1059,7 +1089,7 @@ class LabTransport(
      * The fan-out arm of the fast path, routed here only while [pages] makes this a fast plane: the real
      * `BleFastRoutePolicy.fanout` — the link copy to every linked peer over its pipe (held and lost as the
      * flood is, one stream), plus a page when another member is in range. Non-suspending like
-     * `FramedLink.send`; the pipe's buffer is the phone's socket buffer, so a full one is a lab bug, not a drop.
+     * `FramedLink.send`: the far end's queue has no bound, so the frame is never refused.
      */
     override fun fastFanout(wire: WireEnvelope) {
         val pages = pages ?: return
@@ -1298,7 +1328,7 @@ class LabTransport(
     }
 
     private fun emitNow(frame: InboundFrame) {
-        check(_inbound.tryEmit(frame)) { "$nodeId: inbound buffer full ($BUFFER) — a fast-path frame was dropped" }
+        check(_inbound.tryEmit(frame)) { "$nodeId: the inbound queue refused a fast-path frame" }
     }
 
     /** Leaves the pages, for a node whose live stack is going down ([LabNode.restart] boots a new transport). */

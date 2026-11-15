@@ -606,6 +606,15 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `release(bob.transport) { reorder }` delivers it in the order you choose — how "custody serves the two in
   either order" becomes a deterministic case. Partition (group frames first, say) rather than blindly
   reverse: the intro driver's own `CTL_PROFILE` DM can land in the window.
+- **A send never waits on the far router** (2026-11-14). A pipe hands a frame into the far node's inbound queue,
+  which has no bound, as the queue a phone's link keeps on the way out has none (`FramedLink.send`). With its old
+  bound of 1,024 a `send` into a full queue waited for the far router, and two routers each sending the other a
+  tick waited on each other for good: a mobility simulation's 48-walker gather left 15 to 21 DMs of 270 unread in
+  a linked recipient's queue (`InboundBurstLabTest`). `LabNode.burstSigned` puts thousands of frames at one node with one
+  chaos lag ahead of the lot (`LabTransport.sendBurst`), for a scenario about how many wait there and not how they
+  interleave. The lab drops nothing there either. `BluetoothMeshTransport` and
+  `WifiAwareTransport` hand the router frames with `tryEmit` into a buffer of 256, so a frame that finds it full
+  is lost; no scenario models that.
 - **Restart is real.** `node.restart()` tears the live stack down and rebuilds it over the same identity, DB
   and settings — every in-memory structure (`PendingInbound`, `PendingGroupKeys`, ratchet caches, seen set)
   starts empty.
