@@ -549,6 +549,8 @@ class InboundPipelineTest {
                             msg.attachmentSize,
                             msg.attachmentFetchApproved,
                             msg.senderId == me,
+                            sentAt = msg.sentAt,
+                            dm = msg.recipientId != null,
                             conversationId = msg.conversationId,
                         )
                     }
@@ -4186,6 +4188,114 @@ class InboundPipelineTest {
             }
         }
 
+    /** A stored DM row from [sender] in their own thread naming [hash], for the rig's fetch-row fold. */
+    private fun Rig.storedDm(
+        id: String,
+        sender: String,
+        hash: String,
+        sentAt: Long,
+        approved: Boolean = false,
+    ) {
+        msgMap[id] =
+            MessageEntity(
+                id = id,
+                senderId = sender,
+                recipientId = self.nodeId,
+                conversationId = sender,
+                body = "",
+                sentAt = sentAt,
+                attachmentHash = hash,
+                attachmentFetchApproved = approved,
+            )
+    }
+
+    /**
+     * #321: a tap approves every row naming the hash (ADR 2026-10.js2p), a held stranger's earlier row included, so that
+     * row releases the fetch as well. A second request naming the file is then still asked of the contact, and the fast
+     * plane armed toward the contact alone.
+     */
+    @Test
+    fun aRequestsAttachmentIsAskedOfTheContactAfterATapApprovedAnEarlierStrangersRow() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val stranger = party()
+            val bob = party()
+            rig.pin(stranger)
+            rig.settings.accepted.value = setOf(bob.nodeId)
+            rig.storedDm("s1", "earlier-stranger", "shared", sentAt = 1L, approved = true)
+            rig.storedDm("b1", bob.nodeId, "shared", sentAt = 4L, approved = true)
+
+            // Handed over by the stranger themselves: they are not the hop the want ranks either.
+            val request = rig.sealedFileDm(stranger, id = "r2", attachmentHash = "shared", fileName = "a.zip")
+            rig.deliver(stranger, request, from = stranger.nodeId)
+
+            coVerify { rig.blobExchange.want("shared", bob.nodeId, null, null, false, until = any(), untilKnown = true) }
+            assertEquals("the fast plane is armed toward the contact alone", listOf(bob.nodeId), rig.transport.bulkArmed.toList())
+        }
+
+    /** #321's other half: a blocked sender's earlier row, in a thread accepted before the block, names nobody. */
+    @Test
+    fun aRequestsAttachmentIsNeverAskedOfABlockedSenderWhoseEarlierRowFetchesIt() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val stranger = party()
+            val bob = party()
+            rig.pin(stranger)
+            rig.settings.accepted.value = setOf("mallory", bob.nodeId)
+            rig.settings.blocked.value = setOf("mallory")
+            rig.storedDm("m1", "mallory", "shared", sentAt = 1L)
+            rig.storedDm("b1", bob.nodeId, "shared", sentAt = 4L)
+            rig.storedDm("m2", "mallory", "theirs-alone", sentAt = 1L)
+
+            rig.deliver(stranger, rig.sealedFileDm(stranger, id = "r2", attachmentHash = "shared", fileName = "a.zip"), from = "c")
+            rig.deliver(stranger, rig.sealedFileDm(stranger, id = "r3", attachmentHash = "theirs-alone", fileName = "b.zip"), from = "c")
+
+            coVerify { rig.blobExchange.want("shared", bob.nodeId, "c", null, false, until = any(), untilKnown = true) }
+            // Only the blocked sender's row fetches it: still wanted, of nobody by name, and no link armed for it.
+            coVerify { rig.blobExchange.want("theirs-alone", null, "c", null, false, until = any(), untilKnown = true) }
+            assertEquals(listOf(bob.nodeId), rig.transport.bulkArmed.toList())
+        }
+
+    /**
+     * #321 at custody's door, which runs ahead of the delivery: a request's DM to us naming a file a contact's row
+     * fetches is wanted of the contact, by the contact's row, never of the stranger whose frame it is.
+     */
+    @Test
+    fun onCarriedFrameAsksTheContactForARequestsFrameAContactsRowFetches() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val stranger = party()
+            val bob = party()
+            rig.settings.accepted.value = setOf(bob.nodeId)
+            rig.storedDm("b1", bob.nodeId, "shared", sentAt = 4L)
+            rig.storedDm("b2", bob.nodeId, "relayed", sentAt = 4L)
+
+            // One handed over by the stranger, who is then not the hop to rank either; one through a carrier, who is.
+            rig.pipeline.onCarriedFrame(rig.carried(stranger, "d1", "shared", to = rig.self.nodeId), via = stranger.nodeId)
+            rig.pipeline.onCarriedFrame(rig.carried(stranger, "d2", "relayed", to = rig.self.nodeId), via = "c")
+
+            // By the contact's row (sent at 4), not the window of the stranger's own frame.
+            val contactsWindow = 4L + ForwardRepository.DEFAULT_TTL_MS
+            coVerify { rig.blobExchange.want("shared", bob.nodeId, null, null, false, until = contactsWindow, untilKnown = false) }
+            coVerify { rig.blobExchange.want("relayed", bob.nodeId, "c", null, false, until = contactsWindow, untilKnown = false) }
+            assertEquals("the request's own frames are not what held them", 0L, rig.metrics.files().requestHolds)
+            coVerify(exactly = 0) {
+                rig.blobExchange.want(
+                    any(),
+                    stranger.nodeId,
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    pull = any(),
+                    until = any(),
+                    untilKnown = any(),
+                    ceiling = any(),
+                    pushedBy = any(),
+                )
+            }
+        }
+
     @Test
     fun aRequestsAttachmentAlreadyHeldIsStillDescribed() =
         runTest {
@@ -4333,6 +4443,44 @@ class InboundPipelineTest {
                     body = "",
                     sentAt = 3L,
                     attachmentHash = "shared",
+                )
+
+            rig.deliver(bob, rig.sealedFileDm(bob, id = "b1", attachmentHash = "shared", fileName = "a.zip"), from = "c")
+
+            coVerify {
+                rig.blobExchange.want(
+                    "shared",
+                    bob.nodeId,
+                    "c",
+                    null,
+                    false,
+                    until = 5L + ForwardRepository.DEFAULT_TTL_MS,
+                    untilKnown = any(),
+                )
+            }
+        }
+
+    /**
+     * #321: the tap's approval reaches a held request's row too, so it releases the fetch — and still moves no deadline: a
+     * contact's DM delivered after the tap is pulled through by its own custody window, not left without one by the
+     * request's group row.
+     */
+    @Test
+    fun anAcceptedDmsDeadlineIgnoresARequestsRowATapApproved() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val bob = party()
+            rig.pin(bob)
+            rig.settings.accepted.value = setOf(bob.nodeId)
+            rig.msgMap["s1"] =
+                MessageEntity(
+                    id = "s1",
+                    senderId = "stranger",
+                    conversationId = "g-request",
+                    body = "",
+                    sentAt = 3L,
+                    attachmentHash = "shared",
+                    attachmentFetchApproved = true,
                 )
 
             rig.deliver(bob, rig.sealedFileDm(bob, id = "b1", attachmentHash = "shared", fileName = "a.zip"), from = "c")

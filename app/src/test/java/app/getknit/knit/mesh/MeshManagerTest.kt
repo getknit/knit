@@ -200,6 +200,14 @@ class MeshManagerTest {
         val fastSends = CopyOnWriteArrayList<Pair<WireEnvelope, Peer>>()
         val internetCovers = CopyOnWriteArrayList<Set<String>>()
 
+        /** The peers the manager armed the fast plane toward ([expectBulkTransfer]), in order (#321). */
+        val bulkArmed = CopyOnWriteArrayList<String>()
+
+        override fun expectBulkTransfer(nodeId: String): Boolean {
+            bulkArmed += nodeId
+            return false
+        }
+
         /** Drivable, so a test can bring a peer into range (the met-peers watcher reads the nearby set). */
         val nearby = MutableStateFlow<Set<Peer>>(emptySet())
 
@@ -5521,6 +5529,108 @@ class MeshManagerTest {
 
             coVerify { rig.messages.approveAttachmentFetch("big") }
             assertEquals(listOf(author to BlobReqContent("big", pull = BlobExchange.PULL_BUDGET)), rig.blobAsks())
+        }
+
+    /** A DM row naming [hash], by [sender] in their own thread, sent at [sentAt]: what #321's cases fold. */
+    private fun dmFetchRow(
+        hash: String,
+        sender: String,
+        sentAt: Long,
+        approved: Boolean = false,
+    ) = AttachmentFetchRow(hash, sender, null, approved, own = false, sentAt = sentAt, dm = true, conversationId = sender)
+
+    @Test
+    fun aTapAsksTheContactAndArmsNoLinkTowardAHeldStrangerWhoseRowsNameTheSameFile() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #321: a stranger's request names the picture first, and again later; a contact's DM names it between them. The
+            // tap approves every row naming the hash (ADR 2026-10.js2p), the stranger's too, and still asks the contact, arms
+            // the fast plane toward the contact alone, and pulls it through by the contact's custody window, not the
+            // stranger's later row (ADR 2026-11.qu98).
+            val rig = Rig(backgroundScope)
+            val stranger = "stranger-node"
+            val bob = "bob-node"
+            val tapped = AtomicBoolean()
+            coEvery { rig.messages.approveAttachmentFetch("shared") } answers { tapped.set(true) }
+            coEvery { rig.messages.attachmentFetchRows("shared", any()) } answers {
+                listOf(
+                    dmFetchRow("shared", stranger, sentAt = 1_000L, approved = tapped.get()),
+                    dmFetchRow("shared", bob, sentAt = 2_000L, approved = tapped.get()),
+                    dmFetchRow("shared", stranger, sentAt = 9_000_000L, approved = tapped.get()),
+                )
+            }
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(bob))
+            rig.transport.nearby.value = setOf(Peer(stranger), Peer(bob))
+
+            rig.manager.downloadAttachment("shared")
+
+            coVerify { rig.messages.approveAttachmentFetch("shared") }
+            val asked = BlobReqContent("shared", pull = BlobExchange.PULL_BUDGET, until = 2_000L + ForwardRepository.DEFAULT_TTL_MS)
+            assertEquals("the contact is asked, by the contact's window", listOf(bob to asked), rig.blobAsks())
+            assertEquals("the fast plane is armed toward the contact alone", listOf(bob), rig.transport.bulkArmed.toList())
+        }
+
+    @Test
+    fun aTapNeverNamesABlockedSenderWhoseEarlierRowNamesTheSameFile() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #321's other half: a thread accepted before its sender was blocked still releases its rows, and the blocked
+            // sender is never the holder asked first nor the peer a link is armed toward.
+            val rig = Rig(backgroundScope)
+            val mallory = "mallory-node"
+            val bob = "bob-node"
+            coEvery { rig.messages.attachmentFetchRows("shared", any()) } returns
+                listOf(dmFetchRow("shared", mallory, sentAt = 1_000L, approved = true), dmFetchRow("shared", bob, 2_000L, approved = true))
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(mallory, bob))
+            coEvery { rig.settings.blockedNodeIds } returns MutableStateFlow(setOf(mallory))
+            rig.transport.nearby.value = setOf(Peer(mallory), Peer(bob))
+
+            rig.manager.downloadAttachment("shared")
+
+            assertEquals("the unblocked contact is asked", listOf(bob), rig.blobAsks().map { it.first })
+            assertEquals(listOf(bob), rig.transport.bulkArmed.toList())
+        }
+
+    @Test
+    fun theReArmAfterATapAsksTheContactAndNeverTheHeldStrangerTheTapApproved() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #321: the tap's approval is on every row naming the hash, so a held stranger's row releases it too
+            // (`RequestHold.releases`). A re-arm in a later session — nothing in the exchange remembers the tap's own want —
+            // still names the contact and the contact's window; a blocked sender's earlier row is passed over the same way.
+            val rig = Rig(backgroundScope)
+            val stranger = "stranger-node"
+            val mallory = "mallory-node"
+            val bob = "bob-node"
+            coEvery { rig.messages.attachmentsNeedingFetch(any()) } returns
+                listOf(
+                    MissingAttachment(
+                        "tapped",
+                        stranger,
+                        listOf(
+                            dmFetchRow("tapped", stranger, sentAt = 1_000L, approved = true),
+                            dmFetchRow("tapped", bob, sentAt = 2_000L, approved = true),
+                            dmFetchRow("tapped", stranger, sentAt = 9_000_000L, approved = true),
+                        ),
+                    ),
+                    MissingAttachment(
+                        "blocked",
+                        mallory,
+                        listOf(dmFetchRow("blocked", mallory, sentAt = 1_000L), dmFetchRow("blocked", bob, sentAt = 2_000L)),
+                    ),
+                )
+            rig.transport.nearby.value = setOf(Peer(stranger), Peer(mallory), Peer(bob))
+            rig.stubProfileState(MutableStateFlow(0L))
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(mallory, bob)) // after the profile's stubs
+            coEvery { rig.settings.blockedNodeIds } returns MutableStateFlow(setOf(mallory))
+
+            val passes = rig.countReArms()
+            rig.manager.start()
+            rig.await(2) { rig.askedHashes().size }
+            rig.awaitStartupReArms(passes)
+            val asks = rig.blobAsks()
+            assertEquals("every ask goes to the contact: $asks", setOf<String?>(bob), asks.mapTo(HashSet()) { it.first })
+            val until = asks.filter { it.second.hash == "tapped" }.mapTo(HashSet()) { it.second.until }
+            assertEquals("pulled through by the contact's window", setOf<Long?>(2_000L + ForwardRepository.DEFAULT_TTL_MS), until)
+            rig.manager.stop()
         }
 
     private companion object {

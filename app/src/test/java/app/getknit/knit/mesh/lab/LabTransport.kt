@@ -431,6 +431,9 @@ class LabTransport(
         val until: Long? = null,
     )
 
+    /** The peers this node armed the fast plane toward ([expectBulkTransfer]), in order: who a fetch was aimed at (#321). */
+    val bulkArmed = CopyOnWriteArrayList<String>()
+
     /** Every `blobreq` this node sent that reached its peer, in arrival order — what an ask said, offset included. */
     val blobAsks = CopyOnWriteArrayList<BlobAsk>()
 
@@ -800,6 +803,16 @@ class LabTransport(
     }
 
     override fun bulkRouteTo(nodeId: String): BulkRoute = bulkRoutes[nodeId] ?: BulkRoute.None
+
+    /**
+     * Recorded, and nothing armed: the lab has no on-demand plane to raise. The exchange arms only toward a holder whose
+     * route is [BulkRoute.Reachable], so with no [bulkRoutes] declared every entry is a delivery's or the tap's — or a
+     * live call's hold, which defaults to this (`MeshTransport.holdLink`).
+     */
+    override fun expectBulkTransfer(nodeId: String): Boolean {
+        bulkArmed += nodeId
+        return false
+    }
 
     override fun slowLinkTo(nodeId: String): Boolean = nodeId in slowLinks
 
