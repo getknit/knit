@@ -153,15 +153,19 @@ class MeshcoreHooksTest {
     private val logs = mutableListOf<String>()
     private val keys = mutableListOf<Pair<ByteArray?, String?>>()
 
+    /** The bind's signature each claim edit carried, beside [keys]. */
+    private val sigs = mutableListOf<ByteArray?>()
+
     private val scope = TestScope(UnconfinedTestDispatcher())
     private val hooks = hooks(ops, core)
 
     private fun hooks(
         ops: Ops,
         core: Core,
-    ) = MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, d ->
+    ) = MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, sig, d ->
         keys +=
             k to d
+        sigs += sig
     })
 
     private val boardKey = ByteArray(32) { (0xA0 + it).toByte() }
@@ -671,6 +675,26 @@ class MeshcoreHooksTest {
         assertEquals(moved + 1, core.holdersMoved)
     }
 
+    /**
+     * Stage 5d: the bind's signature reaches the claim store only off the consent, with its key, as one edit — and a
+     * consent without one (a bind that failed this connection) claims the key alone, which the store's same-key rule
+     * makes harmless; a withdrawal forgets both.
+     */
+    @Test
+    fun theClaimCarriesTheConsentsBindAndAWithdrawalForgetsBoth() {
+        val sig = ByteArray(64) { 7 }
+        ops.consent.value = MeshcoreConsent(BOARD, MeshcoreHooks.digest(boardKey), true, boardKey, sig = sig)
+        assertTrue(keys.last().first!!.contentEquals(boardKey))
+        assertTrue("the signature rides with its key", sigs.last()!!.contentEquals(sig))
+        ops.consent.value = consent(granted = true)
+        assertTrue(keys.last().first!!.contentEquals(boardKey))
+        assertNull("no bind this connection: the key alone", sigs.last())
+        ops.consent.value = MeshcoreConsent(BOARD, MeshcoreHooks.digest(boardKey), granted = false, key = null, sig = sig)
+        assertNull(keys.last().first)
+        assertNull("a withdrawal forgets the signature too", sigs.last())
+        assertNull("a consent that does not grant holds no signature", ops.consent.value?.sig)
+    }
+
     /** The maintainer's decision (2026-11-14), the belt: a consent for any board but the bound one is never applied. */
     @Test
     fun aConsentForAnotherAddressThanTheBoundBoardIsIgnored() {
@@ -709,7 +733,7 @@ class MeshcoreHooksTest {
         var failures = 1
         val edits = mutableListOf<ByteArray?>()
         val h =
-            MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, _ ->
+            MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, _, _ ->
                 if (k == null && failures-- > 0) throw java.io.IOException("DataStore")
                 edits += k
             })
@@ -729,7 +753,7 @@ class MeshcoreHooksTest {
         var grantFails = 1
         val pause = kotlinx.coroutines.CompletableDeferred<Unit>()
         val edits = mutableListOf<ByteArray?>()
-        MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, _ ->
+        MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, _, _ ->
             if (k != null) {
                 if (grantFails-- > 0) throw java.io.IOException("DataStore")
                 pause.await() // the retry is in its edit
@@ -750,7 +774,7 @@ class MeshcoreHooksTest {
     fun aStaleRetryIsDroppedByTheCheckInsideTheMutex() {
         var grantFails = 1
         val edits = mutableListOf<ByteArray?>()
-        MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, _ ->
+        MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, _, _ ->
             if (k != null && grantFails-- > 0) throw java.io.IOException("DataStore")
             edits += k
         })

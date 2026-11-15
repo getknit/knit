@@ -352,6 +352,19 @@ class GoldenVectorTest {
                         meshcoreKey = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
                     ),
                 ),
+            // The board's bind signature beside it (ADR 2026-11.gsqu, Stage 5d): sealed-only, fixture bytes here (the real
+            // bind and its refusals are `meshcore-bind-v1.json`'s).
+            "profilePayloadMeshcoreSig" to
+                WireCodec.encodePayload(
+                    ProfilePayload(
+                        name = "Ann",
+                        status = "hiking",
+                        avatarHash = "av1",
+                        version = 1700L,
+                        meshcoreKey = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+                        meshcoreSig = b64(bytes(64, 23)),
+                    ),
+                ),
             "groupRootPayload" to WireCodec.encodePayload(GroupRootPayload(root = bytes(32, 13), version = 2, minter = "aa")),
             "groupKeyPayloadRoot" to
                 WireCodec.encodePayload(
@@ -559,6 +572,37 @@ class GoldenVectorTest {
                             ),
                     ),
                 ),
+            // Label 10, the bind signature beside label 9 (Stage 5d), on the compact layout and under "meshcoreSig" on the named.
+            "messageContentV2ProfileMeshcoreSig" to
+                compact(
+                    MessageContent(
+                        body = "",
+                        ctl = MessageContent.CTL_PROFILE,
+                        pr =
+                            ProfilePayload(
+                                name = "Ann",
+                                status = "hiking",
+                                avatarHash = hex(bytes(32, 7)),
+                                version = 1700L,
+                                meshcoreKey = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+                                meshcoreSig = b64(bytes(64, 23)),
+                            ),
+                    ),
+                ),
+            "messageContentProfileMeshcoreSig" to
+                MessageContent(
+                    body = "",
+                    ctl = MessageContent.CTL_PROFILE,
+                    pr =
+                        ProfilePayload(
+                            name = "Ann",
+                            status = "hiking",
+                            avatarHash = "av1",
+                            version = 1700L,
+                            meshcoreKey = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+                            meshcoreSig = b64(bytes(64, 23)),
+                        ),
+                ).encode(),
             // The pad (ADR 2026-11.gsqu's Stage 4 review): the keyless copy of a profile version whose keyed copies carry the
             // MeshCore key, padded to their length — label 12 on the compact layout, "p" on the named one, zero bytes.
             "messageContentV2ProfilePadded" to

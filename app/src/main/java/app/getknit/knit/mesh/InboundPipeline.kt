@@ -53,7 +53,7 @@ import app.getknit.knit.location.GeoUri
 import app.getknit.knit.mesh.crypto.AesGcm
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.LinkSignals
-import app.getknit.knit.mesh.crypto.MeshcoreKey
+import app.getknit.knit.mesh.crypto.MeshcoreBind
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
@@ -2351,6 +2351,10 @@ class InboundPipeline(
         // Held decides the pull (a held blob is never asked for again); adoptable decides the row.
         val haveAvatar = advertised != null && blobStore.has(advertised)
         val name = TextLimits.cleanReceived(payload.name, TextLimits.DISPLAY_NAME)
+        // Stage 5d: the key only with the board's signature over this sender's bind, the sender being the one the frame's
+        // signature was verified against before it was decrypted (`handleCtlDm`). The signature itself is never stored.
+        val meshcoreKey = MeshcoreBind.provenKey(env.senderId, payload.meshcoreKey, payload.meshcoreSig)
+        if (payload.meshcoreKey != null && meshcoreKey == null) metrics.onMeshcoreBindUnproven()
         peers.upsert(
             existing.copy(
                 // Clean inbound, as the cleartext path does: our own cap and line rules bound only what we originate.
@@ -2368,9 +2372,10 @@ class InboundPipeline(
                 loraKey = payload.loraKey,
                 // This path's alone (ADR 2026-11.gsqu, Stage 4): the MeshCore board the sender claims the compact door on.
                 // The cleartext writer never names it, so only a newer sealed profile moves it, and absent clears. A key that
-                // is not a canonical, full-order Ed25519 key drops the field alone, and so clears it too: the profile is the
-                // sender's own signed and newer word that it names no board we could teach.
-                meshcoreKey = MeshcoreKey.canonicalOrNull(payload.meshcoreKey),
+                // is not a canonical, full-order Ed25519 key, or whose bind signature does not verify over the sender (Stage
+                // 5d), drops the field alone, and so clears it too: the profile is the sender's own signed and newer word that
+                // it names no board it has proven, so none we could teach.
+                meshcoreKey = meshcoreKey,
             ),
         )
         // The supporter badges are this path's alone (docs/SUPPORTER_BADGE.md C-6-2, ADR 2026-10.r99s): stored apart,

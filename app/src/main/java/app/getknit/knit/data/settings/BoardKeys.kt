@@ -22,7 +22,8 @@ internal class BoardKeys private constructor(
     val name: Preferences.Key<String>,
     /**
      * What the bound board reported about itself and the signed profile advertises: Meshtastic's node number and key
-     * (`ProfileContent.loraNode` / `loraKey`), MeshCore's 32-byte public key. Forgotten when another board is bound.
+     * (`ProfileContent.loraNode` / `loraKey`), MeshCore's 32-byte public key and its signature over our bind (the sealed
+     * profile's `meshcoreKey` / `meshcoreSig`). Forgotten when another board is bound.
      */
     val reported: List<Preferences.Key<*>>,
     /** The plane instance's persisted limiters (`LoraPlaneStateStore`): one blob per instance, so two never clobber. */
@@ -36,6 +37,9 @@ internal class BoardKeys private constructor(
         val LORA_KEY: Preferences.Key<String> = stringPreferencesKey("lora_board_key")
         val MESHCORE_PUBKEY: Preferences.Key<String> = stringPreferencesKey(SettingsKeys.MESHCORE_BOARD_PUBKEY)
 
+        /** The board's signature binding our node id to [MESHCORE_PUBKEY] (ADR 2026-11.gsqu, Stage 5d): forgotten with it. */
+        val MESHCORE_BIND: Preferences.Key<String> = stringPreferencesKey(SettingsKeys.MESHCORE_BOARD_BIND)
+
         val MESHTASTIC =
             BoardKeys(
                 address = stringPreferencesKey("lora_device_address"),
@@ -48,7 +52,7 @@ internal class BoardKeys private constructor(
             BoardKeys(
                 address = stringPreferencesKey(SettingsKeys.MESHCORE_DEVICE_ADDRESS),
                 name = stringPreferencesKey(SettingsKeys.MESHCORE_DEVICE_NAME),
-                reported = listOf(MESHCORE_PUBKEY),
+                reported = listOf(MESHCORE_PUBKEY, MESHCORE_BIND),
                 planeState = stringPreferencesKey(SettingsKeys.MESHCORE_PLANE_STATE),
             )
 

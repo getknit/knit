@@ -76,6 +76,7 @@ import app.getknit.knit.di.bindingAddress
 import app.getknit.knit.di.loraAuthorIds
 import app.getknit.knit.di.meshcoreBoardHolders
 import app.getknit.knit.di.pinnedAuthorCheck
+import app.getknit.knit.di.writeMeshcoreClaim
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.BlobExchange
@@ -100,6 +101,8 @@ import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.ContactCard
 import app.getknit.knit.mesh.crypto.LinkProver
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
+import app.getknit.knit.mesh.crypto.MeshcoreBind
+import app.getknit.knit.mesh.crypto.MeshcoreBindFixture
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
@@ -1702,6 +1705,14 @@ class LabNode internal constructor(
     /** Every boot's dialer, kept across restarts: [meshcoreWritesEver] reads them all. */
     private val meshcoreDialers = CopyOnWriteArrayList<FakeMeshcoreDialer>()
 
+    /**
+     * Claim store edits this node's MeshCore consents made (`writeMeshcoreClaim` returned in the plane's `onBoardKey`), over
+     * all its boots: what a scenario waits past before it reads what a Ready did to the claim.
+     */
+    internal val meshcoreClaimWritesEver =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
     /** The MeshCore plane's hooks, as `meshcorePlane` built them: their counters are the dump's `meshcore*` block. */
     internal val meshcoreHooks: MeshcoreHooks get() = checkNotNull(meshcore) { "$name has no MeshCore board" }.kindHooks as MeshcoreHooks
 
@@ -2427,6 +2438,8 @@ class LabNode internal constructor(
                 wallClock = now,
                 log = { loraLog += "session: $it" },
                 records = MeshcoreSetupStore(db.meshcoreSetupDao()),
+                // What the board binds its key to (Stage 5d), as `di/MeshModule` wires `Identity.nodeId`.
+                ownNode = { nodeId },
             ).also { meshcoreSession = it }
         val seal = LoraDirectSeal(ownDhPrivate = keyStore::dhIdentityPrivate, clock = now).also { meshcoreSeal = it }
         lateinit var plane: LoraMeshTransport
@@ -2440,9 +2453,10 @@ class LabNode internal constructor(
                         clock = now,
                         log = { loraLog += it },
                         wallClock = now,
-                        onBoardKey = { key, dialled ->
+                        onBoardKey = { key, sig, dialled ->
                             bindingAddress(dialled, plane.configuredAddress)?.let {
-                                meshcoreClaims.setBoardKey(key?.let(::b64), dialled = it)
+                                writeMeshcoreClaim(meshcoreClaims, { nodeId }, key, sig, dialled = it)
+                                meshcoreClaimWritesEver.incrementAndGet()
                             }
                         },
                     ),
@@ -2491,8 +2505,9 @@ class LabNode internal constructor(
      * A MeshCore boot is done when the board is the user's (ADR 2026-11.gsqu's Stage 5c-2b amendment): its session Ready,
      * its setup record consenting — on the first boot through the real setup, as the user's tap runs it
      * (`provisionKnitChannel(Setup)` → the session's own transaction, its record and its signed consent) — the claim store
-     * holding the board's key under its address, and the sealed claim minted for it. The claim is sealed-only, so the
-     * cleartext profile [boot] waited for does not move for it; a restart mints nothing.
+     * holding the board's key under its address with the board's bind of this node's id (Stage 5d: a key without one claims
+     * nothing), and the sealed claim minted for it. The claim is sealed-only, so the cleartext profile [boot] waited for does
+     * not move for it; a restart mints nothing.
      */
     private suspend fun awaitMeshcoreReady() {
         val session = meshcoreSession ?: return
@@ -2512,12 +2527,18 @@ class LabNode internal constructor(
                     stage = "consent"
                     while (session.consent.value?.granted != true) delay(MeshLab.POLL_MS)
                     stage = "claim"
-                    while (meshcoreClaims.boardKey.first() != key) delay(MeshLab.POLL_MS)
+                    while (!claimsBoard(key)) delay(MeshLab.POLL_MS)
                     stage = "mint"
                     while (meshcoreClaims.sealedVersion.first() == 0L) delay(MeshLab.POLL_MS)
                 }
             } != null
         check(done) { "$name's MeshCore board never got to $stage: ${session.state.value}\n  ${loraLog.takeLast(MeshLab.WINDOW_LORA)}" }
+    }
+
+    /** Whether the claim store holds [key] with a bind that verifies over this node's id: what our sealed profile claims. */
+    private suspend fun claimsBoard(key: String): Boolean {
+        val board = meshcoreClaims.board.first()
+        return board.key == key && board.sig?.let { MeshcoreBind.verifies(nodeId, key, it) } == true
     }
 
     /**
@@ -2613,15 +2634,16 @@ class LabNode internal constructor(
     }
 
     /**
-     * This node drives a MeshCore board whose public key is [key] (ADR 2026-11.gsqu, Stage 4), or none when null: the key
-     * as the board's session reports it, the plane and its DM switch on, and — from this boot on — a build that reads a
-     * MeshCore DM. No board is modelled on the air: what this changes is what the node's sealed profile claims. Never on a
-     * node with a MeshCore board ([meshcoreOn]): its key comes through the plane's own claim path.
+     * This node drives the MeshCore board whose private seed is [seed] (ADR 2026-11.gsqu, Stage 4 and 5d), or none when null:
+     * the board's key, and its bind of this node's id signed as the board signs it ([MeshcoreBindFixture]), written as the
+     * session's consent writes them, the plane and its DM switch on, and — from this boot on — a build that reads a MeshCore
+     * DM. No board is modelled on the air: what this changes is what the node's sealed profile claims. Never on a node with
+     * a MeshCore board ([meshcoreOn]): its key comes through the plane's own claim path.
      */
-    suspend fun driveMeshcoreBoard(key: String?) {
+    suspend fun driveMeshcoreBoard(seed: ByteArray?) {
         check(meshcoreAir == null) { "$name has a MeshCore board: its claim is the plane's" }
         settings.setLoraEnabled(true)
-        meshcoreClaims.setBoardKey(key)
+        meshcoreClaims.setBoardKey(seed?.let { b64(MeshcoreBindFixture.keyOf(it)) }, seed?.let { MeshcoreBindFixture.sig(nodeId, it) })
         if (!readsMeshcoreDms) {
             readsMeshcoreDms = true
             manager.bindMeshcoreDirect()

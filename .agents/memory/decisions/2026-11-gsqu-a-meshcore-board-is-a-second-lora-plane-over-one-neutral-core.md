@@ -1602,3 +1602,169 @@ pace, the production claim path). Test code, and one production finding fixed (b
 - **Where the lab is not the field**: the air's figures on the quick air are the Stage 3b ones ÷ 10; the channel air's
   preset is a fast one, so a scenario is no measure of a rate; the cap's whole window, the rates and the Q13 timing are
   `MeshcoreAirPhysicsTest`'s and owed to boards (the 5c-2a amendment's list).
+
+## Amendment 2026-11-15 — Stage 5d: proof of possession for `meshcoreKey`, the sealed `meshcoreSig` (draft)
+
+The maintainer required proof of possession before release (2026-11-13, "the maintainer's Stage 5 decisions" above).
+Built under the Stage 5d design pass (crypto-, security- and lora-reviewer, 2026-11-15), whose findings were binding on the
+brief. Part A (this text) is the wire, the verification, the claim and the copies; Part B, the board signing on the
+session's actor, builds on it and amends this section when it lands. It amends Stage 4's "Sealed-only", "Keys" and the board
+map's contested rule, and closes Stage 4's "Deferred" and the Stage 5 decision's proof item.
+
+- **The bind.** `MeshcoreBind.message`: ASCII `"knit-meshcore-bind/v1"` (21 B) ‖ the sender's 16 raw `NodeId` bytes ‖ the
+  board's 32-byte key, 69 B of fixed lengths. The board signs it through `CMD_SIGN_START` / `SIGN_DATA` / `SIGN_FINISH`
+  (`MyMesh.cpp:1781-1815`), standard RFC 8032 Ed25519 (Q16), which is deterministic: one board signs one (node, key) to one
+  signature every time. Domains are separate: the consent proof's `"knit-meshcore-consent/v1"` differs at byte 14, and an
+  advert's signed bytes begin with the board's own key.
+- **The verify order** (security N1, crypto N5): `MeshcoreBind.verifies` checks the key first with `MeshcoreKey`
+  (canonical, an Ed25519 point, not of low order), then `S < L` (RFC 8032 §5.1.7, so `S + L` is not a second signature),
+  then Tink. Tink's `Ed25519Verify` is cofactorless and checks no key order: under the identity as a key, `R` = the identity
+  and `S = 0` verifies every message (`MeshcoreBindTest` shows Tink alone accepting it). Every caller uses
+  `MeshcoreBind.verifies`, the session's check of the board's answer included, never a verifier of its own.
+- **What the proof does not prove.** Only that some client the board accepted over BLE (or USB) asked it to sign, once.
+  Boards run the static PIN `123456` unless someone set one (FINDINGS Q8; Knit sets none) and a V4 takes one BLE client,
+  so anyone in BLE range while the owner's phone is away can obtain a valid bind for their own node id and the owner's
+  key. The bind is deterministic, never expires, and nothing revokes it short of re-keying the board. So two proven
+  claimants of one key remain possible (that, a board handed on whose former owner keeps a valid bind for ever, a second
+  Knit identity on one board): **the contested rule is unchanged, and a proof never breaks a tie**
+  (`MeshcoreClaimTest.twoProvenClaimantsOfOneKeyAreBothContestedAndNeitherTaught`). What it closes is the copy: a contact
+  pasting another's key, or another's key and signature, into its own sealed profile is refused, because the signature
+  names the holder's node and the receiver checks it against the frame's authenticated sender. Whether setup should set a
+  random per-board PIN is a maintainer decision pending separately.
+- **An accepted cost: non-repudiation.** The signature is a transferable, permanent proof that node N runs MeshCore key K.
+  Its audience is unchanged — direct contacts only, inside the seal — and `SECURITY.md` records it beside the contact-change
+  leak.
+- **The wire.** `ProfilePayload.meshcoreSig: String?` (canonical padded base64, named layout) and `ProfileV2` label **10**
+  (`ByteArray?`, 64 raw bytes): sealed-only, nullable, elided while unclaimed, so no existing vector moved
+  (`docs/WIRE_COMPAT.md`). Strict on the way in (security N5), on both layouts in one place, `MessageContent.normalized`,
+  which both decoders apply: anything but the canonical spelling of exactly 64 bytes, or a signature beside no key, drops
+  the field alone, never the profile and never a throw. A wrong CBOR type at label 10 fails the plaintext decode, as any
+  mistyped label does (label 9's precedent). `ProfilePayload.toString` and `ProfileV2.toString` name neither the key nor the
+  signature, only whether each is set.
+- **Ingest** (`InboundPipeline.applySealedProfile`, `MeshcoreBind.provenKey`). The sender is `env.senderId`: this path is
+  reached only through `handleCtlDm`, after verify-then-decrypt. The key is stored only when it passes `MeshcoreKey` and the
+  signature verifies over (sender, key); otherwise the field alone is dropped and, the profile being newer, clears a stored
+  key, as absent does. The receiver never stores the signature: it needs the proof once, and each newer profile carries it
+  again. `meshcoreBindUnproven` (`MeshMetrics`' seals group, the debug bridge's `STATE`) counts a profile that passed the
+  version gate with a key present and not stored — no signature, one that fails, or a refused key — never a keyless or
+  padded profile, never an older copy the gate refuses, and never a verbatim re-serve, which the ratchet stops first. A
+  same-version copy under a fresh frame id passes the gate (it refuses only an older version) and counts again — a
+  fan-out's stale re-seal, or a contact-card intro, which skips `sentProfileVersions` on purpose — so the counter counts
+  applied copies, not distinct claims. No log line names a key, a prefix or a signature. The board map's
+  single writer is still `applySealedProfile`, so no unproven key reaches `MeshcoreBoardMap`.
+- **The copies** (crypto B2). `currentProfilePayload` is every recipient's base copy and carries neither field (its
+  `meshcoreKey` parameter is gone). `MeshcoreProfileCopy.of` (pure) gives a direct contact the key **and** the signature,
+  both or neither — the signature alone, beside the board's publicly flooded adverts, would tie our node id to the board —,
+  and anyone else, while a key is claimed, the keyless copy padded to the keyed length. `MeshcoreAudience` carries the claim
+  as a pair, `keyFor` answers it, and `visibleFingerprint` nulls both. `SealedProfileEra.sameCopiesAs` and
+  `MeshcoreFanOutRule.spares` compare the key alone, on purpose (crypto N7): any signature that verifies for (our node,
+  the key) is as good as another to a receiver that never stores it, and determinism makes two copies of one key carry one
+  signature. Their KDoc says so, so nobody adds the signature there.
+- **The pad** (crypto B1). With the signature a keyed copy is 102 B longer than the keyless one on the compact layout and
+  160 B on the named one, a pad of 99 and 156. Stage 4's `MeshcoreProfilePad.MAX_PAD` of 128 missed the named one, and a
+  miss fell back to the bare keyless copy in silence: the contact/stranger length tell Stage 4's second round closed.
+  `MAX_PAD` is 255 now (the pad's own header stays two bytes), and a miss is loud: `padded` answers null, the fan-out counts
+  `sealedProfilePadMisses` (0 unless broken), logs one line naming nothing, and sends the bare keyless copy — never the key
+  to a non-contact, and never a peer left on an older keyed copy.
+- **Our claim.** `MeshcoreClaimRule.claim` yields `MeshcoreBoardClaim(key, sig)` only when the stored signature verifies over
+  our own node id and the key, besides Stage 4's four conditions; `MeshManager.ownMeshcoreKey` returns that pair. A key
+  without a verifying signature claims nothing, since every 5d receiver would drop it. `MeshcoreBoardMap.of`'s
+  `ownBoardKey` keeps reading the **raw** stored key (lora N6): "never our own board" must hold before our signature lands.
+  The claim fingerprint covers the signature, so a claim minted under other bytes is never sealed for these; a board's
+  re-sign is byte-identical and mints nothing.
+- **The store** (crypto B3, security B3, lora B1). `MeshcoreClaimStore.setBoardKey(key, sig, dialled)`, under Stage 5a-2's
+  bound-address rule, in one edit: a null key forgets both (a withdrawal); a signature writes both; no signature for the key
+  already stored leaves the stored signature as it is (a consent re-published without one, after a bind that failed this
+  connection, never erases a proof for the same key and never mints); no signature for a different key writes the key and
+  forgets the signature (the old board's proof must not survive beside the new board's key). The journal exposes the two as
+  **one** flow (`MeshcoreClaimJournal.board`, `MeshcoreBoardReport`), which `watchMeshcoreClaim` combines on, so a signature
+  landing alone wakes the claim and a key is never paired with another write's signature. The signature's setting is
+  `meshcore_board_bind` (`BoardKeys.MESHCORE_BIND`): in `BoardKeys.MESHCORE.reported`, so `BoardBindPolicy` forgets it with
+  the key on every bind (the debug bridge's `LORA` binds through it); outside `TRANSIENT_PREFIXES`, so it rides a backup as
+  the key does; and cleared with the key by every withdrawal, `withdrawAtStart` included, since those publish a null key. A
+  restored phone with another identity's backup holds a signature over another node, which claims nothing until its board
+  signs again.
+- **The board signs** (Part B, below; the rule this part's store is shaped for). The signature rides the
+  `MeshcoreConsent` the session's actor publishes, never a second writer; the board signs after every `PROVEN` key proof
+  that grants consent and before the granting `publishConsent`. **Sign on every proof** (security B3(a), lora N4):
+  determinism makes the store edit and the claim fingerprint no-ops, so a reconnect mints nothing, and the cost is three
+  commands per proof. A bind that fails publishes the consent without a signature, which the store's same-key rule makes
+  harmless.
+- **No migration** for rows stored before 5d. The v34 `peers.meshcoreKey` column exists only on this branch, never on
+  `main`, and no phone or board has run a `MESHCORE_PLANE` build of it: no device was driven in Stages 4 and 5 (security N7).
+  Even so, a 5d sender's claim fingerprint now covers the signature, so its first 5d start mints a fresh version whose copy
+  replaces any stored key through the ordinary gate (a proven key is stored again, an unproven one cleared). The board map's
+  single writer (`applySealedProfile`) is what makes that enough.
+- **A test seam for the lab** (`MeshManager.meshcoreClaimForTest`): a claim the fan-out seals instead of our own, whatever
+  the settings say and unchecked, so a lab node can seal another node's key and signature and its contacts can be watched
+  refusing it. Its changes wake the claim watcher, which mints for it as for any claim change. Nothing in production sets
+  it.
+- **Vectors.** `vectors/meshcore-bind-v1.json` (`MeshcoreBindVectorTest`): a fixed test seed and its key, a node id, the
+  69-byte message, the signature, and the receiver's steps — the accepted claim on both layouts and each refusal (the copy
+  attack, no signature, a non-canonical or 63-byte signature, a signature with no key, the low-order key with its forged
+  signature, `S + L`), each with what a strict decoder keeps and which key is stored. `wire-v1.json` gains
+  `profilePayloadMeshcoreSig`, `messageContentV2ProfileMeshcoreSig` and `messageContentProfileMeshcoreSig`. No existing byte
+  moved; `ios-emitted-v1.json` untouched.
+- **Paired.** knit-ios's unsent Stage 4 brief gains the field (label 10 and the text key, sealed-only), the strict decoders,
+  the verify order (key check, `S < L`, then Ed25519 over the bind of the authenticated sender), never storing the
+  signature, and the bind vectors. An older iOS skips label 10 and keeps the profile.
+
+**Part B (lora-owner, 2026-11-15): the board signs, on the session's actor, and the claim follows the consent.** Under the
+design pass's lora B1–B3, security B2–B3 and crypto B3:
+
+- **One writer.** `MeshcoreConsent` carries `sig`, kept only on a granted consent with a key and named in no `toString`.
+  `MeshcoreSession.publishConsent` attaches the connection's verified bind only when it was made over the very key the
+  consent publishes (`provenKey`). The hooks claim `(c.key, c.sig)` from `onConsent` alone — `onBoardKey(key, sig, dialled)`
+  through the existing `owedClaim` / `claimMutex` latest-wins path — so a withdrawal (an unbind, a Restore,
+  `withdrawAtStart`) published after a bind can never be overtaken by it, and a withdrawal forgets both.
+- **When the board signs** (`MeshcoreSession.bind`): right after a `PROVEN` proof that grants consent, on the actor, before
+  the consent is published — in `readConsent` (the handshake, under `consentLock` with its Ready, and the backoff's
+  `rereadConsent`) for a non-pending record of this board, and in `runSetup` right after its proof, so `grantWrite`
+  publishes it. A pending cleanup, a Restore and every withdrawal never sign. The message is `MeshcoreBind.message(our node
+  id, provenKey)`; the answer is checked with `MeshcoreBind.verifies`, never a verifier of the session's own. The three
+  commands are shared with the consent proof (`boardSign`), which keeps its behaviour.
+- **Our node id** is injected as `ownNode: suspend () -> String?` (`Identity.nodeId` in `di/MeshModule`, `nodeId` in the
+  lab), read bounded at 2 s. Null, or not `NodeId.toBytesOrNull`, signs nothing over no placeholder and owes the bind. A
+  session built without the input (the constructor default) binds nothing and owes nothing, so every pre-5d session test
+  keeps its `SIGN_DATA` counts and event orders.
+- **A failure never withholds the consent.** No answer, `BAD_STATE`, another client's `SIGN_FINISH` (`meshcoreBindUnanswered`,
+  which also counts a bind skipped for want of a node id; the `meshcore bind skipped` line tells the two apart) or a signature that does not verify — another client's `SIGN_START` resets the shared buffer, so
+  the board signs other bytes (`meshcoreBindRefused`, then one `SELF_INFO` read, so a re-key ends the session, as a refused
+  proof does; never inert, never a withdrawal) — publishes the consent without a signature (the store keeps a proof it
+  holds for the same key, Part A's rule) and sets the connection's owed bind, retried as an idle job in `runOneJob` on its
+  own backoff, 10 s doubling to 10 min (`rebindIfOwed`). On success the actor re-publishes the consent with it; a connection
+  no longer consenting drops the owed bind, and the next granting proof binds again. Lines: `meshcore bind signed`,
+  `meshcore bind unanswered: …`, `meshcore bind refused: …`, `meshcore bind skipped: …`, none naming a key, a prefix or a
+  signature; the counters are on `…debug.LORA --es kind meshcore`.
+- **No rewrite on a re-sign** (the crypto review of Part A, non-blocking): `di/writeMeshcoreClaim` passes
+  `MeshcoreClaimStore.setBoardKey` a `keep` check (`meshcoreProofKept`, pure), asked inside the store's own edit of the pair
+  that edit sees: the same key with a stored signature that verifies over our node id stands, so a signer that were not
+  deterministic would still mint nothing per reconnect. With no `keep` the store's four-case rule is unchanged for every
+  other caller. Our node id is read before the edit. No window is left between a read and the write (the Part B review,
+  lora and security: a writer outside `claimMutex`, the debug bridge's `LORA` or the demo seeder, clearing the signature
+  between them would otherwise have left the key unproven until the next proof).
+- **`proveKey` checks the key first** (security N1's follow-up): a `SELF_INFO` key `MeshcoreKey` refuses — not a point, or of
+  low order, under which `R` = identity and `S = 0` verifies any challenge — is `REFUSED` (`keyUnproven`) without a
+  command sent, so such a board never passes the consent proof. No existing expectation moved.
+- **The signer's second use.** `MeshcoreProto`'s allowlist KDoc no longer says the sign commands carry nothing but the
+  consent challenge: the bind is their second use, each a fixed message behind its own domain tag.
+- **Fakes.** `FakeMeshcoreBoard` already signed any buffer as the companion does and reset it on `SIGN_START`; nothing in it
+  changed. Shared-buffer interference is tested on the fake (`MeshcoreSessionTest`, a `FakeForeignClient`'s `SIGN_START` and
+  a swallowed `SIGN_FINISH` between ours), not on a board: a V4 takes one BLE client (lora N8). No simulator case was added.
+- **The lab** (`MeshcoreProfileLabTest`, each case ending in `assertConverged`): a forger (Mallory, a live direct contact of
+  Bob's, both ways) seals Alice's key and Alice's signature through `meshcoreClaimForTest`; fenced on Mallory's forged
+  version applied at Bob, Bob stores no key for her, `meshcoreBindUnproven` moved, Alice stays in his board map uncontested
+  and taught on his board. A relaunch of Alice asks her board to sign again, gets the same bytes and mints no sealed version;
+  an unbind withdraws key and signature and Bob clears Alice's key. A stranger's copy carries neither field and is the
+  contact's length in the compact layout and, sealed as to an older build, in the named one. The log checks grep the
+  signature in base64 and hex beside the key. Lab readiness (`awaitMeshcoreReady`) now waits for a stored bind that
+  verifies over the node's id; `driveMeshcoreBoard` takes the board's seed and writes the key with its bind.
+
+**Trials owed** (V4s at companion v1.18.0; none run here). The lab, with Part B: Mallory, a live direct contact of Bob,
+seals Alice's key and signature through the seam and Bob stores none for her, Alice stays taught and uncontested, and
+`meshcoreBindUnproven` moves at Bob; a second Ready on Alice mints no sealed version; an unbind clears Alice's key at Bob;
+a non-contact's copy carries neither field and is one length on both layouts; the log check greps the signature in base64
+and hex. Boards: a fresh setup binds within one connection and Bob stores the key with `meshcoreBindUnproven` at 0; a
+power-cycle and relaunch moves no `meshcore_sealed_version`; a rebind to a second V4 mints once keyless and once keyed;
+deleting the stored signature re-signs byte-identically; a second central on `123456` obtains a valid bind for a foreign
+node id (the residual above).

@@ -376,7 +376,7 @@ internal class LoraDirectPolicy(
      * flight that ended on the transport's deadline ([PacketOutcome.NoOutcome]) while the session still waited on it is
      * attributed to its send (a `35` books the key reply, a destination's refusal holds the peer) where it was a pacing
      * late NAK; after the firmware's own give-up (`MAX_RETRANSMIT`) the session has dropped the destination, so an ack ends
-     * there and a refusal reaches the core as our board's, an unclassified late NAK as before.
+     * there and a refusal reaches the core as our board's, a late NAK as before, never attributed to the send.
      */
     @Synchronized
     fun resolve(

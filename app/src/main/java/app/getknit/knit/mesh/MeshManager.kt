@@ -59,6 +59,7 @@ import app.getknit.knit.mesh.bluetooth.FormKeys
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.LinkSignals
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
+import app.getknit.knit.mesh.crypto.MeshcoreBind
 import app.getknit.knit.mesh.crypto.MeshcoreKey
 import app.getknit.knit.mesh.crypto.MeshcoreProfilePad
 import app.getknit.knit.mesh.crypto.MessageContent
@@ -5612,8 +5613,8 @@ class MeshManager(
         if (owed.isEmpty()) return
         val me = identity.nodeId()
         val avatarHash = settings.ownAvatarHash.first()
-        val payload = currentProfilePayload(version, avatarHash, meshcoreKey = null)
-        val era = SealedProfileEra(version, audience.key, audience.direct, visibleFingerprint(payload))
+        val payload = currentProfilePayload(version, avatarHash)
+        val era = SealedProfileEra(version, audience.claim?.key, audience.direct, visibleFingerprint(payload))
         rememberEra(era)
         val claimMinted = meshcoreClaims?.sealedVersion?.first() == version
         val now = clock()
@@ -5683,17 +5684,21 @@ class MeshManager(
 
     /**
      * A local fingerprint of everything a sealed profile [keyless] shows its recipient but the version and the MeshCore
-     * key: [SealedProfileEra.visible]. Never sent, never logged.
+     * claim (the key and its signature): [SealedProfileEra.visible]. Never sent, never logged.
      */
     private fun visibleFingerprint(keyless: MessageContent): String {
-        val unversioned = keyless.copy(pr = keyless.pr?.copy(version = 0L, meshcoreKey = null))
+        val unversioned = keyless.copy(pr = keyless.pr?.copy(version = 0L, meshcoreKey = null, meshcoreSig = null))
         return hexOf(sha256("knit-sealed-visible".encodeToByteArray() + unversioned.encode()))
     }
 
     /**
-     * [audience]'s copy of [keyless] for [peerId] in the layout [v3] picks: the key for a direct contact of the set the
-     * version was minted for; for anyone else, while a key is claimed, the keyless copy padded to the keyed one's length
-     * ([MeshcoreProfilePad]), so the copies of one version are one size whoever they go to.
+     * [audience]'s copy of [keyless] for [peerId] in the layout [v3] picks: the key **and** its signature for a direct
+     * contact of the set the version was minted for, both or neither (ADR 2026-11.gsqu, Stage 5d, crypto B2: the signature
+     * alone, beside the board's publicly flooded adverts, would tie our node id to the board); for anyone else, while a
+     * key is claimed, the keyless copy padded to the keyed one's length ([MeshcoreProfilePad]), so the copies of one
+     * version are one size whoever they go to ([MeshcoreProfileCopy]). A pad that misses is counted
+     * (`sealedProfilePadMisses`) and the bare keyless copy sent: never the key to a non-contact, and never a stranded peer
+     * holding an older keyed copy.
      */
     private fun profileCopy(
         peerId: String,
@@ -5701,9 +5706,12 @@ class MeshManager(
         audience: MeshcoreAudience,
         v3: Boolean,
     ): MessageContent {
-        val key = audience.key ?: return keyless
-        val keyed = keyless.copy(pr = keyless.pr?.copy(meshcoreKey = key))
-        return if (audience.keyFor(peerId) != null) keyed else MeshcoreProfilePad.padded(keyless, keyed, v3)
+        val copy = MeshcoreProfileCopy.of(keyless, audience.claim, toContact = audience.keyFor(peerId) != null, v3 = v3)
+        if (copy.padMissed) {
+            metrics.onSealedProfilePadMissed()
+            Log.w(TAG, "sealed profile pad missed: a keyless copy goes unpadded")
+        }
+        return copy.content
     }
 
     /**
@@ -5760,13 +5768,13 @@ class MeshManager(
     internal var onSealedProfile: ((SealedProfileSend) -> Unit)? = null
 
     /**
-     * The sealed presentation payload (`CTL_PROFILE`) for the current profile at [version], carrying [meshcoreKey] — the
-     * recipient's own answer from [MeshcoreAudience.keyFor], never a key for everyone.
+     * The sealed presentation payload (`CTL_PROFILE`) for the current profile at [version]: every recipient's base copy, so
+     * it never carries the MeshCore key or its signature (ADR 2026-11.gsqu, Stage 5d, crypto B2). [profileCopy] adds both
+     * for a direct contact alone, off [MeshcoreAudience.keyFor].
      */
     private suspend fun currentProfilePayload(
         version: Long,
         avatarHash: String?,
-        meshcoreKey: String?,
     ): MessageContent {
         val board = currentLora().board
         return MessageContent(
@@ -5782,7 +5790,6 @@ class MeshManager(
                     loraNode = board?.node,
                     loraKey = board?.key,
                     badges = shownBadges().first().ifEmpty { null },
-                    meshcoreKey = meshcoreKey,
                 ),
         )
     }
@@ -5849,19 +5856,30 @@ class MeshManager(
     }
 
     /**
-     * The MeshCore board our sealed profile names (ADR 2026-11.gsqu, Stage 4) — and, there being no capability bit, the
-     * claim of the compact DM door on it: [MeshcoreClaimRule] over the settings as they stand and the seam
-     * ([bindMeshcoreDirect]). Null, which a receiver reads as no claim, in a manager wired with no claim journal.
+     * The MeshCore board our sealed profile names, with its proof (ADR 2026-11.gsqu, Stage 4 and 5d) — and, there being no
+     * capability bit, the claim of the compact DM door on it: [MeshcoreClaimRule] over the settings as they stand (the key
+     * and its signature from one read, [MeshcoreClaimJournal.board]), our node id and the seam ([bindMeshcoreDirect]).
+     * Null, which a receiver reads as no claim, in a manager wired with no claim journal. Never what "our own board" is
+     * judged by: [meshcoreBoardMap] reads the raw key, so it holds before the signature lands (lora N6).
      */
-    private suspend fun ownMeshcoreKey(): String? {
+    private suspend fun ownMeshcoreKey(): MeshcoreBoardClaim? {
         val journal = meshcoreClaims ?: return null
         return MeshcoreClaimRule.claim(
-            boardKey = journal.boardKey.first(),
+            board = journal.board.first(),
+            nodeId = identity.nodeId(),
             enabled = settings.loraEnabled.first(),
             dms = settings.loraDmEnabled.first(),
             readsMeshcoreDms = meshcoreDirectBound.value,
         )
     }
+
+    /**
+     * Test seam (ADR 2026-11.gsqu, Stage 5d): a claim the sealed fan-out carries **instead of** our own ([ownMeshcoreKey]),
+     * whatever the settings, the switches or the seam say, and unchecked — so `mesh/lab` can make a node seal another
+     * node's key and signature (a forger) and watch its contacts refuse it. A change wakes the claim watcher, which mints a
+     * version for it as for any claim change. Null in production: nothing outside the tests and the lab sets it.
+     */
+    internal val meshcoreClaimForTest = MutableStateFlow<MeshcoreBoardClaim?>(null)
 
     /**
      * Publishes a change in what our sealed profile claims about MeshCore ([ownMeshcoreKey]), or in the direct contacts it
@@ -5874,15 +5892,20 @@ class MeshManager(
     private fun watchMeshcoreClaim(session: CoroutineScope) {
         val journal = meshcoreClaims ?: return
         session.launch {
-            combine(
-                journal.boardKey,
-                settings.loraEnabled,
-                settings.loraDmEnabled,
-                meshcoreDirectBound,
-                directContacts?.observe() ?: flowOf(emptySet()),
-            ) { key, on, dms, bound, direct ->
+            val me = identity.nodeId()
+            // The key and its signature are one flow (Stage 5d): a signature landing alone, for a key already stored, wakes
+            // this as a claim change, since the claim was null without it.
+            val claim =
+                combine(
+                    journal.board,
+                    settings.loraEnabled,
+                    settings.loraDmEnabled,
+                    meshcoreDirectBound,
+                    meshcoreClaimForTest,
+                ) { board, on, dms, bound, forced -> forced ?: MeshcoreClaimRule.claim(board, me, on, dms, bound) }
+            combine(claim, directContacts?.observe() ?: flowOf(emptySet())) { claimed, direct ->
                 // The contacts matter only while a key is claimed: unclaimed, every recipient gets the same bytes.
-                MeshcoreClaimRule.claim(key, on, dms, bound)?.let { it to direct }
+                claimed?.let { it to direct }
             }.distinctUntilChanged()
                 .conflate()
                 .collect { if (publishMeshcoreClaimIfChanged().minted) broadcastSealedProfile() }
@@ -5914,20 +5937,27 @@ class MeshManager(
             audience.at(profileVersion(), minted = true)
         }
 
-    /** Our claim ([ownMeshcoreKey]) and, only while there is one, the direct contacts it goes to, read afresh. */
+    /**
+     * Our claim ([ownMeshcoreKey], or the test seam's [meshcoreClaimForTest]) and, only while there is one, the direct
+     * contacts it goes to, read afresh.
+     */
     private suspend fun meshcoreAudience(): MeshcoreAudience {
-        val key = ownMeshcoreKey() ?: return MeshcoreAudience.NONE
-        return MeshcoreAudience(key, directContacts?.read().orEmpty())
+        val claim = meshcoreClaimForTest.value ?: ownMeshcoreKey() ?: return MeshcoreAudience.NONE
+        return MeshcoreAudience(claim, directContacts?.read().orEmpty())
     }
 
     /**
-     * A local fingerprint of a claim and its audience, the key by its bytes and the contacts sorted: what
-     * [publishMeshcoreClaimIfChanged] compares. Never sent, never logged.
+     * A local fingerprint of a claim and its audience, the key and its signature by their bytes and the contacts sorted:
+     * what [publishMeshcoreClaimIfChanged] compares. Never sent, never logged. The signature is in it (Stage 5d), so a
+     * copy is never sealed under a version minted for other bytes; a board's signature is deterministic, so a re-sign
+     * mints nothing. Unclaimed, it is the fingerprint it was before 5d, so an unclaimed phone mints nothing on upgrade.
      */
     private fun meshcoreFingerprint(audience: MeshcoreAudience): String {
-        val key = audience.key?.let(MeshcoreKey::bytesOrNull) ?: ByteArray(0)
+        val claim = audience.claim
+        val key = claim?.key?.let(MeshcoreKey::bytesOrNull) ?: ByteArray(0)
+        val sig = claim?.sig?.let(MeshcoreBind::sigBytesOrNull) ?: ByteArray(0)
         val contacts = audience.direct.sorted().fold(ByteArray(0)) { acc, id -> acc + id.encodeToByteArray() + 0.toByte() }
-        return hexOf(sha256("knit-meshcore-claim".encodeToByteArray() + key + contacts))
+        return hexOf(sha256("knit-meshcore-claim".encodeToByteArray() + key + sig + contacts))
     }
 
     /** A local fingerprint of a badge list: what [watchBadgeChanges] compares. Never sent anywhere. */
@@ -5960,7 +5990,7 @@ class MeshManager(
         // nothing to publish, and so no fan-out: the confirmed sessions would wait for the next heal. Fan it out now, off
         // this call, which may be answering an init inside the inbound pipeline. The chaos sweep's 2026-11-13 find.
         if (audience.version != before) sessionScope?.launch { broadcastSealedProfile() }
-        val payload = currentProfilePayload(audience.version, avatarHash, meshcoreKey = null)
+        val payload = currentProfilePayload(audience.version, avatarHash)
         // Marked before the seal: once it may have gone, what the peer holds is no longer what the fan-out's record says,
         // and a fan-out deciding meanwhile must not spare it. Kept even when nothing went (it may have overwritten an
         // earlier intro's mark): the cost is one seal the fan-out need not have made.
@@ -7643,29 +7673,29 @@ private data class OwnPresentation(
 )
 
 /**
- * One sealed version's MeshCore claim (ADR 2026-11.gsqu, Stage 4): the [key] our profile claims, or none, and the direct
- * contacts it goes to — the only recipients [keyFor] answers it for. [minted] when this version was minted just now.
- * Names neither when printed.
+ * One sealed version's MeshCore claim (ADR 2026-11.gsqu, Stage 4 and 5d): the [claim] our profile carries — the key and its
+ * signature, together — or none, and the direct contacts it goes to: the only recipients [keyFor] answers it for. [minted]
+ * when this version was minted just now. Names none of them when printed.
  */
-
 private class MeshcoreAudience(
-    val key: String?,
+    val claim: MeshcoreBoardClaim?,
     val direct: Set<String>,
     val version: Long = 0L,
     val minted: Boolean = false,
 ) {
-    fun keyFor(peerId: String): String? = key?.takeIf { peerId in direct }
+    /** The key and its signature [peerId]'s copy carries: both for a direct contact, neither for anyone else. */
+    fun keyFor(peerId: String): MeshcoreBoardClaim? = claim?.takeIf { peerId in direct }
 
     /** This audience as read at [version] under `profileLock`: the version a copy for it is sealed and recorded at. */
     fun at(
         version: Long,
         minted: Boolean = false,
-    ): MeshcoreAudience = MeshcoreAudience(key, direct, version, minted)
+    ): MeshcoreAudience = MeshcoreAudience(claim, direct, version, minted)
 
-    override fun toString(): String = "MeshcoreAudience(claimed=${key != null}, contacts=${direct.size}, v=$version, minted=$minted)"
+    override fun toString(): String = "MeshcoreAudience(claimed=${claim != null}, contacts=${direct.size}, v=$version, minted=$minted)"
 
     companion object {
-        val NONE = MeshcoreAudience(key = null, direct = emptySet())
+        val NONE = MeshcoreAudience(claim = null, direct = emptySet())
     }
 }
 

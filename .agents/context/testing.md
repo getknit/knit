@@ -287,7 +287,11 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
 - **A MeshCore lab node** (ADR 2026-11.gsqu's Stage 5c-2b amendment): `lab.node(name, meshcore = lab.meshcoreAir())` (or
   `meshcoreAir(channel = true)` for the firmware's channel at a fast preset, which `hold` / `release`, `evictRing`, the
   listeners and the Q13 PATH need). The plane is the production child, never the boards sweep's; boot returns at Ready with
-  the record's consent (the first boot runs the real setup) and the claim minted. Edit the topology only through
+  the record's consent (the first boot runs the real setup) and the claim minted — since Stage 5d the board's bind of the
+  node id too (`MeshcoreSession(ownNode = { nodeId })`, the fake board signs it as it signs the consent challenge), since a
+  key without one claims nothing. A node with no board on the air claims one through `LabNode.driveMeshcoreBoard(seed)`,
+  which signs the bind with `MeshcoreBindFixture`; a forger seals another node's claim through
+  `MeshManager.meshcoreClaimForTest`. Edit the topology only through
   `air.meshcoreEdit { … }` (the air's serial context) and read it through `air.snapshot { … }`; `MeshLab.meetOverMeshcore`
   makes nodes contacts over a link and parts them, `awaitAcquainted` then `awaitTaught` each such pair (a link alone teaches
   nothing; taught on the board, pinned, and the plane holding the peer direct with its pair seal's index built,
@@ -296,7 +300,7 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   jump moves the plane's decisions (the re-probe gap, the fragment window, a hold) and never the session's waits. Wait on
   the receiving side's event — `loraBoundPartsTaken` at the receiver's plane, `meshcoreRepinsDone`, a counter or the board
   read back (`meshcoreCommands`, `meshcoreWrites`) — never on `air.airings`, which is written before the receiver's board,
-  session or plane has run. `MeshcoreRoomLabTest` and `MeshcoreDirectLabTest` are the set.
+  session or plane has run. `MeshcoreRoomLabTest`, `MeshcoreDirectLabTest` and `MeshcoreProfileLabTest` are the set.
 - **`SideChannelLabTest` is the BLE side-channel set** (ADR 2026-09.sjaa, 2026-09-17): `lab.node(name, pages =
   pages)` puts the node's radio on a shared `LabPages` — one radio range, joined the way a board joins a
   `FakeMeshtasticAir` — and `LabTransport` then declares `hasFastPlane` and routes `fastFanout`/`fastSend`

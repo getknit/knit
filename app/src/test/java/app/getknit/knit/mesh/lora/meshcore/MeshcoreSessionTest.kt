@@ -1,6 +1,8 @@
 package app.getknit.knit.mesh.lora.meshcore
 
+import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.bluetooth.BackoffConfig
+import app.getknit.knit.mesh.crypto.MeshcoreBind
 import app.getknit.knit.mesh.lora.AckProof
 import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.BoardPacket
@@ -78,6 +80,8 @@ class MeshcoreSessionTest {
         collectPackets: Boolean = true,
         callDeadlineMs: Long = 30_000,
         setupDeadlineMs: Long = 300_000,
+        // Our node id for the bind (Stage 5d); null, every case before 5d's, binds nothing and owes nothing.
+        ownNode: (suspend () -> String?)? = null,
     ): Rig {
         val air = FakeMeshcoreAir(backgroundScope) { testScheduler.currentTime }
         val alice = air.board("alice")
@@ -107,6 +111,7 @@ class MeshcoreSessionTest {
                 setupDeadlineMs = setupDeadlineMs,
                 records = records,
                 nonce = { ByteArray(32) { n -> (nonces.size * 31 + n).toByte() }.also { nonces += it } },
+                ownNode = ownNode,
             )
         // This phone set the board up before: its record, which the handshake reads as consent (one owner, part 2).
         if (consented) {
@@ -3040,7 +3045,233 @@ class MeshcoreSessionTest {
             setup.cancel()
         }
 
+    // --- the bind (ADR 2026-11.gsqu, Stage 5d): the board signs our node id and its key, on the actor, with the consent ---
+
+    /** The `SIGN_DATA` payloads of every bind this rig's session asked, in order. */
+    private fun Rig.bindsAsked(): List<ByteArray> =
+        dialer.channels
+            .flatMap { it.writes }
+            .filter { it[0].toInt() == MeshcoreProto.CMD_SIGN_DATA }
+            .map { it.copyOfRange(1, it.size) }
+            .filter { it.size == MeshcoreBind.MESSAGE_BYTES && it.copyOf(MeshcoreBind.DOMAIN.size).contentEquals(MeshcoreBind.DOMAIN) }
+
+    /**
+     * Hands every bind's `SIGN_FINISH` on this rig's channels, numbered from 1, to [act] before the board takes it; [act]
+     * answers whether the finish is swallowed (never reaches the board, so never answered). A proof's finish passes.
+     */
+    private fun Rig.atBindFinish(act: (n: Int) -> Boolean) {
+        var bindOpen = false
+        var n = 0
+        val hook: (FakeNusChannel) -> Unit = { ch ->
+            ch.swallow = { f ->
+                when (f[0].toInt() and 0xFF) {
+                    MeshcoreProto.CMD_SIGN_DATA -> {
+                        bindOpen = f.size > MeshcoreBind.DOMAIN.size &&
+                            f.copyOfRange(1, 1 + MeshcoreBind.DOMAIN.size).contentEquals(MeshcoreBind.DOMAIN)
+                        false
+                    }
+
+                    MeshcoreProto.CMD_SIGN_FINISH -> {
+                        bindOpen && act(++n)
+                    }
+
+                    else -> {
+                        false
+                    }
+                }
+            }
+        }
+        dialer.onOpen = hook
+        dialer.channels.forEach(hook)
+    }
+
+    private fun MeshcoreConsent.bindVerifies(r: Rig): Boolean =
+        sig?.let { MeshcoreBind.verifies(NodeId.toBytes(OWN_NODE), r.alice.key, it) } == true
+
+    @Test
+    fun theBoardSignsTheBindBeforeTheReadysConsentAndAReconnectSignsTheSameBytes() =
+        runTest {
+            val r = rig(ownNode = { OWN_NODE })
+            val events = mutableListOf<String>()
+            val collect = UnconfinedTestDispatcher(testScheduler)
+            backgroundScope.launch(collect) {
+                r.session.consent.collect { if (it != null) events += "consent:${it.granted}:${it.sig != null}" }
+            }
+            backgroundScope.launch(collect) { r.session.state.collect { if (it is BoardState.Ready) events += "ready" } }
+            up(r)
+            assertEquals("the signed consent precedes the Ready it rides ($events)", listOf("consent:true:true", "ready"), events.take(2))
+            val first = r.consents.last()
+            assertTrue("the bind verifies over our node id and the proven key", first.bindVerifies(r))
+            assertEquals("the bind's message, exactly", 1, r.bindsAsked().size)
+            assertArrayEquals(MeshcoreBind.message(NodeId.toBytes(OWN_NODE), r.alice.key), r.bindsAsked().single())
+            assertEquals(1, r.logs.count { it == "meshcore bind signed" })
+            // Signed on every proof (security B3(a)): a reconnect asks again, and the board's answer is the same bytes.
+            r.ch.disconnect()
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertEquals(2, r.bindsAsked().size)
+            assertTrue(r.consents.last().granted)
+            assertArrayEquals("deterministic: one (node, key), one signature", first.sig, r.consents.last().sig)
+            assertEquals(
+                0L,
+                r.session.counters.bindUnanswered
+                    .get() +
+                    r.session.counters.bindRefused
+                        .get(),
+            )
+        }
+
+    @Test
+    fun aSetupsGrantAndAReReadsConsentCarryTheSignature() =
+        runTest {
+            val r = rig(knitSlot = false, ownNode = { OWN_NODE })
+            up(r)
+            assertFalse("no record, no consent", r.consents.last().granted)
+            assertTrue("a board never set up is never asked to bind", r.bindsAsked().isEmpty())
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Done)
+            assertTrue(r.consents.last().granted)
+            assertTrue("the setup's grant carries the bind", r.consents.last().bindVerifies(r))
+
+            val journal = CountingJournal()
+            val again = rig(records = journal, ownNode = { OWN_NODE })
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:BB", MeshcoreHooks.digest(again.alice.key), SETUP_RECORD, false) }
+            journal.failReads = true
+            up(again)
+            assertTrue(again.consents.last().unread)
+            assertTrue("no proof, no bind", again.bindsAsked().isEmpty())
+            journal.failReads = false
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertTrue("granted at the re-read", again.consents.last().granted)
+            assertTrue("and signed with it", again.consents.last().bindVerifies(again))
+        }
+
+    /**
+     * Lora B3: a bind that fails — another client's `SIGN_START` resetting the shared buffer (a signature of other bytes:
+     * refused), then a `SIGN_FINISH` nobody answers — leaves the consent granted without a signature, never inert and never
+     * withdrawn; it is asked again on its own backoff and the consent re-published with the signature once one verifies.
+     */
+    @Test
+    fun aBindAnotherClientInterleavesOrNobodyAnswersIsAskedAgainAndThenPublishedWithTheConsent() =
+        runTest {
+            val r = rig(ownNode = { OWN_NODE })
+            val foreign = FakeForeignClient(r.alice)
+            r.atBindFinish { n ->
+                when (n) {
+                    1 -> foreign.send(MeshcoreProto.signStart()).let { false }
+
+                    // the buffer the finish signs is now empty
+                    2 -> true
+
+                    // a lost notify: no answer at all
+                    else -> false
+                }
+            }
+            up(r)
+            val first = r.consents.first { it.granted }
+            assertNull("granted, without a signature", first.sig)
+            assertEquals(
+                1L,
+                r.session.counters.bindRefused
+                    .get(),
+            )
+            assertEquals(
+                "the proof itself passed",
+                0L,
+                r.session.counters.keyUnproven
+                    .get(),
+            )
+            val bindAt = r.ch.codes.lastIndexOf(MeshcoreProto.CMD_SIGN_FINISH)
+            assertTrue(
+                "a refused bind reads SELF_INFO once, as a refused proof does",
+                r.ch.codes
+                    .drop(bindAt)
+                    .contains(MeshcoreProto.CMD_APP_START),
+            )
+            assertTrue(r.logs.any { it == "meshcore bind refused: the board's signature does not verify under its key" })
+            advanceTimeBy(70_000)
+            runCurrent()
+            assertEquals(
+                1L,
+                r.session.counters.bindUnanswered
+                    .get(),
+            )
+            assertNull("still unsigned after the second", r.consents.last().sig)
+            advanceTimeBy(120_000)
+            runCurrent()
+            assertEquals(3, r.bindsAsked().size)
+            assertTrue("re-published, signed", r.consents.last().bindVerifies(r))
+            assertTrue("never withdrawn on the way", r.consents.dropWhile { !it.granted }.all { it.granted })
+            assertTrue("the offers stayed open", r.dm() is SendResult.Queued)
+        }
+
+    /** A withdrawal after a bind that failed owes nothing: the late bind never runs, so nothing re-grants the claim. */
+    @Test
+    fun aWithdrawalRacingALateBindLeavesNoClaim() =
+        runTest {
+            val r = rig(ownNode = { OWN_NODE })
+            r.atBindFinish { n -> n == 1 }
+            up(r)
+            assertNull(r.consents.last { it.granted }.sig)
+            assertEquals(MeshcoreUnbind.CLEARED, r.session.unbind("AA:BB"))
+            val asked = r.bindsAsked().size
+            val published = r.consents.size
+            advanceTimeBy(CONSENT_RETRY_MAX + 60_000)
+            runCurrent()
+            assertEquals("the owed bind was dropped with the consent", asked, r.bindsAsked().size)
+            assertTrue("nothing granted since", r.consents.drop(published - 1).none { it.granted })
+            assertNull(r.consents.last().key)
+            assertNull(r.consents.last().sig)
+        }
+
+    @Test
+    fun aMissingOrInvalidNodeIdSignsNothing() =
+        runTest {
+            for (node in listOf<String?>(null, "not a node id")) {
+                val r = rig(ownNode = { node })
+                up(r)
+                assertTrue("consent stands without a bind", r.consents.last().granted)
+                assertNull(r.consents.last().sig)
+                assertTrue("never a bind over a placeholder", r.bindsAsked().isEmpty())
+                assertEquals(
+                    "the consent's proof alone",
+                    1,
+                    r.ch.writes.count { it[0].toInt() == MeshcoreProto.CMD_SIGN_DATA },
+                )
+                assertTrue(r.logs.any { it.startsWith("meshcore bind skipped") })
+                r.session.stop()
+            }
+        }
+
+    /**
+     * Security N1's follow-up: a board reporting a low-order key never proves it — under one, `R` = identity and `S = 0`
+     * would verify any challenge — and is never asked to sign: no consent, no bind, the claim kept and asked again later.
+     */
+    @Test
+    fun aBoardReportingALowOrderKeyIsNeverAskedToSignAndNeverConsents() =
+        runTest {
+            val identity = ByteArray(32).also { it[0] = 1 }
+            val r = rig(consented = false, ownNode = { OWN_NODE })
+            r.alice.reportedKey = identity
+            kotlinx.coroutines.runBlocking { r.records.put("AA:BB", MeshcoreHooks.digest(identity), SETUP_RECORD, false) }
+            up(r)
+            assertFalse(r.consents.last().granted)
+            assertTrue("asked again later, the claim kept", r.consents.last().unread)
+            assertTrue(
+                r.session.counters.keyUnproven
+                    .get() >= 1,
+            )
+            assertTrue("never asked to sign", r.ch.codes.none { it == MeshcoreProto.CMD_SIGN_START })
+            assertTrue(r.bindsAsked().isEmpty())
+        }
+
     private companion object {
+        /** Our node id, as the bind's tests run the session with it. */
+        val OWN_NODE: String = NodeId.derive("alice's phone")
+
+        /** The bind's longest backoff (the consent re-read's): past it any owed bind has been asked again. */
+        const val CONSENT_RETRY_MAX = 600_000L
+
         /** Clock steps [untilPutHeld] takes at most. */
         const val SETTLE_ROUNDS = 600
 

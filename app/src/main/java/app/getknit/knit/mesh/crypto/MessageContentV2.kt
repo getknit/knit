@@ -100,6 +100,7 @@ internal object MessageContentV2 {
                         loraKey = it.loraKey?.let(::keyBytes),
                         badges = it.badges?.map { badge -> BadgeV2(w = badge.w, r = badge.r) },
                         meshcoreKey = it.meshcoreKey?.let(::keyBytes),
+                        meshcoreSig = it.meshcoreSig?.let(::keyBytes),
                     )
                 },
             st = StyleSpans.pack(content.styles),
@@ -166,6 +167,8 @@ internal object MessageContentV2 {
                             loraKey = it.loraKey?.let(::b64),
                             badges = it.badges?.map { badge -> BadgeEntry(w = badge.w, r = badge.r) },
                             meshcoreKey = it.meshcoreKey?.let(::b64),
+                            // Any length decodes; `MessageContent.normalized` drops all but 64 bytes beside a key.
+                            meshcoreSig = it.meshcoreSig?.let(::b64),
                         )
                     },
                 styles = StyleSpans.unpack(w.st),
@@ -206,6 +209,9 @@ internal object MessageContentV2 {
      * Label 9 is the MeshCore board's public key (ADR 2026-11.gsqu, Stage 4): sealed-only too, 32 raw bytes here and
      * canonical base64 on `ProfilePayload`, nullable and elided while unclaimed. Its length and point are the receiver's
      * check (`MeshcoreKey`), never this codec's: a key of the wrong shape decodes and is dropped there, field alone.
+     * Label 10 is that board's signature over the bind (ADR 2026-11.gsqu, Stage 5d, `MeshcoreBind`): sealed-only, 64 raw
+     * bytes here and canonical base64 on `ProfilePayload`, nullable and elided while unclaimed. One that is not exactly 64
+     * bytes, or rides beside no key, is dropped alone by [MessageContent.normalized], which both decoders apply.
      */
     @Serializable
     @Suppress("MagicNumber") // the CBOR labels are the layout itself, pinned by GoldenVectorTest
@@ -320,7 +326,12 @@ internal object MessageContentV2 {
         val badges: List<BadgeV2>? = null,
         @CborLabel(9)
         val meshcoreKey: ByteArray? = null,
-    )
+        @CborLabel(10)
+        val meshcoreSig: ByteArray? = null,
+    ) {
+        /** Names neither the key nor the signature (security N4): a decode failure's message never carries them. */
+        override fun toString(): String = "ProfileV2(v=$version, meshcoreKey=${meshcoreKey != null}, meshcoreSig=${meshcoreSig != null})"
+    }
 
     @Serializable
     @Suppress("MagicNumber") // the CBOR labels are the layout itself, pinned by GoldenVectorTest

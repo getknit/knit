@@ -46,6 +46,7 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.crypto.LinkSignals
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
+import app.getknit.knit.mesh.crypto.MeshcoreBindFixture
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
@@ -2934,8 +2935,9 @@ class MeshManagerTest {
 
     /**
      * Our sealed profile's MeshCore key (ADR 2026-11.gsqu, Stage 4) is claimed only with the seam bound, the plane and its
-     * DM switch on and a MeshCore board's key reported; each change of the claim mints exactly one sealed-only version, and
-     * the cleartext profile never moves for it (the key is not on it, and its version moving would tell every carrier).
+     * DM switch on and a MeshCore board's key reported with its signature over our bind (Stage 5d, which may land after the
+     * key); each change of the claim mints exactly one sealed-only version, and the cleartext profile never moves for it
+     * (the key is not on it, and its version moving would tell every carrier).
      */
     @Test
     fun theMeshcoreClaimMintsOneSealedVersionPerChangeAndNeedsTheSeam() =
@@ -2952,6 +2954,11 @@ class MeshManagerTest {
             assertEquals("a board bound, the switches on, but no seam: no claim, so nothing to publish", 0, claims.puts.size)
 
             rig.manager.bindMeshcoreDirect()
+            rig.healAndAwait()
+            assertEquals("bound, but the board has not signed our bind yet (Stage 5d): no claim", 0, claims.puts.size)
+
+            // The signature lands alone, for the key already stored: the one flow wakes the watcher, and the claim mints.
+            claims.bindSig.value = MeshcoreBindFixture.sig(rig.me.nodeId)
             rig.await(1) { claims.puts.size }
             rig.healAndAwait()
             assertEquals("one version for the claim, and a heal with nothing changed mints none", 1, claims.puts.size)
@@ -7533,6 +7540,10 @@ internal class LoraOffer(
 /** The sealed MeshCore claim's journal in memory (ADR 2026-11.gsqu, Stage 4), recording each version minted. */
 private class FakeMeshcoreClaims : MeshcoreClaimJournal {
     override val boardKey = MutableStateFlow<String?>(null)
+
+    /** The board's bind signature, beside [boardKey] (ADR 2026-11.gsqu, Stage 5d). */
+    val bindSig = MutableStateFlow<String?>(null)
+    override val board = combine(boardKey, bindSig) { key, sig -> MeshcoreBoardReport(key, sig) }
     override val sealedVersion = MutableStateFlow(0L)
     override val publishedFingerprint = MutableStateFlow<String?>(null)
     val puts = CopyOnWriteArrayList<Long>()

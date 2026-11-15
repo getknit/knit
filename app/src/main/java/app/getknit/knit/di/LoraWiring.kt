@@ -8,6 +8,7 @@ import app.getknit.knit.contacts.DirectContacts
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.settings.LoraPlaneStateStore
+import app.getknit.knit.data.settings.MeshcoreClaimStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
@@ -15,8 +16,10 @@ import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshcoreBoardHolder
 import app.getknit.knit.mesh.PublicChannelSink
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
+import app.getknit.knit.mesh.crypto.MeshcoreBind
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
+import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.BoardPlane
 import app.getknit.knit.mesh.lora.DirectDm
@@ -86,6 +89,36 @@ internal fun bindingAddress(
     dialled: String?,
     configured: String?,
 ): String? = configured?.let { dialled ?: it }
+
+/**
+ * The MeshCore claim store edit a consent makes (ADR 2026-11.gsqu, Stage 5d): the board's [key] and the bind's [sig] —
+ * canonical base64, as the store keeps them — under [dialled]'s binding rule (`MeshcoreClaimStore.setBoardKey`). When the
+ * store already holds [key] with a signature that verifies over our node id ([ownNode]) and that key, the new one is not
+ * written ([meshcoreProofKept], asked inside the store's own edit, so no writer in between can leave the key without its
+ * proof): a board signs deterministically (RFC 8032), so this changes nothing on a real one, and a signer that did not
+ * would otherwise mint a sealed version on every reconnect, since the claim's fingerprint covers the signature (the crypto
+ * review of Part A). Board trial 4 checks determinism.
+ */
+internal suspend fun writeMeshcoreClaim(
+    store: MeshcoreClaimStore,
+    ownNode: suspend () -> String?,
+    key: ByteArray?,
+    sig: ByteArray?,
+    dialled: String,
+) {
+    val keyText = key?.let(::b64)
+    val sigText = sig?.let(::b64)
+    // The node id is read before the edit: a DataStore edit never suspends on anything but its own write.
+    val node = if (keyText != null && sigText != null) ownNode() else null
+    store.setBoardKey(keyText, sigText, dialled = dialled, keep = node?.let { n -> { k, s -> meshcoreProofKept(n, k, s) } })
+}
+
+/** Whether a stored [storedSig] already proves (our [ownNode], [storedKey]) ([MeshcoreBind.verifies]): then it stands. Pure. */
+internal fun meshcoreProofKept(
+    ownNode: String,
+    storedKey: String,
+    storedSig: String,
+): Boolean = MeshcoreBind.verifies(ownNode, storedKey, storedSig)
 
 /**
  * Whether a room post's signature verifies against its author's **pinned** key, which hashes to their node id

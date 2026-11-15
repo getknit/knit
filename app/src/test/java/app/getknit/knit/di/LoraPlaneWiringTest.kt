@@ -1,15 +1,32 @@
 package app.getknit.knit.di
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.settings.BoardKeys
+import app.getknit.knit.data.settings.MeshcoreClaimStore
+import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.LoraDoorClaim
+import app.getknit.knit.mesh.MeshcoreBoardReport
+import app.getknit.knit.mesh.crypto.MeshcoreBindFixture
+import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.protocol.Protocol
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
 
 /**
  * The MeshCore plane's wiring (ADR 2026-11.gsqu, Stage 5a-2), as pure rules the module reads: which kinds a build
@@ -17,6 +34,99 @@ import org.junit.Test
  * written under (the `dialled` race), and the door claim an offer is gated on per kind.
  */
 class LoraPlaneWiringTest {
+    @get:Rule
+    val tmp = TemporaryFolder()
+
+    /**
+     * Stage 5d (the crypto review's no-rewrite rule): a stored signature that already proves (our node, the key) is kept,
+     * whatever a re-sign answered, so a signer that were not deterministic could never mint a sealed version per reconnect;
+     * anything short of that proof — another key, no proof stored, one that fails, no node id — takes the new signature.
+     */
+    @Test
+    fun aStoredProofForTheSameKeyIsNeverRewritten() {
+        val node = NodeId.derive("our phone")
+        val other = NodeId.derive("someone else")
+        val key = MeshcoreBindFixture.KEY
+        assertTrue("proven already: kept", meshcoreProofKept(node, key, MeshcoreBindFixture.sig(node)))
+        assertFalse("a stored signature that fails", meshcoreProofKept(node, key, MeshcoreBindFixture.sig(other)))
+        val otherBoard = MeshcoreBindFixture.hex("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb")
+        assertFalse(
+            "another board's key, a valid point, under this board's proof",
+            meshcoreProofKept(node, b64(MeshcoreBindFixture.keyOf(otherBoard)), MeshcoreBindFixture.sig(node)),
+        )
+    }
+
+    /**
+     * The keep-check is asked inside the store's edit, never of a read before it: a signature another writer clears just
+     * before the edit is written again by a consent that carries a valid one. The wrapped store clears it once, at whichever
+     * comes first: a read of `data` (which still shows it, so a read outside the edit sees the stored proof and writes
+     * nothing, or no signature) or the next update. Either way a check made of a read leaves the key unproven.
+     */
+    @Test
+    fun aSignatureClearedJustBeforeTheEditIsWrittenAgain() =
+        runTest {
+            val inner = PreferenceDataStoreFactory.create(scope = backgroundScope) { File(tmp.root, "settings.preferences_pb") }
+            var clearNext = false
+            val dataStore =
+                object : DataStore<Preferences> {
+                    // A read before the edit sees the signature, then loses it in the store: so a check made of that read,
+                    // early return or not, leaves the key unproven.
+                    override val data: Flow<Preferences> =
+                        inner.data.map { p ->
+                            if (clearNext) {
+                                clearNext = false
+                                inner.updateData { it.toMutablePreferences().apply { remove(BoardKeys.MESHCORE_BIND) } }
+                            }
+                            p
+                        }
+
+                    override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
+                        inner.updateData { prefs ->
+                            val seen =
+                                if (clearNext) {
+                                    clearNext = false
+                                    prefs.toMutablePreferences().apply { remove(BoardKeys.MESHCORE_BIND) }.toPreferences()
+                                } else {
+                                    prefs
+                                }
+                            transform(seen)
+                        }
+                }
+            SettingsStore(dataStore).bindBoard(BoardKind.MESHCORE, "BB:BB", name = "")
+            val claims = MeshcoreClaimStore(dataStore)
+            val node = NodeId.derive("our phone")
+            val key = MeshcoreBindFixture.keyOf()
+            writeMeshcoreClaim(claims, { node }, key, MeshcoreBindFixture.sigBytes(node), dialled = "BB:BB")
+            assertEquals(MeshcoreBindFixture.sig(node), claims.board.first().sig)
+            clearNext = true
+            writeMeshcoreClaim(claims, { node }, key, MeshcoreBindFixture.sigBytes(node), dialled = "BB:BB")
+            assertEquals(MeshcoreBoardReport(MeshcoreBindFixture.KEY, MeshcoreBindFixture.sig(node)), claims.board.first())
+        }
+
+    @Test
+    fun aConsentsClaimLandsAsOneEditAndAReSignLeavesTheStoredProof() =
+        runTest {
+            val dataStore = PreferenceDataStoreFactory.create(scope = backgroundScope) { File(tmp.root, "settings.preferences_pb") }
+            SettingsStore(dataStore).bindBoard(BoardKind.MESHCORE, "BB:BB", name = "")
+            val claims = MeshcoreClaimStore(dataStore)
+            val node = NodeId.derive("our phone")
+            val key = MeshcoreBindFixture.keyOf()
+            val proof = MeshcoreBindFixture.sigBytes(node)
+            writeMeshcoreClaim(claims, { node }, key, proof, dialled = "BB:BB")
+            assertEquals(MeshcoreBoardReport(MeshcoreBindFixture.KEY, MeshcoreBindFixture.sig(node)), claims.board.first())
+            // Bytes that do not prove this node: the stored proof stands, nothing written.
+            writeMeshcoreClaim(claims, { node }, key, MeshcoreBindFixture.sigBytes(NodeId.derive("other")), dialled = "BB:BB")
+            assertEquals(MeshcoreBindFixture.sig(node), claims.board.first().sig)
+            // A consent without a signature keeps it too; a withdrawal forgets both.
+            writeMeshcoreClaim(claims, { node }, key, null, dialled = "BB:BB")
+            assertEquals(MeshcoreBindFixture.sig(node), claims.board.first().sig)
+            // No node id: no keep-check at all, so the new signature is written as given.
+            writeMeshcoreClaim(claims, { null }, key, MeshcoreBindFixture.sigBytes(NodeId.derive("other")), dialled = "BB:BB")
+            assertEquals(MeshcoreBindFixture.sig(NodeId.derive("other")), claims.board.first().sig)
+            writeMeshcoreClaim(claims, { node }, null, null, dialled = "BB:BB")
+            assertEquals(MeshcoreBoardReport(null, null), claims.board.first())
+        }
+
     @Test
     fun aReleaseBuildBuildsNoMeshcoreChildAndADebugBuildBuildsBoth() {
         assertEquals("release: MESHCORE_PLANE off", listOf(BoardKind.MESHTASTIC), builtBoardKinds(loraPlane = true, meshcorePlane = false))

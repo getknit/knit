@@ -1,20 +1,34 @@
 package app.getknit.knit.mesh
 
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.mesh.crypto.MeshcoreBind
 import app.getknit.knit.mesh.crypto.MeshcoreKey
+import app.getknit.knit.mesh.crypto.MeshcoreProfilePad
+import app.getknit.knit.mesh.crypto.MessageContent
 import kotlinx.coroutines.flow.Flow
 import java.nio.ByteBuffer
 
 /**
- * Where our sealed profile's MeshCore claim keeps its state (ADR 2026-11.gsqu, Stage 4; implemented by
- * `data/settings/MeshcoreClaimStore`): the bound board's public key, and the sealed-only version a change in what we claim
- * was published under. A change to the claim moves only that version, never the cleartext profile's — the key is not on
- * the cleartext frame, so a cleartext version that moved with no visible field changed would tell every carrier that
- * something sealed did (the badge's rule, ADR 2026-10.r99s, `badge/BadgeJournal`).
+ * Where our sealed profile's MeshCore claim keeps its state (ADR 2026-11.gsqu, Stage 4 and 5d; implemented by
+ * `data/settings/MeshcoreClaimStore`): the bound board's public key and its signature binding our node id
+ * ([MeshcoreBind]), and the sealed-only version a change in what we claim was published under. A change to the claim moves
+ * only that version, never the cleartext profile's — the key is not on the cleartext frame, so a cleartext version that
+ * moved with no visible field changed would tell every carrier that something sealed did (the badge's rule, ADR
+ * 2026-10.r99s, `badge/BadgeJournal`).
  */
 interface MeshcoreClaimJournal {
-    /** The bound MeshCore board's public key as its session reported it (`meshcore_board_pubkey`), unchecked; null unbound. */
+    /**
+     * The bound MeshCore board's public key as its session reported it (`meshcore_board_pubkey`), unchecked; null unbound.
+     * What "never our own board" is judged by (`MeshManager.meshcoreBoardMap`), before any signature lands (lora N6).
+     */
     val boardKey: Flow<String?>
+
+    /**
+     * The key and the signature as **one** flow, from one read of the store (Stage 5d, crypto B3): what the claim is judged
+     * on, so a signature landing alone wakes the claim watcher, and a key and a signature from two different writes are
+     * never paired.
+     */
+    val board: Flow<MeshcoreBoardReport>
 
     /** The profile version the last claim change was published under (0 before the first). */
     val sealedVersion: Flow<Long>
@@ -29,20 +43,78 @@ interface MeshcoreClaimJournal {
 }
 
 /**
- * What our sealed profile claims about MeshCore (ADR 2026-11.gsqu, Stage 4): the bound board's key, canonical and checked
- * ([MeshcoreKey]), only while all four hold — the LoRa plane is on ([enabled]), its DM switch is on ([dms]), a MeshCore
- * board is bound and reported a key [MeshcoreKey] accepts ([boardKey]: a board's own report is not trusted to be one), and
- * this build reads a compact DM off a MeshCore board ([readsMeshcoreDms], `MeshManager.bindMeshcoreDirect`). Else null. The
- * key's presence is the claim of the door, there being no capability bit: a profile that named a board while any of the
- * four failed would have contacts address DMs that board acks and nobody reads (`MeshManager.ownLora`'s rule). Pure.
+ * What the bound MeshCore board reported, as stored (ADR 2026-11.gsqu, Stage 5d): its public [key] and its [sig]nature over
+ * our bind ([MeshcoreBind]), canonical base64 as written, unchecked; either may be null. Its [toString] names neither.
+ */
+data class MeshcoreBoardReport(
+    val key: String?,
+    val sig: String?,
+) {
+    override fun toString(): String = "MeshcoreBoardReport(key=${key != null}, sig=${sig != null})"
+}
+
+/**
+ * The claim our sealed profile carries to a direct contact (ADR 2026-11.gsqu, Stage 5d): the board's [key] and its proof
+ * [sig], both canonical base64, sent together or not at all. Its [toString] names neither.
+ */
+internal data class MeshcoreBoardClaim(
+    val key: String,
+    val sig: String,
+) {
+    override fun toString(): String = "MeshcoreBoardClaim"
+}
+
+/**
+ * What our sealed profile claims about MeshCore (ADR 2026-11.gsqu, Stage 4 and 5d): the bound board's key, canonical and
+ * checked ([MeshcoreKey]), with the board's signature binding our own node id ([MeshcoreBind.verifies] over [nodeId]), only
+ * while all four hold — the LoRa plane is on ([enabled]), its DM switch is on ([dms]), a MeshCore board is bound and
+ * reported a key [MeshcoreKey] accepts and a signature that verifies ([board]: a board's own report is not trusted to be
+ * either), and this build reads a compact DM off a MeshCore board ([readsMeshcoreDms], `MeshManager.bindMeshcoreDirect`).
+ * Else null. The key's presence is the claim of the door, there being no capability bit: a profile that named a board while
+ * any of the four failed would have contacts address DMs that board acks and nobody reads (`MeshManager.ownLora`'s rule).
+ * A key with no verifying signature is no claim: every receiver from 5d on would drop it anyway (`InboundPipeline`). Pure.
  */
 internal object MeshcoreClaimRule {
     fun claim(
-        boardKey: String?,
+        board: MeshcoreBoardReport,
+        nodeId: String,
         enabled: Boolean,
         dms: Boolean,
         readsMeshcoreDms: Boolean,
-    ): String? = MeshcoreKey.canonicalOrNull(boardKey)?.takeIf { enabled && dms && readsMeshcoreDms }
+    ): MeshcoreBoardClaim? {
+        if (!enabled || !dms || !readsMeshcoreDms) return null
+        val key = MeshcoreKey.canonicalOrNull(board.key) ?: return null
+        val sig = board.sig?.takeIf { MeshcoreBind.verifies(nodeId, key, it) } ?: return null
+        return MeshcoreBoardClaim(key, sig)
+    }
+}
+
+/**
+ * One recipient's copy of a sealed profile version (ADR 2026-11.gsqu, Stage 4 and 5d): [keyless] is every recipient's base
+ * copy, which never carries the MeshCore key or its signature (crypto B2); a direct contact's copy ([toContact]) carries
+ * [claim]'s key **and** signature, both or neither — the signature alone, beside the board's publicly flooded adverts,
+ * would tie our node id to the board for anyone who reads it; anyone else's, while a key is claimed, is [keyless] padded
+ * to the keyed copy's sealed length in the layout [v3] picks ([MeshcoreProfilePad]). Pure.
+ */
+internal object MeshcoreProfileCopy {
+    /** [content] to seal; [padMissed] when no pad reached the keyed length and [content] is the bare keyless copy. */
+    class Copy(
+        val content: MessageContent,
+        val padMissed: Boolean = false,
+    )
+
+    fun of(
+        keyless: MessageContent,
+        claim: MeshcoreBoardClaim?,
+        toContact: Boolean,
+        v3: Boolean,
+    ): Copy {
+        claim ?: return Copy(keyless)
+        val keyed = keyless.copy(pr = keyless.pr?.copy(meshcoreKey = claim.key, meshcoreSig = claim.sig))
+        if (toContact) return Copy(keyed)
+        // A miss sends the bare keyless copy, counted: never the key to a non-contact, never a peer left on an older copy.
+        return MeshcoreProfilePad.padded(keyless, keyed, v3)?.let(::Copy) ?: Copy(keyless, padMissed = true)
+    }
 }
 
 /** How far a contact on [MeshcoreBoardMap] is trusted, highest first: the order Stage 5 ranks its board's capacity in. */
@@ -87,13 +159,16 @@ internal data class MeshcoreBoardHolder(
  * - **Never ourselves, and never our own board.** A row whose key is our bound board's key, compared as bytes, is dropped
  *   whoever claims it: a stale or false claim must not make our board a contact of itself.
  * - **Contested keys are marked, never resolved, among live claimants.** Two live contacts claiming one key are both
- *   marked and neither is taught: nothing on this side can tell which holds it (there is no proof of possession yet), and
- *   attribution never reads it. A claimant is **live** unless this phone has not heard from it for [LIVE_BOUND_MS] (its
- *   `lastSeenAt`, our clock, merged with `MAX`): an identity wiped or reinstalled never sends the sealed profile that
- *   would clear its old claim, and would otherwise contest its successor's key at every contact for ever; silent, its
- *   stamp ages past the bound. A claimant that is not live, beside one that is, leaves the map. Never resolved by the
- *   newer version: a profile's version moves only on an edit, so a live contact who has not edited for a month is as
- *   live as one who did today, and the two versions are two senders' clocks.
+ *   marked and neither is taught: nothing on this side can tell which holds it, and attribution never reads it. A row's
+ *   key is proven (Stage 5d: the sealed writer stores only a key whose `meshcoreSig` verifies over its sender, so no
+ *   unproven key reaches this map), but a proof never breaks a tie: a board on the default PIN signs for any BLE client,
+ *   a former owner keeps a valid bind for ever, and one board can bind two identities. A claimant is **live** unless
+ *   this phone has not heard from it for [LIVE_BOUND_MS] (its `lastSeenAt`, our clock, merged with `MAX`): an identity
+ *   wiped or reinstalled never sends the sealed profile that would clear its old claim, and would otherwise contest its
+ *   successor's key at every contact for ever; silent, its stamp ages past the bound. A claimant that is not live,
+ *   beside one that is, leaves the map. Never resolved by the newer version: a profile's version moves only on an edit,
+ *   so a live contact who has not edited for a month is as live as one who did today, and the two versions are two
+ *   senders' clocks.
  *
  * Keys are checked again here ([MeshcoreKey]) and compared as bytes. The map is a routing hint for teaching only: Stage 5
  * never attributes an inbound DM by a board's 6-byte sender prefix (`LoraDirectSeal`'s trust boundary).
@@ -169,7 +244,12 @@ internal class SealedProfileEra(
     /** The key [peerId]'s copy of this version carried: `MeshcoreAudience.keyFor`'s answer at this version. */
     fun keyFor(peerId: String): String? = key?.takeIf { peerId in direct }
 
-    /** Whether [other] gives every peer the same copy as this: the same claim, the same set and the same fields. */
+    /**
+     * Whether [other] gives every peer the same copy as this: the same claim, the same set and the same fields. The claim
+     * is compared by its key alone, on purpose (ADR 2026-11.gsqu, Stage 5d, crypto N7): any signature that verifies for
+     * (our node, the key) is as good as another to a receiver, which stores the key and never the signature, and a board's
+     * RFC 8032 signature is deterministic, so two copies of one key carry one signature. Never add the signature here.
+     */
     fun sameCopiesAs(other: SealedProfileEra): Boolean = key == other.key && direct == other.direct && visible == other.visible
 
     override fun toString(): String = "SealedProfileEra(v=$version, claimed=${key != null}, contacts=${direct.size})"
@@ -190,7 +270,9 @@ internal class SealedProfileEra(
  * - [held] is known: the era of the version this process last recorded for the peer, with no sealed profile sent it
  *   outside the fan-out since (the contact-card intro), so it is the newest copy the peer can hold from us;
  * - [claimMinted]: [next] is the claim journal's own version, so the newest mint was a claim or audience change;
- * - the claim is the same key, and held at both (a mint that gained, dropped or changed the key fans out to all);
+ * - the claim is the same key, and held at both (a mint that gained, dropped or changed the key fans out to all). The key
+ *   alone, on purpose (Stage 5d, crypto N7): the signature beside it is deterministic and the receiver never stores it,
+ *   so a copy whose signature bytes differed would still say the same; never compare it here;
  * - [SealedProfileEra.visible] is equal: no name, status, photo, open-to-chat, LoRa board or badge moved;
  * - [SealedProfileEra.keyFor] answers the same for the peer at both.
  *

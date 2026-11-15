@@ -57,8 +57,9 @@ internal object MeshcoreProto {
      * Every command code an encoder here can emit — the pinned allowlist. `CMD_GET_CONTACTS` (4) is a count read (its
      * `since` past every `lastmod`, so the board lists none: teaching a key needs a free slot confirmed first) or, from
      * Stage 5b-2, the one listing a Ready's reconcile, a setup's erase and a restore read ([listContacts]). The three sign
-     * commands are the consent's signed challenge (the maintainer's decision, 2026-11-13): a nonce behind a Knit domain tag,
-     * never anything else ([signData]).
+     * commands have two uses, each a fixed message behind its own Knit domain tag ([signData]): the consent's signed
+     * challenge (the maintainer's decision, 2026-11-13: a fresh nonce) and, since Stage 5d, the bind of our node id to the
+     * board's key (`MeshcoreBind.message`), the sealed profile's proof of possession. Never anything else.
      */
     val ENCODED_COMMANDS: Set<Int> =
         setOf(

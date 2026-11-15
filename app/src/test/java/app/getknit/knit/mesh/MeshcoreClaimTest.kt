@@ -1,6 +1,13 @@
 package app.getknit.knit.mesh
 
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.identity.NodeId
+import app.getknit.knit.mesh.crypto.MeshcoreBind
+import app.getknit.knit.mesh.crypto.MeshcoreBindFixture
+import app.getknit.knit.mesh.crypto.MessageContent
+import app.getknit.knit.mesh.crypto.b64
+import app.getknit.knit.mesh.crypto.sealBytes
+import app.getknit.knit.mesh.protocol.ProfilePayload
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -15,20 +22,97 @@ import org.junit.Test
 class MeshcoreClaimTest {
     // --- The claim ---
 
+    private val ours = NodeId.derive("ours")
+
+    /** The board's report as stored: RFC 8032 TEST 1's key ([KEY_A]) and, by default, its signature over our bind. */
+    private fun report(
+        key: String? = KEY_A,
+        sig: String? = MeshcoreBindFixture.sig(ours),
+    ) = MeshcoreBoardReport(key, sig)
+
+    private fun claim(
+        board: MeshcoreBoardReport = report(),
+        enabled: Boolean = true,
+        dms: Boolean = true,
+        reads: Boolean = true,
+        node: String = ours,
+    ) = MeshcoreClaimRule.claim(board, node, enabled, dms, reads)
+
     @Test
     fun theKeyIsClaimedOnlyWhileAllFourHold() {
-        assertEquals(KEY_A, MeshcoreClaimRule.claim(KEY_A, enabled = true, dms = true, readsMeshcoreDms = true))
-        assertNull("the plane off", MeshcoreClaimRule.claim(KEY_A, enabled = false, dms = true, readsMeshcoreDms = true))
-        assertNull("DMs off", MeshcoreClaimRule.claim(KEY_A, enabled = true, dms = false, readsMeshcoreDms = true))
-        assertNull("no MeshCore board bound", MeshcoreClaimRule.claim(null, enabled = true, dms = true, readsMeshcoreDms = true))
+        assertEquals(MeshcoreBoardClaim(KEY_A, MeshcoreBindFixture.sig(ours)), claim())
+        assertNull("the plane off", claim(enabled = false))
+        assertNull("DMs off", claim(dms = false))
+        assertNull("no MeshCore board bound", claim(report(key = null, sig = null)))
         // Stage 4 binds no seam: whatever the settings hold, even a key a backup restored, nothing is claimed.
-        assertNull("the seam unbound", MeshcoreClaimRule.claim(KEY_A, enabled = true, dms = true, readsMeshcoreDms = false))
+        assertNull("the seam unbound", claim(reads = false))
     }
 
     @Test
     fun aBoardReportThatIsNotAKeyIsNeverClaimed() {
         for (bad in listOf("", "QQ==", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURp=")) {
-            assertNull(bad, MeshcoreClaimRule.claim(bad, enabled = true, dms = true, readsMeshcoreDms = true))
+            assertNull(bad, claim(report(key = bad)))
+        }
+    }
+
+    /** Stage 5d: a key is claimed only beside the board's signature over our own bind. */
+    @Test
+    fun aKeyIsClaimedOnlyWithASignatureThatBindsOurNode() {
+        assertNull("no signature yet: the board has not signed", claim(report(sig = null)))
+        assertNull("a signature over another node's bind (a backup from another identity)", claim(node = NodeId.derive("other")))
+        assertNull("another board's signature", claim(report(sig = MeshcoreBindFixture.sig(ours, ByteArray(32) { 7 }))))
+        assertNull("not 64 bytes", claim(report(sig = b64(MeshcoreBindFixture.sigBytes(ours).copyOf(63)))))
+        assertNull("a key the signature was not made under", claim(report(key = KEY_B)))
+    }
+
+    @Test
+    fun aReportAndAClaimNameNeitherKeyNorSignature() {
+        val sig = MeshcoreBindFixture.sig(ours)
+        for (printed in listOf(report().toString(), checkNotNull(claim()).toString())) {
+            assertFalse(printed, printed.contains(KEY_A.take(8)))
+            assertFalse(printed, printed.contains(sig.take(8)))
+        }
+    }
+
+    // --- The copies (Stage 5d, crypto B2) ---
+
+    private val keyless =
+        MessageContent(body = "", ctl = MessageContent.CTL_PROFILE, pr = ProfilePayload(name = "Ann", status = "", version = 9L))
+
+    @Test
+    fun aDirectContactsCopyCarriesTheKeyAndTheSignatureTogether() {
+        val claimed = checkNotNull(claim())
+        for (v3 in listOf(true, false)) {
+            val copy = MeshcoreProfileCopy.of(keyless, claimed, toContact = true, v3 = v3)
+            assertEquals(KEY_A, copy.content.pr?.meshcoreKey)
+            assertEquals(claimed.sig, copy.content.pr?.meshcoreSig)
+            assertFalse(copy.padMissed)
+        }
+    }
+
+    @Test
+    fun aNonContactsCopyCarriesNeitherTheKeyNorTheSignatureAndIsOneLength() {
+        val claimed = checkNotNull(claim())
+        for (v3 in listOf(true, false)) {
+            val keyed = MeshcoreProfileCopy.of(keyless, claimed, toContact = true, v3 = v3).content
+            val copy = MeshcoreProfileCopy.of(keyless, claimed, toContact = false, v3 = v3)
+            assertNull("v3=$v3", copy.content.pr?.meshcoreKey)
+            assertNull("v3=$v3: the signature alone would tie our node to the board's adverts", copy.content.pr?.meshcoreSig)
+            assertFalse(copy.padMissed)
+            assertEquals(
+                "v3=$v3",
+                keyed.sealBytes(v3).plaintext.size,
+                copy.content
+                    .sealBytes(v3)
+                    .plaintext.size,
+            )
+        }
+    }
+
+    @Test
+    fun unclaimedEveryCopyIsTheBaseCopy() {
+        for (toContact in listOf(true, false)) {
+            assertEquals(keyless, MeshcoreProfileCopy.of(keyless, claim = null, toContact = toContact, v3 = true).content)
         }
     }
 
@@ -99,6 +183,24 @@ class MeshcoreClaimTest {
         assertTrue(checkNotNull(held["ann"]).contested)
         assertTrue("the verified one is not preferred: neither is taught", checkNotNull(held["bea"]).contested)
         assertFalse(checkNotNull(held["cat"]).contested)
+    }
+
+    /**
+     * Stage 5d (security N2): a proof never breaks a tie. One board bound to two identities — a board handed on, a second
+     * Knit identity, anyone on the default PIN — signs both binds, both verify, and the key is still contested on both.
+     * A statement of the rule, not a guard: the map never sees a proof (ingest stores only proven keys and no signature),
+     * so no implementation of it could let one break a tie, and this held before 5d too.
+     */
+    @Test
+    fun twoProvenClaimantsOfOneKeyAreBothContestedAndNeitherTaught() {
+        val ann = NodeId.derive("ann-proven")
+        val bea = NodeId.derive("bea-proven")
+        for (id in listOf(ann, bea)) {
+            assertTrue("$id's bind verifies", MeshcoreBind.verifies(id, KEY_A, MeshcoreBindFixture.sig(id)))
+        }
+        val held = map(peer(ann, KEY_A, verified = true), peer(bea, KEY_A), direct = setOf(ann, bea))
+        assertEquals(setOf(ann, bea), held.keys)
+        assertTrue(held.values.all { it.contested })
     }
 
     @Test

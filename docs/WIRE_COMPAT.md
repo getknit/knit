@@ -675,6 +675,25 @@ contact learns the key only once a session is confirmed, and the burst a contact
 changed, never whose membership did. *Size:* 35 B on the compact sealed profile, 58 B on the named one. A routing hint only: no build
 attributes an inbound DM by a board's sender prefix. Paired with knit-ios, which parses and keeps it apart.
 
+**Precedent — a proof beside a sealed-only field (the MeshCore bind signature, ADR 2026-11.gsqu's Stage 5d, 2026-11-15).**
+`ProfilePayload.meshcoreSig: String? = null` and `ProfileV2` label **10** (`ByteArray?`): the MeshCore board's RFC 8032
+Ed25519 signature over `"knit-meshcore-bind/v1"` ‖ the sender's 16 raw node-id bytes ‖ `meshcoreKey` (`MeshcoreBind`),
+canonical padded base64 on the named layout and 64 raw bytes on the compact one. Rule 1 by the nullable route, elided while
+unclaimed, so every existing golden vector stayed put (new: `profilePayloadMeshcoreSig`,
+`messageContentV2ProfileMeshcoreSig`, `messageContentProfileMeshcoreSig`, and `vectors/meshcore-bind-v1.json`), and an
+older build skips it. **A strict decoder, on both layouts in one place** (`MessageContent.normalized`, which both decoders
+apply): anything but the canonical spelling of exactly 64 bytes, or a signature beside no key, drops the field alone and
+never the profile. A wrong CBOR type at label 10 fails the plaintext decode, as any mistyped label does. **It gates the
+field beside it**: a 5d receiver stores `meshcoreKey` only when the key passes `MeshcoreKey` and the signature verifies
+over the frame's authenticated sender (key checked first: Tink's cofactorless verifier accepts `R` = identity, `S = 0`
+under a low-order key), and never stores the signature. Nothing has shipped with label 9, so a key without a signature is
+dropped as a bad key is; this is the one place a field added later changes what an earlier field means, and it was
+allowed only because no fielded build ever sent label 9 (it is debug-only behind `MESHCORE_PLANE`). Sent with the key or
+not at all, to direct contacts only; every keyless copy is padded to the keyed length, now 102 B on the compact layout and
+160 B on the named one (`MeshcoreProfilePad.MAX_PAD` 255). *Metadata cost:* inside the seal; the signature is a
+transferable, permanent proof that node N runs MeshCore key K, to the same audience as the key (`SECURITY.md`). Paired
+with knit-ios, whose brief gains the field, the strict decoder, the verify order and the vectors.
+
 **Withdrawn precedent — the one `type` string minted since the v1 baseline (`meshpost`, ADR 2026-09.cf7a and
 2026-09.7r4d, September 2026), taken back before it shipped (ADR 2026-09.26q3).** It was the first entry on
 `isCustodial` since v1, and it is gone because of exactly the cost every earlier precedent had avoided:

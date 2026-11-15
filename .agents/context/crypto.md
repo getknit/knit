@@ -204,7 +204,8 @@ LoRa plane (2026-09.ggq4).
   budget. The sealed profile carries presentation fields only, ordered by the profile version, never `pubKey` or
   `prekey`, and never inserts a peer row. Two fields ride it alone, never the cleartext frame: the badges and the
   MeshCore board's key (`meshcoreKey`, label 9, ADR 2026-11.gsqu's Stage 4 amendment; checked by `MeshcoreKey`, a
-  field-only drop, never the profile's); each moves a sealed-only version past the cleartext one, which `profileVersion()`
+  field-only drop, never the profile's) with its bind signature (`meshcoreSig`, label 10, Stage 5d; see `MeshcoreBind`
+  below); each moves a sealed-only version past the cleartext one, which `profileVersion()`
   states and every edit mints past.
 - **When touching read receipts on the wire or the seal paths — `MessageContent.rm` / `MessageContentV2` label 20,
   `ReadMask`, `Protocol.CAP_READ_RECEIPTS`, `ReadSync` / `ReadRiding` / `ReadMarkStore`, `MeshManager.onMessagesRead` /
@@ -221,6 +222,23 @@ LoRa plane (2026-09.ggq4).
   Reads never claim or record in `DmReAckLedger` (8hn6's qualification), and the standalone frame is an answer-only
   seal that never mints an init. Regression: `ReadMaskTest`, `ReadSyncTest`, `InboundPipelineTest`'s read cases,
   `MeshManagerTest`'s compact-mask cases, `GoldenVectorTest`, `ReadReceiptLabTest`.
+- **When touching `MeshcoreBind` (`message`, `verifies`, `provenKey`, `sigBytesOrNull`), `ProfilePayload.meshcoreSig` /
+  `ProfileV2` label 10, `MessageContent.normalized`'s `strictMeshcoreSig`, `MeshcoreClaimRule` / `MeshcoreBoardClaim` /
+  `MeshcoreBoardReport`, `MeshcoreClaimJournal.board`, `MeshcoreClaimStore.setBoardKey` (`meshcore_board_bind`,
+  `BoardKeys.MESHCORE_BIND`), `MeshcoreProfileCopy`, `MeshcoreProfilePad.MAX_PAD`, `MeshManager.meshcoreClaimForTest`, or the
+  `meshcoreBindUnproven` / `sealedProfilePadMisses` counters:** READ ADR 2026-11.gsqu's Stage 5d amendment, then
+  `docs/WIRE_COMPAT.md`'s bind-signature precedent and `vectors/meshcore-bind-v1.json`. The bind is the board's RFC 8032
+  signature over `"knit-meshcore-bind/v1"` ‖ node id ‖ key; `MeshcoreBind.verifies` checks the key (`MeshcoreKey`) first,
+  then `S < L`, then Tink, and every caller uses it. A receiver stores `meshcoreKey` only when it verifies over
+  `env.senderId` (`provenKey`), never the signature; a failure drops the field alone and counts `meshcoreBindUnproven`.
+  The base copy (`currentProfilePayload`) carries neither field; a direct contact's copy both or neither; every other copy
+  is padded, and a pad miss is counted, never silent. Our claim needs a signature over our own node id, but the board map's
+  "never our own board" reads the raw key. The store's rule makes a consent without a signature harmless for the same key
+  and forgets a stale proof for a new key; `sameCopiesAs` and `spares` compare the key alone on purpose. A proof never
+  breaks a contested tie. iOS mirrors the field, the strict decoder and the verify order (paired). Regression:
+  `MeshcoreBindTest`, `MeshcoreBindVectorTest`, `MeshcoreClaimTest`, `MeshcoreClaimStoreTest`, `MeshcoreProfilePadTest`,
+  `MessageContentV2Test`'s label-10 case, `InboundPipelineTest.aMeshcoreKeyIsStoredOnlyWithASignatureThatBindsItsSender`,
+  `MeshManagerTest.theMeshcoreClaimMintsOneSealedVersionPerChangeAndNeedsTheSeam`.
 - **When touching `MeshManager.broadcastSealedProfile` / `sendIntroTo`'s dedupe (`sentProfileVersions`, `SealedRecord`,
   `sealedEras`, `sealedOutsideFanOut`, `sealedFanOutLock`, `SEALED_PROFILE_STALE_MS`), `MeshcoreFanOutRule` (`spares`,
   `plan`), `OwedSeal`, `FanOutPlan` or `SealedProfileEra`:** READ ADR 2026-11.gsqu's Stage 4 and Stage 5b-1 amendments.

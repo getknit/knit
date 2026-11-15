@@ -1,8 +1,11 @@
 package app.getknit.knit.mesh.lora.meshcore
 
+import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.bluetooth.BackoffConfig
 import app.getknit.knit.mesh.bluetooth.ConnectBackoffPolicy
+import app.getknit.knit.mesh.crypto.MeshcoreBind
+import app.getknit.knit.mesh.crypto.MeshcoreKey
 import app.getknit.knit.mesh.lora.AckProof
 import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.BoardAir
@@ -107,6 +110,12 @@ internal class MeshcoreSession(
     private val records: MeshcoreSetupJournal = MemoryMeshcoreSetupJournal(),
     /** A fresh 32-byte challenge per proof ([proveKey]). */
     private val nonce: () -> ByteArray = { ByteArray(NONCE_BYTES).also(java.security.SecureRandom()::nextBytes) },
+    /**
+     * Our own node id (`Identity.nodeId` in the app): what the board binds its key to for the sealed profile's proof
+     * (ADR 2026-11.gsqu, Stage 5d; [bind]). Null — the default, and every session test's but the bind's — binds nothing
+     * and owes nothing, so the consent goes out as it did before 5d.
+     */
+    private val ownNode: (suspend () -> String?)? = null,
 ) : BoardLink,
     MeshcoreBoardOps {
     private val _state = MutableStateFlow<BoardState>(down(MeshcoreLinkState.Idle))
@@ -821,8 +830,15 @@ internal class MeshcoreSession(
                         unreadLater(c)
                     }
 
+                    // A pending record is a cleanup, never a consent: it binds nothing (Stage 5d). A consent is bound before the
+                    // Ready that publishes it, under [consentLock] with it, so the Ready's consent carries the signature.
                     Proof.PROVEN -> {
-                        if (record.pending) c.cleanup = record.record else c.consent = true
+                        if (record.pending) {
+                            c.cleanup = record.record
+                        } else {
+                            c.consent = true
+                            bind(c)
+                        }
                     }
                 }
             }
@@ -874,18 +890,20 @@ internal class MeshcoreSession(
      * signature verifies as RFC 8032 Ed25519 (`ed25519_sign`) under `SELF_INFO`'s key over exactly those bytes. The board's
      * sign buffer is one for every client: another's `SIGN_START` in between only fails this proof, never passes it. Asked
      * again before a Restore or a cleanup acts, and before a setup writes.
+     *
+     * A key [MeshcoreKey] refuses (not an Ed25519 point, or one of low order) proves nothing and is never asked to sign
+     * (Stage 5d, security N1's follow-up): Tink's verifier is cofactorless and checks no key order, so under a low-order key
+     * `R` = the identity and `S = 0` would verify every challenge. Counted as a signature that does not verify.
      */
     private suspend fun proveKey(c: Conn): Proof {
         val key = c.self?.key ?: return Proof.UNANSWERED
+        if (!MeshcoreKey.accepts(key)) {
+            counters.keyUnproven.incrementAndGet()
+            log("meshcore key not proven: the board reports no valid Ed25519 key")
+            return Proof.REFUSED
+        }
         val message = CONSENT_DOMAIN + nonce()
-        val signature =
-            if (ask<McFrame.SignStart>(c, MeshcoreProto.signStart()) == null ||
-                MeshcoreProto.signData(message)?.let { writeAnswered(c, it) } != Answer.OK
-            ) {
-                null
-            } else {
-                ask<McFrame.Signature>(c, MeshcoreProto.signFinish())?.value
-            }
+        val signature = boardSign(c, message)
         val proof =
             when {
                 signature == null -> Proof.UNANSWERED
@@ -914,12 +932,115 @@ internal class MeshcoreSession(
     /** What a [proveKey] came to: a verified signature, one that does not verify, or no signature at all. */
     private enum class Proof { PROVEN, REFUSED, UNANSWERED }
 
+    /**
+     * The board's signature of [message] through `SIGN_START` / `SIGN_DATA` / `SIGN_FINISH` (`MyMesh.cpp:1781-1815`), or null
+     * for no answer: none at all, `BAD_STATE`, or a `SIGN_DATA` not answered `OK`. The buffer is one for every client, so
+     * what comes back is checked by the caller, never trusted: another's `SIGN_START` in between makes it a signature of
+     * other bytes. Three commands, no air.
+     */
+    private suspend fun boardSign(
+        c: Conn,
+        message: ByteArray,
+    ): ByteArray? =
+        if (ask<McFrame.SignStart>(c, MeshcoreProto.signStart()) == null ||
+            MeshcoreProto.signData(message)?.let { writeAnswered(c, it) } != Answer.OK
+        ) {
+            null
+        } else {
+            ask<McFrame.Signature>(c, MeshcoreProto.signFinish())?.value
+        }
+
+    /**
+     * The bind (ADR 2026-11.gsqu, Stage 5d): the board signs [MeshcoreBind.message] of our node id ([ownNode]) and the key it
+     * just proved ([Conn.provenKey]), and the signature is kept on the connection only once [MeshcoreBind.verifies] accepts
+     * it — the sealed profile's `meshcoreSig`, which every receiver checks against our authenticated node id. It rides the
+     * consent this actor publishes ([publishConsent]), never a second writer, so a withdrawal can never be overtaken by it.
+     *
+     * Run right after every proof that grants consent — the handshake's, a setup's, a re-read's — and before that consent is
+     * published; never for a pending cleanup, a Restore or any withdrawal. **Signed on every such proof** (security B3(a),
+     * lora N4): RFC 8032 is deterministic, so a board signs one (node, key) to one signature every time and the claim store
+     * edit and the claim's fingerprint are no-ops on a reconnect; the cost is three commands a proof, no air.
+     *
+     * A failure — no node id, no answer, another client's command in the shared buffer, a signature that does not verify —
+     * never withholds the consent: it goes out without a signature, which the claim store's same-key rule makes harmless
+     * (a proof it already holds for this key stands), and the bind is owed on its own backoff ([rebindIfOwed]). A signature
+     * that does not verify is read as the proof's [Proof.REFUSED] is: counted, and `SELF_INFO` read once, so a board re-keyed
+     * mid-connection ends the session; never inert, never a withdrawal.
+     */
+    private suspend fun bind(c: Conn) {
+        val input = ownNode ?: return
+        val key = c.provenKey ?: return
+        val node =
+            runCatching { withTimeoutOrNull(RECORD_TIMEOUT_MS) { input() } }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                .getOrNull()
+                ?.let(NodeId::toBytesOrNull)
+        // Over our real node id or nothing: never a placeholder a receiver would refuse anyway.
+        val message = node?.let { MeshcoreBind.message(it, key) }
+        if (node == null || message == null) {
+            counters.bindUnanswered.incrementAndGet()
+            log("meshcore bind skipped: no node id to bind, asked again later")
+            return bindLater(c)
+        }
+        val sig = boardSign(c, message)
+        when {
+            sig == null -> {
+                counters.bindUnanswered.incrementAndGet()
+                log("meshcore bind unanswered: asked again later")
+                bindLater(c)
+            }
+
+            MeshcoreBind.verifies(node, key, sig) -> {
+                c.bindSig = sig.copyOf()
+                c.bindKey = key.copyOf()
+                c.bindOwed = false
+                c.bindBackoffMs = 0
+                log("meshcore bind signed")
+            }
+
+            else -> {
+                counters.bindRefused.incrementAndGet()
+                log("meshcore bind refused: the board's signature does not verify under its key")
+                bindLater(c)
+                // A key re-keyed mid-connection ends the session here, as a refused proof does.
+                selfOf(c)
+            }
+        }
+    }
+
+    /** A bind that failed: owed, asked again as an idle job after a backoff of [CONSENT_RETRY_FIRST_MS] up to [CONSENT_RETRY_MAX_MS]. */
+    private fun bindLater(c: Conn) {
+        c.bindOwed = true
+        c.bindBackoffMs = (c.bindBackoffMs * 2).coerceIn(CONSENT_RETRY_FIRST_MS, CONSENT_RETRY_MAX_MS)
+        c.bindRetryAt = now() + c.bindBackoffMs
+    }
+
+    /**
+     * An owed bind, due ([Conn.bindRetryAt]): asked again on the actor, and on success the consent re-published with its
+     * signature — only while this connection still consents. A consent withdrawn since (a Restore, an unbind, a failed
+     * re-read) owes nothing: the next granting proof binds again. True when the tick is spent.
+     */
+    private suspend fun rebindIfOwed(c: Conn): Boolean {
+        if (!c.bindOwed || now() < c.bindRetryAt) return false
+        if (!c.consent) {
+            c.bindOwed = false
+            c.bindBackoffMs = 0
+            return false
+        }
+        bind(c)
+        if (!c.bindOwed && c.consent) publishConsent(c)
+        poke.trySend(Unit)
+        return true
+    }
+
     /** Hands [c]'s consent to the hooks ([consent]), after anything durable it rests on was written. */
     private fun publishConsent(c: Conn) {
         val digest = c.digest ?: return
         // Only the key the board proved (security F1): never a later SELF_INFO's, and only while it consents.
         val key = c.provenKey?.takeIf { c.consent }
-        _consent.value = MeshcoreConsent(c.address, digest, c.consent && key != null, key, unread = c.consentUnread)
+        // With the bind's signature only when it was made over that very key (Stage 5d); without, the store keeps its proof.
+        val sig = c.bindSig?.takeIf { key != null && c.bindKey?.contentEquals(key) == true }
+        _consent.value = MeshcoreConsent(c.address, digest, c.consent && key != null, key, unread = c.consentUnread, sig = sig)
     }
 
     /**
@@ -1784,16 +1905,12 @@ internal class MeshcoreSession(
     }
 
     /**
-     * One low-priority contact job under sends and the drain: the Ready reconcile's listing first (a board set up for Knit,
-     * once the taught set is known), then its steps one at a time, then the Ready re-assert, then a targeted re-pin.
+     * One low-priority contact job under sends and the drain: a consent re-read or an owed bind (Stage 5d) when due, the
+     * Ready reconcile's listing first (a board set up for Knit, once the taught set is known), then its steps one at a time,
+     * then the Ready re-assert, then a targeted re-pin.
      */
     private suspend fun runOneJob(c: Conn) {
-        if (rereadConsent(c)) return
-        c.cleanup?.let { record ->
-            runCleanup(c, record)
-            poke.trySend(Unit)
-            return
-        }
+        if (runConsentJob(c)) return
         if (reconcileOrDrop(c)) return
         val step = c.steps.removeFirstOrNull()
         val reassert = if (step == null) c.reassert.removeFirstOrNull() else null
@@ -1809,6 +1926,18 @@ internal class MeshcoreSession(
             }
         }
         if (c.steps.isNotEmpty() || c.reassert.isNotEmpty() || pins.hasJobs()) poke.trySend(Unit)
+    }
+
+    /**
+     * The consent's own work, first when due: a record re-read, an owed bind (Stage 5d), or the pending cleanup. True when
+     * the tick is spent.
+     */
+    private suspend fun runConsentJob(c: Conn): Boolean {
+        if (rereadConsent(c) || rebindIfOwed(c)) return true
+        val record = c.cleanup ?: return false
+        runCleanup(c, record)
+        poke.trySend(Unit)
+        return true
     }
 
     /** A record read that failed, due again (security N2): read on the actor, published, and the reconcile owed if it consents. */
@@ -2579,6 +2708,8 @@ internal class MeshcoreSession(
             if (!bonded(c)) counters.unbondedInert.incrementAndGet()
             return MeshcoreSetupResult.Failed("this board is not bonded, or did not prove its key: nothing written", left = null)
         }
+        // Bound before the grant publishes the consent (Stage 5d): a setup that grants it publishes the signature with it.
+        bind(c)
         val plan =
             when (val read = setupReads(c)) {
                 is SetupRead.Planned -> read.plan
@@ -3090,6 +3221,15 @@ internal class MeshcoreSession(
         /** The key this board proved it holds on this connection ([proveKey]): the only key a consent publishes. */
         var provenKey: ByteArray? = null
 
+        /** The bind's verified signature on this connection ([bind]) and the key it was made over; null before one verified. */
+        var bindSig: ByteArray? = null
+        var bindKey: ByteArray? = null
+
+        /** A bind that failed while the consent was being granted: asked again as an idle job at [bindRetryAt] (Stage 5d). */
+        var bindOwed = false
+        var bindRetryAt = 0L
+        var bindBackoffMs = 0L
+
         /** The record could not be read at the last try: re-read as an idle job at [consentRetryAt] (security N2). */
         var consentUnread = false
         var consentRetryAt = 0L
@@ -3255,7 +3395,7 @@ internal class MeshcoreSession(
         private const val CONSENT_RETRY_FIRST_MS = 10_000L
         private const val CONSENT_RETRY_MAX_MS = 600_000L
 
-        /** The consent challenge's domain tag: never the 5d bind proof's (`knit-meshcore-bind/v1`). */
+        /** The consent challenge's domain tag: never the 5d bind's (`MeshcoreBind.DOMAIN`, `knit-meshcore-bind/v1`). */
         val CONSENT_DOMAIN: ByteArray = "knit-meshcore-consent/v1".encodeToByteArray()
 
         /** Frames past the `CONTACTS_START` count a listing reads before it ends short: other clients' strays. */

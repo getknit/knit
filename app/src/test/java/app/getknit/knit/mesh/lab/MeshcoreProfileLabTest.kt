@@ -2,6 +2,13 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.MeshcoreBoardClaim
+import app.getknit.knit.mesh.crypto.MeshcoreBind
+import app.getknit.knit.mesh.crypto.MeshcoreBindFixture
+import app.getknit.knit.mesh.crypto.b64
+import app.getknit.knit.mesh.crypto.b64d
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreProto
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreUnbind
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -26,9 +33,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * The MeshCore board a profile names, end to end (ADR 2026-11.gsqu, Stage 4): the key rides the sealed profile only, so
  * it reaches a contact's `peers` row through `CTL_PROFILE` and stays there across a sealed rename; unbinding the board
  * clears it there; a carrier that shares no session holds the cleartext frame and never the key; the cleartext profile's
- * version never moves for it; and no log line any node writes carries it.
+ * version never moves for it; and no log line any node writes carries it. Since Stage 5d the key goes with the board's bind
+ * of its holder's node id (`meshcoreSig`): a contact stores only a key whose bind names the frame's sender, so a forger who
+ * seals another's key and signature is refused, and the bind itself is in no log line either.
  */
 @RunWith(RobolectricTestRunner::class)
+@Suppress("LargeClass") // the sealed claim's whole end-to-end set, Stage 4 to 5d, over one set of helpers
 class MeshcoreProfileLabTest {
     private lateinit var lab: MeshLab
 
@@ -67,7 +77,7 @@ class MeshcoreProfileLabTest {
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
 
             val cleartextVersion = alice.settings.profileVersion.first()
-            alice.driveMeshcoreBoard(KEY)
+            alice.driveMeshcoreBoard(SEED)
             awaitKey(bob, alice, KEY)
             assertEquals("the cleartext profile version never moved", cleartextVersion, alice.settings.profileVersion.first())
             // Bob wrote Alice a DM, so she is his contact, and the board map Stage 5 teaches from names her board.
@@ -120,10 +130,8 @@ class MeshcoreProfileLabTest {
                 }
             }
 
-            // Never in a log line, in any spelling, on any node.
-            val lines = ShadowLog.getLogs().map { "${it.tag}: ${it.msg} ${it.throwable ?: ""}" }
-            val leaks = lines.filter { line -> listOf(KEY, KEY.take(16), KEY_HEX, KEY_HEX.take(16)).any { it in line } }
-            assertTrue("log lines carrying the key: $leaks", leaks.isEmpty())
+            // Never in a log line, in any spelling, on any node: the key, nor the bind's signature.
+            assertNoLogCarries(KEY, MeshcoreBindFixture.sig(alice.nodeId, SEED))
         }
 
     /**
@@ -171,7 +179,7 @@ class MeshcoreProfileLabTest {
             assertTrue(eve.sendDm(alice, "hey"))
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
 
-            alice.driveMeshcoreBoard(KEY)
+            alice.driveMeshcoreBoard(SEED)
             awaitKey(bob, alice, KEY)
             alice.heal()
             for (stranger in listOf(dave, eve)) {
@@ -188,7 +196,7 @@ class MeshcoreProfileLabTest {
             awaitKey(bob, alice, null)
             assertCopiesOfHeldVersionKeyless(copies, viewer = bob, holder = alice)
             // The rebind after it goes to contacts only, and Bob is no longer one.
-            alice.driveMeshcoreBoard(KEY_2)
+            alice.driveMeshcoreBoard(SEED_2)
             alice.heal()
             assertTrue(lab.tryAwait(1) { if (holdsLatest(bob, alice)) 1 else 0 })
             assertNull("a blocked contact never gets the next key", bob.peer(alice)?.meshcoreKey)
@@ -254,7 +262,7 @@ class MeshcoreProfileLabTest {
             listOf(bob, carol).forEach { exchange(alice, it, atLeast = 2) }
             assertTrue(dave.sendDm(alice, "hello?"))
 
-            alice.driveMeshcoreBoard(KEY)
+            alice.driveMeshcoreBoard(SEED)
             awaitKey(bob, alice, KEY)
             awaitKey(carol, alice, KEY)
             alice.heal()
@@ -283,7 +291,7 @@ class MeshcoreProfileLabTest {
                 assertTrue("${contact.name} holds an older version than its newest copy", holdsNewestSealedTo(contact, alice, copies))
             }
             assertTrue(alice.metrics.seals().sealedProfilesSpared >= 4)
-            assertNoLogCarriesTheKey()
+            assertNoLogCarriesTheKey(alice)
             for (contact in listOf(bob, carol)) exchange(alice, contact, atLeast = 4, sealedTo = sealedTo(alice, copies))
 
             assertRestartMintsNothingAndSealsOnce(alice, listOf(bob, carol, dave, frank), blocked = dave)
@@ -326,7 +334,7 @@ class MeshcoreProfileLabTest {
             }
             alice.transport.lossy(bob.transport, toErinChat)
             alice.transport.lossy(dave.transport, toErinChat)
-            alice.driveMeshcoreBoard(KEY)
+            alice.driveMeshcoreBoard(SEED)
             awaitKey(bob, alice, KEY)
             alice.heal()
 
@@ -378,7 +386,7 @@ class MeshcoreProfileLabTest {
             lab.awaitAcquainted(alice, bob, carol, dave)
             listOf(bob, carol).forEach { exchange(alice, it, atLeast = 2) }
             assertTrue(dave.sendDm(alice, "hello?"))
-            alice.driveMeshcoreBoard(KEY)
+            alice.driveMeshcoreBoard(SEED)
             awaitKey(bob, alice, KEY)
             awaitKey(carol, alice, KEY)
             alice.heal()
@@ -571,11 +579,21 @@ class MeshcoreProfileLabTest {
             }
         }
 
-    /** Never in a log line, in any spelling, on any node. */
-    private fun assertNoLogCarriesTheKey() {
+    /** Never in a log line, in any spelling, on any node: the key, nor the bind's signature. */
+    private fun assertNoLogCarriesTheKey(owner: LabNode) = assertNoLogCarries(KEY, MeshcoreBindFixture.sig(owner.nodeId, SEED))
+
+    /**
+     * Neither [key] nor [sig] (canonical base64) is in any log line on any node, in base64 or in hex, whole or by its first
+     * 16 characters.
+     */
+    private fun assertNoLogCarries(
+        key: String,
+        sig: String,
+    ) {
+        val spellings = listOf(key, sig, hex(b64d(key)), hex(b64d(sig))).flatMap { listOf(it, it.take(16)) }
         val lines = ShadowLog.getLogs().map { "${it.tag}: ${it.msg} ${it.throwable ?: ""}" }
-        val leaks = lines.filter { line -> listOf(KEY, KEY.take(16), KEY_HEX, KEY_HEX.take(16)).any { it in line } }
-        assertTrue("log lines carrying the key: $leaks", leaks.isEmpty())
+        val leaks = lines.filter { line -> spellings.any { it in line } }
+        assertTrue("log lines carrying the key or its bind: $leaks", leaks.isEmpty())
     }
 
     /**
@@ -677,6 +695,237 @@ class MeshcoreProfileLabTest {
         )
     }
 
+    /** Limits for two nodes on a MeshCore air: the DM ✓✓ batched in a second, the re-probe's sweep at 200 ms. */
+    private val quick = LabLimits(dmAckHoldMs = 1_000L, loraLingerSweepMs = 200L)
+
+    /** Alice and Bob, each with a MeshCore board on one air in range of the other's, met as contacts, taught, parted. */
+    private suspend fun boardedPair(): Pair<LabNode, LabNode> {
+        val air = lab.meshcoreAir()
+        air.meshcoreEdit { link("alice", "bob") }
+        val alice = lab.node("alice", quick, meshcore = air).apply { setDisplayName("Alice") }
+        val bob = lab.node("bob", quick, meshcore = air).apply { setDisplayName("Bob") }
+        lab.meetOverMeshcore(alice, bob)
+        return alice to bob
+    }
+
+    /**
+     * The copy attack (ADR 2026-11.gsqu, Stage 5d): Mallory, a live direct contact of Bob's — so his board map keeps her row
+     * up to the contest rule — seals Alice's board key **and** Alice's signature as her own claim. The signature binds
+     * Alice's node, never Mallory's, so Bob drops the field and stores no key for Mallory; Alice's board stays taught on
+     * Bob's and uncontested; Bob counts the refusal.
+     */
+    @Test
+    fun aForgerSealingAnothersKeyAndBindIsRefusedAndTheOwnerStaysTaught() =
+        runBlocking {
+            val (alice, bob) = boardedPair()
+            val aliceKey = b64(checkNotNull(alice.meshcoreBoard).key)
+            awaitKey(bob, alice, aliceKey)
+            val mallory = lab.node("mallory", quick).apply { setDisplayName("Mallory") }
+            val bobCopies = CopyOnWriteArrayList<MeshManager.SealedProfileSend>()
+            bob.manager.onSealedProfile = { bobCopies += it }
+            // Contacts both ways, Bob's audience mint for her sealed once their session confirmed (the meeting's heal).
+            lab.meetOverMeshcore(bob, mallory)
+            lab.link(bob, mallory)
+            assertTrue("Mallory is Bob's direct contact", bob.isDirectContact(mallory))
+            assertTrue("Bob is Mallory's: her keyed copy goes to him", mallory.isDirectContact(bob))
+
+            val unproven = bob.metrics.seals().meshcoreBindUnproven
+            val before = mallory.meshcoreClaims.sealedVersion.first()
+            val stolen = alice.meshcoreClaims.board.first()
+            mallory.manager.meshcoreClaimForTest.value = MeshcoreBoardClaim(checkNotNull(stolen.key), checkNotNull(stolen.sig))
+            // The fence: the version Mallory minted for the forged claim is the one Bob applied.
+            assertTrue(lab.tryAwait(1) { if (mallory.meshcoreClaims.sealedVersion.first() > before) 1 else 0 })
+            val forged = mallory.meshcoreClaims.sealedVersion.first()
+            mallory.heal()
+            assertTrue(
+                "Bob never applied Mallory's forged version",
+                lab.tryAwait(1) { if (bob.peer(mallory)?.updatedAt == forged) 1 else 0 },
+            )
+
+            assertNull("Bob stored the copied key for Mallory", bob.peer(mallory)?.meshcoreKey)
+            assertTrue("the refusal was counted", bob.metrics.seals().meshcoreBindUnproven > unproven)
+            val map = bob.manager.meshcoreBoardMap().first()
+            assertNull(map[mallory.nodeId])
+            val owner = checkNotNull(map[alice.nodeId]) { "Alice left Bob's board map" }
+            assertEquals(aliceKey, owner.key)
+            assertFalse("a forger contests nothing", owner.contested)
+            assertTrue("Alice's board stays taught on Bob's", bob.meshcoreTaught(checkNotNull(alice.meshcoreBoard).key))
+            assertEquals(aliceKey, bob.peer(alice)?.meshcoreKey)
+
+            exchange(bob, mallory, atLeast = 4, sealedTo = sealedTo(bob, bobCopies))
+        }
+
+    /**
+     * The board signs on every proof (security B3(a), lora N4), and determinism makes that free: a second Ready on Alice — a
+     * relaunch — asks the board again, gets the same bytes, and mints no sealed version. An unbind then withdraws the key
+     * and its bind, and Bob clears Alice's key. Neither the key nor the bind is in any log line.
+     */
+    @Test
+    fun aSecondReadyMintsNothingAndAnUnbindClearsTheKeyAtTheContact() =
+        runBlocking {
+            val (alice, bob) = boardedPair()
+            val aliceKey = b64(checkNotNull(alice.meshcoreBoard).key)
+            awaitKey(bob, alice, aliceKey)
+            assertEquals("every copy Bob applied carried a bind that verifies", 0L, bob.metrics.seals().meshcoreBindUnproven)
+            val version = alice.meshcoreClaims.sealedVersion.first()
+            val bind =
+                checkNotNull(
+                    alice.meshcoreClaims.board
+                        .first()
+                        .sig,
+                )
+            val asked = bindsAsked(alice)
+            val writes = alice.meshcoreClaimWritesEver.get()
+
+            alice.restart()
+            assertTrue("the new Ready asked the board to sign again", bindsAsked(alice) > asked)
+            // The fence: the second Ready's consent reached the claim store, then a heal's sealed send ran the mint check
+            // under the profile lock — where a claim that changed would mint.
+            assertTrue(
+                "the second Ready's consent never reached the claim store",
+                lab.tryAwait(1) { if (alice.meshcoreClaimWritesEver.get() > writes) 1 else 0 },
+            )
+            alice.heal()
+            assertEquals("a second Ready minted a sealed version", version, alice.meshcoreClaims.sealedVersion.first())
+            // What the board signed this time (the consent is published only after the bind), not the store's copy.
+            assertEquals(
+                "the board's bind is byte-identical",
+                bind,
+                checkNotNull(alice.meshcoreSession)
+                    .consent.value
+                    ?.sig
+                    ?.let(::b64),
+            )
+
+            assertEquals(MeshcoreUnbind.CLEARED, alice.meshcoreHooks.unbind(alice.meshcoreAddress))
+            assertTrue(
+                lab.tryAwait(1) {
+                    if (alice.meshcoreClaims.board
+                            .first()
+                            .key == null
+                    ) {
+                        1
+                    } else {
+                        0
+                    }
+                },
+            )
+            assertNull(
+                "the bind went with the key",
+                alice.meshcoreClaims.board
+                    .first()
+                    .sig,
+            )
+            lab.link(alice, bob)
+            awaitKey(bob, alice, null)
+            assertNull(bob.manager.meshcoreBoardMap().first()[alice.nodeId])
+            exchange(alice, bob, atLeast = 4)
+            assertNoLogCarries(aliceKey, bind)
+        }
+
+    /**
+     * A non-contact's copy carries neither the key nor its bind, padded to the contact's keyed length, on both layouts
+     * (crypto B1, B2): Bob, a contact, and Dave, a stranger who wrote once, are sealed the claim's version in the compact
+     * layout, then — sealed to as an older build — the next board's version in the named one, every other field the same.
+     */
+    @Test
+    fun aNonContactsCopyCarriesNeitherFieldAndIsOneLengthOnBothLayouts() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val dave = lab.node("dave").apply { setDisplayName("Dave") }
+            val copies = CopyOnWriteArrayList<MeshManager.SealedProfileSend>()
+            alice.manager.onSealedProfile = { copies += it }
+            lab.linkAll(alice to bob, alice to dave, bob to dave)
+            lab.awaitAcquainted(alice, bob, dave)
+            exchange(alice, bob, atLeast = 2)
+            assertTrue(dave.sendDm(alice, "hello?"))
+            lab.assertConverged(listOf(alice, dave), atLeast = 1) { it.dmWith(if (it === alice) dave else alice) }
+
+            alice.driveMeshcoreBoard(SEED)
+            awaitKey(bob, alice, KEY)
+            alice.heal()
+            val compact = alice.meshcoreClaims.sealedVersion.first()
+            val compactLength = assertOneLengthNeitherFieldToTheStranger(copies, compact, contact = bob, stranger = dave)
+
+            alice.sealToAsOlderBuild(bob)
+            alice.sealToAsOlderBuild(dave)
+            alice.driveMeshcoreBoard(SEED_2)
+            awaitKey(bob, alice, KEY_2)
+            alice.heal()
+            val named = alice.meshcoreClaims.sealedVersion.first()
+            val namedLength = assertOneLengthNeitherFieldToTheStranger(copies, named, contact = bob, stranger = dave)
+            // Every field but the version and the key the same: only the layout can move the length.
+            assertTrue("the second version went out in the other layout ($compactLength, $namedLength)", namedLength != compactLength)
+            assertNull(dave.peer(alice)?.meshcoreKey)
+
+            alice.sealToAsOlderBuild(bob, v3 = true)
+            alice.sealToAsOlderBuild(dave, v3 = true)
+            exchange(alice, bob, atLeast = 4)
+        }
+
+    /**
+     * The copies of [version] to [contact] and to [stranger] are recorded, one length: the contact's carries the key and its
+     * bind, the stranger's neither. Answers that length.
+     */
+    private suspend fun assertOneLengthNeitherFieldToTheStranger(
+        copies: List<MeshManager.SealedProfileSend>,
+        version: Long,
+        contact: LabNode,
+        stranger: LabNode,
+    ): Int {
+        val wanted = setOf(contact.nodeId, stranger.nodeId)
+        assertTrue(
+            "v$version never went to both",
+            lab.tryAwait(1) {
+                if (copies
+                        .filter { it.version == version }
+                        .map { it.peerId }
+                        .toSet()
+                        .containsAll(wanted)
+                ) {
+                    1
+                } else {
+                    0
+                }
+            },
+        )
+        val atVersion = copies.filter { it.version == version && it.peerId in wanted }
+        val toContact = atVersion.filter { it.peerId == contact.nodeId }
+        val toStranger = atVersion.filter { it.peerId == stranger.nodeId }
+        assertTrue(
+            "the contact's copy carries both",
+            toContact.all { c ->
+                c.content.pr?.let {
+                    it.meshcoreKey != null &&
+                        it.meshcoreSig != null
+                } ==
+                    true
+            },
+        )
+        assertTrue(
+            "the stranger's copy carries neither",
+            toStranger.all { c ->
+                c.content.pr?.let {
+                    it.meshcoreKey == null &&
+                        it.meshcoreSig == null
+                } !=
+                    false
+            },
+        )
+        val lengths = atVersion.map { it.plaintextBytes }.distinct()
+        assertEquals("copies of v$version differ in length: $lengths", 1, lengths.size)
+        return lengths.single()
+    }
+
+    /** How many binds [node]'s sessions asked its board over all its boots (`SIGN_DATA` of the bind's domain). */
+    private suspend fun bindsAsked(node: LabNode): Int =
+        node.meshcoreWritesEver().count { w ->
+            w[0].toInt() == MeshcoreProto.CMD_SIGN_DATA &&
+                w.size > MeshcoreBind.DOMAIN.size &&
+                w.copyOfRange(1, 1 + MeshcoreBind.DOMAIN.size).contentEquals(MeshcoreBind.DOMAIN)
+        }
+
     private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
     private companion object {
@@ -688,5 +937,9 @@ class MeshcoreProfileLabTest {
 
         /** RFC 8032 TEST 3's public key: the board Alice binds next. */
         const val KEY_2 = "/FHNjmIYoaONpH7QAjDwWAgW7RO6MwOsXeuRFUiQgCU="
+
+        /** RFC 8032 TEST 2's and TEST 3's secret keys: the boards behind [KEY] and [KEY_2], which sign the bind. */
+        val SEED: ByteArray = MeshcoreBindFixture.hex("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb")
+        val SEED_2: ByteArray = MeshcoreBindFixture.hex("c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7")
     }
 }

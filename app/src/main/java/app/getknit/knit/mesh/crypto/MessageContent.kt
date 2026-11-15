@@ -159,14 +159,30 @@ data class MessageContent(
     fun isSupported(): Boolean = v <= MAX_SUPPORTED
 
     /**
-     * This content with every open sender-supplied string brought inside its own rules — today just
-     * [attachmentName] and the transfer offer's `xf.name`. Applied by **both** decoders ([decode] and [MessageContentV2.decode]) so the
-     * repair happens once, at the boundary, and no call site downstream has to remember it.
+     * This content with every open sender-supplied string brought inside its own rules — [attachmentName], the transfer
+     * offer's `xf.name` and the sealed profile's `meshcoreSig` ([strictMeshcoreSig]). Applied by **both** decoders ([decode]
+     * and [MessageContentV2.decode]) so the repair happens once, at the boundary, and no call site downstream has to
+     * remember it.
      */
     internal fun normalized(): MessageContent {
         val name = attachmentName?.let(AttachmentName::sanitize)
         val transfer = xf?.let { it.copy(name = AttachmentName.sanitize(it.name)) }
-        return if (name == attachmentName && transfer == xf) this else copy(attachmentName = name, xf = transfer)
+        val profile = pr?.let(::strictMeshcoreSig)
+        return if (name == attachmentName && transfer == xf && profile === pr) {
+            this
+        } else {
+            copy(attachmentName = name, xf = transfer, pr = profile)
+        }
+    }
+
+    /**
+     * [profile] with its `meshcoreSig` dropped, alone, unless it is the canonical base64 of exactly
+     * [MeshcoreBind.SIG_BYTES] bytes beside a key (ADR 2026-11.gsqu, Stage 5d, security N5): a strict decoder on both
+     * layouts, never a throw and never the profile. Whether it verifies is the receiver's question (`InboundPipeline`).
+     */
+    private fun strictMeshcoreSig(profile: ProfilePayload): ProfilePayload {
+        val sig = profile.meshcoreSig ?: return profile
+        return if (profile.meshcoreKey != null && MeshcoreBind.sigBytesOrNull(sig) != null) profile else profile.copy(meshcoreSig = null)
     }
 
     companion object {

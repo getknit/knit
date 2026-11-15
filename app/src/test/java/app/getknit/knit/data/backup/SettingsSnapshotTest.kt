@@ -108,6 +108,8 @@ class SettingsSnapshotTest {
         }
         for (rides in listOf(
             "meshcore_board_pubkey",
+            // The board's bind signature (Stage 5d) rides with the key it proves: forgotten with it, restored with it.
+            SettingsKeys.MESHCORE_BOARD_BIND,
             "meshcore_room_enabled",
             "meshcore_post_consented",
             "lora_board_key",

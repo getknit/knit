@@ -120,6 +120,12 @@ object SettingsKeys {
     const val MESHCORE_DEVICE_ADDRESS = "meshcore_device_address"
     const val MESHCORE_DEVICE_NAME = "meshcore_device_name"
     const val MESHCORE_BOARD_PUBKEY = "meshcore_board_pubkey"
+
+    // The board's Ed25519 signature over `"knit-meshcore-bind/v1"` ‖ our node id ‖ its key (ADR 2026-11.gsqu, Stage 5d,
+    // `MeshcoreBind`): the proof our sealed profile carries beside the key. Public, like the key, and treated as the key is:
+    // forgotten with it (`BoardKeys.MESHCORE.reported`), riding a backup, never logged, never on the debug bridge. Matches
+    // no [TRANSIENT_PREFIXES] entry.
+    const val MESHCORE_BOARD_BIND = "meshcore_board_bind"
     const val MESHCORE_SETUP_PREFIX = "meshcore_setup_"
     const val MESHCORE_SETUP_ADDRESS = "meshcore_setup_address"
     const val MESHCORE_PRIOR_PREFIX = "meshcore_prior_"
@@ -141,9 +147,9 @@ object SettingsKeys {
      * as prefixes against the key name. Each board kind has its own (ADR 2026-11.gsqu, Stage 2), split the same
      * way and named key by key, never one bare `meshcore_` prefix: a MeshCore board's address, name, setup record
      * (`meshcore_setup_…`), prior settings (`meshcore_prior_…`) and plane state stay, as their `lora_` peers do,
-     * while its public key (`meshcore_board_pubkey`), its Public-channel switch (`meshcore_room_enabled`) and its
-     * post consent (`meshcore_post_consented`) ride, as `lora_board_key`, `lora_room_enabled` and
-     * `meshtastic_post_consented` do. The clone watch's two stamps (`clone_seen_at`, `clone_dismissed_at`)
+     * while its public key (`meshcore_board_pubkey`), its bind signature (`meshcore_board_bind`), its Public-channel
+     * switch (`meshcore_room_enabled`) and its post consent (`meshcore_post_consented`) ride, as `lora_board_key`,
+     * `lora_room_enabled` and `meshtastic_post_consented` do. The clone watch's two stamps (`clone_seen_at`, `clone_dismissed_at`)
      * are about this phone too: a backup taken while its banner showed must not plant it on the next one, and
      * so is the mesh pause deadline (`mesh_pause_until`): a backup taken mid-pause must not pause the other phone.
      * Debug-build diagnostic knobs (`debug_`, e.g. the Bluetooth link cap) are about this phone's test run. A spool

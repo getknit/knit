@@ -329,7 +329,8 @@ internal sealed interface MeshcoreRestoreResult {
 /**
  * This phone's consent for one board (the second part; the maintainer's decisions, 2026-11-13): its [address] and key
  * [digest], [granted] from a non-pending record of that board on a bonded link, and the board's own [key] — what the
- * profile's claim publishes while [granted]. Its [toString] names no key.
+ * profile's claim publishes while [granted] — with the board's [sig] binding our node id to it (ADR 2026-11.gsqu, Stage
+ * 5d), so the key and its proof reach the claim store as one edit from one writer. Its [toString] names neither.
  */
 internal class MeshcoreConsent(
     val address: String,
@@ -341,13 +342,23 @@ internal class MeshcoreConsent(
      * left it; [granted] is false. Read again on the actor with a backoff.
      */
     val unread: Boolean = false,
+    /**
+     * The board's signature of `MeshcoreBind.message(our node, key)`, verified on the actor (Stage 5d); kept only on a granted
+     * consent with a key. Null when this connection's bind has not succeeded: the claim store then keeps a proof it already
+     * holds for the same key.
+     */
+    sig: ByteArray? = null,
 ) {
     private val bytes = key?.copyOf()
+    private val sigBytes = sig?.takeIf { granted && key != null }?.copyOf()
 
     /** The board's key, null for a withdrawal published with the board away (an unbind). */
     val key: ByteArray? get() = bytes?.copyOf()
 
-    override fun toString(): String = "MeshcoreConsent(granted=$granted)"
+    /** The bind's signature over (our node, [key]), or null. */
+    val sig: ByteArray? get() = sigBytes?.copyOf()
+
+    override fun toString(): String = "MeshcoreConsent(granted=$granted, signed=${sigBytes != null})"
 }
 
 /** What an unbind did with the board's setup record ([MeshcoreBoardOps.unbind]). */
@@ -528,6 +539,16 @@ internal class MeshcoreCounters {
 
     /** A consent challenge the board did not answer (a lost notify, BAD_STATE, no such command): asked again later. */
     val proofUnanswered = AtomicLong()
+
+    /**
+     * A bind (Stage 5d: the board's signature over our node id and its key, for the sealed profile's `meshcoreSig`) the board
+     * did not answer — a lost notify, `BAD_STATE`, another client's `SIGN_START` or `SIGN_FINISH` in the shared buffer — or
+     * asked with no node id to bind: the consent goes out without it, and it is asked again on its own backoff.
+     */
+    val bindUnanswered = AtomicLong()
+
+    /** A bind whose signature does not verify under the proven key (another client's bytes in the buffer, or a re-key). */
+    val bindRefused = AtomicLong()
 
     /** A setup record read for a Restore or an unbind that failed: answered as no answer, never as "no record". */
     val recordReadFailures = AtomicLong()

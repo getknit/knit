@@ -81,9 +81,11 @@ internal class MeshcoreHooks(
     private val wallClock: () -> Long = System::currentTimeMillis,
     /**
      * The bound board reported its 32-byte public key, from the session that dialled [dialled] (the `dialled` race, Stage
-     * 5a-2): what `MeshcoreClaimStore.setBoardKey` writes, only while that address is still the bound one.
+     * 5a-2), with its signature binding our node id when the session's bind succeeded (Stage 5d; null otherwise): what
+     * `MeshcoreClaimStore.setBoardKey` writes, as one edit, only while that address is still the bound one. Called from the
+     * consent alone ([onConsent]); null key withdraws both.
      */
-    private val onBoardKey: suspend (key: ByteArray?, dialled: String?) -> Unit = { _, _ -> },
+    private val onBoardKey: suspend (key: ByteArray?, sig: ByteArray?, dialled: String?) -> Unit = { _, _, _ -> },
 ) : BoardKindHooks,
     MeshcoreSessionObserver {
     override val kind: BoardKind get() = BoardKind.MESHCORE
@@ -477,8 +479,9 @@ internal class MeshcoreHooks(
     /**
      * The session's consent for the board on [c] (one owner: the actor resolved it before the Ready, or moved it in its own
      * setup, Restore or unbind after the durable write). Applied whole, so the latest wins: the taught set, the core's offers
-     * ([PlaneCore.holdersMoved]) and the profile's claim — the board's key published while consented, withdrawn (null)
-     * otherwise (security S2).
+     * ([PlaneCore.holdersMoved]) and the profile's claim — the board's key published while consented, with the bind's
+     * signature when the consent carries one (Stage 5d: the session's one writer, so a withdrawal is never overtaken by a late
+     * bind), withdrawn (null, both) otherwise (security S2).
      */
     private suspend fun onConsent(c: MeshcoreConsent) {
         // Only the board this plane is bound to (the maintainer's decision, 2026-11-14): another address cannot hold the claim.
@@ -487,16 +490,17 @@ internal class MeshcoreHooks(
         consent = c.granted
         // A withdrawal goes to the claim first (security N2): nothing after it can skip it. An unread record leaves the claim
         // as the last consent left it.
-        if (!c.unread && !c.granted) claim(c.address, null)
+        if (!c.unread && !c.granted) claim(c.address, null, null)
         if (holders != null) reteach()
         core.holdersMoved()
-        if (!c.unread && c.granted) claim(c.address, c.key)
+        if (!c.unread && c.granted) claim(c.address, c.key, c.sig)
     }
 
     /** The claim edit owed, the latest winning, retried until it lands ([claim]). */
     private class OwedClaim(
         val address: String,
         val key: ByteArray?,
+        val sig: ByteArray?,
     )
 
     @Volatile
@@ -505,14 +509,16 @@ internal class MeshcoreHooks(
     private var claimRetry: kotlinx.coroutines.Job? = null
 
     /**
-     * Publishes ([key]) or withdraws (null) the claim for [address]; an edit that throws (a DataStore I/O error) is owed and
-     * retried with a backoff until it lands or a newer one replaces it, so a withdrawal is never lost (security N2).
+     * Publishes ([key], with its bind [sig] when the consent carried one) or withdraws (null) the claim for [address]; an edit
+     * that throws (a DataStore I/O error) is owed and retried with a backoff until it lands or a newer one replaces it, so a
+     * withdrawal is never lost (security N2).
      */
     private suspend fun claim(
         address: String,
         key: ByteArray?,
+        sig: ByteArray?,
     ) {
-        val owed = OwedClaim(address, key)
+        val owed = OwedClaim(address, key, sig?.takeIf { key != null })
         owedClaim = owed
         if (tryClaim(owed)) return
         synchronized(lock) {
@@ -541,7 +547,7 @@ internal class MeshcoreHooks(
         val landed =
             claimMutex.withLock {
                 if (owedClaim !== owed) return true
-                runCatching { onBoardKey(owed.key, owed.address) }
+                runCatching { onBoardKey(owed.key, owed.sig, owed.address) }
                     .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
                     .isSuccess
             }
@@ -1036,7 +1042,7 @@ internal fun meshcorePlane(
     clock: () -> Long,
     log: (String) -> Unit,
     wallClock: () -> Long,
-    onBoardKey: suspend (key: ByteArray?, dialled: String?) -> Unit,
+    onBoardKey: suspend (key: ByteArray?, sig: ByteArray?, dialled: String?) -> Unit,
 ): BoardPlane =
     BoardPlane(MeshcoreTraits, session) { core ->
         MeshcoreHooks(session, core, scope, clock, log, wallClock, onBoardKey)

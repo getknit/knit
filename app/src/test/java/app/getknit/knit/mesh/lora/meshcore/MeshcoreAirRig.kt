@@ -159,7 +159,7 @@ internal class MeshcoreAirRig(
                             { scope.testScheduler.currentTime },
                             { logs += it },
                             { wall() },
-                        ) { _, _ -> }
+                        ) { _, _, _ -> }
                             .also { hooks = it }
                     },
                 config = MutableStateFlow(LoraConfig(address, MeshcoreHooks.NO_CONFIGURED_SLOT, dms = true)),

@@ -241,6 +241,61 @@ class MessageContentV2Test {
         assertNull(MessageContentV2.encodeOrNull(off.copy(pr = checkNotNull(off.pr).copy(meshcoreKey = MESHCORE_KEY.trimEnd('=')))))
     }
 
+    /**
+     * The board's bind signature (ADR 2026-11.gsqu, Stage 5d) takes profile label 10 as 64 raw bytes beside the key, elided
+     * while unclaimed. Strict on the way in, on both layouts: anything but 64 canonical bytes beside a key is dropped alone,
+     * the profile and its key kept (security N5).
+     */
+    @OptIn(ExperimentalSerializationApi::class)
+    @Test
+    fun aBindSignatureTakesLabelTenAsRawBytesAndIsStrictOnTheWayIn() {
+        val sig = ByteArray(64) { (it * 3).toByte() }
+        val off = MessageContent(body = "", ctl = MessageContent.CTL_PROFILE, pr = ProfilePayload(name = "A", status = "", version = 5L))
+        val keyed = off.copy(pr = checkNotNull(off.pr).copy(meshcoreKey = MESHCORE_KEY))
+        val on = keyed.copy(pr = checkNotNull(keyed.pr).copy(meshcoreSig = b64(sig)))
+        val keyedBytes = checkNotNull(MessageContentV2.encodeOrNull(keyed))
+        val onBytes = checkNotNull(MessageContentV2.encodeOrNull(on))
+        assertEquals("label 10 + bstr(64): 1 + 2 + 64", keyedBytes.size + 67, onBytes.size)
+        assertTrue("the raw signature", hex(onBytes).contains("0a5840" + hex(sig)))
+        assertEquals(on, roundTrip(on))
+        assertEquals("named", on, MessageContent.decode(on.encode()))
+
+        for ((what, bad) in listOf(
+            "63 bytes" to keyed.copy(pr = checkNotNull(keyed.pr).copy(meshcoreSig = b64(sig.copyOf(63)))),
+            "65 bytes" to keyed.copy(pr = checkNotNull(keyed.pr).copy(meshcoreSig = b64(sig + 0))),
+            "beside no key" to off.copy(pr = checkNotNull(off.pr).copy(meshcoreSig = b64(sig))),
+        )) {
+            for ((layout, decoded) in listOf(
+                "compact" to roundTrip(bad),
+                "named" to MessageContent.decode(bad.encode()),
+            )) {
+                val pr = checkNotNull(checkNotNull(decoded) { "$what, $layout: the profile survives" }.pr)
+                assertNull("$what, $layout", pr.meshcoreSig)
+                assertEquals("$what, $layout: the key stays", checkNotNull(bad.pr).meshcoreKey, pr.meshcoreKey)
+            }
+        }
+        // A non-canonical spelling has no raw form (the caller seals named), and the named decoder drops it.
+        val unpadded = keyed.copy(pr = checkNotNull(keyed.pr).copy(meshcoreSig = b64(sig).trimEnd('=')))
+        assertNull(MessageContentV2.encodeOrNull(unpadded))
+        assertNull(MessageContent.decode(unpadded.encode())?.pr?.meshcoreSig)
+        // An older build models no label 10 and keeps the rest.
+        assertEquals(
+            MessageContent.CTL_PROFILE,
+            compactCbor.decodeFromByteArray(OlderWire.serializer(), onBytes).ctl,
+        )
+    }
+
+    /** Neither layout's profile prints the key or the signature (security N4). */
+    @Test
+    fun aProfileNamesNeitherKeyNorSignatureWhenPrinted() {
+        val sig = b64(ByteArray(64) { 9 })
+        val pr = ProfilePayload(name = "A", status = "", version = 5L, meshcoreKey = MESHCORE_KEY, meshcoreSig = sig)
+        val printed = MessageContent(body = "", ctl = MessageContent.CTL_PROFILE, pr = pr).toString()
+        assertFalse(printed, printed.contains(MESHCORE_KEY.take(8)))
+        assertFalse(printed, printed.contains(sig.take(8)))
+        assertTrue(printed, printed.contains("meshcoreSig=set"))
+    }
+
     /** The pad (ADR 2026-11.gsqu's Stage 4 review) takes the reserved label 12 as zero bytes, and its count round-trips. */
     @OptIn(ExperimentalSerializationApi::class)
     @Test

@@ -315,10 +315,19 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
 - **Before touching what our profile claims about a board — `MeshManager.ownLora` / `OwnLora`, `Protocol.CAP_LORA_DIRECT` as
   we claim it, `MeshManager.bindMeshcoreDirect` / `ownMeshcoreKey` / `watchMeshcoreClaim` /
   `publishMeshcoreClaimIfChanged`, `MeshcoreClaimRule`, `MeshcoreClaimJournal` / `MeshcoreClaimStore`
-  (`meshcore_sealed_version`, `meshcore_published`), `ProfilePayload.meshcoreKey` / `ProfileV2` label 9,
-  `PeerEntity.meshcoreKey`, `MeshManager.meshcoreBoardMap` / `MeshcoreBoardMap` / `MeshcoreBoardHolder` /
-  `MeshcoreRank`, or `MeshcoreKey`:** READ ADR 2026-11.gsqu's Stage 4 amendment, then `docs/WIRE_COMPAT.md`'s MeshCore-key
-  precedent and the contacts entry in `contacts.md`. Each kind claims its own door. `CAP_LORA_DIRECT` is Meshtastic's:
+  (`meshcore_sealed_version`, `meshcore_published`, `meshcore_board_bind`), `ProfilePayload.meshcoreKey` / `meshcoreSig` /
+  `ProfileV2` labels 9 and 10, `PeerEntity.meshcoreKey`, `MeshManager.meshcoreBoardMap` / `MeshcoreBoardMap` /
+  `MeshcoreBoardHolder` / `MeshcoreRank`, `MeshcoreKey`, `MeshcoreBind`, `MeshcoreConsent.sig`, `MeshcoreSession.bind` /
+  `ownNode`, `di/writeMeshcoreClaim` / `meshcoreProofKept`, or the `meshcoreBindUnanswered` / `meshcoreBindRefused`
+  counters (`meshcoreBindUnanswered` also counts a bind skipped for want of a node id; the `meshcore bind skipped` line
+  tells the two apart):** READ ADR 2026-11.gsqu's Stage 4 amendment and its Stage 5d amendment (both parts), then
+  `docs/WIRE_COMPAT.md`'s MeshCore-key precedent, the `MeshcoreBind` entry in `crypto.md`, "The bind" in `lora-bridge.md`'s
+  MeshCore contacts section, and the contacts entry in `contacts.md`. **Since Stage 5d the claim is the key and its proof**:
+  the board's signature over `knit-meshcore-bind/v1` ‖ our node id ‖ its key (`meshcoreSig`), asked by the session's actor
+  after every proof that grants consent and carried on the consent it publishes (`MeshcoreConsent.sig`), so the hooks write
+  `(key, sig)` to the claim store off the consent alone, one edit, latest wins; a key without a signature that verifies
+  claims nothing, a failed bind publishes the consent unsigned (the store keeps a proof it holds for the same key) and is
+  owed on a 10 s – 10 min backoff, and a proof never breaks a tie between two claimants of one key. Each kind claims its own door. `CAP_LORA_DIRECT` is Meshtastic's:
   claimed only beside a bound Meshtastic board (the reported node `loraNode` names), so a MeshCore bind, which clears that
   identity, takes the bit with it. MeshCore's door has **no bit**: the sealed profile's `meshcoreKey` is the claim, sent
   only while the plane and its DM switch are on, a MeshCore board reported a key `MeshcoreKey` accepts, and the build is
@@ -329,9 +338,11 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   never the bit alone; bind `bindMeshcoreDirect` before `start()`; memoize `MeshcoreKey`'s point check before collecting
   the map; and the board map Stage 5 teaches from is `meshcoreBoardMap` (`DirectContacts`' set only, ranked, our own
   board excluded, contested keys among live claimants marked and never taught, `latestProfileVersion` never a re-teach
-  order). The key itself is sent to direct contacts only (`MeshcoreAudience`). Regression: `MeshcoreClaimTest`, `MeshcoreKeyTest`,
-  `MeshManagerTest.theLoraDoorIsClaimedOnlyBesideABoundMeshtasticBoard` /
-  `theMeshcoreClaimMintsOneSealedVersionPerChangeAndNeedsTheSeam`, `MeshcoreProfileLabTest`.
+  order). The key and its signature are sent to direct contacts only (`MeshcoreAudience`). Regression: `MeshcoreClaimTest`,
+  `MeshcoreKeyTest`, `MeshcoreBindTest`, `MeshManagerTest.theLoraDoorIsClaimedOnlyBesideABoundMeshtasticBoard` /
+  `theMeshcoreClaimMintsOneSealedVersionPerChangeAndNeedsTheSeam`, `MeshcoreSessionTest`'s bind block,
+  `MeshcoreHooksTest.theClaimCarriesTheConsentsBindAndAWithdrawalForgetsBoth`, `LoraPlaneWiringTest`,
+  `MeshcoreProfileLabTest`.
 
 - **Before touching the MeshCore client — `MeshcoreSession`, `MeshcoreProto` (`McFrame`, `McReject`, `ContactRecord`,
   `expectedAck`, `ENCODED_COMMANDS`, `KNIT_DATA_TYPE`, `MIN_FIRMWARE_VERSION_CODE`), `Cobs`, `MeshcoreDialer` /

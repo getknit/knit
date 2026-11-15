@@ -891,6 +891,15 @@ class PresenceKeyPayload(
  * version gate (absent clears), and refuses a non-canonical or low-order key by dropping the field alone
  * (`mesh/crypto/MeshcoreKey`). A routing hint only: never what an inbound DM is attributed by. Nullable, elided while
  * unclaimed, so every existing profile's bytes are unchanged.
+ *
+ * [meshcoreSig] is that board's proof of possession (ADR 2026-11.gsqu, Stage 5d): its Ed25519 signature over
+ * `"knit-meshcore-bind/v1"` ‖ the sender's node id ‖ [meshcoreKey] (`mesh/crypto/MeshcoreBind`), 64 bytes as canonical
+ * padded base64 (raw on the compact layout, label 10). Sent with the key or not at all, to direct contacts only. A receiver
+ * stores the key only when this verifies over the frame's authenticated sender, and never stores the signature. Strict on
+ * the way in (`MessageContent.normalized`): not exactly 64 bytes, not canonical, or beside no key, and it is dropped alone.
+ * Nullable, elided while unclaimed.
+ *
+ * Its [toString] names neither the key nor the signature, only whether each is set.
  */
 @Serializable
 data class ProfilePayload(
@@ -903,7 +912,15 @@ data class ProfilePayload(
     val loraKey: String? = null,
     val badges: List<BadgeEntry>? = null,
     val meshcoreKey: String? = null,
-)
+    val meshcoreSig: String? = null,
+) {
+    override fun toString(): String =
+        "ProfilePayload(name=$name, status=$status, avatarHash=$avatarHash, version=$version, openToChat=$openToChat, " +
+            "loraNode=$loraNode, loraKey=$loraKey, badges=$badges, meshcoreKey=${setOrUnset(meshcoreKey)}, " +
+            "meshcoreSig=${setOrUnset(meshcoreSig)})"
+
+    private fun setOrUnset(value: String?): String = if (value != null) "set" else "unset"
+}
 
 /**
  * One supporter badge a sealed profile carries ([ProfilePayload.badges], docs/SUPPORTER_BADGE.md): [w] is the

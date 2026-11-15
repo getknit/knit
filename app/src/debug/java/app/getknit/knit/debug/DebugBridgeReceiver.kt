@@ -1817,6 +1817,10 @@ class DebugBridgeReceiver :
             // re-sealed because their copy may be gone.
             .put("sealedProfilesSpared", snap.seals.sealedProfilesSpared)
             .put("sealedProfilesStale", snap.seals.sealedProfilesStale)
+            // Stage 5d (ADR 2026-11.gsqu): a keyless copy no pad reached (0 unless broken), and a contact's MeshCore key
+            // refused for want of a verifying bind signature.
+            .put("sealedProfilePadMisses", snap.seals.sealedProfilePadMisses)
+            .put("meshcoreBindUnproven", snap.seals.meshcoreBindUnproven)
             .put("receiptsSealed", snap.receipts.receiptsSealed)
             .put("receiptsSealedFallback", snap.receipts.receiptsSealedFallback)
             .put("receiptsCustodied", snap.receipts.receiptsCustodied)
@@ -2887,6 +2891,9 @@ class DebugBridgeReceiver :
                     // The consent's refusals (security F2): counts only.
                     .put("meshcoreKeyUnproven", sc.keyUnproven.get())
                     .put("meshcoreProofUnanswered", sc.proofUnanswered.get())
+                    // The bind's failures (Stage 5d): counts only, never a key or a signature.
+                    .put("meshcoreBindUnanswered", sc.bindUnanswered.get())
+                    .put("meshcoreBindRefused", sc.bindRefused.get())
                     .put("meshcoreUnbondedInert", sc.unbondedInert.get())
                     .put("meshcoreConsentMismatches", sc.consentMismatches.get())
                     .put("meshcoreConsentReadFailures", sc.consentReadFailures.get())

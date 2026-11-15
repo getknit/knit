@@ -67,6 +67,13 @@ they are documented and out of scope for reports:
   person, as one sealed frame that names them as its recipient. A relay, a carrier or the Internet relay can't read it,
   but sees whose contact status you changed and when.
 
+- **A build that names your MeshCore board proves it to your contacts, for good.** The same builds send your direct
+  contacts your board's signature binding the board's key to your Knit identity, so a contact cannot claim your board by
+  copying it from your profile. That signature is a permanent proof, which anyone who receives it can show to others,
+  that your Knit identity runs that MeshCore board, and it never expires. It does not prove much more: a board on its
+  default PIN signs for anyone in Bluetooth range while your phone is away, and a board's former owner keeps a valid
+  signature, so two contacts can still both prove one board, and then Knit uses it for neither.
+
 See the README's *Security note* and [`docs/`](docs/) for the full threat model and design detail. Novel
 issues **beyond** these documented trade-offs — key handling, the crypto envelope, signature
 verification, the CBOR wire parser, at-rest encryption, memory-safety in the radio layer — are in scope

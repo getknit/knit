@@ -66,7 +66,6 @@ import app.getknit.knit.mesh.bluetooth.wear.WearStatusServer
 import app.getknit.knit.mesh.crypto.LinkProver
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
 import app.getknit.knit.mesh.crypto.MessageCrypto
-import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.SessionTransactor
@@ -489,6 +488,8 @@ val meshModule =
                     log = { line -> Log.d("MeshcoreSession", line) },
                     // The setup records, the single source of consent, read and written by the session's actor alone.
                     records = get<MeshcoreSetupStore>(),
+                    // What the board binds its key to for the sealed profile's proof (ADR 2026-11.gsqu, Stage 5d).
+                    ownNode = { get<Identity>().nodeId() },
                 )
             }
             loraPlaneOf(
@@ -501,13 +502,13 @@ val meshModule =
                         clock = SystemClock::elapsedRealtime,
                         log = log,
                         wallClock = System::currentTimeMillis,
-                        // The board's public key under the address its session dialled, while that is still the bound
-                        // one (`MeshcoreClaimStore.setBoardKey`'s rule), only while this phone's setup record consents for
-                        // that board; null withdraws it (a board never set up, a Restore, an unbind: security S2). Never in a
-                        // log or the bridge.
-                        onBoardKey = { key, dialled ->
+                        // The board's public key and the bind's signature under the address its session dialled, while
+                        // that is still the bound one (`MeshcoreClaimStore.setBoardKey`'s rule), only while this phone's setup
+                        // record consents for that board; null withdraws both (a board never set up, a Restore, an unbind:
+                        // security S2). Both off the session's consent alone (Stage 5d). Never in a log or the bridge.
+                        onBoardKey = { key, sig, dialled ->
                             bindingAddress(dialled, get<LoraMeshTransport>(loraPlane(BoardKind.MESHCORE)).configuredAddress)?.let {
-                                get<MeshcoreClaimStore>().setBoardKey(key?.let(::b64), dialled = it)
+                                writeMeshcoreClaim(get(), { get<Identity>().nodeId() }, key, sig, dialled = it)
                             }
                         },
                     )

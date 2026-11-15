@@ -607,6 +607,8 @@ class MeshMetrics {
     private val dmSealedV3 = AtomicLong()
     private val sealedProfilesSpared = AtomicLong()
     private val sealedProfilesStale = AtomicLong()
+    private val sealedProfilePadMisses = AtomicLong()
+    private val meshcoreBindUnproven = AtomicLong()
     private val ticksUnsigned = AtomicLong()
     private val dmSealedV1Fallback = AtomicLong()
     private val receiptsSealed = AtomicLong()
@@ -1088,6 +1090,26 @@ class MeshMetrics {
     ) {
         sealedProfilesSpared.addAndGet(spared.toLong())
         sealedProfilesStale.addAndGet(stale.toLong())
+    }
+
+    /**
+     * A keyless sealed profile copy no pad could bring to its keyed copy's length (ADR 2026-11.gsqu, Stage 5d, crypto B1):
+     * sent unpadded, so its length tells a relay the recipient is not a direct contact. Should stay 0; a count is a bug.
+     */
+    fun onSealedProfilePadMissed() {
+        sealedProfilePadMisses.incrementAndGet()
+    }
+
+    /**
+     * A sealed profile we applied whose `meshcoreKey` was present but not stored (ADR 2026-11.gsqu, Stage 5d): its
+     * `meshcoreSig` absent or not verifying over the sender, or the key itself refused. Never a keyless or padded profile,
+     * and never an older copy the version gate refused, nor a verbatim re-serve (the ratchet stops it first). A same-version
+     * copy under a fresh frame id still passes the gate (`version < updatedAt` refuses only an older one) and counts again:
+     * a fan-out's stale re-seal, or a contact-card intro, which skips `sentProfileVersions` on purpose. So this counts
+     * applied copies, not distinct claims. Counted, never logged with any key.
+     */
+    fun onMeshcoreBindUnproven() {
+        meshcoreBindUnproven.incrementAndGet()
     }
 
     /** A live-link delivery tick sent unsigned (v3, `relay = false`) — the one-packet form on every fast plane. */
@@ -2164,6 +2186,8 @@ class MeshMetrics {
             dmSealedV1Fallback = dmSealedV1Fallback.get(),
             sealedProfilesSpared = sealedProfilesSpared.get(),
             sealedProfilesStale = sealedProfilesStale.get(),
+            sealedProfilePadMisses = sealedProfilePadMisses.get(),
+            meshcoreBindUnproven = meshcoreBindUnproven.get(),
             reactionsSealed = reactionsSealed.get(),
             reactionsSealedFallback = reactionsSealedFallback.get(),
             ctlDmSealedBy = ctlDmsByPurpose.mapValues { it.value.get() }.filterValues { it > 0 },
@@ -2498,6 +2522,9 @@ class MeshMetrics {
             // The sealed profile's audience-only mints (ADR 2026-11.gsqu, Stage 5b-1).
             val sealedProfilesSpared: Long = 0,
             val sealedProfilesStale: Long = 0,
+            // Stage 5d: a keyless copy sent unpadded (a bug if ever non-zero), and a received claim with no proof.
+            val sealedProfilePadMisses: Long = 0,
+            val meshcoreBindUnproven: Long = 0,
             val reactionsSealed: Long = 0,
             val reactionsSealedFallback: Long = 0,
             // Sealed ctl DMs by what they carried, and the profile watcher's republishes by why (measurement only, the

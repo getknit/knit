@@ -1,0 +1,105 @@
+{
+  "about": "MeshCore proof of possession (ADR 2026-11.gsqu Stage 5d). message = ASCII \"knit-meshcore-bind/v1\" (21) || node id (16 raw bytes) || the board's Ed25519 public key (32) = 69 bytes; sig = the board's RFC 8032 Ed25519 signature over it (key here from the fixed test seed; verify, never compare: a port's signer may randomize). A sealed profile carries it as meshcoreSig beside meshcoreKey: canonical padded base64 on the named layout, 64 raw bytes at ProfileV2 label 10 on the compact one, to direct contacts only. A receiver decodes strictly (exactly 64 canonical bytes, beside a key, else the field alone is dropped: decodedSig) and stores the key only when the key is canonical, an Ed25519 point and not of low order, S < L, and the signature verifies over the bind of the frame's authenticated sender (storedKey; null drops the field and clears a stored key). Check the key before the signature: under the low-order key below, R = identity and S = 0 verifies every message in a cofactorless verifier. Each step's plaintext is the sealed CTL_PROFILE content in the layout the step names.",
+  "seed": "4d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f26",
+  "key": "0b760ab92ea5fda2f0f38b87996da8b7abc335705b68839e2a3d0467431bdeef",
+  "keyBase64": "C3YKuS6l/aLw84uHmW2ot6vDNXBbaIOeKj0EZ0Mb3u8=",
+  "nodeId": "augbggrbfaxtmpkejnjfsydhny",
+  "nodeIdBytes": "050c131a21282f363d444b525960676e",
+  "message": "6b6e69742d6d657368636f72652d62696e642f7631050c131a21282f363d444b525960676e0b760ab92ea5fda2f0f38b87996da8b7abc335705b68839e2a3d0467431bdeef",
+  "sig": "d393fb0aef1ae5b4582d8c2ac9916b32a31427fa2959050def87d55185d7791db369a3b72e9b24916f3d99f2b9159362f0419095d0f04f340d15900692dd7604",
+  "sigBase64": "05P7Cu8a5bRYLYwqyZFrMqMUJ/opWQUN74fVUYXXeR2zaaO3LpskkW89mfK5FZNi8EGQldDwTzQNFZAGkt12BA==",
+  "steps": [
+    {
+      "name": "accepted, compact",
+      "sender": "augbggrbfaxtmpkejnjfsydhny",
+      "layout": "compact",
+      "plaintext": "a207080ba50163416e6e0260041b0000019a7afd1e000958200b760ab92ea5fda2f0f38b87996da8b7abc335705b68839e2a3d0467431bdeef0a5840d393fb0aef1ae5b4582d8c2ac9916b32a31427fa2959050def87d55185d7791db369a3b72e9b24916f3d99f2b9159362f0419095d0f04f340d15900692dd7604",
+      "decodedSig": "05P7Cu8a5bRYLYwqyZFrMqMUJ/opWQUN74fVUYXXeR2zaaO3LpskkW89mfK5FZNi8EGQldDwTzQNFZAGkt12BA==",
+      "storedKey": "C3YKuS6l/aLw84uHmW2ot6vDNXBbaIOeKj0EZ0Mb3u8="
+    },
+    {
+      "name": "accepted, named",
+      "sender": "augbggrbfaxtmpkejnjfsydhny",
+      "layout": "named",
+      "plaintext": "a364626f6479606363746c08627072a5646e616d6563416e6e66737461747573606776657273696f6e1b0000019a7afd1e006b6d657368636f72654b6579782c4333594b7553366c2f614c77383475486d57326f743676444e58426261494f654b6a30455a304d623375383d6b6d657368636f726553696778583035503743753861356252594c597771795a46724d714d554a2f6f705751554e37346656555958586552327a61614f334c70736b6b5738396d664b35465a4e69384547516c644477547a514e465a41476b74313242413d3d",
+      "decodedSig": "05P7Cu8a5bRYLYwqyZFrMqMUJ/opWQUN74fVUYXXeR2zaaO3LpskkW89mfK5FZNi8EGQldDwTzQNFZAGkt12BA==",
+      "storedKey": "C3YKuS6l/aLw84uHmW2ot6vDNXBbaIOeKj0EZ0Mb3u8="
+    },
+    {
+      "name": "copied: Alice's key and signature sealed by Mallory",
+      "sender": "beibohrffqztuqkij5lf2zdloi",
+      "layout": "compact",
+      "plaintext": "a207080ba50163416e6e0260041b0000019a7afd1e000958200b760ab92ea5fda2f0f38b87996da8b7abc335705b68839e2a3d0467431bdeef0a5840d393fb0aef1ae5b4582d8c2ac9916b32a31427fa2959050def87d55185d7791db369a3b72e9b24916f3d99f2b9159362f0419095d0f04f340d15900692dd7604",
+      "decodedSig": "05P7Cu8a5bRYLYwqyZFrMqMUJ/opWQUN74fVUYXXeR2zaaO3LpskkW89mfK5FZNi8EGQldDwTzQNFZAGkt12BA==",
+      "storedKey": null
+    },
+    {
+      "name": "no signature",
+      "sender": "augbggrbfaxtmpkejnjfsydhny",
+      "layout": "compact",
+      "plaintext": "a207080ba40163416e6e0260041b0000019a7afd1e000958200b760ab92ea5fda2f0f38b87996da8b7abc335705b68839e2a3d0467431bdeef",
+      "decodedSig": null,
+      "storedKey": null
+    },
+    {
+      "name": "non-canonical signature (named only)",
+      "sender": "augbggrbfaxtmpkejnjfsydhny",
+      "layout": "named",
+      "plaintext": "a364626f6479606363746c08627072a5646e616d6563416e6e66737461747573606776657273696f6e1b0000019a7afd1e006b6d657368636f72654b6579782c4333594b7553366c2f614c77383475486d57326f743676444e58426261494f654b6a30455a304d623375383d6b6d657368636f726553696778563035503743753861356252594c597771795a46724d714d554a2f6f705751554e37346656555958586552327a61614f334c70736b6b5738396d664b35465a4e69384547516c644477547a514e465a41476b7431324241",
+      "decodedSig": null,
+      "storedKey": null
+    },
+    {
+      "name": "63-byte signature, compact",
+      "sender": "augbggrbfaxtmpkejnjfsydhny",
+      "layout": "compact",
+      "plaintext": "a207080ba50163416e6e0260041b0000019a7afd1e000958200b760ab92ea5fda2f0f38b87996da8b7abc335705b68839e2a3d0467431bdeef0a583fd393fb0aef1ae5b4582d8c2ac9916b32a31427fa2959050def87d55185d7791db369a3b72e9b24916f3d99f2b9159362f0419095d0f04f340d15900692dd76",
+      "decodedSig": null,
+      "storedKey": null
+    },
+    {
+      "name": "63-byte signature, named",
+      "sender": "augbggrbfaxtmpkejnjfsydhny",
+      "layout": "named",
+      "plaintext": "a364626f6479606363746c08627072a5646e616d6563416e6e66737461747573606776657273696f6e1b0000019a7afd1e006b6d657368636f72654b6579782c4333594b7553366c2f614c77383475486d57326f743676444e58426261494f654b6a30455a304d623375383d6b6d657368636f726553696778543035503743753861356252594c597771795a46724d714d554a2f6f705751554e37346656555958586552327a61614f334c70736b6b5738396d664b35465a4e69384547516c644477547a514e465a41476b743132",
+      "decodedSig": null,
+      "storedKey": null
+    },
+    {
+      "name": "signature with no key, compact",
+      "sender": "augbggrbfaxtmpkejnjfsydhny",
+      "layout": "compact",
+      "plaintext": "a207080ba40163416e6e0260041b0000019a7afd1e000a5840d393fb0aef1ae5b4582d8c2ac9916b32a31427fa2959050def87d55185d7791db369a3b72e9b24916f3d99f2b9159362f0419095d0f04f340d15900692dd7604",
+      "decodedSig": null,
+      "storedKey": null
+    },
+    {
+      "name": "signature with no key, named",
+      "sender": "augbggrbfaxtmpkejnjfsydhny",
+      "layout": "named",
+      "plaintext": "a364626f6479606363746c08627072a4646e616d6563416e6e66737461747573606776657273696f6e1b0000019a7afd1e006b6d657368636f726553696778583035503743753861356252594c597771795a46724d714d554a2f6f705751554e37346656555958586552327a61614f334c70736b6b5738396d664b35465a4e69384547516c644477547a514e465a41476b74313242413d3d",
+      "decodedSig": null,
+      "storedKey": null
+    },
+    {
+      "name": "low-order key (the identity), R = identity, S = 0",
+      "sender": "augbggrbfaxtmpkejnjfsydhny",
+      "layout": "compact",
+      "plaintext": "a207080ba50163416e6e0260041b0000019a7afd1e0009582001000000000000000000000000000000000000000000000000000000000000000a584001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "decodedSig": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "storedKey": null
+    },
+    {
+      "name": "S + L",
+      "sender": "augbggrbfaxtmpkejnjfsydhny",
+      "layout": "compact",
+      "plaintext": "a207080ba50163416e6e0260041b0000019a7afd1e000958200b760ab92ea5fda2f0f38b87996da8b7abc335705b68839e2a3d0467431bdeef0a5840d393fb0aef1ae5b4582d8c2ac9916b32a31427fa2959050def87d55185d7791da03d991449fe36e945da9095980f7277f0419095d0f04f340d15900692dd7614",
+      "decodedSig": "05P7Cu8a5bRYLYwqyZFrMqMUJ/opWQUN74fVUYXXeR2gPZkUSf426UXakJWYD3J38EGQldDwTzQNFZAGkt12FA==",
+      "storedKey": null
+    }
+  ],
+  "domains": {
+    "bind": "knit-meshcore-bind/v1",
+    "consent": "knit-meshcore-consent/v1"
+  }
+}

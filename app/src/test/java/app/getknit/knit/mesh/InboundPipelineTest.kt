@@ -49,6 +49,7 @@ import app.getknit.knit.identity.NodeId
 import app.getknit.knit.identity.PeerLabels
 import app.getknit.knit.mesh.crypto.AesGcm
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
+import app.getknit.knit.mesh.crypto.MeshcoreBindFixture
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
@@ -5887,14 +5888,19 @@ class InboundPipelineTest {
     /** RFC 8032 TEST 1's public key: a full-order Ed25519 point, as a MeshCore board's is. */
     private val meshcoreKey = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
 
-    /** A sealed `CTL_PROFILE` from [author] at [version], compact (v3) whenever its content has a compact form. */
+    /**
+     * A sealed `CTL_PROFILE` from [author] at [version], compact (v3) whenever its content has a compact form. A [key]
+     * carries, by default, the RFC 8032 TEST 1 board's signature over the author's bind (Stage 5d): a proof for [key] only
+     * when [key] is that board's.
+     */
     private fun V2Author.sealedProfile(
         id: String,
         version: Long,
         name: String = "Ann",
         key: String? = null,
+        sig: String? = key?.let { MeshcoreBindFixture.sig(party.nodeId) },
     ): RelayEnvelope {
-        val pr = ProfilePayload(name = name, status = "", version = version, meshcoreKey = key)
+        val pr = ProfilePayload(name = name, status = "", version = version, meshcoreKey = key, meshcoreSig = sig)
         val v3 = MessageContentV2.encodeOrNull(MessageContent(body = "", ctl = MessageContent.CTL_PROFILE, pr = pr)) != null
         return dm(id, "", ctl = MessageContent.CTL_PROFILE, pr = pr, v3 = v3)
     }
@@ -5936,7 +5942,10 @@ class InboundPipelineTest {
 
     /**
      * A key that is not a canonical, full-order Ed25519 key drops the field alone: the rest of the profile applies, and,
-     * the profile being newer, the key it replaces is cleared.
+     * the profile being newer, the key it replaces is cleared. Since Stage 5d each bad key carries the RFC 8032 TEST 1
+     * board's signature, which is over another key, so most cases are refused twice, by the key check and the signature.
+     * "the identity" carries the forgery that verifies under it (R = identity, S = 0, which Tink alone accepts), so for it
+     * the key check, run first, is the only refusal.
      */
     @Test
     fun aBadMeshcoreKeyDropsTheFieldNotTheProfile() =
@@ -5960,14 +5969,77 @@ class InboundPipelineTest {
                     "y ≥ p" to hexKey("ed" + "ff".repeat(30) + "7f"),
                 )
             var version = 20L
+            // R = the identity, S = 0: verifies every message under the identity as a key, in a cofactorless verifier.
+            val identityForgery = b64(ByteArray(32).also { it[0] = 1 } + ByteArray(32))
             for ((what, key) in bad) {
                 rig.deliver(alice, author.sealedProfile("mc-good-$version", version = version++, key = meshcoreKey))
                 assertEquals(meshcoreKey, rig.peerMap[alice.nodeId]?.meshcoreKey)
-                rig.deliver(alice, author.sealedProfile("mc-bad-$version", version = version, name = "Ann $what", key = key))
+                val sig = if (what == "the identity") identityForgery else MeshcoreBindFixture.sig(alice.nodeId)
+                rig.deliver(alice, author.sealedProfile("mc-bad-$version", version = version, name = "Ann $what", key = key, sig = sig))
                 assertEquals("$what: the profile applied", "Ann $what", rig.peerMap[alice.nodeId]?.name)
                 assertNull("$what: the key dropped and cleared", rig.peerMap[alice.nodeId]?.meshcoreKey)
                 version++
             }
+        }
+
+    /**
+     * Stage 5d: a key is stored only beside the board's signature over the sender's own bind, checked against the frame's
+     * authenticated sender. Mallory copying Alice's key and Alice's signature into her own sealed profile is refused, as
+     * are a missing, foreign or malformed signature: the field alone, which clears a stored key, the profile applying.
+     * Each such refusal is counted (`meshcoreBindUnproven`); a keyless profile counts nothing.
+     */
+    @Test
+    fun aMeshcoreKeyIsStoredOnlyWithASignatureThatBindsItsSender() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val mallory = party()
+            for (p in listOf(alice, mallory)) rig.deliver(p, rig.profileWithPrekey(p, sentAt = 10L, prekey = null, version = 10L))
+            val ann = V2Author(alice, rig)
+            val mal = V2Author(mallory, rig)
+            val alicesSig = MeshcoreBindFixture.sig(alice.nodeId)
+
+            fun unproven() = rig.metrics.seals().meshcoreBindUnproven
+
+            rig.deliver(alice, ann.sealedProfile("bind-1", version = 20L, key = meshcoreKey))
+            assertEquals(meshcoreKey, rig.peerMap[alice.nodeId]?.meshcoreKey)
+            assertEquals(0L, unproven())
+
+            // The copy attack: Mallory seals Alice's key and Alice's signature. It names Alice's node, not Mallory's.
+            rig.deliver(mallory, mal.sealedProfile("bind-m", version = 20L, name = "Mal", key = meshcoreKey, sig = alicesSig))
+            assertEquals("the profile applied", "Mal", rig.peerMap[mallory.nodeId]?.name)
+            assertNull("the copied claim did not", rig.peerMap[mallory.nodeId]?.meshcoreKey)
+            assertEquals(1L, unproven())
+            assertEquals("Alice keeps hers", meshcoreKey, rig.peerMap[alice.nodeId]?.meshcoreKey)
+
+            val refused =
+                listOf(
+                    "no signature" to null,
+                    "another board's" to MeshcoreBindFixture.sig(alice.nodeId, ByteArray(32) { 7 }),
+                    "63 bytes" to b64(MeshcoreBindFixture.sigBytes(alice.nodeId).copyOf(63)),
+                    "unpadded" to alicesSig.trimEnd('='),
+                )
+            var version = 30L
+            for ((what, sig) in refused) {
+                rig.deliver(alice, ann.sealedProfile("bind-good-$version", version = version++, key = meshcoreKey))
+                assertEquals(what, meshcoreKey, rig.peerMap[alice.nodeId]?.meshcoreKey)
+                val before = unproven()
+                rig.deliver(
+                    alice,
+                    ann.sealedProfile("bind-bad-$version", version = version, name = "Ann $what", key = meshcoreKey, sig = sig),
+                )
+                assertEquals("$what: the profile applied", "Ann $what", rig.peerMap[alice.nodeId]?.name)
+                assertNull("$what: the key dropped and cleared", rig.peerMap[alice.nodeId]?.meshcoreKey)
+                assertEquals(what, before + 1, unproven())
+                version++
+            }
+
+            // A keyless profile, and a signature beside no key, count nothing.
+            val before = unproven()
+            rig.deliver(alice, ann.sealedProfile("bind-keyless", version = version++))
+            rig.deliver(alice, ann.sealedProfile("bind-sig-alone", version = version++, sig = alicesSig))
+            assertNull(rig.peerMap[alice.nodeId]?.meshcoreKey)
+            assertEquals(before, unproven())
         }
 
     @Test

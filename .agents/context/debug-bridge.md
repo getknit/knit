@@ -292,7 +292,10 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `meshcoreSetupClearedSlots`, and since Stage 5c-2b `meshcoreRepinsDone`, `meshcoreLiveTeachesWritten`, `…Failed`,
   `…Deferred`) and the consent's refusals (`meshcoreKeyUnproven`,
   `meshcoreProofUnanswered`, `meshcoreUnbondedInert`, `meshcoreConsentMismatches`, `meshcoreConsentReadFailures`,
-  `meshcoreRecordReadFailures`, `meshcoreRecordWriteFailures`, `meshcoreRestoreMismatches`, `meshcoreConsentApplyFailures`).
+  `meshcoreRecordReadFailures`, `meshcoreRecordWriteFailures`, `meshcoreRestoreMismatches`, `meshcoreConsentApplyFailures`),
+  and since Stage 5d the bind's (`meshcoreBindUnanswered`: no answer, another client's command in the sign buffer, or a
+  bind skipped for want of a node id — one counter, told apart by the `meshcore bind unanswered` / `meshcore bind skipped`
+  lines; `meshcoreBindRefused`: a signature that does not verify under the proven key).
   `--es prov unbind` may also answer `FAILED`: the record could not be marked pending, so the binding is to stay. Keys: `built`, `enabled`, `dms`, `bound`, `state`, `version`
   (cleaned), `versionCode`, `slot` (the board's Knit slot), `radio`, `multiAcks`, `defaultScope`, `queued`, `queueFree`,
   `heard` (fresh-frame authors at any hop count, unverified), `boardsHeard` (radios counted by verified pinned zero-hop author:

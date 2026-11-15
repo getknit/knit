@@ -1266,6 +1266,30 @@ once. Never `CMD_FACTORY_RESET`. Oracles: `meshcore reconcile listed=N Plan(remo
 contested=…, deferred=…)`, `lora setup kind=meshcore slot=S erased contacts=N slots=M`, `lora restore kind=meshcore
 contacts=N …` — counts only, never a key, a prefix or a name.
 
+#### The bind: the board signs the sealed profile's proof (ADR 2026-11.gsqu's Stage 5d amendment)
+
+The sealed profile's `meshcoreKey` goes with `meshcoreSig`, the board's own Ed25519 signature over
+`MeshcoreBind.message` — `knit-meshcore-bind/v1` ‖ our 16-byte node id ‖ the board's 32-byte key — which every receiver
+checks against the frame's authenticated sender. The session's actor asks for it (`MeshcoreSession.bind`, the same three
+sign commands as the consent proof, its own domain) right after every proof that **grants** consent — the handshake's
+(under `consentLock`, before the Ready), a setup's, a consent re-read's — and checks the answer with
+`MeshcoreBind.verifies` (the key first, then `S < L`, then Tink). The signature rides `MeshcoreConsent.sig`, published by the
+actor with the key it was made over, so the hooks claim `(key, sig)` off the consent alone and a withdrawal is never
+overtaken by a late bind; a pending cleanup, a Restore and every withdrawal never sign. Every such proof signs again
+(determinism: one board, one (node, key), one signature), so a reconnect writes nothing and mints nothing; three commands a
+proof, no air. A bind that fails publishes the consent without the signature (the claim store keeps a proof it holds for the
+same key) and is owed on its own backoff, 10 s to 10 min, as an idle job (`rebindIfOwed`) — re-published with the consent
+on success, dropped once the connection no longer consents. A signature that does not verify is read as a refused proof is:
+counted (`meshcoreBindRefused`) and `SELF_INFO` read once, never inert, never a withdrawal. No answer, another client's
+`SIGN_FINISH` in the shared buffer, or no node id to bind counts `meshcoreBindUnanswered` (one counter; the line says which:
+`meshcore bind unanswered` or `meshcore bind skipped`). The node id is
+`Identity.nodeId` (`MeshcoreSession(ownNode = …)`); a session built without it binds nothing. `proveKey` refuses a key
+`MeshcoreKey` refuses before it asks anything (`keyUnproven`): under a low-order key any challenge would verify. The DI's
+claim write (`di/writeMeshcoreClaim`) keeps a stored signature that already proves (our node, the key) rather than write a
+fresh one — a `keep` check asked inside the store's own edit (`MeshcoreClaimStore.setBoardKey`), never a read before it —
+so a signer that were not deterministic would still mint nothing per reconnect. Oracles: `meshcore bind signed`,
+`meshcore bind unanswered: …`, `meshcore bind refused: …`, `meshcore bind skipped: …` — never a key, a prefix or a signature.
+
 ## Board setup (once, Meshtastic CLI or app)
 
 Flash `firmware-heltec-v4-<ver>`; `--set lora.region <US|EU_868|…>`; `--set network.wifi_enabled false`;
