@@ -1357,3 +1357,93 @@ whole `FRAG_TIMEOUT_MS` at the shortest bound part's airtime, + 1 — `capacityF
 fills a side and no replacement happens at all; the random replacement stays as the backstop past it, and memory stays
 bounded by `MAX_BYTES` and the receive rate. `REPEAT_DELAY_AIRTIMES` is gone.
 
+
+## Amendment 2026-11-14 — Stage 5c-2a: a MeshCore fake the field would agree with, and the physics it proves (draft)
+
+Built under the Stage 5c-2 design pass (lora-reviewer's six Blocking findings, mesh-lab-reviewer's thread-safety, hold and
+draw-seed items). Test code, one production finding fixed (below). The MeshLab MeshCore node and its scenarios are 5c-2b's.
+
+- **The fake's channel, opt-in** (`FakeMeshcoreAir(channel = MeshcoreChannel(…))`). Without one every Stage 3b behaviour
+  `MeshcoreFakeVsSimTest` pins stands unchanged. With one, each behaviour is modelled from the `companion-v1.18.0` source:
+  - **airtime**: the Semtech formula written in the fake (never `LoraAirtime`), the firmware's preamble (32 symbols at
+    SF ≤ 8, `RadioLibWrappers.h:56`): 633 ms for 181 B at SF7 / 62.5, Q5's measured 633 ± 17. Delivery at the airing's end;
+    one reception at a time, half duplex. **An overlap corrupts both packets** and the radio stays busy to the later end,
+    which its CAD sees: radio behaviour the source is silent on, after the capture literature (an equal-power, same-SF
+    overlap usually kills the first too); a per-link `capture` alone keeps the first (round 1's Blocking finding);
+  - **the radio**: one packet at a time from `PacketQueue`'s order (soonest eligible, lowest priority, first in), the 50 %
+    budget over an hour, listen-before-talk (200-ms CAD retries, forced after 4 s; `Dispatcher.cpp:57-62, 270-302`);
+  - **the repeater**: pool 32 (`simple_repeater/MyMesh.cpp:864`), a flood re-aired `nextInt(0, 5·t + 1)` after the end of
+    reception, `t` = airtime(path + payload + 2) × `tx_delay_factor` 0.5, priority by hop count (`Mesh.cpp:344-356`); a direct
+    packet whose next hop it is forwarded after the `direct_tx_delay_factor` 0.3 draw, itself stripped (`Mesh.cpp:78-108`,
+    `MyMesh.cpp:547-553`); `rx_delay_base` settable, under 50 ms ignored, 32 s cap (`Dispatcher.cpp:240-252`). Each draw is
+    `Random(mix(runSeed, repeater, origin, n))`, `n` the origin's nth packet of the route kind, logged;
+  - **dedup**: every node, repeaters included, a 160-entry ring of SHA-256(type + payload), path excluded
+    (`SimpleMeshTables.h:9`, `Packet.cpp:41-50`), cleared on reboot;
+  - **paths**: per-contact `out_path`; a direct packet followed along it and dropped by every node that is not the next hop,
+    the destination included; through a repeater it lands reported `0xFF` (`MyMesh.cpp:453`); an ack offered to whoever
+    hears it on its way (`Mesh.cpp:79-87`); a PATH rewrites its receiver's record and pushes `0x81` (`BaseChatMesh.cpp:353-359`),
+    a flooded one answered by a reciprocal direct PATH (`Mesh.cpp:178-184`); a flooded matched ack draws one direct PATH 3 s
+    later while the sender's record is pinned (`:372-390`);
+  - **boards**: `powered`, a `reboot()` that clears the offline queue, ack table and ring and keeps contacts, the offline cap
+    at the source's 16 (Q6), an RTC that ticks with the air's clock, `tx_air` in ms for every airing, `lossy(from, to)`,
+    `hold` / `release`, synchronous `listeners`, `pathHashMode`. `quickMeshcoreAir` is the Stage 3b air ÷ 10.
+  - **one serial context**: given `serial`, every write, delivery and timer runs on it; `airings` is copy-on-write.
+  - **Where it is not the firmware**: no capture unless stated, no SNR (a stated `score` alone), a packet a lossy link
+    loses never reaches the receiver's CAD, no `TRACE`, adverts or multi-acks, no flood limit or region map. A scoped
+    flood carries its 4 B of transport codes, and a forwarded direct packet's delay is priced before the strip
+    (`Mesh.cpp:90`), both fixed in round 1.
+- **Divergences from the simulator, named in `MeshcoreFakeVsSimTest`**: the Q13 PATH (the simulator aired none in either
+  run; a board check is owed), the drift to one hop that PATH can carry (no simulator run reached it), and the airtime
+  (the simulator's SX1262 takes a 16-symbol preamble at every SF, `SimRadio.h:50`, so Q15's parts sat 606 ms apart where
+  the firmware's sit 633).
+- **The production finding, fixed: the per-side cap sat under one radio's input.** `candidatesPerPart` and
+  `candidateCapacity` priced the shortest bound part at the booked figure — 25 B (a scope's 4 B of transport codes) at the
+  formula plus `FIXED_MS`, 341 ms at the companion default — so the cap was 177 while a back-to-back forger lands 197 of
+  its 21-B, 304-ms parts in the window. Over the channel, a rogue radio for the window plus one airtime made 24
+  replacements, each a 1-in-177 chance at the honest head. Now `BoardTraits.leastRoomAirMs` (MeshCore: an unscoped
+  `GRP_DATA` at the formula, no `FIXED_MS`; Meshtastic: the unsigned broadcast at the formula, read by nothing yet) through
+  `LoraAirtime.leastRoomAirMs` sizes both. The booking is unchanged. **Round 1's decision:** the floor is priced at CR 4/5
+  whatever the board reports (the explicit header carries the rate) and behind the shortest preamble a receiver locks on,
+  6 + 4.25 symbols — a stated assumption, not a bound: 21 B in 197 ms, a cap of **306** at the companion default. The
+  full-rate case now runs its forger at that preamble and lands at least 304 parts in the window without a replacement. Whether a
+  v1.18 receiver locks on a 6-symbol preamble is owed to a board.
+- **Findings, and what became of each:**
+  - **A DM through a repeater was a zero-hop hearing** — fixed in round 1. It lands `0xFF`, which
+    `MeshcoreTraits.heardZeroHop` reads as direct (it trusts the pin), so an out-of-range peer whose DM a repeater forwarded
+    was counted in `boardsHeard`. **Decision:** on a kind that vouches for no sender a DM never counts a radio
+    (`noteAuthorRadio` is called for verified zero-hop room posts alone); it stays the unreachable-lift trigger
+    (`onBoardHeard`), since the catch-up is gated by `reprobe.onHeard` and in the pinned case the hearing is true.
+    Meshtastic is untouched. `MeshcoreHearingTest.aFreshOpenedDmAtZeroHopsHearsItsBoard` now expects 0 radios. **The
+    accepted cost:** two MeshCore users who only DM each other read "0 other radios in range" (`LoraRadioScreen`), since
+    `boardsHeardAt` is fed by verified zero-hop room posts alone; a DM could count once a zero-hop proof exists (Stage 5d
+    or later).
+  - **A silent drift to one hop cost a DM its flight** — shortened in round 1. Another client's write (or a PATH whose `0x81`
+    the phone missed) leaves the record one hop through a repeater; with the repeater gone the attempt goes direct along
+    the dead route and the in-range destination drops it. Before, all three attempts did, the peer was marked unreachable
+    and `endFlight`'s `pins.unverify` re-pinned at the next send, some 15 minutes on. Now an attempt whose ack window
+    passes sets `repinNeeded`, so the next attempt reads the record back, writes zero hops and lands: one retry gap and a
+    BLE read, no air. Once per unanswered attempt (round 2): a retry held behind a full table or pool (`deferredSince`) is
+    not re-pinned every tick, so a held flight costs one read, not one a second for the hold.
+  - **A `0x81` inside a minute of the last pin job is coalesced** (`MeshcorePins.REPIN_GAP_MS`) — not a defect: the push
+    still unverifies the key and marks every flight to it `repinNeeded`, so the next send re-pins. A Q13 PATH that left the
+    record at zero hops draws a read-back and no write; one that left one hop draws the `ADD_UPDATE_CONTACT` at
+    `out_path_len` 0.
+- **Tests**: `FakeMeshcoreAirTest` (each modelled behaviour, the serial context under real threads), `MeshcoreAirPhysicsTest`
+  over `MeshcoreAirRig` (the production stack per node): the cap's whole window at full rate (the memory bound only) and
+  against a rogue forger idle between its own parts (measured, not tuned, per post: the first post's head starts the
+  forger, so it says nothing about a rate; at one honest part's airtime plus a CAD retry of idle no post aired under the
+  running schedule lands, part 1 running into the forger's next head; at two parts plus a CAD retry a post under the
+  schedule lands, and every post whose part 0 took a gap at its start (within one CAD retry of a forger packet's end)
+  lands, where one queued mid-gap on an idle channel airs at once and may not fit; at 50 % with one airtime idle none of
+  three did), the overtake behind a held repeater (a copied-hash head; forty short
+  heads), the replay once the ring forgets (it reaches the plane, `meshcoreZeroHopKnitPosts` moves, no hearing), the Q13
+  PATH and its re-pin, the 1-hop drift, the drift's re-pin on the second attempt, a DM through a repeater counting no radio; `MeshcoreFlushSwitchTest` (a ✓✓
+  chunked at the kind's floor airs whole on the board switched in under it: it pins that the budget does not depend on the
+  board, and cannot show a per-board budget, since none varies yet); `MeshcoreFakeVsSimTest`'s channel replays.
+  Security (c), a shared 6-byte prefix, was already covered in `MeshcoreContactsTest`.
+
+Owed on boards (the design pass's Answer 4): the Q13 PATH (unpin the receiver, DM it, a third board listening: one direct
+PATH about 3 s after the flooded ack); the drift to one hop and its re-pin; a stock repeater's delay spread at
+`tx_delay_factor` 0.5 and 2.0; a real forger board airing junk (its gaps and collisions at R; a shorter-preamble forger);
+the offline queue's real size and its loss on reboot; a 157-B DM through the ESP32 notify; `CMD_SIGN` on hardware (Q16);
+`tx_air` against Knit's ledger over an hour.

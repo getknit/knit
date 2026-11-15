@@ -1,0 +1,267 @@
+package app.getknit.knit.mesh.lora.meshcore
+
+import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.MeshcoreBoardHolder
+import app.getknit.knit.mesh.MeshcoreRank
+import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.lora.AckProof
+import app.getknit.knit.mesh.lora.BoardAddr
+import app.getknit.knit.mesh.lora.BoardAir
+import app.getknit.knit.mesh.lora.BoardBattery
+import app.getknit.knit.mesh.lora.BoardLink
+import app.getknit.knit.mesh.lora.BoardPacket
+import app.getknit.knit.mesh.lora.BoardPlane
+import app.getknit.knit.mesh.lora.BoardSend
+import app.getknit.knit.mesh.lora.BoardState
+import app.getknit.knit.mesh.lora.DirectDm
+import app.getknit.knit.mesh.lora.DirectKind
+import app.getknit.knit.mesh.lora.LORA_DIRECT_OVERHEAD
+import app.getknit.knit.mesh.lora.LORA_DIRECT_TAG
+import app.getknit.knit.mesh.lora.LoraConfig
+import app.getknit.knit.mesh.lora.LoraDirectCrypto
+import app.getknit.knit.mesh.lora.LoraDirectOpen
+import app.getknit.knit.mesh.lora.LoraDirectSource
+import app.getknit.knit.mesh.lora.LoraMeshTransport
+import app.getknit.knit.mesh.lora.PacketOutcome
+import app.getknit.knit.mesh.lora.ProvisionResult
+import app.getknit.knit.mesh.lora.ProvisionSpec
+import app.getknit.knit.mesh.lora.QueueInfo
+import app.getknit.knit.mesh.lora.RadioParams
+import app.getknit.knit.mesh.lora.SendPurpose
+import app.getknit.knit.mesh.lora.SendResult
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.util.Base64
+
+/**
+ * The ✓✓ sibling the lab has no seam for (mesh-lab-reviewer Q4 on the Stage 5c-2 design pass; ADR 2026-11.gsqu's Stage 5c-2a
+ * amendment): the board is switched between a flush's chunking and its airing. `MeshManager` cuts a coalesced ✓✓ to the
+ * kind's budget at its floor (`budgetFor`, never the bound board's Ready), so whichever MeshCore board airs it, it fits:
+ * queued behind a send the old board holds, it airs on the new one whole, to the same peer, never too long.
+ *
+ * What this pins is that the budget does not depend on the board: on MeshCore `budgetFor` is the kind-constant
+ * `directBudget` and every Ready's payload cap is `CHANNEL_DATA_CAP`, so the two boards here differ only in their key and
+ * address. It would fail if the queued ✓✓ were dropped or re-addressed at the switch, or if a per-board budget ever cut it
+ * past the new board's cap; it cannot show a budget that varies between two real boards, since none does yet.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+class MeshcoreFlushSwitchTest {
+    /** A board link whose first send waits on [gate]: the send in flight while the board is switched. */
+    private class GatedBoard : BoardLink {
+        fun readyAs(seed: Byte): BoardState.Ready =
+            BoardState.Ready(
+                own = BoardAddr.MeshCore(ByteArray(6) { seed }),
+                payloadCap = MeshcoreProto.CHANNEL_DATA_CAP,
+                radio = RadioParams(8, 62_500, 5),
+                channel = KNIT_SLOT,
+                detail =
+                    MeshcoreDetail(
+                        publicKey = ByteArray(32) { seed },
+                        versionCode = 11,
+                        version = "v1.18.0",
+                        defaultScope = false,
+                        multiAcks = 0,
+                        clientRepeat = false,
+                        freqKhz = 869_525,
+                        contactCapacity = 100,
+                        slots = emptyList(),
+                        namedForKnit = true,
+                        manualAdd = 1,
+                        dialled = ADDRESS,
+                    ),
+            )
+
+        override val state = MutableStateFlow<BoardState>(BoardState.Down(TransportHealth.Unavailable, MeshcoreLinkState.Idle))
+        override val packets = MutableSharedFlow<BoardPacket>(extraBufferCapacity = 64)
+        override val outcomes = MutableSharedFlow<PacketOutcome>(extraBufferCapacity = 64)
+        override val headroom = MutableSharedFlow<Int>()
+        override val headroomNow: Int? = null
+        override val battery = MutableStateFlow<BoardBattery?>(null)
+        override val boardAir = MutableStateFlow<BoardAir?>(null)
+
+        /** What each send was handed, with the board it went to (its own address's first byte). */
+        val sent = mutableListOf<Triple<Byte, SendPurpose, ByteArray>>()
+        var gate: CompletableDeferred<Unit>? = null
+        private var nextId = 1u
+
+        override suspend fun send(
+            payload: ByteArray,
+            purpose: SendPurpose,
+        ): BoardSend {
+            val on = ((state.value as? BoardState.Ready)?.own as? BoardAddr.MeshCore)?.prefix?.get(0) ?: 0
+            sent += Triple(on, purpose, payload)
+            gate?.let {
+                gate = null
+                it.await()
+            }
+            return BoardSend(SendResult.Queued(nextId++, QueueInfo(10, 16, 0)), 0)
+        }
+
+        override suspend fun provision(spec: ProvisionSpec): ProvisionResult = ProvisionResult.Failed("not here")
+
+        override fun start(address: String) {
+            state.value = readyAs(1)
+        }
+
+        override fun stop() = Unit
+    }
+
+    private class Ops : MeshcoreBoardOps {
+        override val air = MutableSharedFlow<MeshcoreAir>()
+        override val counters = MeshcoreCounters()
+        override var observer: MeshcoreSessionObserver? = null
+
+        override fun slotReading(): MeshcoreSlotReading = MeshcoreSlotReading(KNIT_SLOT, knit = true, atMs = 0)
+
+        override suspend fun setup(): MeshcoreSetupResult = MeshcoreSetupResult.NotReady
+
+        override suspend fun restore(): MeshcoreRestoreResult = MeshcoreRestoreResult.NotReady
+
+        override suspend fun unbind(address: String): MeshcoreUnbind = MeshcoreUnbind.NOTHING
+
+        override val consent = MutableStateFlow<MeshcoreConsent?>(consentFor(1))
+
+        override fun setKnitContacts(
+            ranked: List<ByteArray>,
+            withdrawn: Boolean,
+        ) = Unit
+
+        override suspend fun teach(key: ByteArray): ContactWrite = ContactWrite.NOT_READY
+
+        override suspend fun removeUntaught(key: ByteArray): ContactWrite = ContactWrite.NOT_READY
+    }
+
+    /** Seals by the tag and [LORA_DIRECT_OVERHEAD] − 1 bytes of header: a budget-sized plaintext seals to the cap exactly. */
+    private object Seal : LoraDirectCrypto {
+        override fun seal(
+            peerId: String,
+            frameId: String,
+            sentAtMs: Long,
+            plaintext: ByteArray,
+        ): ByteArray = byteArrayOf(LORA_DIRECT_TAG) + ByteArray(LORA_DIRECT_OVERHEAD - 1) + plaintext
+
+        override fun open(packet: ByteArray): LoraDirectOpen = LoraDirectOpen.Stranger
+    }
+
+    private fun TestScope.transportOver(
+        board: GatedBoard,
+        ops: Ops,
+        metrics: MeshMetrics,
+        logs: MutableList<String>,
+    ): LoraMeshTransport =
+        LoraMeshTransport(
+            selfId = { "alice" },
+            plane =
+                BoardPlane(MeshcoreTraits, board) { core ->
+                    MeshcoreHooks(ops, core, backgroundScope, { testScheduler.currentTime }, { line -> logs += line })
+                },
+            config = MutableStateFlow(LoraConfig(ADDRESS, MeshcoreHooks.NO_CONFIGURED_SLOT, dms = true)),
+            crypto = Seal,
+            source =
+                object : LoraDirectSource {
+                    override suspend fun unackedTo(
+                        peerId: String,
+                        limit: Int,
+                        untakenOnly: Boolean,
+                        maxBytes: Int,
+                    ): List<DirectDm> = emptyList()
+
+                    override suspend fun isUnacked(frameId: String): Boolean = true
+                },
+            boardMap =
+                flowOf(
+                    MeshcoreContacts.holdersOf(
+                        mapOf(
+                            BOB to
+                                MeshcoreBoardHolder(
+                                    Base64.getEncoder().encodeToString(BOB_KEY),
+                                    MeshcoreRank.ACCEPTED,
+                                    1,
+                                    false,
+                                ),
+                        ),
+                    ),
+                ),
+            scope = backgroundScope,
+            metrics = metrics,
+            clock = { testScheduler.currentTime },
+            wallClock = { WALL + testScheduler.currentTime },
+            processStartWall = WALL,
+            log = { logs += it },
+        )
+
+    @Test
+    fun aTickFlushChunkedForOneBoardAirsWholeOnTheNextWhenTheBoardIsSwitchedUnderIt() =
+        runTest {
+            val board = GatedBoard()
+            val ops = Ops()
+            val metrics = MeshMetrics()
+            val logs = mutableListOf<String>()
+            val transport = transportOver(board, ops, metrics, logs)
+            requireNotNull(ops.observer).beforeReady(board.readyAs(1))
+            transport.start()
+            runCurrent()
+            // A DM the old board takes and holds; behind it the ✓✓ flush, chunked to the kind's budget at its floor.
+            board.gate = CompletableDeferred()
+            val held = checkNotNull(board.gate)
+            transport.offer(BOB, "dm-1", WALL, byteArrayOf(1, 2, 3), DirectKind.MESSAGE)
+            runCurrent()
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals("the DM is in the old board's hands", 1, board.sent.size)
+            val budget = transport.budgetFor(BOB).plaintextBytes
+            val ticks = ByteArray(budget) { (it % 7 + 1).toByte() }
+            transport.offer(BOB, "tick-1", WALL, ticks, DirectKind.RECEIPT)
+            runCurrent()
+            // The board is switched: the old one goes down, another comes up under the same binding and consents.
+            board.state.value = BoardState.Down(TransportHealth.Unavailable, MeshcoreLinkState.Idle)
+            runCurrent()
+            ops.consent.value = consentFor(2)
+            requireNotNull(ops.observer).beforeReady(board.readyAs(2))
+            board.state.value = board.readyAs(2)
+            runCurrent()
+            held.complete(Unit)
+            runCurrent()
+            // The old board's DM is acked by bob's board: bob is reachable, and what waited behind the flight goes.
+            board.outcomes.tryEmit(PacketOutcome.Acked(1u, byDestination = true, proof = AckProof.VALID, flown = 1))
+            runCurrent()
+            advanceTimeBy(30_000)
+            runCurrent()
+            val tick = board.sent.filter { it.third.size == LORA_DIRECT_OVERHEAD + budget }
+            assertEquals(
+                "the ✓✓ aired once: ${board.sent.map { it.first to it.third.size }} ${logs.filter { it.startsWith("lora") }}",
+                1,
+                tick.size,
+            )
+            assertEquals("on the new board", 2.toByte(), tick.single().first)
+            assertEquals(
+                "to bob's board",
+                BoardAddr.MeshCore(BOB_KEY.copyOf(6)),
+                (tick.single().second as SendPurpose.DirectDm).to,
+            )
+            assertTrue("within the seal cap", tick.single().third.size <= MeshcoreProto.DIRECT_SEAL_CAP)
+            assertEquals("never too long", 0L, metrics.snapshot().lora.loraDirectTooLong)
+            assertTrue("nothing evicted at the new Ready", logs.none { it.startsWith("lora ready: evicted") })
+        }
+
+    private companion object {
+        const val KNIT_SLOT = 1
+        const val WALL = 1_800_000_000_000L
+        const val ADDRESS = "AA:1"
+        const val BOB = "bob"
+        val BOB_KEY: ByteArray = FakeMeshcoreAir.keyOf("bob")
+
+        fun consentFor(seed: Byte): MeshcoreConsent =
+            MeshcoreConsent(ADDRESS, MeshcoreHooks.digest(ByteArray(32) { seed }), true, ByteArray(32) { seed })
+    }
+}

@@ -441,7 +441,8 @@ class MeshcoreHearingTest {
             assertEquals("the DM opened", 1, n.dmsOpened())
             assertTrue(n.heard())
             assertEquals(0, n.transport.status.value.direct.unreachable)
-            assertEquals(1, n.transport.status.value.boardsHeard)
+            // It lifts the mark, but counts no radio: a DM a repeater forwarded lands `0xFF` too (Stage 5c-2a).
+            assertEquals(0, n.transport.status.value.boardsHeard)
         }
 
     @Test

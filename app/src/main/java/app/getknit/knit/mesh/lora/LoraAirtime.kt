@@ -584,6 +584,13 @@ internal class LoraAirtime(
     fun airMsOfPhy(phyBytes: Int): Long = traits.airMs(phyBytes, params ?: traits.fallbackRadio)
 
     /**
+     * The least time a room packet carrying [payloadBytes] can take on the air at the board's modulation
+     * ([BoardTraits.leastRoomAirMs]): a floor, for a bound sized by how fast a receiver decodes, never a booking.
+     */
+    @Synchronized
+    fun leastRoomAirMs(payloadBytes: Int): Long = traits.leastRoomAirMs(payloadBytes, params ?: traits.fallbackRadio)
+
+    /**
      * Books [ms] of air at [now] under [ceiling] — air that is no packet of its own: on MeshCore the surcharge of a DM our
      * board flooded instead of sending direct (ADR 2026-11.gsqu's Stage 5a-2 amendment), whose airing was booked at send.
      * Not meant for [refund], which matches a compact DM's own airings on when and how much: a surcharge is a few

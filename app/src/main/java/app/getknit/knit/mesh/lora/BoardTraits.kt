@@ -18,6 +18,7 @@ import kotlin.math.pow
  * and pinned by the tests that name it, and [MeshtasticTraits] reads them. A trait sets a factory default only: it never
  * overrides a value a caller injected (`LoraMeshTransport`'s `pace`).
  */
+@Suppress("TooManyFunctions") // one board kind's pure facts, each its own question (ADR 2026-11.gsqu)
 internal interface BoardTraits {
     /** Which kind these are (Stage 2): what the plane reports as its `boardKind`. */
     val kind: BoardKind
@@ -106,6 +107,17 @@ internal interface BoardTraits {
     /** The kind's airtime term: milliseconds [phyBytes] occupy the medium at [radio] (never under 1). */
     fun airMs(
         phyBytes: Int,
+        radio: RadioParams,
+    ): Long
+
+    /**
+     * The least time a room packet carrying [payloadBytes] can take on the air at [radio], whoever airs it: the floor a
+     * receiver's decode rate is sized from (`LoraFragCandidates`' per-side cap, ADR 2026-11.gsqu's Stage 5c-2a amendment).
+     * Priced under the kind's stated assumption about the shortest form a receiver decodes, never at [phyBytes]'
+     * conservative bytes (a scope's transport codes) or [airMs]'s booked margin: a forger's radio airs the shortest form.
+     */
+    fun leastRoomAirMs(
+        payloadBytes: Int,
         radio: RadioParams,
     ): Long
 
@@ -268,6 +280,7 @@ internal data class DutyPolicy(
  * The Meshtastic board's traits: each the constant it always was, read where it lives. The one place a Meshtastic
  * modem preset and region become [RadioParams] and [DutyPolicy], and the one refusal classifier.
  */
+@Suppress("TooManyFunctions") // implements BoardTraits, one function a question
 internal object MeshtasticTraits : BoardTraits {
     override val kind: BoardKind get() = BoardKind.MESHTASTIC
 
@@ -374,6 +387,12 @@ internal object MeshtasticTraits : BoardTraits {
         phyBytes: Int,
         radio: RadioParams,
     ): Long = LoraAirtime.formulaMs(phyBytes, radio, preambleSymbols)
+
+    /** An unsigned broadcast's bytes at the formula: Meshtastic's room never fragments, so nothing reads this yet. */
+    override fun leastRoomAirMs(
+        payloadBytes: Int,
+        radio: RadioParams,
+    ): Long = airMs(payloadBytes + packetOverheadBytes, radio)
 
     /**
      * An RSSI (the NodeDB replay at every handshake has none), not an MQTT uplink, and an `rx_time`, when present, within

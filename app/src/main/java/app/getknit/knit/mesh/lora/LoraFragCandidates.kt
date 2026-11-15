@@ -201,9 +201,11 @@ internal class LoraFragCandidates(
 
         /**
          * The candidates one side of an entry keeps: what one receiver can decode within [timeoutMs] at the shortest bound
-         * part's airtime ([shortestAirMs]), plus one for the honest part — [capacityFor]'s figure, 177 at the companion
-         * default (SF8 / 62.5 kHz: 60 s ÷ 341 ms, + 1). Within the window no radio input can then trigger a replacement;
-         * memory stays bounded by [MAX_BYTES] and the receive rate (the 5c-1 round-3 reviews).
+         * part's airtime ([shortestAirMs]), plus one for the honest part — [capacityFor]'s figure, 306 at the companion
+         * default (SF8 / 62.5 kHz: 60 s ÷ the shortest part's least airtime of 197 ms — CR 4/5 behind a 6-symbol preamble —
+         * + 1; the plane passes the floor, `LoraAirtime.leastRoomAirMs`, never the booked price). Within the window no radio
+         * input can then trigger a replacement; memory stays bounded by [MAX_BYTES] and the receive rate (the 5c-1 round-3
+         * reviews).
          */
         fun perPartFor(
             timeoutMs: Long,

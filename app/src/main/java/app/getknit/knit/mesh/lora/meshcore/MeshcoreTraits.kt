@@ -139,7 +139,9 @@ internal object MeshcoreTraits : BoardTraits {
      * - channel data or text at `path_len != 0xFF && (path_len & 0x3F) == 0` — a flood heard before any repeater re-aired
      *   it; `0xFF` reads direct through a repeater too, so it is not one;
      * - a contact DM at `0xFF` (direct): it cannot prove zero hops by itself, so the pin both phones hold on their own
-     *   boards is trusted (§3); a flood at zero hops counts, and one with hops does not.
+     *   boards is trusted (§3) — for lifting an unreachable mark only: a DM a repeater forwarded along a drifted route
+     *   lands `0xFF` too, so the core never counts a DM's radio in `boardsHeard` (Stage 5c-2a); a flood at zero hops
+     *   counts, and one with hops does not.
      *
      * Never a replay ([live]). Never keyed on the DM's sender prefix: the core keys a hearing on an opened seal or a
      * verified author alone ([hearsSender]).
@@ -213,6 +215,26 @@ internal object MeshcoreTraits : BoardTraits {
         phyBytes: Int,
         radio: RadioParams,
     ): Long = LoraAirtime.formulaMs(phyBytes, radio, preambleSymbolsAt(radio.spreadFactor)) + FIXED_MS
+
+    /**
+     * The least airtime anyone can give a [payloadBytes] room packet that this board will decode, under a stated
+     * assumption rather than a bound (ADR 2026-11.gsqu's Stage 5c-2a amendment, the round-1 decision): an unscoped
+     * `GRP_DATA` (header, path length, channel hash, MAC, AES over the data type, its length and the payload — no transport
+     * codes, a forger need not scope), at CR 4/5 whatever the board reports (the explicit header carries the rate, so a
+     * receiver decodes any), behind the shortest preamble a receiver locks on, [LOCK_PREAMBLE_SYMBOLS] + 4.25 symbols,
+     * and no [FIXED_MS] (the board's loop latency is the sender's count, not the receiver's decode). The shortest bound part
+     * is then 21 B in 197 ms at the companion default, where [phyBytes] and [airMs] book it at 25 B and 341 ms; the
+     * per-side cap is 306. Owed to a board: whether a v1.18 receiver locks on a 6-symbol preamble at all.
+     */
+    override fun leastRoomAirMs(
+        payloadBytes: Int,
+        radio: RadioParams,
+    ): Long =
+        LoraAirtime.formulaMs(
+            HEADER_BYTES + PATH_LEN_BYTES + HASH_BYTES + MAC_BYTES + aesPadded(GROUP_DATA_HEADER + payloadBytes),
+            radio.copy(codingRate = LEAST_CODING_RATE),
+            LOCK_PREAMBLE_SYMBOLS + SYNC_SYMBOLS,
+        )
 
     /** `RadioLibWrapper::preambleLengthForSF` (`RadioLibWrappers.h:56`) and the sync word: 32 + 4.25 at SF ≤ 8, else 16 + 4.25. */
     fun preambleSymbolsAt(spreadFactor: Int): Double =
@@ -316,6 +338,12 @@ internal object MeshcoreTraits : BoardTraits {
     private const val TEXT_HEADER = 5
 
     private const val SHORT_PREAMBLE_MAX_SF = 8
+
+    /** The fewest preamble symbols a LoRa receiver locks on (Semtech AN1200.22): the floor [leastRoomAirMs] assumes. */
+    private const val LOCK_PREAMBLE_SYMBOLS = 6.0
+
+    /** CR 4/5, the least overhead: what [leastRoomAirMs] prices whatever the board's own rate. */
+    private const val LEAST_CODING_RATE = 5
     private const val SHORT_SF_PREAMBLE = 32.0
     private const val LONG_SF_PREAMBLE = 16.0
     private const val SYNC_SYMBOLS = 4.25

@@ -242,7 +242,7 @@ class MeshcoreProtoTest {
     fun theFirmwareModelReadsEveryEncodersOutputAsMeant() {
         // The encoder's own output, decoded by the command handler the fake runs (MyMesh.cpp's): none is answered as an
         // unsupported command or an illegal argument, and the writes land where they say.
-        val air = FakeMeshcoreAir(TestScope(), { 0L })
+        val air = FakeMeshcoreAir(TestScope()) { 0L }
         val board = air.board("alice")
         val bob = air.board("bob")
         board.addContact(bob)

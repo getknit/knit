@@ -7,6 +7,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -23,6 +24,16 @@ import org.junit.Test
  * 161 B refused `TABLE_FULL` (Q11); a two-part flood heard at `path_len` 0 in range and 1 through the repeater (Q15); the
  * drain popping in order to `NO_MORE`. Not checked here, because the simulator has none: the BLE side (Q8), the pool
  * and `TABLE_FULL` past it (Q4, a desk-board measurement), the offline queue's eviction (Q6) and adverts.
+ *
+ * **With the channel** ([MeshcoreChannel], Stage 5c-2a) the same runs air the same packets, with three divergences
+ * modelled from the firmware source rather than the simulator, each named in its case:
+ * - **the Q13 PATH**: a flooded matched ack draws the sender's direct PATH 3 s later while its record is pinned
+ *   (`BaseChatMesh.cpp:372-390`); the simulator aired none in either run (FINDINGS Q13's re-run), and a board check is owed;
+ * - **the drift to one hop**: that PATH carries the ack's own path, so a receiver whose ack the sender heard only through the
+ *   repeater is rewritten to a 1-hop route (`:353-359`); no simulator run reached it, so it has no case here — it is
+ *   `MeshcoreAirPhysicsTest.aQ13PathThatCameThroughTheRepeaterDriftsTheReceiverToOneHopAndItsRepinUndoesIt`;
+ * - **the airtime**: the firmware's preamble is 32 symbols at SF ≤ 8 (`RadioLibWrappers.h:56`), the simulator's SX1262 16
+ *   (`SimRadio.h:50`), so Q15's parts sit 633 ms apart (Q5's measured airtime) where the simulator's sat 606.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class MeshcoreFakeVsSimTest {
@@ -57,9 +68,10 @@ class MeshcoreFakeVsSimTest {
     private fun TestScope.replay(
         run: String,
         topology: Topology,
+        channel: MeshcoreChannel? = null,
     ): Replay {
         val sim = SimFrames.load(run)
-        val air = FakeMeshcoreAir(backgroundScope) { testScheduler.currentTime }
+        val air = FakeMeshcoreAir(backgroundScope, channel) { testScheduler.currentTime }
         air.confirmDelayMs = 300
         air.repeatDelayMs = 150
         val boards = topology.companions.associateWith { air.board(it) }
@@ -80,7 +92,7 @@ class MeshcoreFakeVsSimTest {
             }
             boards.getValue(f.node).handle(bytes)
         }
-        advanceTimeBy(5_000)
+        advanceTimeBy(if (channel != null) 20_000 else 5_000)
         runCurrent()
         return Replay(sim, recorders.mapValues { it.value.frames }, air.airings)
     }
@@ -110,7 +122,10 @@ class MeshcoreFakeVsSimTest {
                 MeshcoreProto.PUSH_LOG_RX_DATA
         }
 
-    private fun assertSameAnswers(r: Replay) {
+    private fun assertSameAnswers(
+        r: Replay,
+        routesDiverge: Set<String> = emptySet(),
+    ) {
         for ((node, fake) in r.fakeRx) {
             val sim = r.sim.filter { !it.tx && it.node == node }.map { it.bytes }
             assertEquals("$node's answer codes", codes(sim), codes(fake))
@@ -129,6 +144,7 @@ class MeshcoreFakeVsSimTest {
             val fakeData = fakeDecoded.filterIsInstance<McFrame.ChannelData>()
             assertEquals("$node's datagram path_len", simData.map { it.pathLen }, fakeData.map { it.pathLen })
             simData.zip(fakeData).forEach { (s, f) -> assertArrayEquals("$node's datagram", s.data, f.data) }
+            if (node in routesDiverge) continue
             assertEquals(
                 "$node's routes as read back",
                 simDecoded.filterIsInstance<McFrame.Contact>().map { it.record.outPathLen },
@@ -205,5 +221,72 @@ class MeshcoreFakeVsSimTest {
             // q15.events.ndjson: alice grp_data flood ×2, relay grp_data flood ×2.
             assertEquals(listOf("grp_data flood", "grp_data flood"), airings(r, "alice"))
             assertEquals(listOf("grp_data flood", "grp_data flood"), airings(r, "relay"))
+        }
+
+    // --- the same runs over the channel (Stage 5c-2a) ---
+
+    private val simPreset get() = MeshcoreChannel(spreadFactor = 7, bandwidthHz = 62_500, codingRate = 5)
+
+    @Test
+    fun onTheChannelQ12AirsTheSameTwoPackets() =
+        runTest {
+            val r = replay("q12", withRelay, simPreset)
+            assertSameAnswers(r)
+            assertEquals(listOf("msg direct"), airings(r, "alice"))
+            assertEquals(listOf("ack direct"), airings(r, "bob"))
+            assertEquals(emptyList<String>(), airings(r, "relay"))
+        }
+
+    @Test
+    fun onTheChannelQ13ReceiverUnknownAddsTheSourceModelledPath() =
+        runTest {
+            val r = replay("q13-receiver_unknown", withRelay, simPreset)
+            // DIVERGENCE (source-modelled), and nothing else: the Q13 PATH reaches bob, who gets its `0x81` and whose record
+            // of alice it rewrites (UNKNOWN in the simulator, zero hops here). Every other answer matches the firmware's.
+            val bobsPush = r.fakeRx.getValue("bob").filter { it[0].toInt() and 0xFF == MeshcoreProto.PUSH_PATH_UPDATED }
+            assertEquals("one 0x81, at bob", 1, bobsPush.size)
+            assertTrue("none at alice", r.fakeRx.getValue("alice").none { it[0].toInt() and 0xFF == MeshcoreProto.PUSH_PATH_UPDATED })
+            assertTrue("the simulator pushed none", r.sim.none { !it.tx && it.code == MeshcoreProto.PUSH_PATH_UPDATED })
+            val withoutPush = r.fakeRx.mapValues { (_, frames) -> frames.filter { it !in bobsPush } }
+            assertSameAnswers(Replay(r.sim, withoutPush, r.airings), routesDiverge = setOf("bob"))
+            val bobsRoutes =
+                r.fakeRx
+                    .getValue("bob")
+                    .map { MeshcoreProto.decode(it) }
+                    .filterIsInstance<McFrame.Contact>()
+                    .map { it.record.outPathLen }
+            assertEquals("bob's record of alice read back pinned by the PATH: $bobsRoutes", 0, bobsRoutes.last())
+            assertEquals(listOf("ack flood"), airings(r, "bob"))
+            assertEquals(listOf("ack flood"), airings(r, "relay"))
+            // DIVERGENCE (source-modelled): alice's direct PATH 3 s after the flooded ack, which the simulator never aired.
+            assertEquals(listOf("msg direct", "path direct"), airings(r, "alice"))
+            val ack = r.airings.first { it.from == "bob" }
+            val path = r.airings.last { it.from == "alice" }
+            assertTrue("about 3 s after the ack landed", path.atMs - (ack.atMs + ack.airMs) in 3_000L..3_500L)
+        }
+
+    @Test
+    fun onTheChannelQ13SenderUnknownAirsTheSimulatorsFivePackets() =
+        runTest {
+            val r = replay("q13-sender_unknown", withRelay, simPreset)
+            assertSameAnswers(r)
+            assertEquals(listOf("msg flood", "path direct"), airings(r, "alice"))
+            assertEquals(listOf("path flood"), airings(r, "bob"))
+            assertEquals(listOf("msg flood", "path flood"), airings(r, "relay"))
+        }
+
+    @Test
+    fun onTheChannelQ15sPartsSitOneFirmwareAirtimeApart() =
+        runTest {
+            val r = replay("q15", q15Topology, simPreset)
+            assertSameAnswers(r)
+            assertEquals(listOf("grp_data flood", "grp_data flood"), airings(r, "alice"))
+            assertEquals(listOf("grp_data flood", "grp_data flood"), airings(r, "relay"))
+            val (p0, p1) = r.airings.filter { it.from == "alice" }
+            assertEquals("181 B each", listOf(181, 181), listOf(p0.bytes, p1.bytes))
+            // DIVERGENCE (airtime): 633 ms start to start (Q5's measured airtime), the simulator's 606.
+            assertEquals(p0.airMs, p1.atMs - p0.atMs)
+            assertTrue(p0.airMs in 616L..650L)
+            assertEquals("the relay's one byte more", listOf(182, 182), r.airings.filter { it.from == "relay" }.map { it.bytes })
         }
 }

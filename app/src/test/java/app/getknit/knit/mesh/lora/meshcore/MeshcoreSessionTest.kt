@@ -613,6 +613,41 @@ class MeshcoreSessionTest {
         }
 
     @Test
+    fun aRetryHeldBehindAFullAckTableRepinsOnceNotEveryTick() =
+        runTest {
+            // 5c-2a round 2: an attempt whose ack window lapses re-pins before the next — once. Held behind a full table, the
+            // retry waits on every tick, and none of those ticks reads the record again.
+            val r = rig()
+            up(r)
+            r.air.loseAck = { true }
+            val reads = {
+                r.ch.writes.count {
+                    it[0].toInt() == MeshcoreProto.CMD_GET_CONTACT_BY_KEY &&
+                        it
+                            .copyOfRange(
+                                1,
+                                33,
+                            ).contentEquals(r.bob.key)
+                }
+            }
+            assertTrue(r.dm() is SendResult.Queued)
+            advanceTimeBy(500)
+            runCurrent()
+            // Another client's eight sends, each owed for a minute: the board's table is full past our attempt's window.
+            r.air.estDirectMs = 60_000
+            val app = FakeForeignClient(r.alice)
+            repeat(8) {
+                app.send(requireNotNull(MeshcoreProto.sendText(r.bob.key.copyOf(6), 0, 1_790_000_700L + it, "x$it".encodeToByteArray())))
+            }
+            runCurrent()
+            val before = reads()
+            advanceTimeBy(20_000)
+            runCurrent()
+            assertEquals("one re-pin for the lapsed attempt", before + 1, reads())
+            assertEquals("and no retry while the table is full", 1, r.sendTexts().size)
+        }
+
+    @Test
     fun anotherClientsSendsFillTheBoardsAckTableToo() =
         runTest {
             val r = rig()

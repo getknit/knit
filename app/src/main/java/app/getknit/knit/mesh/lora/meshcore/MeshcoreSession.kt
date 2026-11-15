@@ -2042,13 +2042,21 @@ internal class MeshcoreSession(
     /** Retries whose attempt timed out, each after a fresh pin where its route may have moved; the last one ends it. */
     private suspend fun flightsDue(c: Conn) {
         for (flight in flights.values.toList()) {
+            if (flight.handle !in flights) continue
             when {
-                flight.handle !in flights -> Unit
-
                 // The session's own bound, which the core's deadline backs (Stage 5).
-                now() - flight.startedAt >= MAX_FLIGHT_MS -> endFlight(flight, unreachable = true)
+                now() - flight.startedAt >= MAX_FLIGHT_MS -> {
+                    endFlight(flight, unreachable = true)
+                }
 
-                now() >= flight.attemptAt + flight.estTimeoutMs + RETRY_SLACK_MS -> advance(c, flight)
+                // An attempt that drew no ack re-pins before the next: the route may have drifted silently (another
+                // client's write, a PATH whose 0x81 we missed), and a read costs BLE, not air (ADR 2026-11.gsqu's 5c-2a
+                // amendment). Once per unanswered attempt: a retry held behind a full table or pool (`deferredSince`,
+                // cleared by the next attempt's SENT) is not re-pinned every tick.
+                now() >= flight.attemptAt + flight.estTimeoutMs + RETRY_SLACK_MS -> {
+                    if (flight.deferredSince == null) flight.repinNeeded = true
+                    advance(c, flight)
+                }
             }
         }
     }

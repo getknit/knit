@@ -273,6 +273,17 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   divergence — the LoRa beacon re-signing the node's own profile under the same id while a settings write
   was landing (two blobs, one id, a scope that never converges; `MeshManager.ownProfile()` is the fix).
   `awaitDmScope`'s failure message lists both custodies row by row for the next one of those.
+- **MeshCore's air physics are virtual-time JVM tests, not lab scenarios** (ADR 2026-11.gsqu's Stage 5c-2a amendment).
+  `MeshcoreAirRig` runs the production stack per node (`MeshcoreSession` dialling a fake board, the hooks, a
+  `LoraMeshTransport` at its own default pace) over a `FakeMeshcoreAir` given a `MeshcoreChannel`; `MeshcoreAirPhysicsTest`
+  runs the cases the lab's wall clock cannot: a forger for the whole fragment window (the per-side cap is a ratio of the
+  window to the airtime, so the fake's own airtime is never shortened), the overtake behind a repeater, the replay once the
+  ring forgets, the Q13 PATH and the drifts, a DM through a repeater. Order a race with `air.hold` / `air.release` and a
+  synchronous `air.listeners` entry installed before the send, never with a repeater draw; pin a draw only with
+  `channel.pinDraw`. A board with no power answers a dial after its window (the session's background mode redials at once on
+  a timeout, so an instant answer spins it). The ✓✓-under-a-board-switch case is `MeshcoreFlushSwitchTest`, over a fake
+  `BoardLink` that gates the send. A lab node on the fake takes `quickMeshcoreAir` (Stage 3b figures ÷ 10) on a serial
+  context the lab owns.
 - **`SideChannelLabTest` is the BLE side-channel set** (ADR 2026-09.sjaa, 2026-09-17): `lab.node(name, pages =
   pages)` puts the node's radio on a shared `LabPages` — one radio range, joined the way a board joins a
   `FakeMeshtasticAir` — and `LabTransport` then declares `hasFastPlane` and routes `fastFanout`/`fastSend`

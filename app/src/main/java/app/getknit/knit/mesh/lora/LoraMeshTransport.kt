@@ -1842,10 +1842,10 @@ internal class LoraMeshTransport(
         // Their board heard by the kind's rule (ADR 2026-11.gsqu §5): on Meshtastic every opened DM, as ever; on MeshCore a
         // live one at zero hops — `0xFF` trusts the pin, a flood with hops does not count — and fresh, in the room post's
         // window: the seal opens for a day, and a DM re-aired direct once MeshCore's dedup forgot it is no hearing of a
-        // board that may be gone (the security review's N4). Its radio is counted by the author the seal names, never the
-        // sender prefix.
+        // board that may be gone (the security review's N4). On a kind that vouches for no sender it lifts a mark but is
+        // never counted a radio (`boardsHeard`): a direct DM a repeater forwarded lands `0xFF` too, so its sender's radio may
+        // be out of range (ADR 2026-11.gsqu's Stage 5c-2a amendment). Only a verified zero-hop room post counts one there.
         val heard = heardDirect(packet, opened)
-        if (!traits.hearsSender && heard) noteAuthorRadio(opened.peerId, packet)
         scope.launch {
             runCatching { inbox.deliver(opened) }
                 .onSuccess { log("lora direct delivered ${opened.frameId} from ${opened.peerId}") }
@@ -2528,17 +2528,20 @@ internal class LoraMeshTransport(
 
     /**
      * [candidates]' capacity at the board's preset now: the fragment window over the shortest fragment's airtime
-     * ([LoraFragCandidates.capacityFor]), so one radio cannot flush an honest entry inside it.
+     * ([LoraFragCandidates.capacityFor]), so one radio cannot flush an honest entry inside it. The airtime is the floor
+     * ([LoraAirtime.leastRoomAirMs]), never the booked price: a booked figure over-states it, and the cap then sits under
+     * what one radio lands in the window (ADR 2026-11.gsqu's Stage 5c-2a amendment).
      */
     private fun candidateCapacity(): Int =
-        LoraFragCandidates.capacityFor(FRAG_TIMEOUT_MS, pace.airtime.timeOnAirMs(LoraFragCandidates.SHORTEST_FRAGMENT_BYTES))
+        LoraFragCandidates.capacityFor(FRAG_TIMEOUT_MS, pace.airtime.leastRoomAirMs(LoraFragCandidates.SHORTEST_FRAGMENT_BYTES))
 
     /**
      * How many waiting parts each side of a [candidates] entry keeps at the board's preset now: what this receiver can
-     * decode within the fragment window ([LoraFragCandidates.perPartFor]), so no radio input fills a side inside it.
+     * decode within the fragment window ([LoraFragCandidates.perPartFor]) at the shortest part's least airtime, so no radio
+     * input fills a side inside it.
      */
     private fun candidatesPerPart(): Int =
-        LoraFragCandidates.perPartFor(FRAG_TIMEOUT_MS, pace.airtime.timeOnAirMs(LoraFragCandidates.SHORTEST_FRAGMENT_BYTES))
+        LoraFragCandidates.perPartFor(FRAG_TIMEOUT_MS, pace.airtime.leastRoomAirMs(LoraFragCandidates.SHORTEST_FRAGMENT_BYTES))
 
     /** Returns the complete frame for [packet]: itself if a whole `0x03`/`0x05` frame, else reassembled from `0x04` parts. */
     private fun reassemble(packet: BoardPacket): ByteArray? =

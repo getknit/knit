@@ -1059,6 +1059,32 @@ have held it. RADIO stats feed `BoardAir` over a ≥ 60 s ring
 - **The fake.** `FakeMeshcoreAir` runs the command handler per board and an air of neighbours and repeaters;
   `MeshcoreFakeVsSimTest` replays the simulator runs of Q11–Q15 into it and checks its answers and airings node by node.
   Nothing in it models the BLE side (Q8's 173-B notify cut, the four-frame queue) beyond `FakeNusChannel.dropFrame`.
+  **The channel** (opt-in, `FakeMeshcoreAir(channel = MeshcoreChannel(…))`, Stage 5c-2a) makes the air the firmware's:
+  - each airing takes the fake's own Semtech airtime (`MeshcoreChannel.airtimeMs`, 32-symbol preamble at SF ≤ 8: 633 ms
+    for 181 B at SF7 / 62.5, Q5's measurement) and lands at its end; a receiver decodes one packet at a time, an overlap
+    corrupts both (`FakeRadio.collisions`; a per-link `capture` alone keeps the first, radio behaviour the source is silent
+    on) and the radio stays busy to its CAD, and what arrives while it transmits is lost (`deaf`); a scoped flood carries
+    its 4 B of transport codes;
+  - a radio airs one packet at a time from a priority queue (soonest eligible, lowest priority, first in), under the
+    50 % budget over an hour and listen-before-talk (200-ms CAD retries, forced after 4 s; `Dispatcher.cpp`); a
+    `rogue` radio skips both;
+  - a repeater (pool 32) re-airs a flood `nextInt(0, 5·t + 1)` after the end of reception,
+    `t` = airtime(path + payload + 2) × `tx_delay_factor` (0.5), priority by hop count, and forwards a direct packet whose next hop it is after the
+    `direct_tx_delay_factor` (0.3) draw, stripping itself (`simple_repeater/MyMesh.cpp:547-553`, `Mesh.cpp:78-108`); every
+    other node drops that packet, the destination included, and an ack is offered to whoever hears it on the way;
+    `rx_delay_base` above 0 delays a flood by `calcRxDelay` (under 50 ms ignored, 32 s cap). Each draw is
+    `Random(mix(runSeed, repeater, origin, n))`, logged in `draws` and on the airing;
+  - every node keeps a 160-entry ring of SHA-256(type + payload), path excluded, cleared on reboot (`evictRing` for tests);
+  - contacts keep `out_path`; through a repeater a direct DM lands reported `0xFF`; a flooded DM draws the flooded PATH
+    return, the sender's reciprocal direct PATH, and `0x81` on each board when a PATH reaches it; a flooded matched ack
+    draws one direct PATH 3 s later while the sender's record is pinned (the Q13 PATH, `BaseChatMesh.cpp:372-390`);
+  - boards: `powered` (off: deaf, mute, the link dropped, a dial times out after its window; on: `reboot()`, which clears
+    the offline queue, the ack table and the ring and keeps contacts), the offline cap at the source's 16, an RTC that
+    ticks with the air's clock, `tx_air` in ms for every airing, `lossy(from, to)`, `hold` / `release`, synchronous
+    `listeners`, `pathHashMode`.
+  `quickMeshcoreAir` is the Stage 3b air with its figures ÷ 10 for the lab's ordinary cases. Given a `serial` context
+  (`limitedParallelism(1)` on a scope the caller owns), every write, delivery and timer runs on it and `snapshot` reads
+  there; `airings` is copy-on-write. `MeshcoreAirRig` runs the production stack (session, hooks, transport) per node over it.
 - **The GATT client (Stage 3c).** `MeshcoreGatt` dials through the `BoardGatt` core `MeshtasticGatt` uses, with its own
   parameters: the Nordic UART service (`MeshcoreUuids`: RX `…02` written, TX `…03` notified, one companion frame each,
   no framing byte), a 176-B MTU floor (`NusLinkPolicy.MIN_MTU`, the firmware's `MAX_FRAME_SIZE` and an ESP32 board's
@@ -1119,7 +1145,7 @@ Debug builds only (`MESHCORE_PLANE`): `di/LoraWiring.loraPlaneOf` builds each ki
   a direct DM trusting the pin); `hearsSender` false, so `noteHeard` and `noteBoard` never run on a MeshCore sender. A
   room post's author is heard only when the post is live and zero-hop, its `sentAt` within `-MAX_FUTURE_SKEW_MS..FRESH_MS`,
   and its signature verifies against the author's pinned key (`LoraAuthorCheck`, `pinnedAuthorCheck`): its radio is
-  counted by author (`AuthorRadio`), and a board holder marked unreachable gets `onBoardHeard`. An opened DM hears its board only at zero hops and fresh (the same window). So on MeshCore `heard` (fresh-frame authors,
+  counted by author (`AuthorRadio`), and a board holder marked unreachable gets `onBoardHeard`. An opened DM hears its board only at zero hops and fresh (the same window), and since Stage 5c-2a it only lifts a mark: it never counts a radio, since a DM a repeater forwarded lands `0xFF` too. **The accepted cost:** two MeshCore users who only DM each other read "0 other radios in range" (`LoraRadioScreen`), because `boardsHeardAt` is fed by verified zero-hop room posts alone; a DM could count once a zero-hop proof exists (Stage 5d or later). So on MeshCore `heard` (fresh-frame authors,
   any hop count, unverified) and `boardsHeard` (verified pinned zero-hop authors) read differently from Meshtastic: when the
   airtime row reads 100 %, compare `boardsHeard` with the dump's `meshcoreZeroHopKnitPosts` (live zero-hop Knit **packets**,
   unverified: a two-part post counts 2 since Stage 5c-1) rather than with `heard`.
@@ -1163,12 +1189,14 @@ Debug builds only (`MESHCORE_PLANE`): `di/LoraWiring.loraPlaneOf` builds each ki
   2.0; `simple_repeater/MyMesh.cpp:547`, `:893`). So a head and a tail pair only when each names the other, one
   verification a matched pair; a fake costs memory, never a check. Each side of an entry (heads, and tails waiting for
   their head) keeps `LoraFragCandidates.perPartFor` parts — what this receiver can decode within the whole 60-s window,
-  60 s ÷ 341 ms + 1 = **177** at the companion default (SF8 / 62.5), `capacityFor`'s figure — so within the window no radio
+  60 s ÷ 197 ms + 1 = **306** at the companion default (SF8 / 62.5), `capacityFor`'s figure off the shortest part's least
+  airtime (`LoraAirtime.leastRoomAirMs`: 21 B unscoped at CR 4/5 behind a 6-symbol preamble, no `FIXED_MS`, an assumption a
+  board owes; the booked 341 ms made it 177, under the 197 parts one firmware-preamble radio lands, `MeshcoreAirPhysicsTest`) — so within the window no radio
   input fills a side, however long the firmware held the honest part (the score delay `calcRxDelay`, up to 32 s; CAD
   retries; `0..5·tx_delay_factor` airtimes a hop, which made a repeat-hold window the wrong measure). Past it a newcomer
   replaces a random waiting one (`SecureRandom`, `FRAG_CANDIDATES_FULL`). A pairing leaves the entry verified or
   not, so two authors under one id each pair their own. Every part ages out on its own arrival. The store holds at most
-  `capacityFor` entries (the 60-s window over the shortest bound part's 341 ms: 177) and `MAX_BYTES` = 256 KiB of slices,
+  `capacityFor` entries (the 60-s window over the shortest bound part's least 197 ms: 306) and `MAX_BYTES` = 256 KiB of slices,
   evicting the oldest past either (`FRAG_OVERFLOW`). The collector suspends on the check.
 - **Resolution.** An elided sender prefix resolves against `LoraAuthorIds`: the direct contacts first, every other peer whose
   key the table holds only when no contact's candidate verifies (`di/loraAuthorIds`, node ids only, kept across a board

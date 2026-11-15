@@ -429,13 +429,24 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   (`SecureRandom`); 184 B of text, less where the band's flood ceiling admits fewer packets. A MeshCore receiver reads no
   unbound `0x04` and trusts no arrival order (the firmware can hold a flood for seconds: score delay, CAD, every hop): a head and a tail pair
   only when each names the other, one verification a pair, so a fake costs memory and never a check; each side keeps what
-  the receiver can decode within the 60-s window (`perPartFor`, 177 at the companion default), a random waiting part replaced past it; every
+  the receiver can decode within the 60-s window (`perPartFor`, 306 at the companion default, off the shortest part's least airtime `LoraAirtime.leastRoomAirMs` since 5c-2a: CR 4/5 behind a 6-symbol preamble, an assumption a board owes), a random waiting part replaced past it; every
   part ages on its own arrival; entries and bytes capped. A prefix resolves against accepted contacts first, every pinned
   peer only when no contact's candidate verifies; a stranger's post never resolves, and on MeshCore only a verified frame is
   `reachable` presence. Meshtastic keeps its seeded counter and sender-keyed `FragReassembler`, and never reads `0x06` or
   `0x07`. Agree the bound form with iOS before MeshCore reaches iOS. `LoraDirectSource.unackedTo` takes `maxBytes` on every
   source. Regression: `LoraFragCandidatesTest`, `MeshcoreRoomPostTest`, `LoraFragVectorTest`, `BoardKindFramePolicyTest`,
   `LoraSizeHintTest`, `CoordinationPlaneSizeBudgetTest`'s MeshCore column.
+
+- **Before touching `FakeMeshcoreAir`, `MeshcoreChannel`, `FakeRadio`, `AirPacket`, `quickMeshcoreAir`, `MeshcoreAirRig`,
+  `MeshcoreAirPhysicsTest`, `FakeMeshcoreAirTest`, `MeshcoreFlushSwitchTest`, or `BoardTraits.leastRoomAirMs` /
+  `LoraAirtime.leastRoomAirMs`:** READ ADR 2026-11.gsqu's Stage 5c-2a amendment, then "The fake" in `lora-bridge.md`'s
+  MeshCore client section. The channel is opt-in (`FakeMeshcoreAir(channel = …)`): without one every Stage 3b behaviour
+  `MeshcoreFakeVsSimTest` pins stays as it was; with one the air is modelled from the firmware source (an independent
+  Semtech airtime checked against Q5, one reception at a time, the queue, budget and listen-before-talk, the repeater's
+  drawn delay, the 160-entry ring, paths, the Q13 PATH). Never price the fake with `LoraAirtime`: its airtime is the
+  oracle the plane's figures are checked against. Draws come from `Random(mix(runSeed, repeater, origin, n))`, never a
+  shared source; order a race with `hold` / `release`, never a draw. The plane sizes `LoraFragCandidates` off the shortest
+  part's **least** airtime (`leastRoomAirMs`: unscoped, no `FIXED_MS`), never the booked price.
 
 ## Adding an entry
 
