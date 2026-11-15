@@ -201,11 +201,14 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   this process, a group photo), re-reads acceptance just before it and the rows inside its write. The
   echo declines a held hash (`EchoDeclined`) after reading custody too, and wants any group photo under
   `FileIntake.MAX_AVATAR_BYTES`; its per-hash memo lasts one `ROUND_MS` and the collector clears it, the re-arm never
-  reads it. The spool drops a held hash from its candidates without settling it. Author, `until` and the fast-only
-  verdict come from the releasing rows only. Custody, relay, acks and `CarrierPullPolicy`'s inputs never read
-  acceptance. Unasked pushes: #277. Lab: `BlockAndRequestLabTest`, `MaliciousForkLabTest`'s request
+  reads it. The spool drops a held hash from its candidates without settling it. The fast-only verdict comes from the
+  releasing rows only. Author and `until` come from `RequestHold.judging` / `askedFirst` (the 2026-11-14 amendment,
+  #321): the rows of ours or of an accepted conversation, the tapped ones only with none of those, and never a blocked
+  sender's row as the author; `MeshManager.downloadAttachment`, the re-arm, `InboundPipeline.foldFetch` and
+  `onCarriedFrame`'s `CarriedRequest.Released` all read them, and the fast plane (`expectBulkTransfer`) is armed toward
+  that author alone. Custody, relay, acks and `CarrierPullPolicy`'s inputs never read acceptance. Unasked pushes: #277. Lab: `BlockAndRequestLabTest`, `MaliciousForkLabTest`'s request
   cases; unit: `RequestHoldTest`, `BlobDaoTest`, `BlobRepositoryTest`'s request cases,
-  `MeshManagerTest.theRequestSweepRereadsAcceptanceJustBeforeItDrops`.
+  `MeshManagerTest.theRequestSweepRereadsAcceptanceJustBeforeItDrops` and its three #321 cases.
 - **When touching `KeyExchange`'s cache / `profileFor` / `serveKey`, `peer_profiles` (`PeerProfileEntity`,
   `PeerRepository.recordProfileFrame`), or the key-ahead in `ForwardSync.onDigest` (`keylessSenders`):** READ ADR
   2026-09.g64k (it closes the case ADR 2026-09.9xuu set aside). A carrier keeps the signed profile each pin came from,

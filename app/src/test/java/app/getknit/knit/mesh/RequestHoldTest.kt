@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.message.AttachmentFetchRow
 import app.getknit.knit.data.message.Conversations
 import kotlinx.coroutines.test.runTest
@@ -58,6 +59,69 @@ class RequestHoldTest {
     fun onlyTheReleasingRowsAreKeptInTheirOrder() {
         val rows = listOf(row(stranger), row(contact, sender = contact), row(stranger, approved = true))
         assertEquals(listOf(rows[1], rows[2]), RequestHold.releasing(rows, acceptsContact))
+    }
+
+    @Test
+    fun aHeldStrangersRowIsNeverAskedFirstEvenOnceATapApprovedIt() {
+        // #321: the tap approves every row naming the hash, so the stranger's earlier row releases it too — and still the
+        // contact's row names the holder. Untapped, the stranger's row does not release at all.
+        val untapped = listOf(row(stranger), row(contact, sender = contact))
+        val tapped = listOf(row(stranger, approved = true), row(contact, sender = contact, approved = true))
+        assertEquals(contact, RequestHold.askedFirst(untapped, acceptsContact, emptySet()))
+        assertEquals(listOf(tapped[1]), RequestHold.judging(tapped, acceptsContact))
+        assertEquals(contact, RequestHold.askedFirst(tapped, acceptsContact, emptySet()))
+    }
+
+    @Test
+    fun aBlockedSendersRowReleasesTheFetchAndIsNeverAskedFirst() {
+        // A thread accepted before its sender was blocked stays accepted: the row fetches, and names nobody.
+        val blockedFriend = "blocked-friend"
+        val accepts: (String) -> Boolean = { it == contact || it == blockedFriend }
+        val rows = listOf(row(stranger), row(blockedFriend, sender = blockedFriend), row(contact, sender = contact))
+        assertEquals(contact, RequestHold.askedFirst(rows, accepts, setOf(blockedFriend)))
+        assertEquals("unblocked, the earlier row names its sender", blockedFriend, RequestHold.askedFirst(rows, accepts, emptySet()))
+        val alone = listOf(row(blockedFriend, sender = blockedFriend))
+        assertFalse("their row still fetches it", RequestHold.held(alone, accepts))
+        assertEquals("and names no holder", null, RequestHold.askedFirst(alone, accepts, setOf(blockedFriend)))
+    }
+
+    @Test
+    fun ourOwnRowAndATappedRowAloneStillSayWhoIsAsked() {
+        val own = row(stranger, sender = me, own = true)
+        assertEquals("our own row names us", me, RequestHold.askedFirst(listOf(row(stranger), own), acceptsContact, emptySet()))
+        // Only tapped rows: the tap is the consent, and they are all there is to go by, in their order.
+        val tappedOnly = listOf(row(stranger), row(stranger, sender = "another", approved = true), row(stranger, approved = true))
+        assertEquals(listOf(tappedOnly[1], tappedOnly[2]), RequestHold.judging(tappedOnly, acceptsContact))
+        assertEquals("another", RequestHold.askedFirst(tappedOnly, acceptsContact, emptySet()))
+        assertEquals(
+            "a blocked sender's tapped row is passed over",
+            stranger,
+            RequestHold.askedFirst(tappedOnly, acceptsContact, setOf("another")),
+        )
+    }
+
+    @Test
+    fun noReleasingRowNamesNobody() {
+        assertEquals(emptyList<AttachmentFetchRow>(), RequestHold.judging(listOf(row(stranger), row(stranger)), acceptsContact))
+        assertEquals(null, RequestHold.askedFirst(listOf(row(stranger), row(stranger)), acceptsContact, emptySet()))
+        assertEquals(null, RequestHold.askedFirst(emptyList(), acceptsContact, emptySet()))
+    }
+
+    @Test
+    fun aTappedRequestsRowNeverMovesAContactsDeadline() {
+        // The deadline folds the judging rows (`PullThroughGate.until`): a stranger's later DM row, or a stranger's group
+        // row, approved by the tap, neither stretches nor lifts the window of the contact's DM.
+        fun dm(
+            sender: String,
+            sentAt: Long,
+            isDm: Boolean = true,
+        ) = AttachmentFetchRow("h", sender, null, approved = true, own = false, sentAt = sentAt, dm = isDm, conversationId = sender)
+        val contactsWindow = 2_000L + ForwardRepository.DEFAULT_TTL_MS
+        val stretched = listOf(dm(stranger, 1_000L), dm(contact, 2_000L), dm(stranger, 9_000_000L))
+        assertEquals(contactsWindow, PullThroughGate.until(RequestHold.judging(stretched, acceptsContact)))
+        val lifted = listOf(dm(stranger, 1_000L, isDm = false), dm(contact, 2_000L))
+        assertEquals(contactsWindow, PullThroughGate.until(RequestHold.judging(lifted, acceptsContact)))
+        assertEquals("every releasing row would have lifted it", null, PullThroughGate.until(RequestHold.releasing(lifted, acceptsContact)))
     }
 
     @Test

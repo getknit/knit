@@ -3604,10 +3604,12 @@ class MeshManager(
     /**
      * The user tapped "Tap to download" on attachment [hash] (ADR 2026-10.js2p): the approval goes on every row naming
      * it first — the database is what every later re-arm reads — then the fetch is wanted plain, which lifts the
-     * fast-only hold at once and asks over whatever plane reaches a holder. Asked of the earliest row's sender first, as
-     * the database re-arm would, and the fast plane armed toward it as delivery does. Nothing to do once held. With the
-     * mesh stopped the want is only recorded — there is no neighbour to ask and no session to time it — and the approval
-     * on the rows is what the next start's re-arm reads, plain.
+     * fast-only hold at once and asks over whatever plane reaches a holder. Asked first of the sender the database re-arm
+     * would name ([RequestHold.askedFirst], #321): the earliest row of ours or of an accepted conversation, never a held
+     * request's row the approval just reached and never a blocked sender's, with the fast plane armed toward that sender
+     * alone, as delivery does, and pulled through by those rows' deadline ([RequestHold.judging]). Nothing to do once
+     * held, or with no row left that fetches it. With the mesh stopped the want is only recorded — there is no neighbour
+     * to ask and no session to time it — and the approval on the rows is what the next start's re-arm reads, plain.
      *
      * Runs on the manager's own scope and returns at once: the chat calls it from its view model, and leaving the screen
      * while a re-arm holds [rewantLock] must not cancel the tap. The approval is written before the lock is taken, so it
@@ -3619,18 +3621,23 @@ class MeshManager(
         scope.launch {
             messages.approveAttachmentFetch(hash)
             rewantLock.withLock {
-                val rows = messages.attachmentFetchRows(hash, me = identity.nodeId())
-                val author = rows.firstOrNull()?.senderId ?: return@withLock
+                val me = identity.nodeId()
+                val rows = messages.attachmentFetchRows(hash, me)
+                // Acceptance and the block list are read here, under the lock and after the rows, as the re-arm reads them.
+                val accepted = AcceptanceSnapshot.of(settings, peers, messages, me).acceptedAmong(rows.map { it.conversationId })
+                val judging = RequestHold.judging(rows, accepted::contains)
+                if (judging.isEmpty()) return@withLock
+                val author = RequestHold.askedFirst(rows, accepted::contains, settings.blockedNodeIds.first())
                 // The rows' deadline too (#195): a tap on a DM past its custody window asks nobody to pull it through.
                 blobExchange.want(
                     hash,
                     author = author,
                     fastOnly = false,
                     approved = true,
-                    until = PullThroughGate.until(rows),
+                    until = PullThroughGate.until(judging),
                     untilKnown = true,
                 )
-                transport.expectBulkTransfer(author)
+                author?.let(transport::expectBulkTransfer)
             }
         }
     }
@@ -3819,13 +3826,21 @@ class MeshManager(
         val accepted = acceptance.acceptedAmong(needed.flatMapTo(HashSet()) { m -> m.rows.map { it.conversationId } })
         // The rows that would fetch each hash ([RequestHold]): ours, tapped, or an accepted conversation's. A hash none
         // of whose rows would is a request's, and waits; the rest are judged by their releasing rows alone, so a held
-        // stranger's row is never the author asked first and never moves a contact's deadline or fast-only verdict.
+        // stranger's row never moves a contact's fast-only verdict.
         val releasing =
             needed.mapNotNull { m ->
                 val rows = RequestHold.releasing(m.rows, accepted::contains)
                 if (rows.isEmpty()) null else m.hash to rows
             }
-        val wanted = releasing.mapTo(mutableListOf<Pair<String, String?>>()) { (hash, rows) -> hash to rows.first().senderId }
+        // Who is asked first, and the deadline below, by the rows of ours or of an accepted conversation among them, and by
+        // the tapped ones only with none of those (#321): a tap approves every row naming the hash, so a held stranger's
+        // row releases it too, and still is never the author named nor moves a contact's deadline. Never a blocked
+        // sender either, whose thread stays accepted.
+        val blocked = settings.blockedNodeIds.first()
+        val wanted =
+            releasing.mapTo(mutableListOf<Pair<String, String?>>()) { (hash, rows) ->
+                hash to RequestHold.askedFirst(rows, accepted::contains, blocked)
+            }
         // The hashes a row of ours fetches: the carried half below never wants one of them in its own right. A hash only
         // held rows name is still a carrier's to pull when a frame naming it is carried for somebody else (ADR
         // 2026-11.qu98, #282's B3/B4): a stranger naming a third party's picture never stops our relay work for them.
@@ -3836,7 +3851,10 @@ class MeshManager(
         val fastOnly = releasing.filter { (_, rows) -> BluetoothFetchGate.fastOnly(rows, limit) }.mapTo(HashSet()) { it.first }
         // And until when its neighbours may be asked to pull it through (#195, ADR 2026-10.2drc): a DM's custody window
         // from its latest row, carried on every ask so nobody echoes it past the window; none for a group's or a room's.
-        val until = releasing.mapNotNull { (hash, rows) -> PullThroughGate.until(rows)?.let { hash to it } }.toMap(HashMap())
+        val until =
+            releasing
+                .mapNotNull { (hash, rows) -> PullThroughGate.until(RequestHold.judging(rows, accepted::contains))?.let { hash to it } }
+                .toMap(HashMap())
         // The carried ones skip those already re-requested above as our own/received attachments, and ones a DM's
         // linked recipient is fetching now ([CarrierPullPolicy], ADR 2026-10.g24x) — this tick re-reads them, so the
         // hold ends by itself when the recipient's link goes or the window passes.

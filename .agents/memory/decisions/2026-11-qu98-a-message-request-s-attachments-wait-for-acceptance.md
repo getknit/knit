@@ -129,3 +129,50 @@ pull of bytes addressed to us waits.
   (`MeshMetrics.Files.acceptanceRearms`), first the collector's opening round and then the one its accept starts, so
   no re-arm is left in flight into the scenario's first send (#291). An id already accepted is skipped, since its
   accept starts no round.
+
+## Amendment 2026-11-14: a tapped request's row and a blocked sender's row never name the holder (#321)
+
+**Observed** (#321, read in the code and reproduced in `MeshManagerTest`). The decision said the author hint and the
+pull-through deadline come from the releasing rows only. Three doors did not keep it:
+
+- the tap (`MeshManager.downloadAttachment`) took the sender of the earliest row naming the hash, whoever it was,
+  armed the fast plane toward that sender and folded every row into the deadline;
+- the tap's approval is written to every row naming the hash (ADR 2026-10.js2p), and a tapped row releases. After one
+  tap a held request's row was therefore a releasing row, so the database re-arm and the delivery's fold
+  (`InboundPipeline.foldFetch`) named its sender and took it into the deadline as well;
+- `onCarriedFrame` wanted a request's frame to us that another row fetches of the frame's own sender, by the frame's
+  own window, ahead of the delivery.
+
+No door read the block list either: a thread accepted before its sender was blocked stays accepted, so a blocked
+sender's earlier row named them.
+
+**Decided.** Whether an attachment is fetched is unchanged: one releasing row fetches it for all, and a tap is
+consent for the hash. Who is asked first and until when it is pulled through come from `RequestHold.judging`: the
+rows that fetch it by standing (ours, or an accepted conversation's), and the tapped rows only when there is none of
+those. `RequestHold.askedFirst` is the earliest of them whose sender is not blocked, or nobody. The tap, the re-arm,
+the delivery's fold and `onCarriedFrame`'s released request all read the two, and the fast plane is armed toward
+that sender alone. Where the frame's own sender is not the one asked, they are not passed as the hop it came from
+either. The fast-only verdict still folds every releasing row, since the tap is the user's consent to Bluetooth for
+the hash.
+
+Approving only the tapped conversation's rows was the alternative. It would change what ADR 2026-10.js2p decided
+(the approval is keyed by hash, as `setVoiceMeta` is), and the tap would have to carry its message id. It was left
+alone.
+
+**Limits.**
+
+- The hint says who is named and which link is armed. The holder round itself (ADR 2026-10.6e5t, 2026-10.f7gg) is
+  unchanged, and so are the carrier rules for a frame whose own conversation is accepted. What that leaves is in
+  #321's comments.
+- An attachment only a blocked sender's rows name is still fetched, with no holder named.
+- Guards: `RequestHoldTest`'s `aHeldStrangersRowIsNeverAskedFirstEvenOnceATapApprovedIt`,
+  `aBlockedSendersRowReleasesTheFetchAndIsNeverAskedFirst`, `ourOwnRowAndATappedRowAloneStillSayWhoIsAsked`,
+  `noReleasingRowNamesNobody` and `aTappedRequestsRowNeverMovesAContactsDeadline`; `MeshManagerTest`'s
+  `aTapAsksTheContactAndArmsNoLinkTowardAHeldStrangerWhoseRowsNameTheSameFile`,
+  `aTapNeverNamesABlockedSenderWhoseEarlierRowNamesTheSameFile` and
+  `theReArmAfterATapAsksTheContactAndNeverTheHeldStrangerTheTapApproved`; `InboundPipelineTest`'s
+  `aRequestsAttachmentIsAskedOfTheContactAfterATapApprovedAnEarlierStrangersRow`,
+  `aRequestsAttachmentIsNeverAskedOfABlockedSenderWhoseEarlierRowFetchesIt`,
+  `onCarriedFrameAsksTheContactForARequestsFrameAContactsRowFetches` and
+  `anAcceptedDmsDeadlineIgnoresARequestsRowATapApproved`; `BlockAndRequestLabTest`'s
+  `aTapOnAPictureAStrangerSentFirstAimsAtTheContactWhoPassedItOn`.

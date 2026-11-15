@@ -4,6 +4,7 @@ import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.settings.BluetoothDownloadLimit
 import app.getknit.knit.mesh.AcceptanceSnapshot
 import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.CarrierPullPolicy
@@ -345,6 +346,79 @@ class BlockAndRequestLabTest {
                 it.dmWith(if (it === alice) bob else alice)
             }
             assertTrue(picture.contentEquals(bob.attachmentPlain(bob.dmWith(alice), id)))
+        }
+
+    /**
+     * #321: a stranger sends Carol a picture first, and Dave — her contact, who has it from the stranger — passes the same
+     * picture on, so two rows name one identity (ADR 2026-10.mptm) and the stranger's is the earlier. Over her Bluetooth
+     * limit it waits for the tap (ADR 2026-10.js2p), whose approval lands on both rows. The tap aims at Dave: the fast
+     * plane is armed toward him and never toward the stranger, whose request stays held, and the picture lands once. All
+     * three are linked, so the stranger is a holder in Carol's reach the whole time and may answer a holder query like
+     * any neighbour (ADR 2026-11.qu98 holds the fetch, not the round); who the tap names is what this pins.
+     */
+    @Test
+    fun aTapOnAPictureAStrangerSentFirstAimsAtTheContactWhoPassedItOn() =
+        runBlocking {
+            val stranger = lab.node("stranger").apply { setDisplayName("Stranger") }
+            val dave = lab.node("dave").apply { setDisplayName("Dave") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            // Dave takes the stranger's copy over Bluetooth at once; Carol keeps the default limit, so hers waits for a tap.
+            dave.settings.setBluetoothDownloadLimit(BluetoothDownloadLimit.NEVER)
+            lab.linkAll(stranger to dave, dave to carol, stranger to carol)
+            lab.awaitAcquainted(stranger, dave, carol)
+            lab.befriend(stranger, dave)
+            lab.befriend(dave, carol)
+
+            val picture = Random(321).nextBytes(OVER_LIMIT_BYTES)
+            assertTrue(stranger.sendImage(picture, "for dave", to = dave))
+            val hash =
+                checkNotNull(stranger.attachmentHash(stranger.dmWith(dave), stranger.ownMessageId(stranger.dmWith(dave), "for dave")))
+            // Dave's row learns the plaintext's name once the bytes are opened, after they are held (onObtained).
+            lab.await(1) { if (dave.holdsIdentityFor(picture)) 1 else 0 }
+
+            val held = carol.metrics.files().requestHolds
+            assertTrue(stranger.forwardImage(picture, "a request", to = carol))
+            val request = stranger.ownMessageId(stranger.dmWith(carol), "a request")
+            assertEquals("the stranger's two sends are one identity", hash, stranger.attachmentHash(stranger.dmWith(carol), request))
+            lab.awaitReceipt(stranger, request, carol)
+            lab.await(1) { if (carol.metrics.files().requestHolds > held) 1 else 0 }
+            assertTrue("the DM is a message request", carol.isRequest(stranger))
+
+            val waiting = carol.metrics.files().blobFastOnlyHeld
+            assertTrue(dave.forwardImage(picture, "look at this", to = carol))
+            val id = dave.ownMessageId(dave.dmWith(carol), "look at this")
+            assertEquals("Dave's forward is the stranger's copy", hash, dave.attachmentHash(dave.dmWith(carol), id))
+            lab.awaitReceipt(dave, id, carol)
+            // Dave's row fetches it, over her limit: the want is held to Wi-Fi Aware, which the lab has none of.
+            lab.await(1) { if (carol.metrics.files().blobFastOnlyHeld > waiting) 1 else 0 }
+            assertTrue("nothing asked before the tap: ${carol.asksFor(hash)}", carol.asksFor(hash).isEmpty())
+            assertFalse("carol holds it before the tap", carol.holdsBlob(hash))
+            // The delivery arms toward Dave after its want returns: awaited, so the next arm counted is the tap's alone.
+            lab.await(1) { carol.transport.bulkArmed.count { it == dave.nodeId } }
+            val armedBefore = carol.transport.bulkArmed.size
+
+            carol.manager.downloadAttachment(hash)
+            // The tap's own arm, after its want: before #321's fix this was the stranger, the earliest row's sender.
+            lab.await(1) { if (carol.transport.bulkArmed.size > armedBefore) 1 else 0 }
+            lab.await(1) { if (carol.holdsBlob(hash)) 1 else 0 }
+            assertTrue(
+                "the approval is on both rows",
+                carol.row(request)?.attachmentFetchApproved == true && carol.row(id)?.attachmentFetchApproved == true,
+            )
+            assertEquals(
+                "the tap aimed at Dave alone: ${carol.transport.bulkArmed}",
+                setOf(dave.nodeId),
+                carol.transport.bulkArmed
+                    .drop(armedBefore)
+                    .toSet(),
+            )
+            assertFalse("a link was armed toward the stranger: ${carol.transport.bulkArmed}", stranger.nodeId in carol.transport.bulkArmed)
+            assertEquals("one copy reached carol", 1, stranger.filesTo(carol, hash) + dave.filesTo(carol, hash))
+            assertTrue("the stranger's thread is still a request", carol.isRequest(stranger))
+            lab.assertConverged(listOf(dave, carol), atLeast = 1, carriers = listOf(stranger)) {
+                it.dmWith(if (it === dave) carol else dave)
+            }
+            assertTrue(picture.contentEquals(carol.attachmentPlain(carol.dmWith(dave), id)))
         }
 
     /**
@@ -692,5 +766,8 @@ class BlockAndRequestLabTest {
         const val HOUR_MS = 60 * MINUTE_MS
         const val HEAL_TICKS = 8
         const val TICK_WAIT_MS = 10_000L
+
+        // Past the 1 MB default Bluetooth limit: its sender declares it, and its recipient holds it for a tap.
+        const val OVER_LIMIT_BYTES = 1_200_000
     }
 }

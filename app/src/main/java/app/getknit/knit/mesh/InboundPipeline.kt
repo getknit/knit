@@ -3206,7 +3206,8 @@ class InboundPipeline(
                 roster = env.group?.members?.toSet(),
                 departed = env.group?.departed?.toSet(),
             )
-        if (carriedRequestHeld(hash, carried, me)) return
+        val request = carriedRequest(hash, carried, me)
+        if (request == CarriedRequest.Held) return
         if (CarrierPullPolicy.defers(listOf(carried), linked, clock())) {
             metrics.onCarrierPullDeferred()
             return
@@ -3216,6 +3217,14 @@ class InboundPipeline(
         // rule (`MeshManager.unopenedForUs`, #291), so it never re-holds this pull.
         val fastOnly =
             if (RequestHold.carriedForOthers(carried, me, acceptance(me))) false else carriedFastOnly(env, content, hash, member) ?: return
+        // A request's frame to us that another row fetches (#321): asked of that row's sender and pulled through by that
+        // row's window, never the stranger's who sent this frame, as the delivery right behind will judge it. Nor is the
+        // stranger the hop it came from, when they handed it over themselves.
+        if (request is CarriedRequest.Released) {
+            val hop = via.takeUnless { it == env.senderId }
+            blobExchange.want(hash, author = request.author, via = hop, fastOnly = fastOnly, until = request.until)
+            return
+        }
         // A DM's carrier pulls it through for its custody window and no longer: frame-global, the same on every node (#195).
         val until = env.recipientId?.let { clampFuture(env.sentAt) + ForwardRepository.DEFAULT_TTL_MS }
         blobExchange.want(hash, author = env.senderId, via = via, fastOnly = fastOnly, until = until)
@@ -3226,25 +3235,48 @@ class InboundPipeline(
      * group naming nobody but us and its sender — because its conversation is a message request not accepted yet (#282,
      * [RequestHold]), the frame's own sender counted as one of a group's senders. We count as a member by the frame's
      * roster, its departed list or our group row, so a stranger cannot skip the hold by leaving us out of `members`. A row
-     * naming the hash that would fetch it (ours, tapped, an accepted conversation's) still does. A frame we carry for
-     * somebody else — a third party's DM, a group naming a third party — or our own, is never held here: it goes by the
-     * carrier rules, under the carrier budget ([carrierBytes]).
+     * naming the hash that would fetch it (ours, tapped, an accepted conversation's) still does, and then that row says
+     * who is asked first and until when ([CarriedRequest.Released], #321), never the request's own frame. A frame we
+     * carry for somebody else — a third party's DM, a group naming a third party — or our own, is never held here: it
+     * goes by the carrier rules, under the carrier budget ([carrierBytes]).
      */
-    private suspend fun carriedRequestHeld(
+    private suspend fun carriedRequest(
         hash: String,
         frame: CarriedAttachment,
         me: String,
-    ): Boolean {
+    ): CarriedRequest {
         val group = frame.groupId
         val ours = frame.member || (group != null && groups.find(group)?.left == false)
-        val conversation = RequestHold.conversationOf(frame.copy(member = ours), me) ?: return false
+        val conversation = RequestHold.conversationOf(frame.copy(member = ours), me) ?: return CarriedRequest.No
         val acceptance = acceptance(me)
-        if (acceptance.isAccepted(conversation, frame.senderId)) return false
+        if (acceptance.isAccepted(conversation, frame.senderId)) return CarriedRequest.No
         val rows = messages.attachmentFetchRows(hash, me)
         val accepted = acceptance.acceptedAmong(rows.map { it.conversationId })
-        if (RequestHold.releasing(rows, accepted::contains).isNotEmpty()) return false
-        noteRequestHeld(hash, frame.senderId)
-        return true
+        val judging = RequestHold.judging(rows, accepted::contains)
+        if (judging.isEmpty()) {
+            noteRequestHeld(hash, frame.senderId)
+            return CarriedRequest.Held
+        }
+        val author = RequestHold.askedFirst(rows, accepted::contains, settings.blockedNodeIds.first())
+        return CarriedRequest.Released(author, PullThroughGate.until(judging))
+    }
+
+    /** [carriedRequest]'s verdict on a custodied frame's attachment. */
+    private sealed interface CarriedRequest {
+        /** Not a message request's frame to us alone: wanted by the carrier rules, of the frame's own sender. */
+        data object No : CarriedRequest
+
+        /** A request's frame to us that no row fetches: not wanted until the request is accepted (#282). */
+        data object Held : CarriedRequest
+
+        /**
+         * A request's frame to us whose attachment another row fetches: wanted of that row's sender ([author], null when
+         * only a blocked sender's row fetches it) and by that row's deadline ([until]), never the frame's own (#321).
+         */
+        data class Released(
+            val author: String?,
+            val until: Long?,
+        ) : CarriedRequest
     }
 
     /**
@@ -3317,6 +3349,9 @@ class InboundPipeline(
      * the user's [limit] — so a held request's row naming the same hash moves neither. A row of a message request not
      * accepted yet (#282) fetches nothing by itself: held unless another row releases it, and then asked first of that
      * row's sender. Our own row, or one in an [accepted] [conversationId], is asked of its frame's sender as before.
+     * The deadline and that sender come from [RequestHold.judging] and [RequestHold.askedFirst] (#321): a tapped request's
+     * row releases the fetch and decides neither while a row of ours or a contact's does, and a blocked sender is never
+     * the one asked.
      */
     @Suppress("LongParameterList") // the delivery's verdicts, threaded once from deliveredFetch
     private suspend fun foldFetch(
@@ -3330,22 +3365,27 @@ class InboundPipeline(
         acceptance: AcceptanceSnapshot,
     ): DeliveredFetch {
         val acceptedIds = acceptance.acceptedAmong(rows.map { it.conversationId } - conversationId)
-        val releasing = RequestHold.releasing(rows) { it in acceptedIds || (accepted && it == conversationId) }
+        val accepts = { id: String -> id in acceptedIds || (accepted && id == conversationId) }
+        val releasing = RequestHold.releasing(rows, accepts)
+        // The deadline, and who is asked first below, by the rows of ours or of an accepted conversation, and by the tapped
+        // ones only with none of those (#321): a tap approves a held request's row too, and it still moves neither.
+        val judging = RequestHold.judging(releasing, accepts)
         if (own || accepted) {
             // Our own row, or an accepted one, is among them; with it unstored as well (a re-serve of a deleted row), all.
             val judged = releasing.ifEmpty { rows }
             return DeliveredFetch(
                 inheritsTap = inheritsTap,
                 fastOnly = gated && BluetoothFetchGate.fastOnly(judged, limit),
-                until = PullThroughGate.until(judged),
+                until = PullThroughGate.until(judging.ifEmpty { judged }),
             )
         }
         if (releasing.isEmpty()) return DeliveredFetch.HELD
         return DeliveredFetch(
             inheritsTap = inheritsTap,
             fastOnly = BluetoothFetchGate.fastOnly(releasing, limit),
-            until = PullThroughGate.until(releasing),
-            author = releasing.first().senderId,
+            until = PullThroughGate.until(judging),
+            author = RequestHold.askedFirst(releasing, accepts, settings.blockedNodeIds.first()),
+            asksSender = false,
         )
     }
 
@@ -3402,15 +3442,18 @@ class InboundPipeline(
             }
 
             radio -> {
-                // The author of a row that fetches it: this frame's sender, unless its own row is held and another fetches it.
-                val author = fetch.author ?: env.senderId
+                // The author of a row that fetches it: this frame's sender, unless its own row is held and another fetches
+                // it — then that row's sender, or nobody when only a blocked sender's row does (#321).
+                val author = if (fetch.asksSender) env.senderId else fetch.author
+                // A held row's sender is not the hop to rank either, when the frame came straight from them.
+                val hop = if (fetch.asksSender) via else via.takeUnless { it == env.senderId }
                 // The delivery read every row naming the hash, or its own is no DM's: its deadline, none included, is known.
-                blobExchange.want(hash, author = author, via = via, fastOnly = fetch.fastOnly, until = fetch.until, untilKnown = true)
+                blobExchange.want(hash, author = author, via = hop, fastOnly = fetch.fastOnly, until = fetch.until, untilKnown = true)
                 // Arm the fast plane toward the author — the guaranteed holder — so the pull can ride a NAN
                 // NDP instead of crawling over BLE (the serve side arms its own half in the composite; only
                 // the larger nodeId of a pair ever initiates, so an inert mark here is harmless). Freshness/
                 // cooldown gating lives in the transport; a multi-hop author simply isn't fresh and no-ops.
-                transport.expectBulkTransfer(author)
+                author?.let(transport::expectBulkTransfer)
             }
         }
     }
@@ -3424,8 +3467,11 @@ class InboundPipeline(
         val fastOnly: Boolean,
         // The deadline the want pulls it through by: a DM's custody window, null for anything else (#195).
         val until: Long? = null,
-        // The holder asked first when the new row is a held request's and another row fetches it (#282); null: its sender.
+        // The holder asked first when the new row is a held request's and another row fetches it (#282): that row's sender
+        // ([RequestHold.askedFirst]), null when only a blocked sender's row does. Read only while [asksSender] is false.
         val author: String? = null,
+        // Whether the frame's own sender is asked first: its row is ours or an accepted conversation's, so it fetches it.
+        val asksSender: Boolean = true,
         // No row naming it fetches it: a message request's attachment waits for its acceptance (#282, [RequestHold]).
         val held: Boolean = false,
     ) {

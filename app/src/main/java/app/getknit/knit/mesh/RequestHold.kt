@@ -16,8 +16,10 @@ import kotlinx.coroutines.flow.first
  *
  * Folded over the rows the way `BluetoothFetchGate` folds them (ADR 2026-10.js2p): one row that would fetch the hash
  * fetches it for all. A row releases it when it is ours, tapped, or in a conversation [Conversations.isAccepted]
- * accepts — so a contact's copy of a picture a stranger also sent is fetched, and only the releasing rows say who is
- * asked first and until when it is pulled through. A public room is always accepted, so a room post is never held.
+ * accepts — so a contact's copy of a picture a stranger also sent is fetched. Who is asked first and until when it is
+ * pulled through come from the rows that fetch it by standing, ours or an accepted conversation's ([judging]): a tap
+ * approves every row naming the hash, a held stranger's included, and that row never outranks a contact's (#321). A
+ * public room is always accepted, so a room post is never held.
  *
  * A local decision on our own pull of bytes addressed to us, and nothing else: custody, relay, acks and the digest never
  * read it (ADR 009, 006), and a frame we carry for somebody else is judged by the carrier rules alone.
@@ -34,6 +36,31 @@ object RequestHold {
         rows: List<AttachmentFetchRow>,
         accepted: (conversationId: String) -> Boolean,
     ): List<AttachmentFetchRow> = rows.filter { releases(it, accepted) }
+
+    /**
+     * The rows among [rows] that say who is asked first and until when the attachment is pulled through (#321, ADR
+     * 2026-11.qu98): the ones that fetch it by standing — ours, or an [accepted] conversation's — in their order, and only
+     * with none of those, the tapped ones. The tap's approval is written to every row naming the hash (ADR 2026-10.js2p),
+     * so after one tap a held request's row [releases] too: it still fetches the attachment, and it neither names the
+     * holder nor moves the deadline while a row of ours or a contact's does. With tapped rows alone the tap is the
+     * consent, and they are all there is to go by. Empty when no row releases it.
+     */
+    fun judging(
+        rows: List<AttachmentFetchRow>,
+        accepted: (conversationId: String) -> Boolean,
+    ): List<AttachmentFetchRow> = rows.filter { it.own || accepted(it.conversationId) }.ifEmpty { rows.filter { it.approved } }
+
+    /**
+     * Who is asked first for the attachment [rows] name, and the one peer the fast plane is armed toward for it: the
+     * sender of the earliest [judging] row that nobody [blocked] sent, or null when there is none — nothing fetches it, or
+     * only a blocked sender's row does, and then no holder is named. A blocked sender's thread stays accepted, so their
+     * earlier row still releases the fetch; the block list is read here alone, never in custody (ADR 2026-09.bts9).
+     */
+    fun askedFirst(
+        rows: List<AttachmentFetchRow>,
+        accepted: (conversationId: String) -> Boolean,
+        blocked: Set<String>,
+    ): String? = judging(rows, accepted).firstOrNull { it.senderId !in blocked }?.senderId
 
     /** Whether the attachment [rows] name is held: some row names it and none releases it. No rows, nothing held. */
     fun held(
