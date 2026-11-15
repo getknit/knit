@@ -197,3 +197,10 @@ answers it, the answer moves us back onto it (rule C). No `prevPeerInitEphPub` c
 restored side, which holds no session row at all (#189's comment). Regression:
 `RatchetSessionsReclaimTest.issue189sThreeErasAnInitOlderThanPrevRootIsHealedByTheReclaim`.
 
+
+## Amendment (2026-11-14, ADR 2026-11.dgj2): a restore's reset rides a carried anchor
+
+"A reset from no session … nothing exported" still holds for the ratchet: `exportedRoots` is unchanged. A restored
+phone is now the one exception the scope table makes. While its own flagged reset is unanswered and the anchor its
+backup carried is armed, `ScopeRegistry`'s `restored` seam emits that reset's new root live and the anchor as the
+retiring scope. A superseding reset inherits the anchor, and C-3.1-5's one refill applies unchanged (spec C-3.1-6).

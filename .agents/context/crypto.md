@@ -268,6 +268,25 @@ LoRa plane (2026-09.ggq4).
   Every other unconfirmed session exports nothing; a caller that wants confirmed peers reads `ExportedRoots.confirmed`
   (`broadcastSealedProfile`). Regression: `RatchetSessionsExportTest`, `ScopeSyncTest`'s carrier push,
   `ResetOverRelayLabTest.aResetToAPeerOnlyTheRelayReaches…`.
+- **When touching `RatchetSessions.ownPendingResets`, `ScopeRegistry`'s `restored` seam / `RestoredDmRoots`, the
+  anchor arming in `MeshManager.finishRestore`, or the reset a restore re-sends when a peer's prekey moves:** READ ADR
+  2026-11.dgj2 and spool spec C-3.1-6, after the entry above. A restored phone holds no session, so its resets replace
+  no root and export nothing; the anchor its backup carried (`DmScopeAnchors`, `.agents/context/storage.md`) stands in
+  for the replaced root. While our own flagged reset to the peer is unanswered (`ownPendingResets`: initiator,
+  unconfirmed, an init, `lastResetSentAt > 0`, whatever `prevRoot` holds) and the anchor is armed, the table carries
+  the reset's root live and the anchor retiring, both taking that reset alone. A reset that supersedes the restore's
+  inherits the anchor; a restore reset whose prekey is at least `IdentityKeyStore.SPK_KEEP` ids behind the peer's new
+  pin is re-rooted (`restoreResetOwed`, `resetOnRestoredPeersPrekey`, settled 2 s because the drain pins older profiles
+  one by one), and a pin that moved less owes nothing. Re-roots are bounded by `RatchetSessions.restoreReRoot`: one per
+  `RESTORE_REROOT_FLOOR_MS` (1 h) since the last re-root (`establishedAt`, never `lastResetSentAt`, which a re-send
+  also stamps), `RESTORE_REROOT_CAP` (3) per process, each
+  refusal counted as `DropReason.RESTORE_RESET_REFUSED`. While unanswered, the heal basket re-sends it every 20 h as
+  `RESEND_OWN` under the same init, sealed against the prekey that init recorded (`resendRestoreResets`; `REMARK_OWN`
+  would decline once the pin moved), and sends nothing while a re-root is owed but held back. Each copy re-runs the
+  holder's reset path and re-arms our 6 h floor. `ownPendingResets` carries the slot's previous root, which stays a
+  retiring scope until it drains. None of it runs while `restorePending`.
+  Regression: `RatchetSessionsExportTest`, `ScopeRegistryTest`'s restore cases, `DmScopeAnchorsTest`, `MeshManagerTest`'s
+  restore-anchor cases, `RestoreOverRelayLabTest`.
 - **When touching `mesh/crypto/LinkKeys` / `LinkSignals`, `MeshManager.sendLinkSignal` / `linkSignalFrame`, or
   `InboundPipeline.handleLink` / `mayOpenLink`:** READ ADR 2026-10.a5yj and its 2026-10-27 amendment (draft), then
   `docs/DIRECT_LINKS.md` §2 and §5 (`.agents/context/direct-links.md` routes the rest of the link). A `link` signal is a

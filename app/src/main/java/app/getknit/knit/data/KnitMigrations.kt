@@ -777,6 +777,21 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v33 → v34: `dm_scope_anchors` (ADR 2026-11.dgj2, #324), per DM peer a restore resets, the live DM scope's id and
+     * outer seal keys. Empty on arrival: `DmScopeAnchors` fills it from confirmed sessions on the next mesh start.
+     */
+    val MIGRATION_33_34 =
+        object : Migration(33, 34) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `dm_scope_anchors` (`peerId` TEXT NOT NULL, `scopeId` BLOB NOT NULL, " +
+                        "`sealKey` BLOB NOT NULL, `nonceKey` BLOB NOT NULL, `armedUntil` INTEGER NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`peerId`))",
+                )
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -812,5 +827,6 @@ object KnitMigrations {
             MIGRATION_30_31,
             MIGRATION_31_32,
             MIGRATION_32_33,
+            MIGRATION_33_34,
         )
 }

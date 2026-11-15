@@ -1226,12 +1226,44 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 33 to 34 keeps every peer and adds the empty DM scope anchor table`() =
+        runTest {
+            helper.createDatabase(33).use { c ->
+                c.execSQL(
+                    "INSERT INTO peers (nodeId, name, status, avatarHash, verified, updatedAt, openToChat, lastSeenAt, advertisedKnown) " +
+                        "VALUES ('peer-1','Ann','',NULL,1,7,0,9,0)",
+                )
+            }
+            helper.runMigrationsAndValidate(34, listOf(KnitMigrations.MIGRATION_33_34)).use { c ->
+                c.prepare("SELECT name FROM peers").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("Ann", s.getText(0))
+                    assertFalse(s.step())
+                }
+                c.prepare("SELECT COUNT(*) FROM dm_scope_anchors").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(0L, s.getLong(0))
+                }
+                // The writer's shape (ADR 2026-11.dgj2): an unarmed anchor, then the restore arms it.
+                c.execSQL(
+                    "INSERT INTO dm_scope_anchors (peerId, scopeId, sealKey, nonceKey, armedUntil, updatedAt) " +
+                        "VALUES ('peer-1', x'01', x'02', x'03', 0, 5)",
+                )
+                c.execSQL("UPDATE dm_scope_anchors SET armedUntil = 9 WHERE peerId = 'peer-1'")
+                c.prepare("SELECT armedUntil FROM dm_scope_anchors WHERE peerId = 'peer-1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(9L, s.getLong(0))
+                }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 33
+        const val CURRENT_VERSION = 34
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

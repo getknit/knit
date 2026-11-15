@@ -124,6 +124,7 @@ import app.getknit.knit.mesh.spool.AccountIssuer
 import app.getknit.knit.mesh.spool.AttachmentDeferPolicy
 import app.getknit.knit.mesh.spool.CommonsStore
 import app.getknit.knit.mesh.spool.DeviceKeyring
+import app.getknit.knit.mesh.spool.DmScopeAnchors
 import app.getknit.knit.mesh.spool.FreeKeyJournal
 import app.getknit.knit.mesh.spool.GroupRootPolicy
 import app.getknit.knit.mesh.spool.GroupRootStore
@@ -135,6 +136,7 @@ import app.getknit.knit.mesh.spool.IssuerGroup
 import app.getknit.knit.mesh.spool.MoveResult
 import app.getknit.knit.mesh.spool.PairScopeRoots
 import app.getknit.knit.mesh.spool.PublicSpoolSource
+import app.getknit.knit.mesh.spool.RestoredDmRoots
 import app.getknit.knit.mesh.spool.ScopeBlobs
 import app.getknit.knit.mesh.spool.ScopeConfigIssuer
 import app.getknit.knit.mesh.spool.ScopeConfigPolicy
@@ -190,6 +192,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -793,6 +796,13 @@ class MeshManager(
     /** The presence keys' rows (ADR 2026-11.xp6d): the engine's own keys, and the peers' the inbound arm stores. */
     private val presenceKeyStore = PresenceKeyRepository(db)
 
+    /**
+     * Each DM peer's scope anchor (spec C-3.1-6, ADR 2026-11.dgj2, #324): kept from confirmed sessions by
+     * [watchScopeAnchors], carried by a backup, armed by [finishRestore] until the peer answers, for at most
+     * [DmScopeAnchors.ARM_WINDOW_MS], its reset re-sent meanwhile by [resendRestoreResets].
+     */
+    private val scopeAnchors = DmScopeAnchors(db.dmScopeAnchorDao(), clock, DmScopeAnchors.ARM_WINDOW_MS)
+
     // The inbound half of the mesh: verify → custody → dispatch → deliver/ack, plus the store-and-forward
     // carry gate and the avatar/group-photo/attachment screening. MeshManager still OWNS the DTN services
     // above and the outbound origination choke; the pipeline receives the services by reference and reaches
@@ -855,7 +865,10 @@ class MeshManager(
             flooredResets = flooredResets,
             adoptGroupRoot = ::adoptGroupRoot,
             onGroupRootCtl = ::onGroupRootCtl,
-            onProfilePinned = { introSync.onProfilePinned(it) },
+            onProfilePinned = {
+                introSync.onProfilePinned(it)
+                resetOnRestoredPeersPrekey(it)
+            },
             onSelfProfile = { cloneWatch.onSelfProfile(it) },
             onPeerFrameOpened = { senderId, initEph, flagged -> introSync.onPeerFrameOpened(senderId, initEph, flagged) },
             onTransferCtl = onTransferSignal,
@@ -1093,6 +1106,7 @@ class MeshManager(
                         groupRoots = ::groupScopeRoots,
                         pairs = ::pairScopeRoots,
                         commons = { commons?.roots().orEmpty() },
+                        restored = ::restoredDmRoots,
                         placement = ::scopePlacement,
                     ),
                 dialer = dialer,
@@ -1533,6 +1547,8 @@ class MeshManager(
      * with a plane to arm (ADR 2026-09.dcah).
      */
     private fun watchScopeInputs(session: CoroutineScope) {
+        // Ahead of the plane's gate: the anchors a backup carries are kept whether or not the plane is wired.
+        watchScopeAnchors(session)
         val sync = scopeSync ?: return
         session.launch { ratchet.rootChanges.collect { sync.onScopeTableChanged() } }
         // Where a scope lives (ADR 2026-10.8kfx): a config won or deferred into eligibility, a node declaring, the
@@ -1542,6 +1558,224 @@ class MeshManager(
             merge(scopeConfigs.observeWinners().map { }, scopeConfigs.observeDeclared().map { }, homes.directory.map { })
                 .drop(1)
                 .collect { sync.onScopeTableChanged() }
+        }
+    }
+
+    /**
+     * Keeps the DM scope anchors a backup carries (ADR 2026-11.dgj2) current: once on start, and again on every root
+     * change (a session confirms or moves), block-list change and acceptance change, since who is a contact decides who
+     * keeps one ([anchorTargets]) and neither of the last two moves a root. Runs whether or not the Internet plane is
+     * wired, so a backup taken with the plane off still carries the anchors a restore with it on needs.
+     */
+    private fun watchScopeAnchors(session: CoroutineScope) {
+        val failed: (Exception) -> Unit = { Log.w(TAG, "scope anchors failed: ${it.message}") }
+        session.launch {
+            // Each settings projection re-emits on a write to any key: only a change of the set itself is an input here.
+            // The start's pass runs once the root changes are subscribed, so a confirmation landing meanwhile is not lost.
+            merge(
+                ratchet.rootChanges.onSubscription { emit(START_PASS) }.map { },
+                settings.blockedNodeIds
+                    .distinctUntilChanged()
+                    .drop(1)
+                    .map { },
+                settings.acceptedConversations
+                    .distinctUntilChanged()
+                    .drop(1)
+                    .map { },
+            ).collect { runRound(failed) { reconcileScopeAnchors() } }
+        }
+    }
+
+    /**
+     * One pass of [DmScopeAnchors.reconcile]: the confirmed sessions' live roots, kept only for [anchorTargets]; the row of
+     * a peer whose session is our own unanswered reset left as it is, since that peer may still be on the root the row
+     * names (round-1 finding C3); every blocked peer's row dropped, armed or not (S2). Skipped while a restore is still to
+     * finish: every carried row is unarmed then and no session is confirmed, so a pass would delete the very anchors
+     * [finishRestore] is about to arm. It runs one at its end. Serialised by [anchorPass]; `internal` for `MeshManagerTest`.
+     */
+    internal suspend fun reconcileScopeAnchors() =
+        anchorPass.withLock {
+            if (settings.restorePending.first()) return@withLock
+            reconcileScopeAnchorsLocked()
+        }
+
+    /**
+     * One anchor pass at a time, reads and writes together (round-4 finding 1): a pass is called from the event collector,
+     * the heal basket and [finishRestore]'s close, and one whose session read predated a confirmation could otherwise prune
+     * after a fresher pass wrote, deleting the new row through `deleteUnarmed`. [dropScopeAnchor] and the restore's `arm`
+     * take it too, so no pass that read a contact as a target writes its row back after the removal. Never re-entered.
+     */
+    private val anchorPass = Mutex()
+
+    /** [reconcileScopeAnchors]' body, under [anchorPass]. */
+    private suspend fun reconcileScopeAnchorsLocked() {
+        val me = identity.nodeId()
+        val confirmed =
+            ratchet.exportedRoots().filter { it.confirmed }.map { DmScopeAnchors.Confirmed(it.peerId, it.pairwiseRoot) }
+        val pending = ratchet.ownPendingResets().mapTo(HashSet()) { it.peerId }
+        scopeAnchors.reconcile(me, confirmed, anchorTargets(me), keep = pending, dropped = settings.blockedNodeIds.first())
+    }
+
+    /**
+     * Who keeps an anchor (round-1 finding S2, ADR 2026-11.dgj2): the [wipedPeers] a person accepted — a DM by the Message
+     * Requests rule ([AcceptanceSnapshot]), a group's other members only for a group that rule accepts — never a blocked
+     * one. An unaccepted request or a blocked sender may hold a confirmed session with us (#290), and an anchor would give
+     * them a restore's subscription and its re-sends for the whole window: the exposure the backup accepted is the
+     * person's contacts'. [finishRestore]'s own resets still go to every wiped peer. `internal` for `mesh/lab`'s
+     * diagnostics.
+     */
+    internal suspend fun anchorTargets(me: String): Set<String> {
+        val acceptance = AcceptanceSnapshot.of(settings, peers, messages, me)
+        val blocked = settings.blockedNodeIds.first()
+        return buildSet {
+            messages
+                .distinctConversations()
+                .filterTo(this) { Conversations.kindFor(it) == ConversationKind.DM && acceptance.isAccepted(it) }
+            groups.active().filter { acceptance.isAccepted(it.groupId) }.flatMapTo(this) { GroupMembersStore.decode(it.members) }
+            remove(me)
+            removeAll(blocked)
+        }
+    }
+
+    /**
+     * The scope table's restore input (spec C-3.1-6): each armed anchor joined with our own unanswered flagged reset to its
+     * peer ([RatchetSessions.ownPendingResets]), whatever root that reset replaced, so a reset that supersedes the
+     * restore's keeps the anchor (design-pass R1). A restore file is hostile input: a failure here costs the restore's
+     * scopes for one derivation, never the ScopeSync round that asked. Nothing while a restore is still to finish: the
+     * rows then carry the file's own `armedUntil`, and only the restore that is running decides which anchors it uses
+     * ([finishRestore]'s `arm`, round-2 finding 3). `internal` for `MeshManagerTest`.
+     */
+    internal suspend fun restoredDmRoots(): List<RestoredDmRoots> =
+        try {
+            if (settings.restorePending.first()) return emptyList()
+            val pending =
+                ratchet.ownPendingResets().mapNotNull { reset ->
+                    reset.pendingResetInit?.let {
+                        DmScopeAnchors.Pending(reset.peerId, reset.pairwiseRoot, it, reset.prevPairwiseRoot, reset.prevRootExpiresAt)
+                    }
+                }
+            scopeAnchors.restored(pending)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (
+            @Suppress("TooGenericExceptionCaught") e: Exception,
+        ) {
+            Log.w(TAG, "restore scope anchors unreadable: ${e.message}")
+            emptyList()
+        }
+
+    /**
+     * A restored phone's reset can only reach a peer on the prekey that peer still holds. The backup pinned the one it
+     * had then, and a peer that rotated past its retention since (current plus four, weekly) refuses an init against it as
+     * `EPOCH_GONE`, which nothing re-sends (design-pass R2, ADR 2026-11.dgj2). So when a profile pins a prekey for a peer
+     * whose anchor this restore armed, and our pending reset's prekey is past that retention behind it — or no reset could
+     * be sealed at all — a fresh [RatchetSessions.ResetCause.AFTER_WIPE] reset goes ([RatchetSessions.restoreResetOwed]).
+     * `resetPlan` re-roots it (an init against a prekey the peer has left), and the anchor carries it
+     * ([restoredDmRoots]). A pin that moved less than that owes nothing: the peer still opens the reset we hold (C1).
+     *
+     * Bounded ([RatchetSessions.restoreReRoot], round-1 finding S1): one re-root per hour since our last reset to the
+     * peer and a handful per process ([restoreReRoots]), each refusal counted as
+     * [DropReason.RESTORE_RESET_REFUSED]. A peer signing profiles that each pin a new prekey id otherwise bought one
+     * flooded reset per profile for the whole window. The heal basket ([resendRestoreResets]) sends one the floor held.
+     *
+     * The drain hands us every profile the scope still holds, oldest first, so the reset waits [PREKEY_RESET_SETTLE_MS] for
+     * the batch to land and is sealed once against the pin it settles on. The wait lives in memory; the heal basket is the
+     * backstop past a restart.
+     */
+    private suspend fun resetOnRestoredPeersPrekey(peerId: String) {
+        val verdict = restoreReRootFor(peerId)
+        if (verdict == RatchetSessions.RestoreReRoot.FLOORED || verdict == RatchetSessions.RestoreReRoot.CAPPED) {
+            metrics.onDropped(DropReason.RESTORE_RESET_REFUSED)
+        }
+        if (verdict != RatchetSessions.RestoreReRoot.SEND) return
+        val session = sessionScope ?: return
+        prekeyResets.compute(peerId) { _, running ->
+            running?.takeIf { it.isActive } ?: session.launch {
+                delay(PREKEY_RESET_SETTLE_MS)
+                runRound({ Log.w(TAG, "restore reset on a new prekey failed: ${it.message}") }) { sendPrekeyReset(peerId) }
+            }
+        }
+    }
+
+    /**
+     * [RatchetSessions.restoreReRoot] for [peerId]'s armed anchor and its pinned prekey, or null when nothing is armed,
+     * nothing is pinned, the peer is us or the restore has not finished.
+     */
+    private suspend fun restoreReRootFor(peerId: String): RatchetSessions.RestoreReRoot? {
+        if (peerId == identity.nodeId() || settings.restorePending.first() || !scopeAnchors.isArmed(peerId)) return null
+        val pinned = peers.find(peerId)?.prekeyId ?: return null
+        return RatchetSessions.restoreReRoot(ratchet.sessionFor(peerId), pinned, clock(), restoreReRoots[peerId] ?: 0)
+    }
+
+    /** Waits of [resetOnRestoredPeersPrekey], one per peer while it runs. */
+    private val prekeyResets = ConcurrentHashMap<String, Job>()
+
+    /**
+     * Restore re-roots sent per peer since this process's restore finished ([RatchetSessions.RESTORE_REROOT_CAP]). In
+     * memory: a restart starts the count again, so a peer that never answers costs at most the cap per process and one per
+     * [RatchetSessions.RESTORE_REROOT_FLOOR_MS] across them (the floor reads the persisted `lastResetSentAt`).
+     */
+    private val restoreReRoots = ConcurrentHashMap<String, Int>()
+
+    /** [resetOnRestoredPeersPrekey]'s reset, judged again against the pin that settled. */
+    private suspend fun sendPrekeyReset(peerId: String) {
+        if (restoreReRootFor(peerId) != RatchetSessions.RestoreReRoot.SEND) return
+        Log.i(TAG, "re-sending the restore reset to $peerId on its new prekey ${peers.find(peerId)?.prekeyId}")
+        sendRestoreReRoot(peerId)?.let { Log.i(TAG, "no restore reset to $peerId on its new prekey: $it") }
+        // A reset from no session fires no root change: its before and after views both export nothing.
+        scopeSync?.onScopeTableChanged()
+    }
+
+    /** A restore's re-rooted reset to [peerId], counted toward [restoreReRoots] when sealed; null when it went. */
+    private suspend fun sendRestoreReRoot(peerId: String): String? =
+        pipeline.sendSessionReset(peerId, identity.nodeId(), clock(), RatchetSessions.ResetCause.AFTER_WIPE).also {
+            if (it == null) restoreReRoots.merge(peerId, 1, Int::plus)
+        }
+
+    /**
+     * Re-sends each restore reset still unanswered into its armed anchor (ADR 2026-11.dgj2), from the heal basket. Our
+     * custody keeps the reset a day and a spool two, so a peer off the relay for longer would find nothing in the scope
+     * it reads. Due once the last copy is [DmScopeAnchors.RESEND_FLOOR_MS] old ([RatchetSessions.restoreResendDue]), as
+     * the marker under the same init ([RatchetSessions.ResetCause.RESEND_OWN]): a fresh frame id and `sentAt` for
+     * custody, never a new root, so a peer that adopted an earlier copy and whose answer is on its way keeps that root.
+     * A peer whose pinned prekey moved past the reset's retention gets the re-rooted one instead, under
+     * [resetOnRestoredPeersPrekey]'s floor and cap. It stops on the answer (no pending reset), the contact's removal or
+     * block (no anchor) or the window's end.
+     */
+    private suspend fun resendRestoreResets() {
+        if (settings.restorePending.first()) return
+        val me = identity.nodeId()
+        var sent = false
+        for (reset in ratchet.ownPendingResets()) {
+            val peer = reset.peerId
+            val cause = restoreResendCause(peer) ?: continue
+            Log.i(TAG, "re-sending the restore reset to $peer ($cause)")
+            val declined =
+                if (cause == RatchetSessions.ResetCause.AFTER_WIPE) {
+                    sendRestoreReRoot(peer)
+                } else {
+                    pipeline.sendSessionReset(peer, me, clock(), cause)
+                }
+            if (declined != null) Log.i(TAG, "no restore reset re-sent to $peer: $declined") else sent = true
+        }
+        // A re-root moves the anchor's reset init; the marker moves nothing the table keys on, but its frame is new.
+        if (sent) scopeSync?.onScopeTableChanged()
+    }
+
+    /**
+     * What [resendRestoreResets] owes [peer]'s armed anchor now: a re-rooted reset when [RatchetSessions.restoreReRoot]
+     * allows one, the marker under the same init once the last copy is [DmScopeAnchors.RESEND_FLOOR_MS] old, or nothing —
+     * nothing too while a re-root is owed but floored or capped, since the peer cannot open the init the marker carries.
+     */
+    private suspend fun restoreResendCause(peer: String): RatchetSessions.ResetCause? {
+        if (!scopeAnchors.isArmed(peer)) return null
+        val session = ratchet.sessionFor(peer)
+        val reRoot = peers.find(peer)?.prekeyId?.let { RatchetSessions.restoreReRoot(session, it, clock(), restoreReRoots[peer] ?: 0) }
+        return when {
+            reRoot == RatchetSessions.RestoreReRoot.SEND -> RatchetSessions.ResetCause.AFTER_WIPE
+            reRoot != null && reRoot != RatchetSessions.RestoreReRoot.NOT_OWED -> null
+            RatchetSessions.restoreResendDue(session, clock(), DmScopeAnchors.RESEND_FLOOR_MS) -> RatchetSessions.ResetCause.RESEND_OWN
+            else -> null
         }
     }
 
@@ -1717,6 +1951,8 @@ class MeshManager(
 
     override suspend fun cancelIntro(peerId: String) = introSync.cancel(peerId)
 
+    override suspend fun dropScopeAnchor(peerId: String) = anchorPass.withLock { scopeAnchors.remove(peerId) }
+
     override fun introState(peerId: String): Flow<IntroState?> = introSync.state(peerId)
 
     override suspend fun ratchetState(): List<RatchetPeerState> =
@@ -1753,6 +1989,9 @@ class MeshManager(
      */
     @Volatile
     private var healBasket: Job? = null
+
+    /** The heal basket under way, or the last one: `MeshManagerTest` joins it, so a heal never lands on a running one. */
+    internal val healBasketJob: Job? get() = healBasket
 
     /** When [heal] last ran the three retention sweeps, on [clock]; stamped by the start's own sweep. */
     @Volatile
@@ -1792,6 +2031,9 @@ class MeshManager(
                 broadcastSealedProfile() // catch sessions that only confirmed after the edit fired
                 bootstrapCommonsSessions() // a session with every commons member, eight intros at a time (§7.4)
                 introSync.retry() // re-send stale contact-card intros, settle confirmed ones, expire pair-scope grace
+                runRound({ Log.w(TAG, "restore reset re-send failed: ${it.message}") }) { resendRestoreResets() }
+                // The anchors' backstop: a pass an event missed (a failed round) or a window that ran out since.
+                runRound({ Log.w(TAG, "scope anchors failed: ${it.message}") }) { reconcileScopeAnchors() }
                 mintGroupRootsIfDue() // mint a group's spool root when it is our turn (spec §3.2)
                 presenceKeys?.reconcile("heal") // the backstop: rotations due by the clock, keys a linked contact lacks
                 metrics.onHealCompleted() // the lab's "the basket ran" signal; nothing above may be observed from outside
@@ -1862,6 +2104,11 @@ class MeshManager(
         Log.i(TAG, "finishing a backup restore: fresh prekey, session resets, profile bump")
         identity.rotatePrekey(clock())
         val wiped = wipedPeers(me)
+        // Before the resets, so the first scope derivation after them already holds each anchor (ADR 2026-11.dgj2), and only
+        // for the wiped peers that are the person's contacts ([anchorTargets]). Every other row is disarmed: only this
+        // restore decides which anchors it uses, whatever the file said.
+        anchorPass.withLock { scopeAnchors.arm(anchorTargets(me) intersect wiped) }
+        restoreReRoots.clear()
         // The direct contacts no flooded reset covers — card-, QR- or accept-only, no DM thread, no shared group — get
         // theirs over the first link instead (ADR 2026-11.xp6d, "Restore"): a flood would list them to every relay.
         presenceKeys?.let { engine -> directContacts?.let { engine.onRestore(it.read() - wiped - me) } }
@@ -1872,6 +2119,12 @@ class MeshManager(
         }
         broadcastProfile()
         settings.clearRestorePending()
+        // The reconcile the pending restore held back (a peer that answered meanwhile moves its anchor on now).
+        runRound({ Log.w(TAG, "scope anchors failed: ${it.message}") }) { reconcileScopeAnchors() }
+        // A reset from no session fires no root change (its before and after views both export nothing), so this is the
+        // table's cue for the restore's scopes, the anchors among them, rather than the 60 s poll. After the flag clears:
+        // [restoredDmRoots] gives nothing while the restore is pending, and a derivation then would find nothing new.
+        scopeSync?.onScopeTableChanged()
     }
 
     /**
@@ -6350,6 +6603,15 @@ class MeshManager(
     }
 
     private companion object {
+        /**
+         * How long a restore's prekey trigger waits for the rest of a drained batch of profiles before it re-roots
+         * ([resetOnRestoredPeersPrekey], ADR 2026-11.dgj2): one pull lands its blobs within milliseconds of each other.
+         */
+        const val PREKEY_RESET_SETTLE_MS = 2_000L
+
+        /** The value [watchScopeAnchors] feeds its own root-change stream for the start's pass; no peer has it. */
+        const val START_PASS = ""
+
         /** Debug-bridge root fingerprint length — enough to compare eras across devices, nothing more. */
         const val ROOT_HASH_HEX_CHARS = 8
 

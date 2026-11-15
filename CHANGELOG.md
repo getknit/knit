@@ -50,6 +50,9 @@ document:
 
 ### Fixed
 
+- After you restore Knit from a backup, messages to and from contacts you only reach over the Internet get
+  through again. Before, neither side heard the other until your phones were next in radio range. This needs a
+  backup made with this version or later (#324).
 - A phone already linked to another over Bluetooth could keep dialing it again every few seconds, wasting
   battery and radio time. It now leaves a link it holds alone.
 - Knit now waits until you accept a message request before it downloads the request's pictures and files.

@@ -359,7 +359,11 @@ class IdentityKeyStore(
         /** Signed-prekey rotation cadence; the PFS horizon of session *initiations* (design doc §prekeys). */
         private const val SPK_ROTATE_MS = 7 * 24 * 60 * 60_000L
 
-        /** Prekey privates retained (current + 4 predecessors ≈ 35 days of initiation lateness). */
-        private const val SPK_KEEP = 5
+        /**
+         * Prekey privates retained (current + 4 predecessors ≈ 35 days of initiation lateness). Public because a restore
+         * reads it as the peer's retention too: a reset sealed against a prekey fewer than this many ids behind the peer's
+         * newest still opens, so it is never re-rooted (`RatchetSessions.restoreResetOwed`, ADR 2026-11.dgj2).
+         */
+        const val SPK_KEEP = 5
     }
 }

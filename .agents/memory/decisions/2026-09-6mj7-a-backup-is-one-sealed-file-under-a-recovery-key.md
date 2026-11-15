@@ -88,3 +88,12 @@ files verified on the phone under their keys in under a second (`RestoreStager.s
 wrong key was refused as `WRONG_KEY_OR_DAMAGED`, neither the node id nor the name appears in the file's
 bytes, the live `-wal` was untouched and no lock or busy error was logged. Still owed: the restore half
 on a second phone from onboarding, then the Settings door on the same phone.
+
+## Amendment (2026-11-14, ADR 2026-11.dgj2): the backup carries each DM scope's anchor
+
+The backup now carries `dm_scope_anchors`: per DM peer a restore resets, the live DM scope's id and outer seal keys
+(schema 34). This is a schema change. "Keeps forward-secrecy material out of a file" now means it keeps every ratchet
+chain out. The anchor is valid until the pair's next reset, so it gives whoever holds the file and its key that era's
+envelopes and a way to recognise the contact on a spool, as carried `group_roots` already do for groups. Without it,
+a restore's resets never reach a contact the relay is the only path to (#324). The reasons and limits are in ADR
+2026-11.dgj2.

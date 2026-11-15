@@ -21,15 +21,19 @@ class ScopeRegistryTest {
         groups: List<GroupScopeRoots> = emptyList(),
         pairs: List<PairScopeRoots> = emptyList(),
         commons: List<CommonsRoots> = emptyList(),
+        restored: List<RestoredDmRoots> = emptyList(),
     ) = ScopeRegistry(
         selfId = { me },
         roots = { roots },
         groupRoots = { groups },
         pairs = { pairs },
         commons = { commons },
+        restored = { restored },
     )
 
     private fun root(seed: Byte) = ByteArray(32) { seed }
+
+    private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
     @Test
     fun `derives one scope per session peer, matching the spec's DM derivation`() =
@@ -115,6 +119,107 @@ class ScopeRegistryTest {
 
             // Past the drain the session is any other unconfirmed initiation: off the table until the answer.
             assertTrue(registry(listOf(entry)).scopes(now = 5_000L).isEmpty())
+        }
+
+    /**
+     * C-3.1-6 (ADR 2026-11.dgj2, #324). A restored phone holds no session, so its reset replaces no root and, alone,
+     * exports nothing. The anchor its backup carried is the scope the peer still reads: it stays as the retiring scope
+     * beside the reset's new root, both taking that reset alone. Before this the relay-only pair had no scope at all.
+     */
+    @Test
+    fun `a restore's anchor is the retiring scope beside its reset's new root, both carrying the reset`() =
+        runTest {
+            val eph = ByteArray(32) { 9 }
+            val anchorId = ByteArray(32) { 7 }
+            val anchorKeys = ScopeCrypto.SealKeys(ByteArray(32) { 5 }, ByteArray(32) { 6 })
+            val scopes = registry(restored = listOf(RestoredDmRoots(bob, root(3), eph, anchorId, anchorKeys))).scopes(0L)
+            assertEquals(2, scopes.size)
+            val (fresh, anchor) = scopes
+            assertArrayEquals(ScopeCrypto.dmScopeId(root(3), me, bob), fresh.id)
+            assertFalse(fresh.retiring)
+            assertArrayEquals(eph, fresh.resetInit)
+            assertArrayEquals(anchorId, anchor.id)
+            assertArrayEquals(anchorKeys.sealKey, anchor.keys.sealKey)
+            assertArrayEquals(anchorKeys.nonceKey, anchor.keys.nonceKey)
+            assertTrue(anchor.retiring)
+            assertEquals(bob, anchor.peerId)
+            assertFalse(anchor.pair)
+            assertArrayEquals("the anchor takes the restore's reset and nothing else of ours", eph, anchor.resetInit)
+        }
+
+    /**
+     * R1 of the design pass: a reset that supersedes the restore's re-roots over a root the peer never derived, so the
+     * ratchet now exports it beside that dead root. The anchor must stay: it is still the one scope the peer reads,
+     * and it takes the superseding reset.
+     */
+    @Test
+    fun `a reset that supersedes the restore's keeps the anchor beside the table's own pair`() =
+        runTest {
+            val eph = ByteArray(32) { 8 }
+            val anchorId = ByteArray(32) { 7 }
+            val anchorKeys = ScopeCrypto.SealKeys(ByteArray(32) { 5 }, ByteArray(32) { 6 })
+            val exported = ScopeRoots(bob, root(4), prevPairwiseRoot = root(3), prevRootExpiresAt = 5_000L, pendingResetInit = eph)
+            val restored = RestoredDmRoots(bob, root(4), eph, anchorId, anchorKeys)
+            val scopes = registry(roots = listOf(exported), restored = listOf(restored)).scopes(now = 0L)
+            assertEquals(
+                "the new root once, the dead restore root and the anchor",
+                listOf(
+                    ScopeCrypto.dmScopeId(root(4), me, bob).toHex(),
+                    ScopeCrypto.dmScopeId(root(3), me, bob).toHex(),
+                    anchorId.toHex(),
+                ).sorted(),
+                scopes.map { it.idHex }.sorted(),
+            )
+            val anchor = scopes.single { it.id.contentEquals(anchorId) }
+            assertTrue(anchor.retiring)
+            assertArrayEquals("the anchor takes the superseding reset", eph, anchor.resetInit)
+        }
+
+    /**
+     * Round-1 finding S3: an anchor comes from a restore file, hostile input. One whose id equals a scope this phone
+     * derives itself (here a group's) must not replace it as a retiring scope under the file's keys: the derived one is
+     * kept, live, with its own keys.
+     */
+    @Test
+    fun `a restored anchor colliding with a derived scope never replaces it`() =
+        runTest {
+            val group = GroupScopeRoots(groupId, setOf(me, bob), root(7), rootVersion = 1)
+            val derived = registry(groups = listOf(group)).scopes(0L).single()
+            val hostile = ScopeCrypto.SealKeys(ByteArray(32) { 5 }, ByteArray(32) { 6 })
+            val restored = RestoredDmRoots(bob, root(3), ByteArray(32) { 9 }, derived.id, hostile)
+            val scope = registry(groups = listOf(group), restored = listOf(restored)).scopes(0L).single { it.id.contentEquals(derived.id) }
+            assertEquals(groupId, scope.groupId)
+            assertFalse(scope.retiring)
+            assertArrayEquals(derived.keys.sealKey, scope.keys.sealKey)
+        }
+
+    /**
+     * Round-1 finding C2: once a re-send of a superseding reset ends the ratchet's own export, the restore's input still
+     * carries the slot — the restore root, which the peer may have adopted — as a retiring scope taking that reset, until
+     * the slot's drain ends.
+     */
+    @Test
+    fun `a restore's slot stays a retiring scope carrying the pending reset until it drains`() =
+        runTest {
+            val eph = ByteArray(32) { 8 }
+            val restored =
+                RestoredDmRoots(
+                    bob,
+                    root(4),
+                    eph,
+                    ByteArray(32) { 7 },
+                    ScopeCrypto.SealKeys(ByteArray(32) { 5 }, ByteArray(32) { 6 }),
+                    prevPairwiseRoot = root(3),
+                    prevRootExpiresAt = 5_000L,
+                )
+            val slotId = ScopeCrypto.dmScopeId(root(3), me, bob)
+            val slot = registry(restored = listOf(restored)).scopes(0L).single { it.id.contentEquals(slotId) }
+            assertTrue(slot.retiring)
+            assertArrayEquals(eph, slot.resetInit)
+            assertTrue(
+                "gone once drained",
+                registry(restored = listOf(restored)).scopes(5_000L).none { it.id.contentEquals(slotId) },
+            )
         }
 
     @Test

@@ -12,6 +12,7 @@ import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.forward.ForwardEntity
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.scopeanchor.DmScopeAnchorEntity
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -82,6 +83,9 @@ class DatabaseExportTest {
             ),
         )
         live.savedFileDao().upsert("h1", "content://docs/document/report.pdf", 3L)
+        live.dmScopeAnchorDao().put(
+            DmScopeAnchorEntity("bob", ByteArray(32) { 1 }, ByteArray(32) { 2 }, ByteArray(32) { 3 }, armedUntil = 0L, updatedAt = 4L),
+        )
     }
 
     @Test
@@ -94,6 +98,8 @@ class DatabaseExportTest {
                 assertEquals(2L, c.count("messages"))
                 assertEquals(1L, c.count("blobs"))
                 assertEquals(1L, c.count("peers"))
+                // ADR 2026-11.dgj2: the anchor a restore's reset is pushed into rides the backup, unlike the session.
+                assertEquals(1L, c.count("dm_scope_anchors"))
                 for (table in BackupTables.TRANSIENT) assertEquals(table, 0L, c.count(table))
                 for (table in BackupTables.DEVICE_LOCAL) assertEquals(table, 0L, c.count(table))
                 assertEquals("ok", c.scalar("PRAGMA quick_check"))

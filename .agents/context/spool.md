@@ -68,6 +68,16 @@ lines.
   joins the set. A sig is delivered `ttl = 0` like a cast and is never presence (ADR 2026-10.fw8g). The Typing
   indicators switch stops cues on every plane, and `handleTyping` shows none from a blocked sender or in a message
   request, whatever plane it came over.
+- **When touching where a restored phone's DM scopes come from — `ScopeRegistry`'s `restored` seam,
+  `RestoredDmRoots`, `DmScopeAnchors`, `dm_scope_anchors`:** READ ADR 2026-11.dgj2 and `docs/SPOOL_PROTOCOL.md` C-3.1-6
+  (#324). A restore carries each DM scope's anchor (id and outer seal, never a root) because its resets replace no
+  root and C-3.1-4 alone left a relay-only contact unreachable; the anchor is subscribed as a retiring scope that takes
+  our pending reset alone, so `ScopeFrames.mayRefill` is unchanged, and it leaves the table when the session confirms
+  or the 30-day window ends; the reset is re-sent every 20 h until then (a `RESEND_OWN` marker under the same init).
+  `restoredScopes` comes last before `distinctBy`, so an anchor from a file never shadows a scope this phone derives.
+  Over a relay alone the holder's re-seals of its outage DMs never reach a scope: custody keeps the first bytes under
+  an id and `ScopeSync` pushes from custody (ADR 2026-10.dmgw). The crypto half is `.agents/context/crypto.md`'s
+  `ownPendingResets` entry.
 - **When touching `ScopeSync.reconcile`, `Worker.stop`, or the worker coroutine that hands a pull to `deliver`:**
   READ ADR 2026-10.f82h. A reconcile that drops a relay cancels its worker mid-delivery as a matter of course; the
   delivery survives only because `MeshRouter.handleInbound` finishes what it admitted under `NonCancellable`. Don't

@@ -25,6 +25,28 @@ class ScopeRoots(
 )
 
 /**
+ * A restored phone's scope inputs for one DM peer (spec C-3.1-6, ADR 2026-11.dgj2, #324). The [anchorId] and
+ * [anchorKeys] are the id and outer seal of the peer's DM scope as our backup carried it, which the peer still reads;
+ * [pairwiseRoot] is the root of our own flagged reset to the peer, still unanswered, and [resetInit] its init
+ * ephemeral. Assembled by `DmScopeAnchors.restored` from armed anchors and `RatchetSessions.ownPendingResets`, so it
+ * exists only while that reset waits and the anchor's window is open.
+ */
+class RestoredDmRoots(
+    val peerId: String,
+    val pairwiseRoot: ByteArray,
+    val resetInit: ByteArray,
+    val anchorId: ByteArray,
+    val anchorKeys: ScopeCrypto.SealKeys,
+    /**
+     * The root the pending reset's slot drains, until [prevRootExpiresAt]: the restore's own root once a second reset
+     * re-rooted over it, which the peer may have adopted. Kept here as a retiring scope because a re-send of the second
+     * reset ends `RatchetSessions.exportedRoots`' copy of it (round-1 finding C2).
+     */
+    val prevPairwiseRoot: ByteArray? = null,
+    val prevRootExpiresAt: Long = 0L,
+)
+
+/**
  * The inputs of one **pair scope** (`docs/SPOOL_PROTOCOL.md` §3.5): the peer an intro is pending with (or
  * in its post-confirmation grace) and the identity-derived [pairSecret] (`ScopeCrypto.pairSecret`) the
  * scope's id and seal keys come from. The one scope input that is not a session or group secret — it is
@@ -97,6 +119,13 @@ class GroupScopeRoots(
  * session confirms. The [pairs] seam is what bounds their lifetime: `IntroSync` names a peer only while its
  * intro is pending or inside the post-confirmation grace, and the scope vanishes with the name.
  *
+ * **A restore's anchors** (spec C-3.1-6, ADR 2026-11.dgj2) come from [restored]: a restored phone
+ * holds no session, so its resets replace no root and the exception above never applies to them. The anchor its
+ * backup carried stands in for the replaced root: while our own flagged reset to the peer is unanswered, the peer gets
+ * the reset's root live and the anchor retiring, both carrying the reset's init, exactly the C-3.1-4 shape. A reset
+ * that supersedes the restore's keeps the anchor whatever its `prevRoot` holds, so the table may also carry that
+ * reset's own retiring scope from [roots]; the ids differ and both take only the reset.
+ *
  * **Where each scope lives** is [placement] (ADR 2026-10.8kfx): read once per derivation, it gives every DM, pair
  * and group scope its relays ([Scope.spools]) by the union rule in [ScopeSpools]. Without it — every test that
  * predates homes — a scope belongs at every relay, as before. A commons stays bound to its one relay either way.
@@ -110,6 +139,7 @@ class ScopeRegistry(
     private val groupRoots: suspend () -> List<GroupScopeRoots> = { emptyList() },
     private val pairs: suspend () -> List<PairScopeRoots> = { emptyList() },
     private val commons: suspend () -> List<CommonsRoots> = { emptyList() },
+    private val restored: suspend () -> List<RestoredDmRoots> = { emptyList() },
     private val placement: suspend () -> ScopePlacement? = { null },
     private val bounds: ScopeBounds = DEFAULT_BOUNDS,
 ) {
@@ -117,8 +147,12 @@ class ScopeRegistry(
     suspend fun scopes(now: Long): List<Scope> {
         val me = selfId()
         val placed = placement()
-        return (dmScopes(me, now, placed) + groupScopes(me, now, placed) + pairScopes(me, placed) + commonsScopes())
-            .distinctBy { it.idHex }
+        // A restore's scopes go last: an anchor comes from a restore file, hostile input, so one whose id equals a scope
+        // this phone derives itself never replaces it (round-1 finding S3), and the first copy of an id is the one kept.
+        return (
+            dmScopes(me, now, placed) + groupScopes(me, now, placed) + pairScopes(me, placed) + commonsScopes() +
+                restoredScopes(me, now, placed)
+        ).distinctBy { it.idHex }
     }
 
     /**
@@ -172,6 +206,37 @@ class ScopeRegistry(
                     if (prev != null) add(dmScope(me, entry.peerId, prev, retiring = true, entry.pendingResetInit, spools))
                 }
             }
+
+    /**
+     * A restore's two scopes per peer (C-3.1-6): the pending reset's root live, where the peer's answer and re-seals
+     * land, and the carried anchor retiring, where the peer still reads, both carrying the reset's init so the anchor
+     * takes that reset alone (C-3.1-5, `ScopeFrames.mayRefill`).
+     */
+    private suspend fun restoredScopes(
+        me: String,
+        now: Long,
+        placed: ScopePlacement?,
+    ): List<Scope> =
+        restored().flatMap { entry ->
+            val spools = placed?.forDm(entry.peerId)
+            val drained =
+                entry.prevPairwiseRoot?.takeIf { entry.prevRootExpiresAt > now }?.let {
+                    dmScope(me, entry.peerId, it, retiring = true, entry.resetInit, spools)
+                }
+            listOfNotNull(
+                dmScope(me, entry.peerId, entry.pairwiseRoot, retiring = false, entry.resetInit, spools),
+                Scope(
+                    id = entry.anchorId,
+                    keys = entry.anchorKeys,
+                    bounds = bounds,
+                    retiring = true,
+                    peerId = entry.peerId,
+                    resetInit = entry.resetInit,
+                    spools = spools,
+                ),
+                drained,
+            )
+        }
 
     private suspend fun groupScopes(
         me: String,

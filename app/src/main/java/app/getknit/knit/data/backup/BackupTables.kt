@@ -41,6 +41,9 @@ object BackupTables {
             "drafts",
             "scope_configs",
             "spool_declared",
+            // Each DM scope's anchor (ADR 2026-11.dgj2, #324): the scope a restore's reset is pushed into, so a contact
+            // the relay is the only path to hears it. Ids and outer seal keys only, never a root or a chain.
+            "dm_scope_anchors",
         )
 
     /** Left empty in the backup; the mesh rebuilds each from nothing. */

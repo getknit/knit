@@ -149,6 +149,15 @@ enum class DropReason {
     PRESENCE_KEY_REFUSED,
 
     /**
+     * A profile that pinned a new prekey for a peer whose restore anchor is armed, and owed it a re-rooted restore reset
+     * that was not sent (`RatchetSessions.restoreReRoot`, ADR 2026-11.dgj2): inside the hour since our last reset to that
+     * peer, or past the handful a restore re-roots in one process. The profile itself is applied as any other. Never
+     * reset-triggering: it is our own send held back, and counting it is what shows a peer minting prekey ids to make us
+     * flood resets. One per profile, so a steady count is that peer's profile rate.
+     */
+    RESTORE_RESET_REFUSED,
+
+    /**
      * A blob frame (`FrameType.isUnsignedPointToPoint`) marked for relay — refused by `InboundPipeline.verifyInbound`
      * and never flooded by [MeshRouter]. Every build sends the blob traffic point-to-point, so a count here is a crafted
      * frame.

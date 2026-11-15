@@ -73,6 +73,7 @@ class ContactRemoverTest {
                 mesh.cancelIntro(RIVER)
                 notifier.forgetConversation(RIVER)
                 messages.deleteByConversation(RIVER)
+                mesh.dropScopeAnchor(RIVER)
                 drafts.clear(RIVER)
                 peers.setVerified(RIVER, false)
                 settings.unaccept(RIVER)
@@ -97,11 +98,13 @@ class ContactRemoverTest {
         runTest {
             remover().remove(RIVER)
 
-            // The peer row stays (the key pin), and no other mesh call goes out — no reset, no session drop.
+            // The peer row stays (the key pin), and no other mesh call goes out — no reset, no session drop. The
+            // anchor a backup would carry goes (ADR 2026-11.dgj2): local state the peer never sees.
             coVerify { peers.verifiedNodeIds() }
             coVerify { peers.setVerified(RIVER, false) }
             confirmVerified(peers)
             coVerify { mesh.cancelIntro(RIVER) }
+            coVerify { mesh.dropScopeAnchor(RIVER) }
             confirmVerified(mesh)
             // The group rows are read, never written; the block list is read, never written.
             verify { groups.observeGroups() }

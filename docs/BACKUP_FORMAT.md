@@ -88,7 +88,8 @@ inside SQLite (`DatabaseExport`). The mesh keeps running: the live database's wr
 
 Carried (`BackupTables.CARRIED`): `blobs`, `blob_verdicts`, `photo_refusals`, `attachment_holders`, `peers`, `peer_profiles`,
 `peer_badges`, `met_peers`, `groups`, `group_member_clocks`, `group_roots`, `commons`, `commons_members`,
-`commons_outbox`, `messages`, `reactions`, `pins`, `message_receipts`, `drafts`. Rebuilt on arrival: `messages_fts` (the triggers fill it as the rows land).
+`commons_outbox`, `messages`, `reactions`, `pins`, `message_receipts`, `drafts`, `scope_configs`, `spool_declared`,
+`dm_scope_anchors`. Rebuilt on arrival: `messages_fts` (the triggers fill it as the rows land).
 `peer_profiles` is the signed profile frame each pin came from, public by construction; carried so a restored
 phone can still prove the key of every peer whose frames it will carry again (ADR 2026-09.g64k).
 `attachment_holders` is the proof that a DM photo's recipient holds its bytes; carried because a restore is a move
@@ -96,6 +97,15 @@ and the peer still holds them, so the restored phone does not upload to a spool 
 2026-10.vy27).
 `photo_refusals` names the photos refused over the profile photo ceiling; carried beside the verdicts so a restored
 phone does not fetch them again from every holder (ADR 2026-11.4ckq).
+`scope_configs` holds each conversation's relay config; carried because a config has no ack, so a restored phone could
+never ask for it again (spool spec C-5-6). `spool_declared` records which nodes declared their relays.
+`dm_scope_anchors` is, per DM peer a restore resets, the id and outer seal keys of that peer's live DM scope, never
+its root or any chain. A restored phone holds no session, so its resets replace no root and get no DM scope; the
+anchor is the scope the peer still reads, and the restore's reset is pushed into it (spool spec C-3.1-6, ADR
+2026-11.dgj2). It is valid until the pair's next reset, so the file gives whoever holds it and its key that era's
+envelopes and a way to recognise the peer on a relay, as `group_roots` already do for groups, and with the identity
+the reach to reset every such contact from another phone. Only the person's contacts among the peers a restore
+resets keep a row: never an unaccepted request or a blocked sender.
 
 **Never carried** (`BackupTables.TRANSIENT`), on purpose — they exist in the copy, empty:
 
@@ -106,8 +116,13 @@ phone does not fetch them again from every holder (ADR 2026-11.4ckq).
   A send chain carried forward from a snapshot re-seals indices its peers have already consumed; every
   such frame drops as a `DUPLICATE`, which the reset heuristic never counts (ADR 024) — a silent loss.
   The reset/replacement path (`FORWARD_SECRECY_RATCHET.md` §7, `GROUP_FORWARD_SECRECY.md` advance rule
-  5) was built for "wipe / reinstall", and a restore is one. Leaving them out also keeps forward-secrecy
-  material out of a file that may sit on a cloud drive for years.
+  5) was built for "wipe / reinstall", and a restore is one. Leaving them out also keeps every ratchet
+  chain out of a file that may sit on a cloud drive for years.
+- `lora_direct_seen`: which DMs a compact LoRa copy delivered and whether the signed copy's ratchet step ran
+  (ADR 2026-10.x9fa); ratchet state, which a restore re-derives like the sessions it describes.
+- `own_presence_keys`, `peer_presence_keys`, `link_owed_resets`: presence keys (ADR 2026-11.xp6d). Our own are
+  minted afresh after a restore, and a contact's would let the file recognise every contact's phone; a restore
+  re-roots every session, so contacts hand theirs again over the next link.
 
 **Device-local** (`BackupTables.DEVICE_LOCAL`), also empty in the copy: `saved_files`, where each received
 file was saved on this phone. Its document URIs name this phone's storage and are readable only through
