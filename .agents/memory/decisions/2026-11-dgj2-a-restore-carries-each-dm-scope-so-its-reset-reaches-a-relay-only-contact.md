@@ -165,9 +165,16 @@ How the anchor is kept and used:
   them by a `SeenSet` window.
 - **Not covered:**
   - A DM the holder sent during the outage, over a relay alone (see the holder above). `RestoreOverRelayLabTest` parks
-    that case as `@Ignore` until the custody plane serves a re-seal.
+    that case as `@Ignore` until the custody plane serves a re-seal (#325).
   - A database wiped on a lost key (`DatabaseKey`, ADR 2026-10.47rw): the table goes with it.
   - Direct contacts with no thread, whose restore reset is link-owed (ADR 2026-11.xp6d) and never custodied.
+  - A contact whose anchor no keeper pass has written yet. A DM thread's first message, or joining an accepted group,
+    wakes no pass, so a backup taken before the next heal (up to 15 min) carries no anchor for a new contact and its
+    restore cannot reach that contact over a relay (#330). Accepted on 2026-11-15: a long-standing contact, the likely
+    case, is covered.
+- **Device trial (2026-11-15, Pixel 3 restoring, Moto G relay-only on public-1):** with the anchor written, the pair
+  confirmed over the relay alone 29 s after the restored phone's mesh started. The anchor was subscribed as a retiring
+  scope beside the new one, then left the table. A backup taken 30 s after the pair's first DM stranded the pair (#330).
 - **Hostile input:** a restore file is hostile input. The reader skips a row of the wrong lengths or armed past the
   30-day window plus `DmScopeAnchors.ARM_CLOCK_SLACK_MS` (24 h), a reconcile deletes the over-armed one, and `finishRestore` disarms every row before it arms its
   targets. The slack keeps a wall clock stepped back just after `arm` from deleting the restore's own arming, which

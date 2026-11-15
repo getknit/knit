@@ -195,9 +195,9 @@ class RestoreOverRelayLabTest {
      * reset over the anchor and re-seals it under the new root, same id, but the re-seal only floods (`resealRecentDmsTo`):
      * every custody keeps the first bytes it stored under an id (`ForwardSync.onSeen`, ADR 2026-10.dmgw), Bob's own
      * included, so `ScopeSync` pushes the original again and never the re-seal, and a pair the relay alone connects
-     * never meets it. Parked until a re-seal reaches a scope.
+     * never meets it. Parked until a re-seal reaches a scope (#325).
      */
-    @Ignore("#324: a reset's re-seal floods only; custody keeps the original bytes, so a relay-only peer never gets it")
+    @Ignore("#325: a reset's re-seal floods only; custody keeps the original bytes, so a relay-only peer never gets it")
     @Test
     fun aDmSentWhileARestoredRelayOnlyContactWasAwayReachesItOnTheReseal() =
         runBlocking {
