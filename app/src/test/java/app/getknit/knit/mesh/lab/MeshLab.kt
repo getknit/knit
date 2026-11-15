@@ -1448,6 +1448,12 @@ class LabNode internal constructor(
     /** The [app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto.rootTag] of the session this node holds with [peer] now. */
     suspend fun rootTagFor(peer: LabNode): Long? = ratchetSessions.rootTagFor(peer.nodeId)
 
+    /** Whether our session with [peer] is our own unanswered flagged reset (`RatchetSessions.ownPendingResets`). */
+    suspend fun holdsOwnPendingResetTo(peer: LabNode): Boolean = ratchetSessions.ownPendingResets().any { it.peerId == peer.nodeId }
+
+    /** Whether the anchor keeper counts [peer] among the contacts it keeps an anchor for (`MeshManager.anchorTargets`). */
+    suspend fun keepsAnchorFor(peer: LabNode): Boolean = peer.nodeId in manager.anchorTargets(nodeId)
+
     /**
      * Waits until every link-up presence-key pass this node scheduled has run (`MeshManager`'s delayed reconcile,
      * `presenceLinkPassesCompleted`), so an acquaintance covers the keys a link-up hands over. A node whose link-up wait
@@ -2327,12 +2333,18 @@ class LabNode internal constructor(
      * the settings carrying the restore mark that makes the next `MeshManager.start` run `finishRestore`.
      * The snapshot is taken at the moment of the call; nothing this node held in memory survives. [lastGeneration] is
      * the `presence_key_last_generation` an older backup carried, for a second restore from one backup: null, the snapshot's.
+     * [inFile] edits the restored database before the node boots on it: what the backup file itself carried (a crafted
+     * row, a stale one), with no live keeper running to tidy it first.
      */
-    suspend fun restoreFromBackup(lastGeneration: Long? = null) {
+    suspend fun restoreFromBackup(
+        lastGeneration: Long? = null,
+        inFile: suspend LabNode.() -> Unit = {},
+    ) {
         check(!meshPaused) { "$name's mesh is paused: resumeMesh() before a restore" }
         val peers = shutdownLive()
         awaitPeersSettled(peers)
         db.withWriteTransaction { BackupTables.TRANSIENT.forEach { executeSQL("DELETE FROM $it") } }
+        inFile()
         lastGeneration?.let { settings.setPresenceKeyLastGeneration(it) }
         dataStore.edit { it[booleanPreferencesKey(SettingsKeys.RESTORE_PENDING)] = true }
         timedBoot()

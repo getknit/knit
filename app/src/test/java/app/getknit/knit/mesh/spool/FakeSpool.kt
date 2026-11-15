@@ -146,6 +146,15 @@ class FakeSpool(
     /** Every PUSH the spool accepted, in order — the outbound-side assertion hook. */
     val pushed = mutableListOf<String>()
 
+    /** Every PUSH the spool accepted, as (scope hex, blob id hex), in order — which scope a blob went into. */
+    val pushedInto: MutableList<Pair<String, String>> = java.util.Collections.synchronizedList(mutableListOf())
+
+    /** Every accepted PUSH's bytes by blob id hex, so a test holding a scope's keys can open what went in. */
+    val pushedData: MutableMap<String, ByteArray> = ConcurrentHashMap()
+
+    /** The blob ids accepted into [scopeHex], in order. */
+    fun pushedTo(scopeHex: String): List<String> = synchronized(pushedInto) { pushedInto.filter { it.first == scopeHex }.map { it.second } }
+
     /** Every blob id a PULL asked for — how a test proves the client stopped re-requesting something. */
     val pulled = mutableListOf<String>()
 
@@ -830,7 +839,11 @@ class FakeSpool(
                 return
             }
             val fresh = state.live.put(idHex, push.data) == null
-            if (fresh) pushed.add(idHex)
+            if (fresh) {
+                pushed.add(idHex)
+                pushedInto.add(scopeHex to idHex)
+                pushedData[idHex] = push.data
+            }
             while (state.live.size > maxFramesFor(scopeHex)) {
                 val eldest = state.live.keys.first()
                 state.live.remove(eldest)

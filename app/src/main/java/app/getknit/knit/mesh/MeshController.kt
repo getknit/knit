@@ -182,6 +182,12 @@ interface MeshController {
      */
     suspend fun cancelIntro(peerId: String) {}
 
+    /**
+     * The contact [peerId] was removed: drop the DM scope anchor a backup would carry for them (`DmScopeAnchors`,
+     * ADR 2026-11.dgj2), so no backup taken from now on can reach their scope. Nothing else moves. Idempotent.
+     */
+    suspend fun dropScopeAnchor(peerId: String) {}
+
     /** Where the contact-card intro with [peerId] stands, or null when none is pending or recently confirmed. */
     fun introState(peerId: String): Flow<IntroState?> = flowOf(null)
 

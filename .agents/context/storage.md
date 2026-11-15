@@ -56,6 +56,21 @@ lines.
   the mesh has no clone tolerance — and the copy says so. The database copy goes
   through a raw single-connection driver on purpose (`ATTACH` is read-only to SQLite and lands on a pool
   reader; the SQLCipher layer rewrites `BEGIN` to `EXCLUSIVE`) — don't move it onto the Room connection.
+- **When touching `dm_scope_anchors` (`data/scopeanchor/`, DB v34), `DmScopeAnchorDao`, `mesh/spool/DmScopeAnchors`,
+  `MeshController.dropScopeAnchor`, or what `finishRestore` arms:** READ ADR 2026-11.dgj2 and spool spec C-3.1-6. The
+  table is `BackupTables.CARRIED`, the one crypto-derived row a backup carries beside `group_roots`: per DM peer a
+  restore resets that is the person's contact (`MeshManager.anchorTargets`: an accepted DM or an accepted group's
+  member, never a blocked one), the live DM scope's id and outer seal keys, never a root or a chain. Only that set
+  keeps a row, from a confirmed session. A reconcile runs on root changes and on a change to the block list or the
+  accepted set (never on a settings write that left them as they were), and once per heal basket, one pass at a time
+  under `MeshManager.anchorPass` (inputs read inside it); it deletes every unarmed row it did not just
+  write, but for a peer our own reset is still waiting on, and the row of a blocked peer or a peer no longer a target,
+  armed or not. So a removed contact, a stranger, an unaccepted request, a blocked sender or a drained era leaves nothing in
+  the next backup. Presence keys stay `TRANSIENT`
+  (ADR 2026-11.xp6d) because a restore re-mints them, while the anchor is the only way a restore's reset reaches a
+  relay-only contact. A restore file is hostile input: rows of the wrong length, or armed past the 30-day window and
+  its 24 h clock slack, are skipped and dropped, and while `restorePending` no reconcile runs (it would delete the carried rows before
+  `finishRestore` arms them) and no row reaches the scope table (`MeshManager.restoredDmRoots`). Never log a row.
 - **When touching the `lora_direct_seen` table (`data/ratchet/LoraDirectSeen.kt`, DB v28):** READ ADR 2026-10.x9fa and
   `.agents/context/crypto.md`'s compact-door entry. It is ratchet state — which DMs a compact LoRa copy delivered and
   whether the signed copy's ratchet step has run — so it is `BackupTables.TRANSIENT`, never carried, and swept 48 h after
@@ -63,7 +78,7 @@ lines.
 - **When touching `own_presence_keys` / `peer_presence_keys` (`data/presencekey/`, DB v32), `PresenceKeyDao`,
   `PeerDao.deleteOrphanPresenceKeys` or the `presence_key_last_generation` setting:** READ ADR 2026-11.xp6d ("The
   presence key"). Both tables are `BackupTables.TRANSIENT`: a backup must not carry the means to recognise every
-  contact, and a restore mints its own keys afresh while the carried generation counter keeps their numbers above
+  contact's phone (the DM scope anchors it does carry are the exception ADR 2026-11.dgj2 argues), and a restore mints its own keys afresh while the carried generation counter keeps their numbers above
   everything as of the backup. Numbers minted after the backup can repeat, and the new root tells the eras apart. A
   peer's keys go with its `peers` row. Never log a row.
 - **When touching `mesh/CloneWatch`, the self branch of `InboundPipeline.handleProfile`, the `clone_`

@@ -8,6 +8,7 @@ import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine.OpenOutcome
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions.ResetSeal
 import app.getknit.knit.mesh.protocol.EncEnvelope
+import app.getknit.knit.mesh.protocol.RatchetHeader
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -67,6 +68,18 @@ class RatchetSessionsExportTest {
         ): EncEnvelope? = sessions.sealDm(peer.nodeId, peer.ik.pub, prekey(), text.toByteArray(), AAD, now, confirmedOnly = true)
 
         suspend fun reset(now: Long): ResetSeal = sessions.sealResetDm(peer.nodeId, peer.ik.pub, prekey(), "reset".toByteArray(), AAD, now)
+
+        /** A reset against the peer's prekey [pkid], for [cause]: a restore's, or one after the peer rotated. */
+        suspend fun reset(
+            now: Long,
+            cause: RatchetSessions.ResetCause,
+            pkid: Int = 1,
+        ): ResetSeal {
+            val spk = RatchetEngine.PeerPrekey(id = pkid, pub = peer.spks.getValue(pkid).pub)
+            return sessions.sealResetDm(peer.nodeId, peer.ik.pub, spk, "reset".toByteArray(), AAD, now, cause)
+        }
+
+        suspend fun ownPending(): RatchetSessions.ExportedRoots? = sessions.ownPendingResets().singleOrNull()
 
         suspend fun open(
             env: EncEnvelope,
@@ -199,6 +212,121 @@ class RatchetSessionsExportTest {
             sealed(a.reset(T1))
             assertNull(a.export())
             assertEquals(changes, a.changes.size)
+        }
+
+    /**
+     * A restore's reset (ADR 2026-11.dgj2, #324): from no session it replaces no root, so [RatchetSessions.exportedRoots]
+     * still exports nothing for it (C-3.1-4), and [RatchetSessions.ownPendingResets] is the read the restore's anchor
+     * joins: the reset's root, its init, no slot.
+     */
+    @Test
+    fun aRestoreResetIsAnOwnPendingResetAndStillExportsNothing() =
+        runTest {
+            val (a, _) = established()
+            a.sessions.forget(a.peer.nodeId)
+            val reset = sealed(a.reset(T1, RatchetSessions.ResetCause.AFTER_WIPE))
+            assertTrue(reset.reRooted)
+            assertNull(a.export())
+            val pending = checkNotNull(a.ownPending())
+            assertArrayEquals(exported(a.root()), pending.pairwiseRoot)
+            assertArrayEquals(checkNotNull(reset.envelope.r?.init).eph, pending.pendingResetInit)
+            assertNull("the anchor stands in for the slot", pending.prevPairwiseRoot)
+        }
+
+    /** Our first-contact init is no reset: neither read carries it. The AFTER_WIPE marker over it is one. */
+    @Test
+    fun aFirstContactInitIsNoOwnPendingResetUntilARestoreMarksIt() =
+        runTest {
+            val (a, _) = pair()
+            a.seal("hello", T)
+            assertNull(a.export())
+            assertNull(a.ownPending())
+
+            val marker = sealed(a.reset(T + 1_000, RatchetSessions.ResetCause.AFTER_WIPE))
+            assertFalse("the marker keeps the init", marker.reRooted)
+            assertNull("still nothing exported", a.export())
+            assertArrayEquals(checkNotNull(marker.envelope.r?.init).eph, checkNotNull(a.ownPending()).pendingResetInit)
+        }
+
+    /**
+     * Design-pass R1: a second reset over the restore's — here the prekey trigger's, after the peer rotated — re-roots and
+     * puts the never-derived restore root in the slot, so [RatchetSessions.exportedRoots] starts exporting it. The own
+     * pending read follows the new reset whatever the slot holds, so the anchor still carries it; the peer's answer
+     * ends both.
+     */
+    @Test
+    fun aResetOverTheRestoreResetStaysAnOwnPendingResetUntilAnswered() =
+        runTest {
+            val (a, b) = established()
+            a.sessions.forget(b.nodeId)
+            val first = sealed(a.reset(T1, RatchetSessions.ResetCause.AFTER_WIPE))
+            val restoreRoot = a.root()
+            val past = 1 + RatchetSessions.PEER_PREKEYS_KEPT
+            b.spks[past] = RatchetCrypto.generateKeyPair()
+            assertFalse(
+                "a pin inside the peer's retention owes nothing",
+                RatchetSessions.restoreResetOwed(a.sessions.sessionFor(b.nodeId), pinnedPkid = past - 1),
+            )
+            assertTrue("owed on a pin past it", RatchetSessions.restoreResetOwed(a.sessions.sessionFor(b.nodeId), pinnedPkid = past))
+            val second = sealed(a.reset(T1 + 120_000, RatchetSessions.ResetCause.AFTER_WIPE, pkid = past))
+            assertTrue(second.reRooted)
+            assertFalse(
+                "and never again once on it",
+                RatchetSessions.restoreResetOwed(a.sessions.sessionFor(b.nodeId), pinnedPkid = past),
+            )
+
+            val pending = checkNotNull(a.ownPending())
+            val secondInit = checkNotNull(second.envelope.r?.init).eph
+            assertArrayEquals(secondInit, pending.pendingResetInit)
+            assertFalse(secondInit.contentEquals(checkNotNull(first.envelope.r?.init).eph))
+            val exportedNow = checkNotNull(a.export())
+            assertArrayEquals("the slot holds the restore root", exported(restoreRoot), exportedNow.prevPairwiseRoot)
+            assertArrayEquals("and the own pending read carries it", exported(restoreRoot), pending.prevPairwiseRoot)
+
+            // Round-1 finding C2: the re-send ends pendingResetInit, so exportedRoots drops both scopes; the own pending read
+            // keeps the init and the slot, which the peer may be on.
+            val resend = sealed(a.reset(T1 + 130_000, RatchetSessions.ResetCause.RESEND_OWN, pkid = past))
+            assertFalse("a marker, no new root", resend.reRooted)
+            assertArrayEquals("under the same init", secondInit, checkNotNull(resend.envelope.r?.init).eph)
+            assertNull("exportedRoots no longer carries it", a.export())
+            val afterResend = checkNotNull(a.ownPending())
+            assertArrayEquals(secondInit, afterResend.pendingResetInit)
+            assertArrayEquals(exported(restoreRoot), afterResend.prevPairwiseRoot)
+
+            b.open(second.envelope, T1 + 131_000)
+            a.open(b.seal("answer", T1 + 132_000), T1 + 132_000)
+            assertNull("answered", a.ownPending())
+            assertTrue(checkNotNull(a.export()).confirmed)
+            assertArrayEquals("one root", a.root(), b.root())
+        }
+
+    /**
+     * A restore's re-send (ADR 2026-11.dgj2) after the peer rotated within its retention: the marker under the same init
+     * goes whatever the pin says ([RatchetSessions.ResetCause.RESEND_OWN]), where [RatchetSessions.ResetCause.REMARK_OWN],
+     * which needs the pinned prekey to be the init's, declines. The peer, still holding the old prekey, adopts the marker
+     * and its answer confirms us: one root, no re-root.
+     */
+    @Test
+    fun aRestoreResendGoesUnderItsInitAfterThePeerRotatedWithinItsRetention() =
+        runTest {
+            val (a, b) = established()
+            a.sessions.forget(b.nodeId)
+            val restore = sealed(a.reset(T1, RatchetSessions.ResetCause.AFTER_WIPE))
+            val restoreRoot = a.root()
+            b.spks[2] = RatchetCrypto.generateKeyPair()
+
+            assertTrue(a.reset(T1 + 1_000, RatchetSessions.ResetCause.REMARK_OWN, pkid = 2) is ResetSeal.Declined)
+            val resend = sealed(a.reset(T1 + 2_000, RatchetSessions.ResetCause.RESEND_OWN, pkid = 2))
+            assertFalse(resend.reRooted)
+            assertArrayEquals(checkNotNull(restore.envelope.r?.init).eph, checkNotNull(resend.envelope.r?.init).eph)
+            assertTrue("flagged", (checkNotNull(resend.envelope.r).flags and RatchetHeader.FLAG_RESET) != 0)
+            assertArrayEquals("no new root", restoreRoot, a.root())
+
+            b.open(resend.envelope, T1 + 3_000)
+            a.open(b.seal("answer", T1 + 4_000), T1 + 4_000)
+            assertNull("answered", a.ownPending())
+            assertArrayEquals("one root", a.root(), b.root())
+            assertTrue(a.reset(T1 + 5_000, RatchetSessions.ResetCause.RESEND_OWN, pkid = 2) is ResetSeal.Declined)
         }
 
     /** A reset the ratchet declines moves nothing (ADR 2026-09.qerd's floor). */
@@ -381,6 +509,51 @@ class RatchetSessionsExportTest {
         assertNull("no root replaced", RatchetSessions.pendingResetInit(base.copy(prevRoot = null)))
         assertNull("the peer's init", RatchetSessions.pendingResetInit(base.copy(weAreInitiator = false)))
         assertFalse(RatchetSessions.exports(base.copy(prevRoot = null)))
+
+        // The restore's read (ADR 2026-11.dgj2): any own unanswered flagged reset, whatever the slot holds.
+        assertNotNull(RatchetSessions.ownPendingReset(base))
+        assertNotNull("no root replaced", RatchetSessions.ownPendingReset(base.copy(prevRoot = null)))
+        assertNotNull("a marker over a plain init", RatchetSessions.ownPendingReset(base.copy(lastResetSentAt = 60L)))
+        assertNull("a plain init", RatchetSessions.ownPendingReset(base.copy(lastResetSentAt = 0L)))
+        assertNull("answered", RatchetSessions.ownPendingReset(base.copy(confirmed = true)))
+        assertNull("the peer's init", RatchetSessions.ownPendingReset(base.copy(weAreInitiator = false)))
+
+        // The prekey trigger: no session, or our own pending reset on a prekey the peer no longer keeps (C1).
+        val onPkid3 = base.copy(prevRoot = null, initPkid = 3)
+        val gone = 3 + RatchetSessions.PEER_PREKEYS_KEPT
+        assertTrue("no session", RatchetSessions.restoreResetOwed(null, pinnedPkid = 3))
+        assertFalse("on the pinned prekey", RatchetSessions.restoreResetOwed(onPkid3, pinnedPkid = 3))
+        assertFalse("rotated, still kept by the peer", RatchetSessions.restoreResetOwed(onPkid3, pinnedPkid = gone - 1))
+        assertTrue("rotated past the peer's retention", RatchetSessions.restoreResetOwed(onPkid3, pinnedPkid = gone))
+        assertFalse("confirmed", RatchetSessions.restoreResetOwed(onPkid3.copy(confirmed = true), pinnedPkid = gone))
+        assertFalse("a plain init", RatchetSessions.restoreResetOwed(onPkid3.copy(lastResetSentAt = 0L), pinnedPkid = gone))
+
+        // Its bound (S1): one re-root per floor since our last reset, a few per process, a clock moved back not floored.
+        val sentAt = onPkid3.lastResetSentAt
+        val floor = RatchetSessions.RESTORE_REROOT_FLOOR_MS
+
+        fun reRoot(
+            now: Long,
+            soFar: Int = 0,
+            state: RatchetEngine.SessionState? = onPkid3,
+        ) = RatchetSessions.restoreReRoot(state, gone, now, soFar)
+        assertEquals(RatchetSessions.RestoreReRoot.FLOORED, reRoot(sentAt + floor - 1))
+        assertEquals(RatchetSessions.RestoreReRoot.SEND, reRoot(sentAt + floor))
+        assertEquals(RatchetSessions.RestoreReRoot.SEND, reRoot(sentAt - 1))
+        // Measured from our init's stamp, not the last copy's: a marker just sent holds back no re-root (round-2 finding 1).
+        assertEquals(
+            RatchetSessions.RestoreReRoot.SEND,
+            reRoot(sentAt + floor, state = onPkid3.copy(lastResetSentAt = sentAt + floor - 1)),
+        )
+        assertEquals(
+            RatchetSessions.RestoreReRoot.CAPPED,
+            reRoot(sentAt + floor, soFar = RatchetSessions.RESTORE_REROOT_CAP),
+        )
+        assertEquals(RatchetSessions.RestoreReRoot.SEND, reRoot(sentAt, state = null))
+        assertEquals(
+            RatchetSessions.RestoreReRoot.NOT_OWED,
+            RatchetSessions.restoreReRoot(onPkid3, gone - 1, sentAt + floor, reRootsSoFar = 0),
+        )
     }
 
     private companion object {

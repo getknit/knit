@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.crypto.ratchet
 
+import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RatchetHeader
@@ -663,7 +664,8 @@ class RatchetSessions(
         now: Long,
         cause: ResetCause,
     ): ResetPlan {
-        if (cause == ResetCause.REMARK_OWN) return remarkPlan(old, peerSpk)
+        if (cause == ResetCause.REMARK_OWN) return remarkPlan(old, peerSpk.id)
+        if (cause == ResetCause.RESEND_OWN) return remarkPlan(old, pinnedPkid = null)
         if (old == null) return ResetPlan.ReRoot
         val pendingInit = old.weAreInitiator && !old.confirmed
         // An init against a prekey the peer has since replaced may never be adoptable: only a fresh one heals it.
@@ -684,14 +686,17 @@ class RatchetSessions(
     }
 
     /**
-     * [ResetCause.REMARK_OWN]'s plan: the marker under our own unanswered reset init, still against the peer's pinned
-     * prekey, or nothing — never a new root. Runs under the lock.
+     * [ResetCause.REMARK_OWN]'s and [ResetCause.RESEND_OWN]'s plan: the marker under our own unanswered reset init — still
+     * against the peer's pinned prekey [pinnedPkid], unless null (a restore's re-send) — or nothing, never a new root.
+     * Runs under the lock.
      */
     private fun remarkPlan(
         old: RatchetEngine.SessionState?,
-        peerSpk: RatchetEngine.PeerPrekey,
+        pinnedPkid: Int?,
     ): ResetPlan {
-        val ownReset = old != null && old.weAreInitiator && !old.confirmed && old.lastResetSentAt > 0L && old.initPkid == peerSpk.id
+        val ownReset =
+            old != null && old.weAreInitiator && !old.confirmed && old.lastResetSentAt > 0L &&
+                (pinnedPkid == null || old.initPkid == pinnedPkid)
         return if (ownReset) ResetPlan.Mark else ResetPlan.Decline("no pending reset of ours to mark")
     }
 
@@ -855,6 +860,29 @@ class RatchetSessions(
          * nothing else — no new root (the peer may already be adopting the lost one), declined when no such init is held.
          */
         REMARK_OWN,
+
+        /**
+         * A restore's re-send of its own pending reset into an armed anchor (ADR 2026-11.dgj2): the marker under that init,
+         * nothing else — no new root, declined when no such init is held. Unlike [REMARK_OWN] it does not need the pinned
+         * prekey to be the init's: a peer that rotated since keeps the old one for four more weeks and still opens it
+         * (`restoreResetOwed` re-roots only past that), and the marker's seal is based on what the init recorded.
+         */
+        RESEND_OWN,
+    }
+
+    /** What [RatchetSessions.restoreReRoot] decided. */
+    enum class RestoreReRoot {
+        /** Owed and allowed: re-root now. */
+        SEND,
+
+        /** Nothing is owed ([RatchetSessions.restoreResetOwed]). */
+        NOT_OWED,
+
+        /** Owed, but our last reset to the peer is under [RatchetSessions.RESTORE_REROOT_FLOOR_MS] old. */
+        FLOORED,
+
+        /** Owed, but this restore has re-rooted toward the peer [RatchetSessions.RESTORE_REROOT_CAP] times already. */
+        CAPPED,
     }
 
     /** What [sealResetDm] did. */
@@ -961,6 +989,39 @@ class RatchetSessions(
         }
 
     /**
+     * Our own **unanswered flagged reset** to each peer, whatever root it replaced: the read a restore's anchors join
+     * (spec C-3.1-6, ADR 2026-11.dgj2, #324). [exportedRoots] reaches only a reset that replaced a root it held
+     * ([pendingResetInit]); a restore holds none, so its resets — a re-root from no session, or the marker over an
+     * init made since the wipe — export nothing there, and a reset that supersedes one ([reRoot] puts the restore
+     * reset's never-derived root in the slot) exports a retiring scope the peer never read. This reads the state
+     * alone ([ownPendingReset]): `pairwiseRoot` is the reset's root, `pendingResetInit` its init's ephemeral, and the
+     * slot (`prevPairwiseRoot`, until `prevRootExpiresAt`) whatever it holds: null for a reset from no session, the
+     * restore's own root once a second reset re-rooted over it. That root the peer may be on (it adopted the first reset),
+     * and a re-send of the second ([ResetCause.REMARK_OWN]) moves its stamp past `establishedAt`, which ends
+     * [pendingResetInit] and with it [exportedRoots]' copy of the slot; this read keeps it (round-1 finding C2). The
+     * anchor stands in for the root a restore does not hold, and only while armed (`DmScopeAnchors.restored`).
+     *
+     * A read beside [exportedRoots], never through it: every other consumer of the scope view (presence, `RelayReach`,
+     * [rootChanges]) keeps the C-3.1-4 rule, and a first-contact init or a stranger's reset is joined with nothing here
+     * unless a restore armed that peer's anchor. Exported through [RatchetCrypto.exportRoot] under the lock, like
+     * [exportedRoots]; a raw root never leaves.
+     */
+    suspend fun ownPendingResets(): List<ExportedRoots> =
+        locked {
+            store.sessionPeerIds().mapNotNull { peerId ->
+                val state = store.session(peerId) ?: return@mapNotNull null
+                val init = ownPendingReset(state) ?: return@mapNotNull null
+                ExportedRoots(
+                    peerId = peerId,
+                    pairwiseRoot = RatchetCrypto.exportRoot(state.root),
+                    prevPairwiseRoot = state.prevRoot?.let { RatchetCrypto.exportRoot(it) },
+                    prevRootExpiresAt = state.prevRootExpiresAt,
+                    pendingResetInit = init,
+                )
+            }
+        }
+
+    /**
      * One peer's exported scope roots: the active one plus, until [prevRootExpiresAt], the retiring
      * session's — the drain window that keeps a replaced session's blobs reachable.
      *
@@ -1050,9 +1111,10 @@ class RatchetSessions(
          * one and the re-root the other with the same `now`, a plain `sealDm` init leaves the stamp 0, and a marker
          * stamps it past the init), and the re-root kept a root to drain ([RatchetEngine.SessionState.prevRoot]).
          * A reset from no session — a restore's, or one toward a stranger whose frames we cannot open — has no
-         * prevRoot and exports nothing, exactly as before. Race-keep (we won against the peer's own init) leaves
-         * the state standing with the peer's losing root in the slot, which is the root that peer is on until it
-         * adopts ours; losing the race confirms us on the peer's root and ends it.
+         * prevRoot and exports nothing here, exactly as before; a restore's reaches its peer through the anchor its
+         * backup carried instead, joined with [ownPendingResets] (spec C-3.1-6, ADR 2026-11.dgj2). Race-keep (we
+         * won against the peer's own init) leaves the state standing with the peer's losing root in the slot, which
+         * is the root that peer is on until it adopts ours; losing the race confirms us on the peer's root and ends it.
          *
          * The row cannot tell whether the replaced root had confirmed. A reset re-rooted over our own unanswered
          * reset keeps the first reset's slot ([reRoot]), so the slot stays the root the peer was on; one rare path
@@ -1067,6 +1129,86 @@ class RatchetSessions(
                     state.lastResetSentAt > 0L &&
                     state.lastResetSentAt == state.establishedAt
             }
+
+        /**
+         * The init ephemeral of our own flagged reset, still unanswered, **whatever its slot holds** — [ownPendingResets]'
+         * rule (ADR 2026-11.dgj2). Wider than [pendingResetInit] on two counts, both a restore's: no replaced root (a
+         * re-root from no session, or a reset re-rooted over one, whose slot holds a root the peer never derived), and
+         * a marker (`lastResetSentAt` past `establishedAt`: the AFTER_WIPE marker over an init made since the wipe).
+         * A plain `sealDm` init leaves the stamp 0 and is not one; the peer's init, or an answered one, neither.
+         */
+        fun ownPendingReset(state: RatchetEngine.SessionState): ByteArray? =
+            state.initEphPub?.takeIf { state.weAreInitiator && !state.confirmed && state.lastResetSentAt > 0L }
+
+        /**
+         * Whether a restore owes the peer a fresh reset now that a profile pinned prekey [pinnedPkid] for it (ADR
+         * 2026-11.dgj2's prekey trigger, design-pass R2): no session at all — the restore's reset could not be sealed —
+         * or our own unanswered flagged reset ([ownPendingReset]) sealed against a prekey the peer no longer keeps. A
+         * peer keeps its newest [PEER_PREKEYS_KEPT] and mints ids one above its newest, so a reset whose prekey is fewer
+         * ids behind the pin still opens there and is owed nothing: a second root then would land inside the floor the
+         * first one's adoption starts and drop as `RESET_FLOORED` (round-1 finding C1, ADR 2026-09.qerd). One that far
+         * behind can only be refused as `EPOCH_GONE`. Never for a confirmed session, the peer's own init or a plain one,
+         * and never once the pending reset is near the pin, so a re-served profile owes nothing twice. The caller gates
+         * it on the peer's armed anchor and on [restoreReRoot]'s floor and cap; the row decides the rest, no clock.
+         */
+        fun restoreResetOwed(
+            state: RatchetEngine.SessionState?,
+            pinnedPkid: Int,
+        ): Boolean = state == null || (ownPendingReset(state) != null && pinnedPkid - state.initPkid >= PEER_PREKEYS_KEPT)
+
+        /**
+         * Whether a restore re-roots its reset toward a peer now ([restoreResetOwed] owed it), bounded so a peer cannot
+         * make us flood (round-1 finding S1, ADR 2026-11.dgj2). Each profile a peer signs can pin a new prekey id, and
+         * each re-root is a flooded, custodied, anchor-pushed frame under our id and a purge of our receive state, so
+         * without a bound one never-answering armed peer bought one per profile for the whole window. A re-root goes at
+         * most once per [floorMs] since our last re-root to the peer (`establishedAt`: our own init's stamp, our clock,
+         * persisted, set by every re-root and never by a marker) and at most [cap] times per process ([reRootsSoFar], the
+         * caller's count since the restore). Not `lastResetSentAt`, which a re-send of the same init also stamps: a marker
+         * just before a pin past retention would hold back the re-root the pin owes for an hour (round-2 finding 1). A
+         * peer rotates weekly and keeps five, so an hour loses nothing. No stamp, or a clock moved back past it, is not
+         * floored; across a restart, which clears [reRootsSoFar], the floor still holds.
+         */
+        fun restoreReRoot(
+            state: RatchetEngine.SessionState?,
+            pinnedPkid: Int,
+            now: Long,
+            reRootsSoFar: Int,
+            floorMs: Long = RESTORE_REROOT_FLOOR_MS,
+            cap: Int = RESTORE_REROOT_CAP,
+        ): RestoreReRoot {
+            if (!restoreResetOwed(state, pinnedPkid)) return RestoreReRoot.NOT_OWED
+            val last = state?.establishedAt ?: 0L
+            if (last > 0L && last in (now - floorMs + 1)..now) return RestoreReRoot.FLOORED
+            if (reRootsSoFar >= cap) return RestoreReRoot.CAPPED
+            return RestoreReRoot.SEND
+        }
+
+        /** A peer's prekey retention, as [restoreResetOwed] reads it: this build's own (`IdentityKeyStore.SPK_KEEP`). */
+        const val PEER_PREKEYS_KEPT = IdentityKeyStore.SPK_KEEP
+
+        /** [restoreReRoot]'s floor between two restore re-roots toward one peer. */
+        const val RESTORE_REROOT_FLOOR_MS = 60 * 60_000L
+
+        /** [restoreReRoot]'s cap on restore re-roots toward one peer in one process. */
+        const val RESTORE_REROOT_CAP = 3
+
+        /**
+         * Whether a restore's pending reset is due its re-send (ADR 2026-11.dgj2): our own unanswered flagged reset
+         * ([ownPendingReset]) whose last copy went [floorMs] or more ago, on our clock (`lastResetSentAt` is stamped by
+         * every seal of it, the re-send included). Custody keeps a copy a day and a spool two, so past that nothing
+         * re-pushes the reset into the anchor, and a peer off the relay for longer would never meet it. A clock that
+         * moved back past the stamp is due once, and the re-send restamps it. The re-send is the marker under the
+         * same init ([ResetCause.REMARK_OWN]), never a new root: a peer that adopted an earlier copy resolves it by
+         * the init's ephemeral (`RatchetEngine.resolveSession`), and one that did not adopts it.
+         */
+        fun restoreResendDue(
+            state: RatchetEngine.SessionState?,
+            now: Long,
+            floorMs: Long,
+        ): Boolean {
+            val at = state?.takeIf { ownPendingReset(it) != null }?.lastResetSentAt ?: return false
+            return now - at >= floorMs || now < at
+        }
 
         /**
          * Whether a frame stamped [frameSentAt] (the sender's clock) was sealed before the session we initiated

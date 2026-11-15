@@ -314,6 +314,7 @@ carries; never renumber an old one.
 | [2026-11.8mhs](decisions/2026-11-8mhs-a-link-seals-everything-after-an-ephemeral-key-exchange.md) | A link seals everything after an ephemeral key exchange | mesh, security |
 | [2026-11.acs5](decisions/2026-11-acs5-detekt-runs-only-type-resolved.md) | detekt runs only type-resolved, on every source folder | build, toolchain, static-analysis |
 | [2026-11.b37x](decisions/2026-11-b37x-hiding-a-known-node-is-presentation-only.md) | Hiding a known node is presentation only | contacts, diagnostics, ui |
+| [2026-11.dgj2](decisions/2026-11-dgj2-a-restore-carries-each-dm-scope-so-its-reset-reaches-a-relay-only-contact.md) | a restore carries each DM scope so its reset reaches a relay-only contact | backup, spool, ratchet |
 | [2026-11.ejn8](decisions/2026-11-ejn8-translation-models-go-phone-to-phone-over-a-direct-transfer.md) | Translation models go phone to phone over a direct transfer | transfer, ml, wire, privacy |
 | [2026-11.f8pg](decisions/2026-11-f8pg-an-update-of-knit-restarts-the-mesh-like-a-reboot-does.md) | An update of Knit restarts the mesh like a reboot does | reliability, service, android |
 | [2026-11.mfbq](decisions/2026-11-mfbq-a-callee-with-no-live-path-declines-no-route-unrung.md) | A callee with no live path declines no_route unrung, and the caller re-places it as a mesh call | calls |

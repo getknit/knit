@@ -17,6 +17,7 @@ import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.blob.RequestOnlyBlob
+import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.crypto.SignedPrekey
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.group.GroupEntity
@@ -37,6 +38,7 @@ import app.getknit.knit.data.ratchet.GroupRatchetRepository
 import app.getknit.knit.data.ratchet.GroupRootRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.data.reaction.ReactionEntity
+import app.getknit.knit.data.scopeanchor.DmScopeAnchorEntity
 import app.getknit.knit.data.settings.LoraBoard
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
@@ -93,6 +95,7 @@ import app.getknit.knit.mesh.spool.CommonsMember
 import app.getknit.knit.mesh.spool.CommonsRoom
 import app.getknit.knit.mesh.spool.CommonsRoots
 import app.getknit.knit.mesh.spool.CommonsStore
+import app.getknit.knit.mesh.spool.DmScopeAnchors
 import app.getknit.knit.mesh.spool.GroupRootStore
 import app.getknit.knit.mesh.spool.Scope
 import app.getknit.knit.mesh.spool.ScopeFrames
@@ -133,6 +136,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -773,10 +777,16 @@ class MeshManagerTest {
             coEvery { settings.introGrace } returns MutableStateFlow(emptySet())
         }
 
-        /** Runs [MeshManager.heal] and waits for its basket to run to the end (`healsCompleted`), as the lab does. */
-        suspend fun healAndAwait() {
+        /**
+         * Runs [MeshManager.heal] and waits for its basket job to end. A basket still under way is joined first: `heal`
+         * launches none while one is active, and `healsCompleted` moves one statement before the job ends, so a heal right
+         * after the count moved could land on the old job and run nothing.
+         */
+        suspend fun healAndAwait(on: MeshManager = manager) {
             val before = metrics.frames().healsCompleted.toInt()
-            manager.heal()
+            withContext(Dispatchers.Default) { withTimeout(AWAIT_MS) { on.healBasketJob?.join() } }
+            on.heal()
+            withContext(Dispatchers.Default) { withTimeout(AWAIT_MS) { on.healBasketJob?.join() } }
             await(before + 1) { metrics.frames().healsCompleted.toInt() }
         }
 
@@ -2202,9 +2212,13 @@ class MeshManagerTest {
             rig.manager.start()
             assertTrue("held until the root moves", rig.sentChatFrames().isEmpty())
 
-            rig.await(1) { roots.subscriptionCount.value }
-            roots.emit(rig.bob.nodeId)
-            rig.await(1) { rig.sentChatFrames().size }
+            // Re-emitted until the tick goes: `rootChanges` has more than one subscriber (the held ticks' collector and the
+            // scope anchors' keeper, ADR 2026-11.dgj2), so a subscriber count says nothing about which one is listening.
+            // The flush seals a held tick once, and `single()` below still catches a second send.
+            rig.await(1) {
+                roots.tryEmit(rig.bob.nodeId)
+                rig.sentChatFrames().size
+            }
             assertEquals(rig.bob.nodeId, rig.sentChatFrames().single().recipientId)
             rig.manager.stop()
         }
@@ -5640,6 +5654,14 @@ class MeshManagerTest {
         const val AWAIT_MS = 10_000L
         const val POLL_MS = 5L
 
+        /** How many prekey-moving profiles [aNeverAnsweringPeerMovingItsPrekeyGetsAtMostTheCapOfReRoots] pins. */
+        const val PROFILES_PINNED = 50
+
+        const val DAY_MS = 24 * 60 * 60_000L
+
+        /** How long [twoOverlappingAnchorPassesAcrossAConfirmationKeepTheFreshRow] lets an unserialised pass write. */
+        const val FRESH_PASS_MS = 1_000L
+
         /** A group thread's id, as `Conversations.groupIdFor` shapes one. */
         const val GROUP_THREAD = "g-thread"
     }
@@ -5943,6 +5965,400 @@ class MeshManagerTest {
             assertTrue("the profile bump went out", bump >= 0)
             assertTrue("every reset precedes the profile bump", resets.all { sent.indexOf(it) < bump })
         }
+
+    /**
+     * ADR 2026-11.dgj2 (#324): the restore arms the anchors its backup carried before any reset is sealed, so the first
+     * derivation after a reset already holds the scope the peer reads. Only this restore's arming counts: a carried row
+     * of a peer the restore does not reset, armed far ahead by the file, is disarmed, and the reconcile at the end of the
+     * restore drops it. Every wiped peer's row stays armed for the window and no longer.
+     */
+    @Test
+    fun aRestoreArmsEachWipedPeersAnchorBeforeItsResetAndDisarmsTheRest() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+            val restorePending = MutableStateFlow(true)
+            coEvery { rig.settings.restorePending } returns restorePending
+            coEvery { rig.settings.clearRestorePending() } answers {
+                restorePending.value = false
+                mockk(relaxed = true)
+            }
+            val stranger = party()
+            rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            coEvery { rig.messages.distinctConversations() } returns listOf(rig.bob.nodeId)
+            coEvery { rig.groups.active() } returns emptyList()
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(rig.bob.nodeId))
+            val anchors = rig.db.dmScopeAnchorDao()
+            anchors.put(anchorRow(rig.bob.nodeId, armedUntil = 0L))
+            anchors.put(anchorRow(stranger.nodeId, armedUntil = Long.MAX_VALUE))
+
+            val real =
+                RatchetSessions(
+                    store = RatchetRepository(rig.db.ratchetDao(), clock = { rig.now }),
+                    dhIdentityPriv = { ByteArray(32) { 1 } },
+                    spkPrivFor = { null },
+                )
+            val ratchet = spyk(real)
+            val armedAtSeal = CopyOnWriteArrayList<Map<String, Long>>()
+            coEvery { ratchet.sealResetDm(any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+                armedAtSeal += anchors.all().associate { row -> row.peerId to row.armedUntil }
+                callOriginal()
+            }
+            val manager = rig.build(ratchet = ratchet)
+
+            manager.start()
+            rig.await(1) { if (restorePending.value) 0 else 1 }
+
+            val window = rig.clockNow + DmScopeAnchors.ARM_WINDOW_MS
+            assertEquals("one reset, to the one wiped peer", 1, armedAtSeal.size)
+            assertEquals(
+                "armed for the window, the file's own arming gone, before the reset was sealed",
+                mapOf(rig.bob.nodeId to window, stranger.nodeId to 0L),
+                armedAtSeal.single(),
+            )
+            withContext(Dispatchers.Default) {
+                withTimeout(AWAIT_MS) { while (anchors.all().any { it.peerId == stranger.nodeId }) delay(POLL_MS) }
+            }
+            val after = anchors.all().associate { it.peerId to it.armedUntil }
+            assertEquals("the closing reconcile keeps the armed anchor and drops the rest", mapOf(rig.bob.nodeId to window), after)
+            manager.stop()
+        }
+
+    /**
+     * ADR 2026-11.dgj2: a restore's reset is re-sent while its anchor is armed and the peer has not answered, because our
+     * custody keeps it a day and a spool two. Once its last copy is [DmScopeAnchors.RESEND_FLOOR_MS] old the heal basket
+     * sends the marker under the same init, never a new root; inside the floor nothing goes. A peer whose pinned prekey
+     * moves past the reset's gets one re-rooted reset on the new prekey, once.
+     */
+    @Test
+    fun aRestoreResetIsReSentUnderItsInitPastTheFloorAndReRootedOnceOnAMovedPrekey() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+            val restorePending = MutableStateFlow(true)
+            coEvery { rig.settings.restorePending } returns restorePending
+            coEvery { rig.settings.clearRestorePending() } answers {
+                restorePending.value = false
+                mockk(relaxed = true)
+            }
+            rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            coEvery { rig.messages.distinctConversations() } returns listOf(rig.bob.nodeId)
+            coEvery { rig.groups.active() } returns emptyList()
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(rig.bob.nodeId))
+            rig.db.dmScopeAnchorDao().put(anchorRow(rig.bob.nodeId, armedUntil = 0L))
+
+            rig.manager.start()
+            rig.await(1) { if (restorePending.value) 0 else 1 }
+            rig.await(1) { rig.resetInitsTo(rig.bob).size }
+            val restoreInit = rig.resetInitsTo(rig.bob).single()
+
+            rig.clockNow += DmScopeAnchors.RESEND_FLOOR_MS - 1
+            rig.healAndAwait()
+            assertEquals("inside the floor nothing is re-sent", 1, rig.resetInitsTo(rig.bob).size)
+
+            rig.clockNow += 1
+            rig.healAndAwait()
+            val afterResend = rig.resetInitsTo(rig.bob)
+            assertEquals("one re-send past the floor", 2, afterResend.size)
+            assertEquals("under the same init: no new root", restoreInit, afterResend.last())
+            rig.healAndAwait()
+            assertEquals("the re-send restamps the floor", 2, rig.resetInitsTo(rig.bob).size)
+
+            // A pin inside Bob's retention owes nothing (C1): he still opens the reset we hold.
+            rig.repin(rig.bob, prekeyId = 2)
+            rig.healAndAwait()
+            assertEquals("a rotation Bob still keeps owes no new root", 2, rig.resetInitsTo(rig.bob).size)
+
+            // Past it, one re-root at once: the re-send just before is a marker, not a re-root, so the hour-long floor
+            // (S1), measured from the last re-root, does not hold it (round-2 finding 1). Then nothing more.
+            rig.repin(rig.bob, prekeyId = 1 + IdentityKeyStore.SPK_KEEP)
+            rig.healAndAwait()
+            val afterMove = rig.resetInitsTo(rig.bob)
+            assertEquals("one reset on the moved prekey", 3, afterMove.size)
+            assertTrue("a fresh root for it", afterMove.last() != restoreInit)
+            rig.healAndAwait()
+            assertEquals("and only one: the pending reset is on the pinned prekey now", 3, rig.resetInitsTo(rig.bob).size)
+            rig.manager.stop()
+        }
+
+    /**
+     * Round-1 finding S1: an armed peer that never answers and pins a new prekey id far past ours at every turn would
+     * otherwise buy one flooded re-root per profile for the whole window. Fifty such pins, each an hour apart so the floor
+     * never holds one back, still get the cap and no more.
+     */
+    @Test
+    fun aNeverAnsweringPeerMovingItsPrekeyGetsAtMostTheCapOfReRoots() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = restoredWithBobArmed()
+            val restoreInit = rig.resetInitsTo(rig.bob).single()
+            repeat(PROFILES_PINNED) { turn ->
+                rig.repin(rig.bob, prekeyId = 1 + (turn + 1) * IdentityKeyStore.SPK_KEEP)
+                rig.clockNow += RatchetSessions.RESTORE_REROOT_FLOOR_MS
+                rig.healAndAwait()
+            }
+            val inits = rig.resetInitsTo(rig.bob)
+            assertEquals("the restore's reset and the cap's re-roots, nothing else", 1 + RatchetSessions.RESTORE_REROOT_CAP, inits.size)
+            assertEquals(restoreInit, inits.first())
+            assertEquals("each a re-root", inits.size, inits.toSet().size)
+            rig.manager.stop()
+        }
+
+    /**
+     * Round-1 finding S2: an anchor is kept only for a contact, never for an unaccepted Message Request or a blocked
+     * sender, though each holds a confirmed session; a restore arms none for them, whatever the file carried; and a
+     * block drops an accepted contact's row with no root change.
+     */
+    @Test
+    fun anchorsAreKeptForAcceptedContactsAloneAndABlockDropsOne() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+            val stranger = party()
+            val blockedSender = party()
+            listOf(rig.bob, stranger, blockedSender).forEach { rig.answered(it) }
+            coEvery { rig.messages.distinctConversations() } returns listOf(rig.bob.nodeId, stranger.nodeId, blockedSender.nodeId)
+            coEvery { rig.groups.active() } returns emptyList()
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(rig.bob.nodeId, blockedSender.nodeId))
+            val blocked = rig.blockList().apply { value = setOf(blockedSender.nodeId) }
+            val anchors = rig.db.dmScopeAnchorDao()
+
+            rig.manager.start()
+            rig.await(1) { if (runBlocking { anchors.all() }.any { it.peerId == rig.bob.nodeId }) 1 else 0 }
+            rig.healAndAwait() // a full reconcile after the one that wrote Bob's: any stranger's row would be in by now
+            assertEquals("the contact alone", setOf(rig.bob.nodeId), anchors.all().mapTo(HashSet()) { row -> row.peerId })
+
+            blocked.value = setOf(blockedSender.nodeId, rig.bob.nodeId)
+            rig.await(1) { if (runBlocking { anchors.all() }.isEmpty()) 1 else 0 }
+            rig.manager.stop()
+        }
+
+    /** The same, across a restore whose file carried a row for each: only the contact's is armed, the others go. */
+    @Test
+    fun aRestoreArmsNoAnchorForARequestOrABlockedSender() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+            val restorePending = MutableStateFlow(true)
+            coEvery { rig.settings.restorePending } returns restorePending
+            val stranger = party()
+            val blockedSender = party()
+            coEvery { rig.messages.distinctConversations() } returns listOf(rig.bob.nodeId, stranger.nodeId, blockedSender.nodeId)
+            coEvery { rig.groups.active() } returns emptyList()
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(rig.bob.nodeId, blockedSender.nodeId))
+            rig.blockList().value = setOf(blockedSender.nodeId)
+            val anchors = rig.db.dmScopeAnchorDao()
+            listOf(rig.bob, stranger, blockedSender).forEach { anchors.put(anchorRow(it.nodeId, armedUntil = 0L)) }
+            // The rows as the restore's arming left them, before its closing reconcile prunes: that pass would delete the
+            // stranger's and the blocked sender's rows whatever the arming did, so the end state alone proves nothing.
+            var armedAtFinish: Map<String, Long>? = null
+            coEvery { rig.settings.clearRestorePending() } answers {
+                armedAtFinish = runBlocking { anchors.all() }.associate { row -> row.peerId to row.armedUntil }
+                restorePending.value = false
+                mockk(relaxed = true)
+            }
+
+            rig.manager.start()
+            rig.await(1) { if (restorePending.value) 0 else 1 }
+            val window = rig.clockNow + DmScopeAnchors.ARM_WINDOW_MS
+            assertEquals(
+                "only the contact armed by the restore",
+                mapOf(rig.bob.nodeId to window, stranger.nodeId to 0L, blockedSender.nodeId to 0L),
+                armedAtFinish,
+            )
+            rig.await(1) { if (runBlocking { anchors.all() }.size == 1) 1 else 0 }
+            val row = anchors.all().single()
+            assertEquals(rig.bob.nodeId, row.peerId)
+            assertTrue("armed", row.armedUntil > rig.clockNow)
+            rig.manager.stop()
+        }
+
+    /**
+     * The S1 bound across a restart, which clears the in-memory re-root count: the floor reads our init's own persisted
+     * stamp, so a relaunched phone still keeps two re-roots toward one peer an hour apart.
+     */
+    @Test
+    fun aRestartKeepsRestoreReRootsAnHourApart() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = restoredWithBobArmed()
+            rig.repin(rig.bob, prekeyId = 1 + IdentityKeyStore.SPK_KEEP)
+            rig.clockNow += RatchetSessions.RESTORE_REROOT_FLOOR_MS
+            rig.healAndAwait()
+            assertEquals("one re-root, an hour after the restore's", 2, rig.resetInitsTo(rig.bob).size)
+            rig.manager.stop()
+
+            val relaunched = rig.build()
+            relaunched.start()
+            rig.repin(rig.bob, prekeyId = 1 + 2 * IdentityKeyStore.SPK_KEEP)
+            rig.clockNow += RatchetSessions.RESTORE_REROOT_FLOOR_MS / 2
+            rig.healAndAwait(relaunched)
+            assertEquals("held inside the hour after the restart", 2, rig.resetInitsTo(rig.bob).size)
+            rig.clockNow += RatchetSessions.RESTORE_REROOT_FLOOR_MS / 2
+            rig.healAndAwait(relaunched)
+            assertEquals("and sent once it is over", 3, rig.resetInitsTo(rig.bob).size)
+            relaunched.stop()
+        }
+
+    /**
+     * Round-2 finding 3: while a restore is still to finish, the anchor rows carry the restore file's own arming, so the
+     * scope table gets no restore input at all: a row armed for a day with a pending reset to its peer gives nothing until
+     * the flag clears, and then the scopes.
+     */
+    @Test
+    fun aRestoreFilesArmedRowGivesNoScopeUntilTheRestoreFinishes() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            val restorePending = MutableStateFlow(true)
+            coEvery { rig.settings.restorePending } returns restorePending
+            val ratchet =
+                RatchetSessions(
+                    store = RatchetRepository(rig.db.ratchetDao(), clock = { rig.now }),
+                    dhIdentityPriv = { ByteArray(32) { 1 } },
+                    spkPrivFor = { null },
+                )
+            val prekey = RatchetEngine.PeerPrekey(1, RatchetCrypto.generateKeyPair().pub)
+            val sealed =
+                ratchet.sealResetDm(
+                    rig.bob.nodeId,
+                    rig.bob.bundle.dhPublicKey(),
+                    prekey,
+                    "reset".toByteArray(),
+                    "aad".toByteArray(),
+                    rig.clockNow,
+                    RatchetSessions.ResetCause.AFTER_WIPE,
+                )
+            assertTrue(sealed is RatchetSessions.ResetSeal.Sealed)
+            rig.db.dmScopeAnchorDao().put(anchorRow(rig.bob.nodeId, armedUntil = rig.clockNow + DAY_MS))
+            val manager = rig.build(ratchet = ratchet)
+
+            assertTrue("nothing while the restore is pending", manager.restoredDmRoots().isEmpty())
+            restorePending.value = false
+            assertEquals("the scopes once it is not", listOf(rig.bob.nodeId), manager.restoredDmRoots().map { it.peerId })
+        }
+
+    /**
+     * Round-4 finding 1: two keeper passes overlapping a confirmation. The stale one read the sessions before Bob
+     * answered (nothing confirmed) and is held between its reads; the fresh one, after, writes Bob's new scope unarmed.
+     * Were the stale one to prune after that write, `deleteUnarmed` would delete the fresh row (no session confirmed, no
+     * pending reset in its reads) and a backup would carry no anchor. One pass at a time: the fresh row stays.
+     */
+    @Test
+    fun twoOverlappingAnchorPassesAcrossAConfirmationKeepTheFreshRow() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+            coEvery { rig.messages.distinctConversations() } returns listOf(rig.bob.nodeId)
+            coEvery { rig.groups.active() } returns emptyList()
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(rig.bob.nodeId))
+            val ratchet =
+                spyk(
+                    RatchetSessions(
+                        store = RatchetRepository(rig.db.ratchetDao(), clock = { rig.now }),
+                        dhIdentityPriv = { ByteArray(32) { 1 } },
+                        spkPrivFor = { null },
+                    ),
+                )
+            val root = ByteArray(32) { 4 }
+            val answered = AtomicBoolean(false)
+            coEvery { ratchet.exportedRoots() } answers {
+                if (answered.get()) listOf(RatchetSessions.ExportedRoots(rig.bob.nodeId, root, null, 0L)) else emptyList()
+            }
+            val staleRead = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val calls = AtomicInteger()
+            coEvery { ratchet.ownPendingResets() } coAnswers {
+                if (calls.getAndIncrement() == 0) {
+                    staleRead.complete(Unit)
+                    release.await()
+                }
+                emptyList()
+            }
+            val anchors = rig.db.dmScopeAnchorDao()
+            anchors.put(anchorRow(rig.bob.nodeId, armedUntil = rig.clockNow + DAY_MS))
+            val manager = rig.build(ratchet = ratchet)
+
+            withContext(Dispatchers.Default) {
+                val stale = launch { manager.reconcileScopeAnchors() }
+                withTimeout(AWAIT_MS) { staleRead.await() }
+                answered.set(true)
+                val fresh = launch { manager.reconcileScopeAnchors() }
+                // Without the lock the fresh pass writes now; with it, it waits behind the stale one. Either way, give it
+                // the time to, then let the stale pass prune.
+                withTimeoutOrNull(FRESH_PASS_MS) { fresh.join() }
+                release.complete(Unit)
+                withTimeout(AWAIT_MS) {
+                    stale.join()
+                    fresh.join()
+                }
+            }
+            val row = checkNotNull(anchors.all().singleOrNull { it.peerId == rig.bob.nodeId }) { "the fresh row was pruned" }
+            assertArrayEquals(ScopeCrypto.dmScopeId(root, rig.me.nodeId, rig.bob.nodeId), row.scopeId)
+            assertEquals("unarmed: Bob answered", 0L, row.armedUntil)
+        }
+
+    /** A restored rig whose one DM contact, Bob, has an armed anchor and our restore reset; returns once it went. */
+    private suspend fun TestScope.restoredWithBobArmed(): Rig {
+        val rig = Rig(backgroundScope)
+        rig.stubProfileState(MutableStateFlow(0L))
+        rig.stubHealState()
+        val restorePending = MutableStateFlow(true)
+        coEvery { rig.settings.restorePending } returns restorePending
+        coEvery { rig.settings.clearRestorePending() } answers {
+            restorePending.value = false
+            mockk(relaxed = true)
+        }
+        rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+        coEvery { rig.messages.distinctConversations() } returns listOf(rig.bob.nodeId)
+        coEvery { rig.groups.active() } returns emptyList()
+        coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(rig.bob.nodeId))
+        rig.db.dmScopeAnchorDao().put(anchorRow(rig.bob.nodeId, armedUntil = 0L))
+        rig.manager.start()
+        rig.await(1) { if (restorePending.value) 0 else 1 }
+        rig.await(1) { rig.resetInitsTo(rig.bob).size }
+        return rig
+    }
+
+    /** Pins [p] again with prekey [prekeyId] (a fresh public half), as a newer profile of theirs would. */
+    private fun Rig.repin(
+        p: Party,
+        prekeyId: Int,
+    ) {
+        coEvery { peers.find(p.nodeId) } returns
+            PeerEntity(
+                nodeId = p.nodeId,
+                pubKey = p.bundle.encoded,
+                capabilities = Protocol.LOCAL_CAPABILITIES and Protocol.CAP_CRYPTO_V3.inv(),
+                prekeyId = prekeyId,
+                prekeyPub = b64(RatchetCrypto.generateKeyPair().pub),
+                prekeyProfileAt = prekeyId.toLong(),
+                updatedAt = prekeyId.toLong(),
+            )
+    }
+
+    /** The init ephemerals (hex) of every flagged reset this rig sent [p], one per frame id, in send order. */
+    private fun Rig.resetInitsTo(p: Party): List<String> =
+        transport.sent
+            .mapNotNull { WireCodec.decodeEnvelope(it.first.signed) }
+            .distinctBy { it.id }
+            .filter { it.type == FrameType.CHAT && it.recipientId == p.nodeId }
+            .mapNotNull { env ->
+                val r = WireCodec.decodePayload<ChatContent>(env.payload)?.enc?.r ?: return@mapNotNull null
+                r.init
+                    ?.eph
+                    ?.takeIf { r.flags and RatchetHeader.FLAG_RESET != 0 }
+                    ?.let { hex(it) }
+            }
+
+    /** A well-formed carried anchor row for [peer] (ADR 2026-11.dgj2), armed until [armedUntil]. */
+    private fun anchorRow(
+        peer: String,
+        armedUntil: Long,
+    ) = DmScopeAnchorEntity(peer, ByteArray(32) { 1 }, ByteArray(32) { 2 }, ByteArray(32) { 3 }, armedUntil, updatedAt = 1L)
 
     // --- the heal basket (work item #63) ---
 
