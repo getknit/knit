@@ -298,7 +298,10 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `limitSecs`, `holding`, `releaseInSecs`) and `counters` (`meshcoreForeignDms`, `meshcoreForeignPosts`, `meshcorePublicDiscarded`,
   `meshcoreFragmentsRefused`, `meshcoreAcksBooked`, `meshcorePathReturnsBooked`, `meshcoreAnswersReplayed`,
   `meshcoreFloodSurcharges`, `meshcoreLawHolds`, `meshcoreZeroHopKnitPosts`, `meshcoreTeachRefused`, and the session's `meshcoreDirectFlooded`,
-  `meshcorePinFailures`, `meshcorePacketsDropped`, `meshcoreCommandsRefused`, `meshcoreUnexpected`, `meshcoreRejected`).
+  `meshcorePinFailures`, `meshcorePacketsDropped`, `meshcoreCommandsRefused`, `meshcoreUnexpected`, `meshcoreRejected`, and,
+  since Stage 5c-1, the reassembler's `meshcoreFragCandidatesFull` (a waiting bound part replaced at random past its side's airtime
+  cap), `meshcoreFragUnverified`, `meshcoreElidedUnverified`, read off the fast-path drops; `meshcoreFragmentsRefused` now counts any
+  unbound `0x04` part and a bound one that does not parse).
   The plane logs under `MeshcorePlane` (`lora ready kind=meshcore … inbox=knit-only`, `lora law hold` / `lora law clear`),
   the session under `MeshcoreSession`.
   `…debug.LORATX --es text <s>`

@@ -30,4 +30,25 @@ class LoraSizeHintTest {
         assertEquals(0, LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying = true, attached = false))
         assertEquals(0, LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying = false, attached = true))
     }
+
+    /**
+     * The 5c-1 reviews' N4: the MeshCore composer's budget follows what the band's flood ceiling can ever admit — two
+     * full packets on the companion's 10 % sub-band, none on a 1 % one, where a post would be dropped as `loraAirNever` —
+     * and the full budget until the board reports its duty. Meshtastic's never moves.
+     */
+    @Test
+    fun `the MeshCore room budget is what the band's flood ceiling can ever admit`() {
+        val air = LoraAirtime(dedicatedUnlocksDuty = true, traits = app.getknit.knit.mesh.lora.meshcore.MeshcoreTraits)
+        assertEquals("no duty yet", null, air.snapshot(0).roomPacketsFit)
+        val radio = RadioParams(8, 62_500, 5)
+        air.onRadio(radio, DutyPolicy(10.0, dedicatedSlot = false))
+        assertEquals(2, air.snapshot(0).roomPacketsFit)
+        air.onRadio(radio, DutyPolicy(1.0, dedicatedSlot = false))
+        assertEquals(0, air.snapshot(0).roomPacketsFit)
+        assertEquals(LoraSizeHint.MESHCORE_ROOM_BODY_BYTES, LoraSizeHint.roomBodyBytes(BoardKind.MESHCORE, null))
+        assertEquals(LoraSizeHint.MESHCORE_ROOM_BODY_BYTES, LoraSizeHint.roomBodyBytes(BoardKind.MESHCORE, 2))
+        assertEquals(LoraSizeHint.MESHCORE_ONE_PACKET_ROOM_BODY_BYTES, LoraSizeHint.roomBodyBytes(BoardKind.MESHCORE, 1))
+        assertEquals(0, LoraSizeHint.roomBodyBytes(BoardKind.MESHCORE, 0))
+        assertEquals(LoraSizeHint.ROOM_BODY_BYTES, LoraSizeHint.roomBodyBytes(BoardKind.MESHTASTIC, 0))
+    }
 }

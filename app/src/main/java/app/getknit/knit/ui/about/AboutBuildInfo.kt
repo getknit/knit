@@ -82,6 +82,7 @@ internal val BUILD_FLAGS: List<Pair<String, Boolean>> =
     listOf(
         "INTERNET_PLANE" to BuildConfig.INTERNET_PLANE,
         "LORA_PLANE" to BuildConfig.LORA_PLANE,
+        "MESHCORE_PLANE" to BuildConfig.MESHCORE_PLANE,
         "COMMONS" to BuildConfig.COMMONS,
         "DEV_VIEW" to BuildConfig.DEV_VIEW,
         "SPOOL_DIRECTORY" to BuildConfig.SPOOL_DIRECTORY,

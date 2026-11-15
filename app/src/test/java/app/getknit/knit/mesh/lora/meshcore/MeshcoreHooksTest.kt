@@ -234,7 +234,7 @@ class MeshcoreHooksTest {
             PacketRoute.RETIRED,
             hooks.route(packet(channel, payload = byteArrayOf(LoraMeshTransport.RETIRED_CTL_TAG, 1)), KNIT_SLOT),
         )
-        // A fragment waits for 5c's reassembler.
+        // An unbound fragment is refused (Stage 5c-1 reads bound parts: [aBoundPartIsKnitsAndAnUnboundOneIsNot]).
         assertEquals(PacketRoute.DROPPED, hooks.route(packet(channel, payload = byteArrayOf(FastFrameCodec.TAG_FRAG, 1, 2)), KNIT_SLOT))
         assertEquals(1L, hooks.counters.fragmentsRefused.get())
         // Everything else on the public Knit key, or anywhere else, is not a Knit frame.
@@ -252,6 +252,36 @@ class MeshcoreHooksTest {
             hooks.route(packet(MeshcorePacket.Type.CHANNEL_TEXT, slot = KNIT_SLOT, dataType = null), KNIT_SLOT),
         )
         assertEquals(5L, hooks.counters.foreignPosts.get())
+    }
+
+    /**
+     * Stage 5c-1: a bound part (`0x07`, part 0 committing to part 1) is Knit's, for the core's candidates
+     * (`LoraFragCandidates`); an unbound `0x04` — the form a stranger on the public key can crowd, which no MeshCore phone
+     * sends — and a bound part that does not parse are refused and counted. A whole elided frame (`0x06`) is Knit's too.
+     */
+    @Test
+    fun aBoundPartIsKnitsAndAnUnboundOneIsNot() {
+        val channel = MeshcorePacket.Type.CHANNEL_DATA
+
+        fun part(
+            tag: Byte,
+            part: Int,
+            count: Int = 2,
+        ) = byteArrayOf(tag, 0, 7, ((part shl 4) or count).toByte()) + ByteArray(12) { 1 }
+        assertEquals(PacketRoute.KNIT, hooks.route(packet(channel, payload = part(FastFrameCodec.TAG_BOUND_FRAG, 0)), KNIT_SLOT))
+        assertEquals(PacketRoute.KNIT, hooks.route(packet(channel, payload = part(FastFrameCodec.TAG_BOUND_FRAG, 1)), KNIT_SLOT))
+        assertEquals(
+            PacketRoute.DROPPED,
+            hooks.route(packet(channel, payload = part(FastFrameCodec.TAG_BOUND_FRAG, 0, count = 3)), KNIT_SLOT),
+        )
+        assertEquals(PacketRoute.DROPPED, hooks.route(packet(channel, payload = part(FastFrameCodec.TAG_FRAG, 0)), KNIT_SLOT))
+        assertEquals(2L, hooks.counters.fragmentsRefused.get())
+        assertEquals(PacketRoute.KNIT, hooks.route(packet(channel, payload = byteArrayOf(FastFrameCodec.TAG_ELIDED, 0, 0, 1)), KNIT_SLOT))
+        // And only on the Knit slot under Knit's data type, as every Knit frame.
+        assertEquals(
+            PacketRoute.DROPPED,
+            hooks.route(packet(channel, slot = 2, payload = part(FastFrameCodec.TAG_BOUND_FRAG, 0)), KNIT_SLOT),
+        )
     }
 
     @Test

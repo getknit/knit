@@ -1737,6 +1737,12 @@ class MeshcoreSessionTest {
             return entry
         }
 
+        /** The put [holdPut] counts down to suspends on [putGate], after its row landed when [holdLanded]; [putHolding] meanwhile. */
+        var holdPut = -1
+        var holdLanded = false
+        val putGate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var putHolding = false
+
         override suspend fun put(
             address: String,
             digest: String,
@@ -1746,7 +1752,17 @@ class MeshcoreSessionTest {
             if (putsBeforeFailing == 0) error("SQLCipher is not open")
             if (putsBeforeFailing > 0) putsBeforeFailing--
             if (failWrites || failPuts) error("SQLCipher is not open")
+            val hold = holdPut == 0
+            if (holdPut >= 0) holdPut--
+            if (hold && !holdLanded) holdOnGate()
             inner.put(address, digest, record, pending)
+            if (hold && holdLanded) holdOnGate()
+        }
+
+        private suspend fun holdOnGate() {
+            putHolding = true
+            putGate.await()
+            putHolding = false
         }
 
         override suspend fun markPending(address: String): Boolean {
@@ -2651,7 +2667,69 @@ class MeshcoreSessionTest {
             assertTrue(checkNotNull(r.records.entryOf("AA:BB")).pending)
         }
 
+    // --- the 5b-2 tail's reviews (2026-11-14): the two cancellation windows a kept consent could stand over ---
+
+    /** Runs the session's clock until [journal]'s held put is suspended, or a few minutes pass. */
+    private fun TestScope.untilPutHeld(journal: CountingJournal) {
+        repeat(SETTLE_ROUNDS) {
+            if (journal.putHolding) return
+            advanceTimeBy(500)
+            runCurrent()
+        }
+    }
+
+    /** (2): a consented re-setup cancelled inside its write-ahead, its row already pending on disk, ends unconsented. */
+    @Test
+    fun aConsentedReSetupCancelledInsideItsWriteAheadEndsUnconsented() =
+        runTest {
+            val journal = CountingJournal()
+            val r = rig(records = journal)
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, false) }
+            up(r)
+            assertTrue(r.consents.last().granted)
+            journal.holdPut = 0 // the write-ahead, held once its pending row landed
+            journal.holdLanded = true
+            val setup = async { r.session.setup() }
+            untilPutHeld(journal)
+            assertTrue("held inside the write-ahead", journal.putHolding)
+            assertTrue("the consent was kept over it", r.consents.last().granted)
+            assertTrue(checkNotNull(journal.inner.entryOf("AA:BB")).pending)
+            r.session.stop() // the actor is cancelled inside the write
+            runCurrent()
+            assertFalse("revoked on the way out", r.consents.last().granted)
+            assertNull(r.consents.last().key)
+            assertTrue(checkNotNull(journal.inner.entryOf("AA:BB")).pending)
+            setup.cancel()
+        }
+
+    /** (1): a consented re-setup cancelled inside the grant that puts its prior back ends unconsented, the record pending. */
+    @Test
+    fun aConsentedReSetupCancelledInsideItsPutBackEndsUnconsented() =
+        runTest {
+            val journal = CountingJournal()
+            val r = rig(records = journal)
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:BB", MeshcoreHooks.digest(r.alice.key), SETUP_RECORD, false) }
+            up(r)
+            assertTrue(r.consents.last().granted)
+            // The erase's listing never answers: nothing on the board changed, so the prior record goes back as a grant.
+            r.ch.swallow = { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACTS && MeshcoreProto.u32(it, 1) == 0L }
+            journal.holdPut = 1 // the write-ahead lands; the put-back's grant is held before its row
+            val setup = async { r.session.setup() }
+            untilPutHeld(journal)
+            assertTrue("held inside the put-back's grant", journal.putHolding)
+            assertTrue("the write-ahead's row is pending", checkNotNull(journal.inner.entryOf("AA:BB")).pending)
+            r.session.stop() // the actor is cancelled inside the grant
+            runCurrent()
+            assertFalse("never a consent over a pending record", r.consents.last().granted)
+            assertNull(r.consents.last().key)
+            assertTrue(checkNotNull(journal.inner.entryOf("AA:BB")).pending)
+            setup.cancel()
+        }
+
     private companion object {
+        /** Clock steps [untilPutHeld] takes at most. */
+        const val SETTLE_ROUNDS = 600
+
         /** `CMD_FACTORY_RESET` (`MyMesh.cpp`): formats the board, a new identity and the radio reset (ADR 045). */
         const val CMD_FACTORY_RESET = 51
 

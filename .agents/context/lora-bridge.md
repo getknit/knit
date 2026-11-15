@@ -1106,8 +1106,9 @@ Debug builds only (`MESHCORE_PLANE`): `di/LoraWiring.loraPlaneOf` builds each ki
 - **What is Knit's.** The board is Knit's alone. `MeshcoreHooks.route` reads the slot and the data type before a byte is
   decoded (the channel key is public): channel data on the board's own Knit slot under `KNIT_DATA_TYPE` is a Knit frame, a
   contact DM in a COBS-decoded `0x11` seal's shape is a compact DM, and everything else — a foreign DM, another slot or data
-  type, Public slot 0 (Stage 6), a `0x04` fragment (Stage 5c) — is counted and discarded as `PacketRoute.DROPPED`: never a
-  hearing, never stored, logged, shown, relayed or in custody.
+  type, Public slot 0 (Stage 6), a `0x04` fragment that does not parse or names more than two parts (since Stage 5c-1,
+  `meshcoreFragmentsRefused`) — is counted and discarded as `PacketRoute.DROPPED`: never a hearing, never stored, logged,
+  shown, relayed or in custody.
 - **Our board's answers**, booked from one place (`route`), for every **live** plain or signed-plain contact DM, Knit's or not
   (`companion-v1.18.0`: a 6-B ack code for plain, 4 for signed): for a direct one the larger of one flooded ack and, along a
   path, at most one multi-ack and the ack (`sendAckTo` sends one multi-ack whatever `multi_acks` reads); for a flooded one one
@@ -1120,8 +1121,8 @@ Debug builds only (`MESHCORE_PLANE`): `di/LoraWiring.loraPlaneOf` builds each ki
   and its signature verifies against the author's pinned key (`LoraAuthorCheck`, `pinnedAuthorCheck`): its radio is
   counted by author (`AuthorRadio`), and a board holder marked unreachable gets `onBoardHeard`. An opened DM hears its board only at zero hops and fresh (the same window). So on MeshCore `heard` (fresh-frame authors,
   any hop count, unverified) and `boardsHeard` (verified pinned zero-hop authors) read differently from Meshtastic: when the
-  airtime row reads 100 %, compare `boardsHeard` with the dump's `meshcoreZeroHopKnitPosts` (live zero-hop Knit posts,
-  unverified) rather than with `heard`.
+  airtime row reads 100 %, compare `boardsHeard` with the dump's `meshcoreZeroHopKnitPosts` (live zero-hop Knit **packets**,
+  unverified: a two-part post counts 2 since Stage 5c-1) rather than with `heard`.
 - **The law.** Before Ready is published the session tells the hooks (`MeshcoreSessionObserver.beforeReady`), which put the
   board's radio and its band's duty into the ledger (`LoraAirtime.onRadio`), or `forgetRadio` with no sane radio — never the
   last board's. Every poll's CORE uptime and RADIO `tx_air` feed `MeshcoreDutyLaw`; while its verdict holds, the pacer holds
@@ -1135,12 +1136,52 @@ Debug builds only (`MESHCORE_PLANE`): `di/LoraWiring.loraPlaneOf` builds each ki
   background window (its bond re-read each minute), so the hourly direct net is its only dial. A board without NUS twice in a
   row is terminal (`NusDialResult.ServiceAbsent`: `StaleBond` bonded, `NeedsPairing` not).
 - **The door** (5b-2's second part): the plane is fed `meshcoreBoardMap` and `bindMeshcoreDirect` is bound before start; the
-  setup record is `meshcore_setup` under SQLCipher, and it is the consent the session touches a board under. A room post is
-  still one packet (`roomPartLimit` 1 until 5c).
-- **Face.** `LoraFacts.floodSpent` (the room's saturated notice at 90 % of the flood share), `roomBodyBytes` (40 B on
-  MeshCore, pinned by `CoordinationPlaneSizeBudgetTest`) and `directReach` (the acked boards a MeshCore DM notice reads,
+  setup record is `meshcore_setup` under SQLCipher, and it is the consent the session touches a board under. A room post
+  takes up to two elided packets since Stage 5c-1 (the next section).
+- **Face.** `LoraFacts.floodSpent` (the room's saturated notice at 90 % of the flood share), `roomBodyBytes` (200 B on
+  MeshCore in two elided packets since Stage 5c-1, 40 B in one `0x05` before; pinned by `CoordinationPlaneSizeBudgetTest`)
+  and `directReach` (the acked boards a MeshCore DM notice reads,
   never the flood-fed `reachable`; a zero-hop hearing never marks one); the version string is cleaned before anything shows it. The dump is
   `…debug.LORA --es kind meshcore` (`debug-bridge.md`).
+
+### MeshCore's room posts and the reassembler (ADR 2026-11.gsqu's Stage 5c-1 amendment)
+
+- **Out.** An own room post rides the elided form (`BoardTraits.elidesRoom`: `LoraFrameCodec.encodeBest(elide = true,
+  bind = true)` → `FastFrameCodec.encodeElided`, the sender a 4-byte prefix; a frame the elision cannot reproduce keeps
+  `0x05`/`0x03`, logged `lora elide refused <label>`). Past one 164-B packet it is split into the **bound** form (`0x07`,
+  `fragmentBound`), **bound both ways** (the maintainer's decision, 2026-11-14): each part carries 152 B of the frame and the
+  first 8 bytes of SHA-256 over the other part's slice. A bound part is never padded. Each part is booked under
+  `Ceiling.FLOOD`; a frame past two bound parts is `lora room too long … parts=3` and never airs. Measured with random
+  printable ASCII (2026-11-14): 57 B of text in one packet, 197 B in two; the composer's budget is 184 B, cut to 50 B or 0
+  where the band's flood ceiling admits only one or no full packet (`AirtimeSnapshot.roomPacketsFit`,
+  `LoraSizeHint.roomBodyBytes(kind, packetsFit)`). Every fragmented frame draws a fresh id (`fragIds`, `SecureRandom`);
+  Meshtastic keeps its seeded counter.
+- **In.** On a kind that elides, `onFramePacket` reads through `readVerified`: a whole `0x03`/`0x05` frame as ever, a whole
+  `0x06` resolved and verified, a bound part through `LoraFragCandidates`, and never an unbound `0x04` (`route` refuses it,
+  `meshcoreFragmentsRefused`). **Arrival order is not trusted:** behind a MeshCore repeater a forger's short part routinely
+  lands before the honest one, since the repeater holds a packet a random `0..5·t` (`t` = airtime × `tx_delay_factor`, up to
+  2.0; `simple_repeater/MyMesh.cpp:547`, `:893`). So a head and a tail pair only when each names the other, one
+  verification a matched pair; a fake costs memory, never a check. Each side of an entry (heads, and tails waiting for
+  their head) keeps `LoraFragCandidates.perPartFor` parts — what this receiver can decode within the whole 60-s window,
+  60 s ÷ 341 ms + 1 = **177** at the companion default (SF8 / 62.5), `capacityFor`'s figure — so within the window no radio
+  input fills a side, however long the firmware held the honest part (the score delay `calcRxDelay`, up to 32 s; CAD
+  retries; `0..5·tx_delay_factor` airtimes a hop, which made a repeat-hold window the wrong measure). Past it a newcomer
+  replaces a random waiting one (`SecureRandom`, `FRAG_CANDIDATES_FULL`). A pairing leaves the entry verified or
+  not, so two authors under one id each pair their own. Every part ages out on its own arrival. The store holds at most
+  `capacityFor` entries (the 60-s window over the shortest bound part's 341 ms: 177) and `MAX_BYTES` = 256 KiB of slices,
+  evicting the oldest past either (`FRAG_OVERFLOW`). The collector suspends on the check.
+- **Resolution.** An elided sender prefix resolves against `LoraAuthorIds`: the direct contacts first, every other peer whose
+  key the table holds only when no contact's candidate verifies (`di/loraAuthorIds`, node ids only, kept across a board
+  change). At most 8 resolutions a pairing (4 candidates × 2 tiers), each a `PeerRepository.find` and an Ed25519 verify. A
+  stranger's post never resolves; Meshtastic never reads `0x06` or `0x07` (`UNKNOWN_TAG`) and keeps its sender-keyed
+  `FragReassembler`.
+- **Presence.** On MeshCore a frame is `reachable` presence only once its signature verifies (a whole `0x03`/`0x05` is
+  checked for it): a stranger cannot make an id look LoRa-reachable.
+- **Counted** as `FastPathDrop`s, on the dump's `meshcoreFrag*` keys and `fastDrop_*`: `FRAG_TIMEOUT`, `FRAG_OVERFLOW`,
+  `FRAG_CANDIDATES_FULL` (a waiting part replaced past its side's cap: forgers aiming at an observed id),
+  `FRAG_UNVERIFIED` (a pairing that did not verify: a stranger, a forger's own pair), `ELIDED_UNVERIFIED`.
+- **The form is to agree with iOS** before MeshCore reaches iOS (`docs/WIRE_COMPAT.md`'s `0x07` precedent, vectors
+  `lora-frag-v1.json`); an author tag would not close the race the binding does (`docs/NEXT_WIRE_BREAK.md` item 16).
 
 ### MeshCore's contacts (ADR 2026-11.gsqu's Stage 5b-2 amendment)
 

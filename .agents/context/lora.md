@@ -379,14 +379,14 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `MeshcoreSessionObserver`, `meshcorePlane` / `meshtasticPlane` / `BoardPlane`, `BoardTraits.live` / `heardZeroHop` /
   `hearsSender`, `LoraAuthorCheck` / `pinnedAuthorCheck`, `AuthorRadio`, `LoraPacePolicy.holdForLaw` / `lawHeld`,
   `PlaneCore.holdForLaw`, `LoraAirtime.recordMs` / `airMsOfPhy` / `forgetRadio`, `LoraPlaneSnapshot.meshcoreLaws` / `MeshcoreLawStamp`, `LoraFacts.lawHeld` /
-  `LoraStatus.lawHeld`, `NusDialResult.ServiceAbsent`, `MeshcoreSession.UNBONDED_POLL_MS`, `BoardKindHooks.extendSnapshot`, `MeshcoreTraits.STAGED_ROOM_PART_LIMIT`, `BoardBinding.dialled` /
+  `LoraStatus.lawHeld`, `NusDialResult.ServiceAbsent`, `MeshcoreSession.UNBONDED_POLL_MS`, `BoardKindHooks.extendSnapshot`, `BoardBinding.dialled` /
   `LinkState.Ready.address` / `MeshcoreDetail.dialled`, `di/builtBoardKinds` / `bindingAddress` / `loraPlaneOf`,
   `LoraDoorClaim`, `LoraFacts.floodSpent` / `roomBodyBytes` / `directReach`, `LoraSizeHint.MESHCORE_ROOM_BODY_BYTES`, or
   `…debug.LORA --es kind meshcore`:** READ ADR 2026-11.gsqu's Stage 5a-2 amendment (and the maintainer's Stage 5 decisions,
   the 5a-1 amendment), then "The MeshCore plane in the core" in `lora-bridge.md`. Debug builds only (`MESHCORE_PLANE`); a
   release build constructs no MeshCore child. The board is Knit's: `route` reads the slot and data type before decoding and
-  counts and discards everything not Knit's as `DROPPED`, never a hearing (Public until Stage 6, a `0x04` fragment until 5c,
-  and `roomPartLimit` 1 until 5c). Our board's answers are booked in `route` for every live acked contact DM, Knit's or not;
+  counts and discards everything not Knit's as `DROPPED`, never a hearing (Public until Stage 6, and a `0x04` fragment of
+  more than two parts or none that parses; Stage 5c-1 reads the rest, the next entry but one). Our board's answers are booked in `route` for every live acked contact DM, Knit's or not;
   a flooded DM of ours books only its surcharge. A hearing on MeshCore is a verified, fresh, live, zero-hop Knit frame alone,
   its radio counted by author; never a sender prefix. The ledger takes the board's radio and band before Ready (or forgets
   the last board's), and the duty law holds the pacer to its release, its rings persisted per board digest and its hold on the face (`lawHeld`). An unbonded board is never dialled in the
@@ -414,6 +414,28 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   back nothing the erase removed. No key, prefix or `Knit xxxx` name in any line (`BoardAddr.MeshCore` and
   `LoraBoardHolder` print neither). Regression: `MeshcoreContactsTest`, `MeshcoreSessionTest`'s Stage 5b-2 block,
   `MeshcoreHooksTest`'s taught-set block, `MeshcorePoliciesTest`.
+
+- **Before touching MeshCore's room posts or the reassembler — `LoraFragCandidates` (`capacityFor`, `perPartFor`,
+  `MAX_BYTES`, `SHORTEST_FRAGMENT_BYTES`), `FastFrameCodec.TAG_BOUND_FRAG` / `fragmentBound` /
+  `parseBoundFragment` / `commitmentOf` / `COMMITMENT_BYTES`, `LoraAuthorIds` / `LoraAuthorDirectory` / `di/loraAuthorIds`,
+  `BoardTraits.elidesRoom`, `MeshcoreTraits.ROOM_PART_LIMIT`, `LoraFrameCodec.encodeBest`'s `elide` / `bind` /
+  `Encoded.elided`, `LoraMeshTransport`'s `readVerified` / `verifiedElided` / `candidateCapacity` / `candidatesPerPart` /
+  `fragIds`, `FastPathDrop.FRAG_CANDIDATES_FULL` / `FRAG_UNVERIFIED` / `ELIDED_UNVERIFIED`,
+  `LoraSizeHint.MESHCORE_ROOM_BODY_BYTES` / `MESHCORE_ONE_PACKET_ROOM_BODY_BYTES`, `AirtimeSnapshot.roomPacketsFit`, or
+  `LoraDirectSource.unackedTo`'s `maxBytes`:** READ ADR 2026-11.gsqu's Stage 5c-1 amendment (with its two review rounds),
+  then "MeshCore's room posts and the reassembler" in `lora-bridge.md`, and `docs/WIRE_COMPAT.md`'s `0x07` precedent. Debug
+  builds only. An own room post rides elided (`0x06`) in at most two bound packets (`0x07`, bound both ways: each part
+  carries 8 bytes of SHA-256 over the other's slice; never padded), each under `Ceiling.FLOOD`, its id drawn fresh per frame
+  (`SecureRandom`); 184 B of text, less where the band's flood ceiling admits fewer packets. A MeshCore receiver reads no
+  unbound `0x04` and trusts no arrival order (the firmware can hold a flood for seconds: score delay, CAD, every hop): a head and a tail pair
+  only when each names the other, one verification a pair, so a fake costs memory and never a check; each side keeps what
+  the receiver can decode within the 60-s window (`perPartFor`, 177 at the companion default), a random waiting part replaced past it; every
+  part ages on its own arrival; entries and bytes capped. A prefix resolves against accepted contacts first, every pinned
+  peer only when no contact's candidate verifies; a stranger's post never resolves, and on MeshCore only a verified frame is
+  `reachable` presence. Meshtastic keeps its seeded counter and sender-keyed `FragReassembler`, and never reads `0x06` or
+  `0x07`. Agree the bound form with iOS before MeshCore reaches iOS. `LoraDirectSource.unackedTo` takes `maxBytes` on every
+  source. Regression: `LoraFragCandidatesTest`, `MeshcoreRoomPostTest`, `LoraFragVectorTest`, `BoardKindFramePolicyTest`,
+  `LoraSizeHintTest`, `CoordinationPlaneSizeBudgetTest`'s MeshCore column.
 
 ## Adding an entry
 

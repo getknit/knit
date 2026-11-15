@@ -36,9 +36,11 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.security.SecureRandom
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.random.Random
 
 /**
  * A [MeshTransport] that carries this phone's user's own small frames over LoRa via a Meshtastic board
@@ -157,6 +159,19 @@ internal class LoraMeshTransport(
      * 2026-11.gsqu's Stage 5 decisions). [LoraAuthorCheck.None] verifies nothing, so no such hearing counts.
      */
     private val authorCheck: LoraAuthorCheck = LoraAuthorCheck.None,
+    /**
+     * The authors an elided room post's sender prefix may stand for ([LoraAuthorIds]: accepted contacts, then every
+     * pinned peer), on a kind whose room posts elide ([BoardTraits.elidesRoom], MeshCore; ADR 2026-11.gsqu's Stage 5c-1
+     * amendment). Collected only there, and only while a board is configured. Null resolves nothing: every elided post is
+     * dropped, counted.
+     */
+    private val authorIds: LoraAuthorDirectory? = null,
+    /**
+     * A fresh fragment id for each fragmented frame on a kind whose room posts elide (MeshCore; the 5c-1 reviews' B2): a
+     * counter seeded once would let one observed post predict the author's next ids, and a forger pre-fill their entries.
+     * `SecureRandom` in production; the JVM tests inject their own. Meshtastic keeps its seeded counter ([fragSeq]).
+     */
+    private val fragIds: () -> Int = { FRAG_IDS.nextInt(FRAG_ID_MASK + 1) },
 ) : MeshTransport,
     LoraPlaneStatus,
     PublicChannelSink,
@@ -326,10 +341,35 @@ internal class LoraMeshTransport(
 
     /** Poked when a direct send starts waiting, so the deadline loop re-reads the soonest deadline. */
     private val flightWake = Channel<Unit>(Channel.CONFLATED)
-    private val fragSeq = AtomicInteger()
 
-    // Keyed on the sending board, every undecoded `from` in one bucket as before ([NoSender]).
+    // Seeded at random per process (lora-reviewer finding 5, not a wire change), then counted: Meshtastic's, whose packets name
+    // their sender. A kind whose room posts elide draws every id fresh ([fragIds]).
+    private val fragSeq = AtomicInteger(Random.nextInt(FRAG_ID_MASK + 1))
+
+    // Keyed on the sending board, every undecoded `from` in one bucket as before ([NoSender]). Meshtastic's alone: a kind
+    // whose room posts elide reads its fragments through [candidates].
     private val reassembler = FragReassembler<Any>(now = clock, capacity = FRAG_CAP, timeoutMs = FRAG_TIMEOUT_MS)
+
+    /**
+     * The reassembler of a kind whose channel packets name no sender, on a key anyone holds (MeshCore, [BoardTraits.elidesRoom];
+     * ADR 2026-11.gsqu's Stage 5c-1 amendment): the bound form only, bound both ways, keyed on `(fragId, count)`; a head and
+     * a tail pair only when each names the other's slice, one signature check a matched pair, and a part that names nobody
+     * yet waits; sized by airtime ([candidateCapacity], [candidatesPerPart]); each drop its own [FastPathDrop].
+     */
+    private val candidates =
+        LoraFragCandidates(now = clock, timeoutMs = FRAG_TIMEOUT_MS) { drop ->
+            metrics.onFastDropped(
+                when (drop) {
+                    LoraFragCandidates.Drop.TIMEOUT -> FastPathDrop.FRAG_TIMEOUT
+                    LoraFragCandidates.Drop.OVERFLOW -> FastPathDrop.FRAG_OVERFLOW
+                    LoraFragCandidates.Drop.REPLACED -> FastPathDrop.FRAG_CANDIDATES_FULL
+                },
+            )
+        }
+
+    /** The last [authorIds] snapshot; [LoraAuthorIds.NONE] until the source first reports. Kept across a board change (N3). */
+    @Volatile
+    private var authors: LoraAuthorIds = LoraAuthorIds.NONE
 
     // LoRa-heard senders (a long linger — there are no periodic cues on LoRa).
     // NOTE these are frame **authors**, not radios: an older build's gateway can still air a frame its pocket-mate
@@ -473,6 +513,23 @@ internal class LoraMeshTransport(
         jobs += scope.launch { deadlineLoop() }
         // Only while a board is configured: an unconfigured plane reads no contacts, and losing the board stops it.
         boardMap?.let { source -> jobs += scope.launch { configured.collectLatest { on -> if (on) collectBoardMap(source) } } }
+        // Only on a kind whose room posts elide, and only while a board is configured: nothing else resolves a prefix.
+        authorIds?.takeIf { traits.elidesRoom }?.let { source ->
+            jobs += scope.launch { configured.collectLatest { on -> if (on) collectAuthorIds(source) } }
+        }
+    }
+
+    /**
+     * Keeps [authors] current, as [collectBoardMap] keeps the holders: a failing source is caught and logged (`lora authors
+     * failed`), the last snapshot stays in force, and the source is asked again every [BOARD_MAP_RETRY_MS].
+     */
+    private suspend fun collectAuthorIds(source: LoraAuthorDirectory) {
+        while (true) {
+            runRound(onFailure = { e -> log("lora authors failed: ${e.javaClass.simpleName}") }) {
+                source.collect { authors = it }
+            }
+            delay(BOARD_MAP_RETRY_MS)
+        }
     }
 
     /**
@@ -577,6 +634,9 @@ internal class LoraMeshTransport(
         // (MeshCore's, ADR 2026-11.gsqu's Stage 5a-2 amendment): the next board's own verdict holds it again.
         pace.forgetBand()
         pace.holdForLaw(null)
+        // Parts heard through the board that is gone. The authors stay: they are the phone's, not the board's, and the
+        // collector that keeps them only restarts on a configured edge a conflated flow can skip (the 5c-1 reviews' N3).
+        candidates.clear()
         _reachable.value = emptySet()
         _health.value = TransportHealth.Unavailable
         // The board is gone and with it the route every mark was about (ADR 2026-10.x9fa).
@@ -845,7 +905,8 @@ internal class LoraMeshTransport(
         // a post that needs two is two packets of a shared window spent on one line nobody is waiting for, while the
         // radios and the spool carry it anyway. Asked after encoding, because the 0x05 deflate makes the fit
         // depend on the words, not on a length. Its own counter, apart from `loraTooBig` (past three packets). The
-        // limit is the board kind's ([BoardTraits.roomPartLimit]): one on Meshtastic.
+        // limit is the board kind's ([BoardTraits.roomPartLimit]): one on Meshtastic, two elided ones on MeshCore (ADR
+        // 2026-11.gsqu §4), each part booked under the kind's room ceiling.
         if (LoraFramePolicy.isBroadcastRoomChat(env) && parts.size > traits.roomPartLimit) {
             metrics.onLoraRoomTooLong()
             log("lora room too long $label:${env.id} parts=${parts.size}")
@@ -936,12 +997,16 @@ internal class LoraMeshTransport(
         val encoded =
             LoraFrameCodec.encodeBest(
                 wire,
-                fragSeq.getAndIncrement() and FRAG_ID_MASK,
+                if (traits.elidesRoom) fragIds() and FRAG_ID_MASK else fragSeq.getAndIncrement() and FRAG_ID_MASK,
                 maxPayload,
                 transcode = true,
                 // ADR 2026-09.mhs5: the governor prices the packet against this board's own preset and firmware, so a
                 // frame under the 2.8 signature cliff is grown past it and leaves cheaper than it arrived.
                 cost = pace.airtime,
+                // The elided form on a kind whose room posts elide (MeshCore, ADR 2026-11.gsqu §4): the sender a prefix, and
+                // two parts bound, part 0 committing to part 1 (the maintainer's decision, 2026-11-14).
+                elide = traits.elidesRoom,
+                bind = traits.elidesRoom,
             )
         if (encoded == null) {
             metrics.onLoraTooBig()
@@ -950,6 +1015,8 @@ internal class LoraMeshTransport(
         }
         if (encoded.transcodeRefused) metrics.onTranscodeFallback()
         if (encoded.transcoded) metrics.onLoraTranscoded()
+        // Counted nowhere else: the frame still rides, in the form the transcoder chose (0x05 or 0x03).
+        if (traits.elidesRoom && !encoded.elided) log("lora elide refused $label")
         if (encoded.grewBy > 0) {
             metrics.onLoraPadded()
             log("lora pad $label +${encoded.grewBy}B past the signature cliff")
@@ -2276,7 +2343,7 @@ internal class LoraMeshTransport(
      * then a Knit frame on the bound slot, a burned tag (counted `loraRetiredCtl`, never `UNKNOWN_TAG`, ADR
      * 2026-10.rp3s — the radio is still counted: a board in range is a board in range), or the kind's own traffic.
      */
-    private fun onLoraPacket(packet: BoardPacket) {
+    private suspend fun onLoraPacket(packet: BoardPacket) {
         val bound = hooks.boundSlot(currentConfig?.channelIndex, board.state.value as? BoardState.Ready)
         val route = hooks.route(packet, bound)
         when (route) {
@@ -2312,17 +2379,16 @@ internal class LoraMeshTransport(
         }
     }
 
-    /** One inbound mesh frame off the air: reassemble, decode, dedup, and hand it to the router. */
-    private fun onFramePacket(packet: BoardPacket) {
-        val fragmented = packet.payload[0] == FastFrameCodec.TAG_FRAG
-        val compact = reassemble(packet) ?: return
-        val wire = FastFrameCodec.decodeCompact(compact)
-        if (wire == null) {
-            val reason = if (compact[0] == FastFrameCodec.TAG_TRANSCODED) FastPathDrop.TRANSCODE_FAILED else FastPathDrop.DECODE_FAILED
-            metrics.onFastDropped(reason)
-            return
-        }
-        val env = WireCodec.decodeEnvelope(wire.signed) ?: return
+    /**
+     * One inbound mesh frame off the air: reassemble, decode, dedup, and hand it to the router. On a kind whose room posts
+     * elide ([BoardTraits.elidesRoom], MeshCore) an elided frame and every fragment set go through [readVerified], which
+     * suspends the packet collector on the author check; everything else is read as it always was ([readFrame]).
+     */
+    private suspend fun onFramePacket(packet: BoardPacket) {
+        val fragmented = packet.payload[0] == FastFrameCodec.TAG_FRAG || packet.payload[0] == FastFrameCodec.TAG_BOUND_FRAG
+        val read = (if (traits.elidesRoom) readVerified(packet) else readFrame(packet)) ?: return
+        val wire = read.wire
+        val env = read.env
         if (env.senderId == selfIdCached) return // our own frame echoed back over the mesh
         // No `sigSeen` add (ADR 2026-10.rp3s): it stopped the composite's relay re-fan bouncing this frame back over
         // LoRa, and the admit rule refuses every frame that is not ours now.
@@ -2330,10 +2396,9 @@ internal class LoraMeshTransport(
         // something a spool just handed an older build's gateway says where a *frame* has been, not where its
         // author is. Everything below runs either way — this path must never become a propagation black hole.
         // And never off our own board, heard back through a repeater: that is our own airing, nobody's reach.
-        val own = ownBoard()
-        if (isPresenceEvidence(env, wallClock()) && (own == null || packet.from != own)) {
-            noteReachable(Peer(env.senderId))
-        }
+        // On a kind that vouches for no sender, only a frame whose signature verifies is presence (the 5c-1 reviews' N1): a
+        // whole `0x03`/`0x05` is read unverified, and anyone on the public key could make any id look LoRa-reachable.
+        if (isPresence(packet, read)) noteReachable(Peer(env.senderId))
         if (!traits.hearsSender) hearAuthor(packet, wire, env)
         metrics.onLoraReceived()
         if (fragmented) metrics.onLoraReassembled()
@@ -2341,6 +2406,139 @@ internal class LoraMeshTransport(
         _inbound.tryEmit(InboundFrame(wire, env, fromNodeId = env.senderId))
         log("lora rx ${env.type} id=${env.id} from ${env.senderId}")
     }
+
+    /**
+     * Whether [read] is presence of its author: fresh by `FramePresence`'s rule, not our own board's airing, and — on a kind
+     * that vouches for no sender — verified against the author's pinned key (checked here for a whole frame read unverified).
+     */
+    private suspend fun isPresence(
+        packet: BoardPacket,
+        read: FrameRead,
+    ): Boolean {
+        if (!isPresenceEvidence(read.env, wallClock())) return false
+        val own = ownBoard()
+        if (own != null && packet.from == own) return false
+        return traits.hearsSender || read.verified || verified(read.wire, read.env)
+    }
+
+    /** A frame read off the air: [verified] when its signature was checked against its author's pinned key on the way. */
+    private class FrameRead(
+        val wire: WireEnvelope,
+        val env: RelayEnvelope,
+        val verified: Boolean,
+    )
+
+    /** A whole `0x03`/`0x05` frame, or one reassembled from `0x04` parts by the sender-keyed [reassembler], decoded. */
+    private fun readFrame(packet: BoardPacket): FrameRead? {
+        val compact = reassemble(packet) ?: return null
+        val wire = decoded(compact) ?: return null
+        val env = WireCodec.decodeEnvelope(wire.signed) ?: return null
+        return FrameRead(wire, env, verified = false)
+    }
+
+    /** [compact] (a whole `0x03`/`0x05` frame) decoded, or null — counted by its tag — when it does not decode. */
+    private fun decoded(compact: ByteArray): WireEnvelope? {
+        val wire = FastFrameCodec.decodeCompact(compact)
+        if (wire == null) {
+            val reason = if (compact[0] == FastFrameCodec.TAG_TRANSCODED) FastPathDrop.TRANSCODE_FAILED else FastPathDrop.DECODE_FAILED
+            metrics.onFastDropped(reason)
+        }
+        return wire
+    }
+
+    /**
+     * A frame off a kind whose channel packets name no sender, on a key anyone holds (MeshCore; ADR 2026-11.gsqu's Stage 5c-1
+     * amendment, the security design pass's B2):
+     * - a whole `0x03`/`0x05` frame is read as ever ([readFrame]): it decodes to one envelope, which the router verifies;
+     * - a whole `0x06` frame is resolved and verified ([verifiedElided]); none verifying is [FastPathDrop.ELIDED_UNVERIFIED];
+     * - a bound part (`0x07`, each part committing to the other) joins [candidates], where it waits until the one part that
+     *   names it and is named back arrives; that pairing is decoded and verified once, and one that fails is
+     *   [FastPathDrop.FRAG_UNVERIFIED]. A fake costs a slot of memory (replaced at random past the side's airtime cap,
+     *   [FastPathDrop.FRAG_CANDIDATES_FULL]), never a check.
+     *
+     * So a forged part, a fresh-id flush or a stranger's post never costs an honest post, and a stranger's never resolves.
+     */
+    private suspend fun readVerified(packet: BoardPacket): FrameRead? {
+        val payload = packet.payload
+        return when (payload[0]) {
+            FastFrameCodec.TAG_COMPACT, FastFrameCodec.TAG_TRANSCODED -> {
+                readFrame(packet)
+            }
+
+            FastFrameCodec.TAG_ELIDED -> {
+                verifiedElided(payload).also { if (it == null) metrics.onFastDropped(FastPathDrop.ELIDED_UNVERIFIED) }
+            }
+
+            FastFrameCodec.TAG_BOUND_FRAG -> {
+                val frag = FastFrameCodec.parseBoundFragment(payload) ?: return null
+                val tried = candidates.accept(frag, candidateCapacity(), candidatesPerPart())
+                tried.firstNotNullOfOrNull { verifiedWhole(it.frame) }?.let { return it }
+                if (tried.isNotEmpty()) metrics.onFastDropped(FastPathDrop.FRAG_UNVERIFIED)
+                null
+            }
+
+            // An unbound `0x04` never reaches here (the hooks refuse it on this kind): it is the form a forger can crowd.
+            else -> {
+                metrics.onFastDropped(FastPathDrop.UNKNOWN_TAG)
+                null
+            }
+        }
+    }
+
+    /**
+     * [frame], a joined fragment set, read only if it verifies: an elided one through [verifiedElided], a `0x03`/`0x05` one
+     * decoded and checked against its author's pinned key. Never counted here: the caller counts the arrival (one pairing an
+     * arrival, up to `IdElision.MAX_CANDIDATES` × 2 tiers of resolutions for an elided one).
+     */
+    private suspend fun verifiedWhole(frame: ByteArray): FrameRead? {
+        if (frame.isEmpty()) return null
+        if (frame[0] == FastFrameCodec.TAG_ELIDED) return verifiedElided(frame)
+        if (!FastFrameCodec.isFrameTag(frame[0])) return null
+        val wire = FastFrameCodec.decodeCompact(frame) ?: return null
+        val env = WireCodec.decodeEnvelope(wire.signed) ?: return null
+        return FrameRead(wire, env, verified = true).takeIf { verified(wire, env) }
+    }
+
+    /**
+     * An elided [frame]'s one envelope whose signature verifies, resolved against accepted contacts first and, only when
+     * none of theirs verifies, against every other pinned peer ([LoraAuthorIds], the security pass's `IdElision` item);
+     * null when neither does, a stranger's included.
+     */
+    private suspend fun verifiedElided(frame: ByteArray): FrameRead? {
+        val ids = authors
+        for (tier in LoraAuthorIds.Tier.entries) {
+            for (wire in FastFrameCodec.decodeElided(frame) { prefix -> ids.resolve(prefix, tier) }) {
+                val env = WireCodec.decodeEnvelope(wire.signed) ?: continue
+                if (verified(wire, env)) return FrameRead(wire, env, verified = true)
+            }
+        }
+        return null
+    }
+
+    /** [authorCheck] on [wire], never throwing: a check that fails to run is no verification. */
+    private suspend fun verified(
+        wire: WireEnvelope,
+        env: RelayEnvelope,
+    ): Boolean =
+        runCatching { authorCheck.verified(wire, env) }.getOrElse { e ->
+            if (e is CancellationException) throw e
+            log("lora author check failed: ${e.javaClass.simpleName}")
+            false
+        }
+
+    /**
+     * [candidates]' capacity at the board's preset now: the fragment window over the shortest fragment's airtime
+     * ([LoraFragCandidates.capacityFor]), so one radio cannot flush an honest entry inside it.
+     */
+    private fun candidateCapacity(): Int =
+        LoraFragCandidates.capacityFor(FRAG_TIMEOUT_MS, pace.airtime.timeOnAirMs(LoraFragCandidates.SHORTEST_FRAGMENT_BYTES))
+
+    /**
+     * How many waiting parts each side of a [candidates] entry keeps at the board's preset now: what this receiver can
+     * decode within the fragment window ([LoraFragCandidates.perPartFor]), so no radio input fills a side inside it.
+     */
+    private fun candidatesPerPart(): Int =
+        LoraFragCandidates.perPartFor(FRAG_TIMEOUT_MS, pace.airtime.timeOnAirMs(LoraFragCandidates.SHORTEST_FRAGMENT_BYTES))
 
     /** Returns the complete frame for [packet]: itself if a whole `0x03`/`0x05` frame, else reassembled from `0x04` parts. */
     private fun reassemble(packet: BoardPacket): ByteArray? =
@@ -2605,6 +2803,9 @@ internal class LoraMeshTransport(
         const val FRAG_CAP = 16
         const val FRAG_TIMEOUT_MS = 60_000L // LoRa parts are seconds apart; the NAN 5 s default would drop them
         const val FRAG_ID_MASK = 0xFFFF
+
+        /** Where a kind whose room posts elide draws each fragment id ([fragIds]): unpredictable from the last one. */
+        private val FRAG_IDS = SecureRandom()
         const val REACHABLE_LINGER_MS = 45 * 60_000L
         const val LINGER_SWEEP_MS = 60_000L
 

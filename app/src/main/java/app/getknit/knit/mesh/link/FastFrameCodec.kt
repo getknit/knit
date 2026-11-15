@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.link
 
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import java.security.MessageDigest
 import java.util.zip.DataFormatException
 import java.util.zip.Deflater
 import java.util.zip.Inflater
@@ -40,6 +41,19 @@ import java.util.zip.Inflater
  *        [decodeCompact], and the receiver never needs to know the sender's chunk size
  * ```
  *
+ * Bound fragment ([TAG_BOUND_FRAG], ADR 2026-11.gsqu's Stage 5c-1 amendment): the MeshCore plane's two-part form, where
+ * the channel key is public and a packet names no sender. The parts are bound both ways (the maintainer's decision,
+ * 2026-11-14): each carries a commitment to the other's slice, so a part pairs only with the one part that names it and
+ * names it back, and a forger who heard either cannot make a part the honest other one accepts:
+ * ```
+ * [0]    tag 0x07
+ * [1-2]  fragId, big-endian u16 (drawn fresh for every frame on that plane)
+ * [3]    part index (high nibble) / part count (low nibble): 0x02 or 0x12 — always two parts
+ * [4..11] commitment: the first COMMITMENT_BYTES of SHA-256 over the OTHER part's slice
+ * [12]    this part's slice: part 0 the frame's first `maxMessage - 12` bytes, part 1 the rest
+ * ```
+ * The slices are a complete `0x03`, `0x05` or `0x06` frame, as `0x04`'s. Every shipped reader drops the tag as unknown.
+ *
  * Transcoded frame ([TAG_TRANSCODED], ADR 060): the same header and sig as 0x03, but the body is
  * [FrameTranscoder]'s schema-aware re-encoding of `signed` (integer labels, raw ids and hashes, a 6-byte clock,
  * the payload inlined), which the receiver rebuilds byte-exact before the signature is verified — `signed`
@@ -51,11 +65,14 @@ import java.util.zip.Inflater
  * Elided frame ([TAG_ELIDED], ADR 2026-10.jend's follow-up): the 0x05 header and sig around an [IdElision] body,
  * a transcoded body with the ids a receiver can put back left out. It cannot be decoded alone — a prefixed id needs
  * the receiver's own directory — so it is not a [decodeCompact] tag; [decodeElided] answers every candidate envelope
- * and the caller keeps the one whose signature verifies. **No sender emits it yet**: it is for a board kind with no
- * fielded receivers (MeshCore), and stays out of every Wi-Fi Aware, BLE and Meshtastic path.
+ * and the caller keeps the one whose signature verifies. **Only the LoRa plane's MeshCore kind emits it** (an own room
+ * post, the sender a prefix, ADR 2026-11.gsqu §4 since Stage 5c-1, read back by `LoraMeshTransport`'s verified path), and
+ * it stays out of every Wi-Fi Aware, BLE and Meshtastic path. Fragmented, it rides the bound form ([TAG_BOUND_FRAG]),
+ * which a reassembler joins by the pairing whose signature verifies (`LoraFragCandidates`), never by tag alone.
  *
  * Tag registry (append-only, like capability bits): `0x01` legacy tagged-CBOR frame (forever), `0x02`
- * burned (a since-removed nudge), `0x03` compact, `0x04` fragment, `0x05` transcoded, `0x06` elided; `0x10` burned
+ * burned (a since-removed nudge), `0x03` compact, `0x04` fragment, `0x05` transcoded, `0x06` elided, `0x07` bound fragment
+ * (MeshCore only); `0x10` burned
  * (the LoRa bridge's retired OFFER, see below); `0x11` the LoRa plane's compact pair-sealed DM (ADR 2026-10.x9fa,
  * below — never a frame this codec reads). Flag bits are append-only too: a
  * receiver drops any reserved bit it does not know, so a new bit is only ever emitted toward a peer whose
@@ -78,8 +95,18 @@ internal object FastFrameCodec {
     /** A single transcoded frame (layout above, ADR 060): the 0x03 header around a [FrameTranscoder] body. */
     const val TAG_TRANSCODED: Byte = 0x05
 
-    /** A single elided frame (layout above): the 0x05 header around an [IdElision] body. Not emitted yet. */
+    /** A single elided frame (layout above): the 0x05 header around an [IdElision] body. MeshCore room posts only. */
     const val TAG_ELIDED: Byte = 0x06
+
+    /** One part of a bound two-part frame (layout above): MeshCore room posts only. */
+    const val TAG_BOUND_FRAG: Byte = 0x07
+
+    /**
+     * Bytes of the other part's SHA-256 that each bound part carries. Eight: a forger who heard one part must find a second
+     * slice whose hash shares 64 bits with the honest other's within the seconds a repeater holds it — 2^64 work, out of
+     * reach; six (2^48) is a few GPU-hours offline and saves two bytes a part.
+     */
+    const val COMMITMENT_BYTES = 8
 
     // Burned elsewhere in this tag space: 0x10 was the LoRa plane's gateway-to-gateway OFFER (ADR 044's
     // `LoraCtl`), retired with the pocket bridge (ADR 2026-10.rp3s). Older builds still air it, and the LoRa plane
@@ -385,14 +412,67 @@ internal object FastFrameCodec {
     }
 
     /**
+     * Splits a complete frame into exactly two [TAG_BOUND_FRAG] messages of at most [maxMessage] bytes, each committing to
+     * the other's slice ([commitmentOf]); null when it fits one message or needs more than two.
+     */
+    fun fragmentBound(
+        frame: ByteArray,
+        maxMessage: Int,
+        fragId: Int,
+    ): List<ByteArray>? {
+        val slice = maxMessage - FRAG_HEADER_BYTES - COMMITMENT_BYTES
+        if (slice <= 0 || frame.size <= maxMessage || frame.size > 2 * slice) return null
+        val slice0 = frame.copyOfRange(0, slice)
+        val slice1 = frame.copyOfRange(slice, frame.size)
+        return listOf(
+            boundHeader(fragId, 0) + commitmentOf(slice1) + slice0,
+            boundHeader(fragId, 1) + commitmentOf(slice0) + slice1,
+        )
+    }
+
+    /**
+     * A parsed [TAG_BOUND_FRAG] message, or null when malformed: wrong tag, a count other than two, a part past it, or no
+     * commitment and a byte of slice. [Fragment.commitment] is the other part's hash it names.
+     */
+    fun parseBoundFragment(message: ByteArray): Fragment? {
+        if (message.size <= FRAG_HEADER_BYTES || message[0] != TAG_BOUND_FRAG) return null
+        val part = (message[3].toInt() shr NIBBLE_BITS) and NIBBLE_MAX
+        val count = message[3].toInt() and NIBBLE_MAX
+        if (count != BOUND_PARTS || part >= count) return null
+        val fragId = ((message[1].toInt() and BYTE_MASK) shl Byte.SIZE_BITS) or (message[2].toInt() and BYTE_MASK)
+        val sliceAt = FRAG_HEADER_BYTES + COMMITMENT_BYTES
+        if (message.size <= sliceAt) return null
+        return Fragment(fragId, part, count, message.copyOfRange(sliceAt, message.size), message.copyOfRange(FRAG_HEADER_BYTES, sliceAt))
+    }
+
+    /** What a bound part commits to for the other part's [slice]: the first [COMMITMENT_BYTES] of its SHA-256. */
+    fun commitmentOf(slice: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(slice).copyOf(COMMITMENT_BYTES)
+
+    private fun boundHeader(
+        fragId: Int,
+        part: Int,
+    ): ByteArray =
+        byteArrayOf(
+            TAG_BOUND_FRAG,
+            ((fragId shr Byte.SIZE_BITS) and BYTE_MASK).toByte(),
+            (fragId and BYTE_MASK).toByte(),
+            ((part shl NIBBLE_BITS) or BOUND_PARTS).toByte(),
+        )
+
+    /** A bound frame's parts: always two. */
+    private const val BOUND_PARTS = 2
+
+    /**
      * One parsed fragment. A plain class (like [WireEnvelope]): a ByteArray field would make a data
-     * class' equals/hashCode reference-based, so we don't pretend to value equality.
+     * class' equals/hashCode reference-based, so we don't pretend to value equality. [commitment] is a bound part's hash of
+     * the other part's slice ([parseBoundFragment]); null on every other fragment.
      */
     class Fragment(
         val fragId: Int,
         val part: Int,
         val count: Int,
         val payload: ByteArray,
+        val commitment: ByteArray? = null,
     )
 
     /** [ttl]/[hops] packed to one byte, each nibble saturated at [NIBBLE_MAX] (kdoc: why that is safe). */

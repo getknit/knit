@@ -134,9 +134,10 @@ class MeshcoreTraitsTest {
         assertEquals("eight attempts are two whole flights of three", 2, traits.maxFlights)
         assertEquals(MeshcoreAckTable.EXPECTED_ACK_TABLE_SIZE / traits.airings, traits.maxFlights)
         assertEquals(Ceiling.FLOOD, traits.roomCeiling)
-        // Two elided packets from Stage 5c; one until its reassembler can take a two-part post on the public key.
+        // Two elided packets since Stage 5c-1 brought the reassembler a two-part post on the public key needs (5a-2 staged one).
         assertEquals(2, MeshcoreTraits.ROOM_PART_LIMIT)
-        assertEquals(1, traits.roomPartLimit)
+        assertEquals(2, traits.roomPartLimit)
+        assertTrue("a MeshCore room post elides", traits.elidesRoom)
         assertEquals(0L, traits.minGapMs)
         assertEquals(MeshcoreProto.DIRECT_SEAL_CAP, traits.directPayloadCap(255))
         assertEquals(MeshcoreProto.CHANNEL_DATA_CAP, traits.floorPayload)

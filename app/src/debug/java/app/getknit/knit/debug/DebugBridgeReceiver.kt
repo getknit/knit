@@ -93,6 +93,7 @@ import app.getknit.knit.di.demoGoRequested
 import app.getknit.knit.di.loraPlane
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
+import app.getknit.knit.mesh.FastPathDrop
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshManager
@@ -2804,6 +2805,7 @@ class DebugBridgeReceiver :
         val law = hooks?.lawState()
         val c = hooks?.counters
         val sc = session.counters
+        val fastDrops = metrics.snapshot().fast.fastDropsByReason
         return result
             .put("state", status.state::class.simpleName)
             // Cleaned before it is shown (`MeshcoreHooks.cleanVersion`): the string the board reports.
@@ -2894,7 +2896,12 @@ class DebugBridgeReceiver :
                     .put("meshcorePacketsDropped", sc.packetsDropped.get())
                     .put("meshcoreCommandsRefused", sc.commandsRefused.get())
                     .put("meshcoreUnexpected", sc.unexpected.get())
-                    .put("meshcoreRejected", sc.rejected.get()),
+                    .put("meshcoreRejected", sc.rejected.get())
+                    // The reassembler on the public Knit key (ADR 2026-11.gsqu's Stage 5c-1 amendment): MeshCore's alone, so
+                    // read off the shared fast-path drops by name. FRAG_TIMEOUT / FRAG_OVERFLOW are every plane's (`STATE`).
+                    .put("meshcoreFragCandidatesFull", fastDrops[FastPathDrop.FRAG_CANDIDATES_FULL] ?: 0)
+                    .put("meshcoreFragUnverified", fastDrops[FastPathDrop.FRAG_UNVERIFIED] ?: 0)
+                    .put("meshcoreElidedUnverified", fastDrops[FastPathDrop.ELIDED_UNVERIFIED] ?: 0),
             )
     }
 

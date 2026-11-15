@@ -2,7 +2,8 @@ package app.getknit.knit.mesh.lora
 
 /**
  * How long a draft may be before it risks not riding the LoRa hop — the composer's "long message" hint (ADR 040). Both
- * budgets are now **one packet** at the MTU-255 floor: a room post rides only in one (ADR 2026-10.rp3s), and a DM rides
+ * Meshtastic budgets are now **one packet** at the MTU-255 floor (a MeshCore room post takes two elided packets,
+ * [MESHCORE_ROOM_BODY_BYTES]): a room post rides only in one (ADR 2026-10.rp3s), and a DM rides
  * only as one compact pair-sealed unicast (ADR 2026-10.x9fa) — a PKI packet, which firmware 2.8 caps at 219 B (its
  * PKC overhead under the 228-B floor's `want_ack` write), less the 51 bytes of header and GCM tag around its
  * plaintext, which leaves 168 B for the v3 compact content (the PKI amendment; 175 B before). Everything
@@ -24,18 +25,43 @@ object LoraSizeHint {
     const val ROOM_BODY_BYTES = 100
 
     /**
-     * [ROOM_BODY_BYTES]'s MeshCore peer (ADR 2026-11.gsqu §4, Stage 5a-2): what one channel-data packet
-     * ([app.getknit.knit.mesh.lora.meshcore.MeshcoreProto.CHANNEL_DATA_CAP], 164 B) holds of incompressible text in the
-     * `0x05` form, with the same few bytes' margin, pinned by `CoordinationPlaneSizeBudgetTest`. The elided `0x06` form and
-     * a second packet (about 57 B and 200 B, gsqu §4) are Stage 5c's, which raises it.
+     * [ROOM_BODY_BYTES]'s MeshCore peer (ADR 2026-11.gsqu §4, Stage 5c-1): what two bound elided channel-data packets
+     * ([app.getknit.knit.mesh.lora.meshcore.MeshcoreProto.CHANNEL_DATA_CAP], 164 B; each part holds 152 B of the frame beside
+     * its 8-byte commitment to the other) hold of incompressible text, a few bytes under the figure measured with random
+     * printable ASCII (2026-11-14: 197 B; one packet holds 57 B), pinned by `CoordinationPlaneSizeBudgetTest`. Stage 5a-2
+     * pinned 40 B in one `0x05` packet until the reassembler a two-part post on the public key needs.
      */
-    const val MESHCORE_ROOM_BODY_BYTES = 40
+    const val MESHCORE_ROOM_BODY_BYTES = 184
 
-    /** The room composer's body budget on a board of [kind] ([ROOM_BODY_BYTES], [MESHCORE_ROOM_BODY_BYTES]). */
-    fun roomBodyBytes(kind: BoardKind): Int =
+    /**
+     * What one bound-form MeshCore packet holds of incompressible text (one elided `0x06` packet), a few bytes under the 57 B
+     * measured: the budget where the band's room ceiling admits one packet and not two.
+     */
+    const val MESHCORE_ONE_PACKET_ROOM_BODY_BYTES = 50
+
+    /**
+     * The room composer's body budget on a board of [kind] ([ROOM_BODY_BYTES], [MESHCORE_ROOM_BODY_BYTES]). On MeshCore
+     * [packetsFit] (`AirtimeSnapshot.roomPacketsFit`, the 5c-1 reviews' N4) cuts it to what the band's flood ceiling can
+     * ever admit: two packets the full budget, one [MESHCORE_ONE_PACKET_ROOM_BODY_BYTES], none 0, so a post that would be
+     * dropped as `loraAirNever` is warned about. Null (duty not known yet) keeps the full budget. Meshtastic's room post
+     * is one packet under the whole allowance and reads [ROOM_BODY_BYTES] always.
+     */
+    fun roomBodyBytes(
+        kind: BoardKind,
+        packetsFit: Int? = null,
+    ): Int =
         when (kind) {
-            BoardKind.MESHTASTIC -> ROOM_BODY_BYTES
-            BoardKind.MESHCORE -> MESHCORE_ROOM_BODY_BYTES
+            BoardKind.MESHTASTIC -> {
+                ROOM_BODY_BYTES
+            }
+
+            BoardKind.MESHCORE -> {
+                when {
+                    packetsFit == null || packetsFit >= 2 -> MESHCORE_ROOM_BODY_BYTES
+                    packetsFit == 1 -> MESHCORE_ONE_PACKET_ROOM_BODY_BYTES
+                    else -> 0
+                }
+            }
         }
 
     /**

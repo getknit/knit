@@ -477,7 +477,9 @@ val meshModule =
         if (BoardKind.MESHCORE in BUILT_BOARD_KINDS) {
             single<MeshcoreDialer> { MeshcoreGatt(androidContext(), get()) }
             // The setup records under SQLCipher (ADR 2026-11.gsqu's Stage 5b-2 amendment): the consent gate's half on this phone.
-            single { MeshcoreSetupStore(get<KnitDatabase>().meshcoreSetupDao()) }
+            // The DAO is its own definition, as every other DAO is (`appModule`), so `KoinGraphVerifyTest` resolves the store.
+            single { get<KnitDatabase>().meshcoreSetupDao() }
+            single { MeshcoreSetupStore(get()) }
             single(loraPlane(BoardKind.MESHCORE)) {
                 MeshcoreSession(
                     dialer = get(),

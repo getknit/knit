@@ -85,6 +85,12 @@ internal data class AirtimeSnapshot(
      * ([PublicPostPolicy.onAirBudget], `LoraFacts.roomSignedUpTo`). 154 on a 2.8.1 board whose slot 0 is AEAD.
      */
     val roomSignedUpTo: Int = MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE),
+    /**
+     * How many full-size room packets an own post may take and still fit its kind's room ceiling on an empty window
+     * ([LoraAirtime.roomPacketsFit]), up to the kind's part limit; null before the board reported its duty. What the
+     * MeshCore composer's budget reads (the 5c-1 reviews' N4): 0 on a band where no post ever airs.
+     */
+    val roomPacketsFit: Int? = null,
 ) {
     /** Whether the budget charges a Knit broadcast for the board's signature — the `…debug.LORA` dump's `signing`. */
     val signing: Boolean get() = knitSignedUpTo != LoraAirtime.UNSIGNED
@@ -624,7 +630,21 @@ internal class LoraAirtime(
             dedicated = dedicated(),
             knitSignedUpTo = knitBroadcast().signedUpTo,
             roomSignedUpTo = price(AirPurpose.PUBLIC_POST).signedUpTo,
+            roomPacketsFit = roomPacketsFit(),
         )
+    }
+
+    /**
+     * The most full-size room packets (the kind's [BoardTraits.maxPayload]) an own post may take, up to
+     * [BoardTraits.roomPartLimit], whose cost is under the room ceiling ([BoardTraits.roomCeiling]) on an empty window — the
+     * [Refusal.NEVER] test [refusal] makes, read at the largest post. Full-size packets over-price a post's last part, so it
+     * errs toward the smaller budget. Null until the board's duty is known: the fallback's would read 0 everywhere.
+     */
+    private fun roomPacketsFit(): Int? {
+        if (duty == null) return null
+        val one = timeOnAirMs(traits.maxPayload, knitBroadcast())
+        val ceiling = ceilingMs(traits.roomCeiling)
+        return (traits.roomPartLimit downTo 1).firstOrNull { n -> n * one <= ceiling } ?: 0
     }
 
     /** Drops samples that have aged out of the rolling window. Cheap: the deque is in send order. */

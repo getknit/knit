@@ -1050,6 +1050,9 @@ internal class MeshcoreSession(
                 ?.let { merge(it, record) } ?: record
         // A re-setup of a board this connection consents for keeps its consent (and so its taught set) through the erase.
         val consented = c.consent && c.setupPrior?.let { it.digest == digest && !it.pending } == true
+        // Open before the write when consent is kept over it (the 5b-2 tail's reviews): a cancellation inside the write is
+        // then revoked by [runSetup]'s `finally`. Without a kept consent the write revokes first, so nothing stands over it.
+        c.setupOpen = consented
         val ahead =
             withdrawWrite(
                 c,
@@ -1061,7 +1064,7 @@ internal class MeshcoreSession(
             }
         // A kept consent stands only over a write-ahead that landed (lora, the tail's review): anything else revokes it now.
         if (consented && ahead != RecordOutcome.DONE) revoke(c, c.address, digest)
-        if (ahead == RecordOutcome.DONE) c.setupOpen = true
+        c.setupOpen = ahead == RecordOutcome.DONE
         return ahead == RecordOutcome.DONE
     }
 
@@ -1069,8 +1072,9 @@ internal class MeshcoreSession(
     private suspend fun restorePrior(c: Conn) {
         val prior = c.setupPrior
         c.setupPrior = null
-        // The record goes back to what it was: the setup is closed, its consent decided below.
-        c.setupOpen = false
+        // The record goes back to what it was, its consent decided below. The setup stays open until that write returns (the
+        // 5b-2 tail's reviews): a cancellation inside the grant leaves the write-ahead's pending record, and [runSetup]'s
+        // `finally` revokes a kept consent over it; a grant that fails revokes on its own, and a withdraw write first.
         if (prior == null) {
             withdrawWrite(c, c.address, { entryOf(c.address) == null }) { records.clear(c.address) }
         } else if (!prior.pending && prior.digest == c.provenKey?.let(MeshcoreHooks::digest)) {
@@ -1083,6 +1087,7 @@ internal class MeshcoreSession(
                 records.put(c.address, prior.digest, prior.record, prior.pending)
             }
         }
+        c.setupOpen = false
     }
 
     /** What a record write came to under the record write rule. */
@@ -2493,14 +2498,15 @@ internal class MeshcoreSession(
             log("meshcore setup refused: the board's key changed after its proof")
             return MeshcoreSetupResult.Failed("the board's key changed after it was proven: nothing written", left = null)
         }
-        // The intent before any board write (security N1): the planned record, merged, kept pending, so a setup cut off
-        // anywhere after — a session end, a process death, a failed grant — leaves a cleanup that puts the board back.
-        if (!writeAhead(c, plan.record)) {
-            return MeshcoreSetupResult.Failed("the setup's record could not be written first: nothing written", left = null)
-        }
-        // A setup cut off after its write-ahead (a session end, a throw, a cancellation) leaves its record pending: consent is
-        // revoked on the way out, so a consent kept through a re-setup's erase never outlives it (lora, the tail's review).
+        // A setup cut off from its write-ahead on (a session end, a throw, a cancellation, inside the write-ahead itself)
+        // leaves its record pending: consent is revoked on the way out, so a consent kept through a re-setup's erase never
+        // outlives it (lora, the tail's review; the write-ahead inside the `try`, the 5b-2 tail's reviews).
         try {
+            // The intent before any board write (security N1): the planned record, merged, kept pending, so a setup cut off
+            // anywhere after — a session end, a process death, a failed grant — leaves a cleanup that puts the board back.
+            if (!writeAhead(c, plan.record)) {
+                return MeshcoreSetupResult.Failed("the setup's record could not be written first: nothing written", left = null)
+            }
             return setupWrites(c, plan)
         } finally {
             if (c.setupOpen) {
@@ -2976,7 +2982,10 @@ internal class MeshcoreSession(
         /** The Ready reconcile is owed (one listing a Ready). */
         var reconcileWanted = false
 
-        /** A setup's write-ahead landed and the setup has not closed: on exit, an open setup revokes ([runSetup]). */
+        /**
+         * A setup's write-ahead landed, or is being written under a kept consent, and the setup has not closed: on exit, an
+         * open setup revokes ([runSetup]).
+         */
         var setupOpen = false
 
         /** The record before a running setup's write-ahead, put back if the setup leaves nothing of its own ([restorePrior]). */

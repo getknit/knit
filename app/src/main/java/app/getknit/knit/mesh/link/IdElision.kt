@@ -15,7 +15,9 @@ import java.io.ByteArrayOutputStream
  * A second pass over [FrameTranscoder]'s schema-1 body that leaves out the envelope ids a receiver can put back
  * itself, for a radio whose every packet counts (ADR 2026-10.jend's MeshCore board kind, 164 B a packet). Like the
  * transcoder it is transport-local: `signed` still arrives byte-for-byte and the originator's signature verifies over
- * it, the ids just do not travel. **Not wired**: no sender emits it yet ([FastFrameCodec.TAG_ELIDED]).
+ * it, the ids just do not travel. Wired on the LoRa plane's MeshCore kind alone since ADR 2026-11.gsqu's Stage 5c-1
+ * amendment ([FastFrameCodec.TAG_ELIDED]): an own room post's sender rides as a prefix, and the receiver resolves it
+ * against its accepted contacts first and every other pinned peer only on a miss (`LoraAuthorIds`).
  *
  * Three substitutions, each in place of the id's own value, so the map keeps its entries and their order:
  *  - a `profile`'s **id** rides as CBOR `null`: it is `profile-<senderId>-<sentAt>` ([FrameId.profileId]), which every

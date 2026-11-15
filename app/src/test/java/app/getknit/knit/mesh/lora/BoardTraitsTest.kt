@@ -94,7 +94,7 @@ class BoardTraitsTest {
     }
 
     @Test
-    fun theDefaultSinkBudgetIsMeshtasticsAndTheDefaultFourArgSourceAsksTheThreeArgOne() =
+    fun theDefaultSinkBudgetIsMeshtasticsAndEverySourceTakesTheBudget() =
         kotlinx.coroutines.test.runTest {
             val sink =
                 object : LoraDirectSink {
@@ -107,22 +107,26 @@ class BoardTraitsTest {
                     ) = Unit
                 }
             assertEquals(LoraDirectBudget(168, 9), sink.budgetFor("bob"))
-            val asked = mutableListOf<Triple<String, Int, Boolean>>()
+            // Stage 5c-1 closed the gap a defaulted four-argument form left (a forward sized every board at its own 168 B):
+            // a source must take the budget, and the three-argument reader asks it at Meshtastic's.
+            val asked = mutableListOf<Int>()
             val source =
                 object : LoraDirectSource {
                     override suspend fun unackedTo(
                         peerId: String,
                         limit: Int,
                         untakenOnly: Boolean,
+                        maxBytes: Int,
                     ): List<DirectDm> {
-                        asked += Triple(peerId, limit, untakenOnly)
+                        asked += maxBytes
                         return emptyList()
                     }
 
                     override suspend fun isUnacked(frameId: String) = false
                 }
             source.unackedTo("bob", 3, untakenOnly = true, maxBytes = 105)
-            assertEquals("the known gap: a forward with no maxBytes sizes at its own figure", listOf(Triple("bob", 3, true)), asked)
+            source.unackedTo("bob", 3)
+            assertEquals("the plane's budget, then Meshtastic's", listOf(105, LoraDirectBudget.MESHTASTIC.plaintextBytes), asked)
         }
 
     @Test

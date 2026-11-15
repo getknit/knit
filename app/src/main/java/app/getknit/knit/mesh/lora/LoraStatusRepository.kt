@@ -111,7 +111,8 @@ internal class LoraStatusRepository(
                 directBudget = lora.directBudget,
                 // The room's own flood share (MeshCore, ADR 2026-11.gsqu's Stage 5a-2 amendment): a threshold, as `airtimeSpent`.
                 floodSpent = live && floodSaturated(status.airtime),
-                roomBodyBytes = LoraSizeHint.roomBodyBytes(kind),
+                // What the band's room ceiling can ever admit (MeshCore, the 5c-1 reviews' N4); changes only with the band.
+                roomBodyBytes = LoraSizeHint.roomBodyBytes(kind, status.airtime?.roomPacketsFit),
                 // The per-board direct mark on a kind whose DM reaches direct neighbours alone; Meshtastic reads `reachable`.
                 directReach = directReachOf(kind, status, live),
                 lawHeld = lawHeldOf(live, status),

@@ -1195,8 +1195,10 @@ The 5b-2 tail (non-blocking follow-ups after the part 2 commit, 2026-11-14), app
   back but changed nothing restores the prior record instead of leaving the planned one pending. A kept consent never outlives a setup that did not finish (the tail's review):
   a write-ahead that does not land revokes it, and a setup cut off after its write-ahead — a session end, a throw, a
   cancellation — revokes it on the way out (`runSetup`'s `finally`, on `Conn.setupOpen`), leaving its record pending for the
-  next connection's cleanup; a process death is withdrawn at start (`withdrawAtStart`). The only window left is the
-  erase's own writes, while the setup runs, over the very board the user already consented to.
+  next connection's cleanup; a process death is withdrawn at start (`withdrawAtStart`). Consent is kept from the
+  write-ahead to the grant — over the erase, the step writes and a rollback's put-back — on the board the user already
+  consented to, and nowhere else: a cancellation inside the write-ahead or the put-back's grant revokes it too (the Stage
+  5c-1 amendment's first item).
 - **Claim edits are serialised** (`claimMutex`), each checked inside it — its retry's one check — so a stale retry never
   lands after a newer edit. The rollback's `!changedAnything` branch is a belt: every needed setup step carries its own
   prior, so a rollback that changed nothing is unreachable today (no test can reach it).
@@ -1204,4 +1206,154 @@ The 5b-2 tail (non-blocking follow-ups after the part 2 commit, 2026-11-14), app
 - Tests: the write-ahead before the erase (a cut at the first erasure leaves a pending record), a re-setup keeping its
   consent and taught contacts, a stale grant retry, a start of another board; the cut-off tests assert the setup's writes
   landed before the cut, and the mid-Restore test drops its unbind with the actor.
+
+## Amendment 2026-11-14 — Stage 5c-1: two-part room posts, and a reassembler a stranger on the key cannot poison (draft)
+
+Built under the Stage 5 design passes' 5c part (the security pass's B2 and `IdElision` items, lora-reviewer finding 5),
+the maintainer's decision 7 above, and the 5b-2 tail reviews' two carried items. Debug builds only (`MESHCORE_PLANE`).
+The MeshLab MeshCore node and its two-node scenarios are Stage 5c-2's.
+
+- **The two cancellation windows closed first.** A consented re-setup's kept consent could stand over a pending record in
+  two places: `restorePrior` cleared `Conn.setupOpen` before its put-back's grant, so a cancellation inside that write
+  skipped `runSetup`'s revoke; and a cancellation inside the write-ahead's `withdrawWrite(keepConsent = true)` came before
+  `setupOpen` was set and outside the `try`. Now the write-ahead runs inside the `try` with `setupOpen = consented` set
+  before it, and `restorePrior` clears `setupOpen` only once its write returned (a failed grant revokes on its own, a
+  withdraw write first). Tests cancel the actor inside each write and assert the last consent is not granted over the
+  pending record; each fails against the old order.
+- **Own room posts in two elided packets** (§4): `MeshcoreTraits.roomPartLimit` is `ROOM_PART_LIMIT` (2), the staged 1
+  gone; `BoardTraits.elidesRoom` (MeshCore true, Meshtastic false) has `LoraFrameCodec.encodeBest(elide = true)` take
+  `FastFrameCodec.encodeElided` (the sender a prefix) whenever it reproduces, else the transcoder's pick
+  (`lora elide refused`). Each part is booked under the kind's room ceiling, `Ceiling.FLOOD`. Measured with random
+  printable ASCII at 164 B a packet (2026-11-14): **57 B of text in one packet, 213 B in two**; the composer's budget
+  (`LoraSizeHint.MESHCORE_ROOM_BODY_BYTES`) is 200 B. Meshtastic stays at one packet and never emits or reads `0x06`.
+- **`fragSeq` is seeded at random per process**, on both kinds (not a wire change; Meshtastic's room never fragments).
+- **The reassembler** (`LoraFragCandidates`, a pure policy; Meshtastic keeps its sender-keyed `FragReassembler`). On a kind
+  that elides, every fragment set and every whole `0x06` frame is read only once a signature verifies against a pinned
+  author (`LoraAuthorCheck`); a whole `0x03`/`0x05` packet goes to the router as in 5a-2.
+  - Entries keyed on `(fragId, count)`: another count is another entry, never a reset.
+  - Up to three distinct candidates a part, in arrival order; **a fourth is refused and counted, never kept over one** —
+    the owner's choice over evicting: the honest parts leave back to back, so a forger who learns the id from part 0 fits a
+    packet or two in before the honest part 1, and an evicting store would let them push it out afterwards.
+  - Every arrival answers only the combinations it completes; the first that verifies is settled, and only its candidates
+    leave the entry, so two authors under one colliding id both complete. (Superseded by the review round below: a part 1
+    is now kept only beside the part 0 that committed to it, and an entry tries at most 24 checks.)
+  - A `0x04` part naming more than `roomPartLimit` parts, or none that parses, is refused at `route`
+    (`meshcoreFragmentsRefused`, the 5a-2 counter's new meaning), so no entry on the public key costs 27 tries.
+  - **Capacity by airtime**: the 60-s window over the shortest fragment's airtime at the board's preset now, plus one,
+    between 64 and 2048 (`capacityFor`; 177 at the companion's default SF8 / 62.5 kHz, its shortest fragment 341 ms), so one radio cannot flush an
+    honest entry inside the window. Two radios can: the cost accepted until the author tag below.
+  - Each drop is its own `FastPathDrop`: `FRAG_TIMEOUT`, `FRAG_OVERFLOW`, `FRAG_CANDIDATES_FULL`, `FRAG_UNVERIFIED`,
+    `ELIDED_UNVERIFIED` (the last three new, on the MeshCore dump as `meshcoreFrag*` / `meshcoreElidedUnverified`).
+  - The check suspends the packet collector (a DB read and an Ed25519 verify, at most 8 an arrival): ordering stays one
+    collector's, and LoRa packets arrive seconds apart.
+- **Resolution, contacts first** (the security pass's `IdElision` item): a prefix resolves against `LoraAuthorIds`, the
+  direct contacts (`DirectContacts`) first and every other peer whose key the table holds only on a miss — **a miss read
+  as "no contact's candidate verified"**, the owner's reading, which also delivers a non-contact author whose prefix a
+  contact happens to share. Four ground identities sharing a contact's prefix therefore cannot censor the contact unless
+  they are contacts. A stranger's prefix resolves to nobody, and their post is dropped. Node ids only, never a key or a name.
+- **The author tag** a fragment header would need to make the candidates unnecessary is parked as `docs/NEXT_WIRE_BREAK.md`
+  item 16, to agree with iOS before MeshCore reaches iOS.
+- **`maxBytes` is required on `LoraDirectSource.unackedTo`** (the Stage 1a.4 carry-forward): the four-argument form is the
+  one every source implements; the three-argument form is a convenience at Meshtastic's budget, which the core never calls.
+- **Tests:** `LoraFragCandidatesTest` (a forged part, a flush past the old capacity, colliding ids, the bound on tries, the sweep, the
+  bounds, the two tiers), `MeshcoreRoomPostTest` (the plane end to end: two elided parts under `FLOOD`, a third too long, a
+  forged part with an observed id, a fresh-id flush, two authors under one id, a stranger, a pinned non-contact, a stale
+  replay that is no hearing), `BoardKindFramePolicyTest` (jend's invariant: every frame type flood, zero-hop or refused on
+  each kind), `CoordinationPlaneSizeBudgetTest`'s MeshCore column (the room in one and two elided packets, the DM at 156 B,
+  157 after COBS), and `MeshtasticHooksTest`'s two deferred cases.
+
+**Cost, by design:** a hearing of a two-part post reads the last part's packet (its path length and liveness); a part
+heard through a repeater beside a zero-hop last part still counts. A stranger can make each entry try up to 24 verifications (the review round below),
+and two radios can still flush the store inside its window.
+
+Owed: Stage 5c-2's MeshLab MeshCore node and its scenarios (the security pass's (a)–(f), the lab follow-ups); the device
+trial — two MeshCore boards in range, a 150-200 B room post from one phone: two parts on the air, `lora tx … parts=2` and
+`lora rx chat` on the other, `meshcoreFragUnverified` 0.
+
+### The review round (security- and lora-reviewer, 2026-11-14), applied
+
+The maintainer decided the censorship finding on 2026-11-14: **bind part 1 to part 0.** What changed against the text above:
+
+- **B1 — the bound form, `0x07`.** Refusing a fourth part-1 let a stranger censor every two-part post: hearing part 0 they
+  learn the id, and three ~21-B junk part-1s (≈ 0.24 s each at SF8 / 62.5) fit while the ≈ 1 s honest part 1 is still on the
+  air, which then arrives fourth. Now part 0 carries `COMMITMENT_BYTES` = 8 bytes of SHA-256 over part 1's slice
+  (`FastFrameCodec.fragmentBound`): eight because a forger would need a 64-bit second preimage within the second before part
+  1 airs, and six (2^48) is a few GPU-hours offline for two bytes of text. A part 1 is kept only beside the part 0 that
+  committed to it; junk is dropped unread (`FRAG_UNBOUND`) and takes no slot. Only before any part 0 has arrived is a part 1
+  held unbound (three at most), for a flood that reordered the two. Part 0 kept refuse-the-fourth, on the belief that the
+  honest part 0 is always held because a forger learns the id from it — **wrong behind a repeater, and superseded by the
+  second round below**. **A distinct tag rather than a flag in `0x04`**: every shipped reader drops an unknown tag as `UNKNOWN_TAG`,
+  while a flagged `0x04` would reach `parseFragment`, which reads every byte past the header as slice. Additive because only
+  the MeshCore plane reads or writes it and that plane has no fielded readers (debug-only); recorded in
+  `docs/WIRE_COMPAT.md`, vectors `lora-frag-v1.json` (`LoraFragVectorTest`; no other vector moved). **A MeshCore plane reads
+  no unbound `0x04` at all** (`meshcoreFragmentsRefused`): no MeshCore phone sends one, and it is the form a forger can
+  crowd. To agree with iOS before MeshCore reaches iOS (paired later). `docs/NEXT_WIRE_BREAK.md` item 16 now says an author
+  tag alone does not close this race (a forger copies it from the part 0 it heard); the commitment does. **Room budget:**
+  part 0 holds 152 B of the frame, so two packets hold **205 B** of noise (57 B in one); `MESHCORE_ROOM_BODY_BYTES` is 192.
+- **B2 — a fresh id per frame.** Seeded once and then counted, one observed post predicted the author's next ids, so a
+  forger could pre-fill their part-0 slots, or open an entry early for the sweep to age out. On a kind that elides each
+  fragmented frame now draws its id from `SecureRandom` (`LoraMeshTransport.fragIds`, injectable for the tests); Meshtastic
+  keeps its seeded counter. And every candidate ages out on its own arrival, never its entry's first, so a junk part that
+  opened an entry early leaves alone.
+- **N1 — presence verified.** On a kind that vouches for no sender, `onFramePacket` notes `reachable` only for a frame whose
+  signature verifies; a whole `0x03`/`0x05`, read unverified, is checked for it.
+- **N2 — a fresh replay (recorded, not fixed).** A post captured and re-aired at `path_len 0` within `FRESH_MS` still verifies
+  and is fresh, so it is a hearing of its author's radio and counted under the author in relay suppression. Recorded against
+  #283, whose fix must cover every LoRa kind before MeshCore ships in release (the 5a-2 release gate).
+- **N3 — the authors stay across a board change.** `quiesce` no longer clears `LoraAuthorIds`: they are the phone's, and
+  the collector restarts only on a configured edge a conflated `StateFlow` can skip.
+- **N4 — the budget follows the band.** `AirtimeSnapshot.roomPacketsFit` is how many full packets fit the room ceiling on an
+  empty window (the `NEVER` test, at full size, so it errs small; null before the duty is known); `LoraFacts.roomBodyBytes`
+  reads 192, 50 or 0 from it on MeshCore. Meshtastic's never moves.
+- **N5 — the checks, corrected.** Not "nine an entry": up to three pairings, each up to `IdElision.MAX_CANDIDATES` × 2 tiers =
+  8 resolutions, so at most **8 checks an arrival and 24 an entry**, each a `PeerRepository.find` and an Ed25519 verify.
+  `meshcoreZeroHopKnitPosts` counts packets: a two-part post counts 2.
+- **N6 — the Koin graph.** `KoinGraphVerifyTest` had failed since 5b-2's second part: `MeshcoreSetupStore`'s DAO is now its
+  own definition, as every other DAO is.
+
+The "Cost, by design" above stands with "nine verifications" read as 24.
+
+### The second review round (lora- and security-reviewer, 2026-11-14): bind both ways
+
+Both reviewers found one new Blocking hole: the one-way form assumed the honest part 0 reaches a receiver first. Behind a
+MeshCore repeater it usually does not: the repeater holds a packet a random `nextInt(0, 5·t + 1)` before re-airing it, `t`
+its airtime × `tx_delay_factor` (0.5 by default, up to 2.0; `examples/simple_repeater/MyMesh.cpp:547`, `:893`,
+`CommonCLI.cpp:109`), so 0–2.5 s for a 1-s part 0, while a forger in range of the author airs a 13-B part 0 of about 0.25 s
+under the observed id. One fake copying the commitment then took the honest part 1's pairing (and a second copy of part 1
+is stopped by the board's `hasSeen`); three filled the slots. **The maintainer's decision, 2026-11-14: bind both ways.**
+
+- **The form, changed in place** (unshipped, debug-only): part 0 = `07|fragId|02|H(slice1)[8]|slice0`, part 1 =
+  `07|fragId|12|H(slice0)[8]|slice1`, each H the first 8 bytes of SHA-256 over the other part's slice. A head and a tail
+  pair only when both hashes match, so each part 1 names exactly one part 0 and one verification runs a matched pair. A
+  fake head cannot match the honest tail's `H(slice0)`, nor a fake tail the honest head's `H(slice1)` (64-bit second
+  preimages). Each part now holds 152 B of the frame. `vectors/lora-frag-v1.json` regenerated (`commitmentBack` added).
+- **Fakes cost memory, never a check.** Each side of an entry (heads, and tails waiting for their head) is capped
+  (`LoraFragCandidates.perPartFor`; sized first by one repeater's hold, then by the whole window — the third round below).
+  Past the cap a newcomer replaces a **random** waiting part (`SecureRandom`, injectable), counted
+  `FRAG_CANDIDATES_FULL`, so a flood cannot aim at the honest slot. A pairing leaves the entry whether it verifies or not,
+  so nothing a forger pairs lingers. The store also holds at most `MAX_BYTES` = 256 KiB of slices (one radio fills about
+  8.5 KB a minute), evicting the oldest entry past it, beside `capacityFor`'s entry cap (177 at the default).
+  `FRAG_UNBOUND` is gone: a part that names nobody yet may be the honest one reordered, so it waits.
+- **Budget:** 197 B of noise in two packets (57 in one); `MESHCORE_ROOM_BODY_BYTES` is **184**.
+- **Never padded** (the round's security follow-up): a frame that does not elide keeps the transcoder's pick, which may be
+  deflated, and `LoraFrameCodec`'s pad would grow the last bound part after both commitments were made. Bound parts are
+  never padded. A MeshCore board signs nothing, so the pad never paid there anyway.
+- **Doc drift fixed:** the `authors` KDoc (kept across a board change) and `verifiedWhole`'s figure.
+- **Tests, each against the hole:** a fake part 0 copying the commitment ahead of the honest one; three distinct fake
+  part-0s first; more fakes than one radio airs in the window with a pinned replacement source (the cap checked against the
+  formula); a reordered honest part 1 beside fake tails; a frame that does not elide, never padded.
+
+### The third review round (2026-11-14): a side holds the whole window's input
+
+Both reviewers, 0 Blocking. The round-2 cap — what one radio airs inside one repeater's longest hold, (5 × 2.0 + 1) ×
+the longest bound packet's airtime ÷ the shortest's + 1 = 38 — covered one hop at `tx_delay_factor` 2.0. The firmware can
+hold a flood far longer: the score delay `calcRxDelay`, `(rx_delay_base^(0.85 − score) − 1) × air`, with `rx_delay_base`
+settable to 20 (an old persisted default of 10) and capped at 32 s (`MyMesh.cpp:542-545`, `Dispatcher.cpp:11, 243-253`,
+`CommonCLI.cpp:108`); CAD retries under a busy channel or the 50 % tx budget (`Dispatcher.cpp:281-302`); and up to
+(5·f + 1) airtimes for every further hop. So a forger who saturated our receiver for 13–20 s a post won a 1-in-38 lottery
+a fake. **The coordinator's decision (security's fix):** each side keeps what our one receiver can decode within the
+whole `FRAG_TIMEOUT_MS` at the shortest bound part's airtime, + 1 — `capacityFor`'s figure, **177** at SF8 / 62.5 kHz
+(60 s ÷ 341 ms). The board decodes one packet at a time, so within the window no radio input, from one forger or many,
+fills a side and no replacement happens at all; the random replacement stays as the backstop past it, and memory stays
+bounded by `MAX_BYTES` and the receive rate. `REPEAT_DELAY_AIRTIMES` is gone.
 

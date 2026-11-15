@@ -48,6 +48,16 @@ internal object LoraFrameCodec {
      * Meshtastic 2.8 board's signature cliff is grown past it instead (ADR 2026-09.mhs5) — the board charges 66 bytes
      * for signing anything smaller, so a few bytes of pad are cheaper than the signature they avoid. Null by
      * default, so a caller with no board to price against gets exactly today's encoding.
+     *
+     * [elide] (a kind whose room posts elide, [BoardTraits.elidesRoom]: MeshCore, ADR 2026-11.gsqu §4) takes the elided
+     * form, `0x06`, with the sender as a prefix ([FastFrameCodec.encodeElided]) whenever it can be reproduced, else the
+     * pick above. An elided frame is never padded: it is not a [FastFrameCodec.deflated] tag, and a MeshCore board signs
+     * nothing, so it has no cliff to dodge.
+     *
+     * [bind] (the same kind) splits a frame past one packet into the bound two-part form ([FastFrameCodec.fragmentBound]:
+     * each part commits to the other's slice), which is never padded. A frame too long for two bound parts is cut as
+     * plain `0x04` parts at the bound form's slice size instead — never aired: it says how many packets it would take,
+     * which is at least three, so the caller's room part limit refuses it (`lora room too long`).
      */
     fun encodeBest(
         wire: WireEnvelope,
@@ -55,19 +65,47 @@ internal object LoraFrameCodec {
         maxPayload: Int = MeshtasticProto.MAX_PAYLOAD,
         transcode: Boolean = false,
         cost: PacketCost? = null,
+        elide: Boolean = false,
+        bind: Boolean = false,
     ): Encoded? {
         val cap = maxPayload.coerceIn(MIN_PAYLOAD, MeshtasticProto.MAX_PAYLOAD)
+        val elided = if (elide) FastFrameCodec.encodeElided(wire, prefixSender = true, prefixRecipient = false) else null
         val best = FastFrameCodec.encodeBest(wire, transcode) ?: return null
-        val frame = if (cost == null) best.frame else paddable(best.frame, cap, cost)
-        val parts = if (frame.size <= cap) listOf(frame) else FastFrameCodec.fragment(frame, cap, fragId) ?: return null
-        val padded = if (cost != null && FastFrameCodec.deflated(frame)) pad(parts, cap, cost) else parts
+        val chosen = elided ?: best.frame
+        val frame = if (cost == null || elided != null) chosen else paddable(chosen, cap, cost)
+        val parts = partsOf(frame, cap, fragId, bind) ?: return null
+        // Never a bound part (the 5c-1 round-2 security follow-up): each commits to the other's bytes, so a pad would make the
+        // honest pair unmatched everywhere.
+        val bound = bind && parts.size == 2 && parts[0][0] == FastFrameCodec.TAG_BOUND_FRAG
+        val padded = if (cost != null && !bound && FastFrameCodec.deflated(frame)) pad(parts, cap, cost) else parts
         return Encoded(
             padded,
-            transcoded = best.transcoded,
+            transcoded = elided == null && best.transcoded,
             transcodeRefused = best.transcodeRefused,
-            grewBy = (padded.last().size - parts.last().size) + (frame.size - best.frame.size),
+            grewBy = (padded.last().size - parts.last().size) + (frame.size - chosen.size),
+            elided = elided != null,
         )
     }
+
+    /** [frame] as one packet, two bound parts ([bind]) or plain `0x04` parts; null past three. */
+    private fun partsOf(
+        frame: ByteArray,
+        cap: Int,
+        fragId: Int,
+        bind: Boolean,
+    ): List<ByteArray>? =
+        when {
+            frame.size <= cap -> listOf(frame)
+            bind -> FastFrameCodec.fragmentBound(frame, cap, fragId) ?: tooLongForTwo(frame, cap, fragId)
+            else -> FastFrameCodec.fragment(frame, cap, fragId)
+        }
+
+    /** [frame], too long for two bound parts, cut so its part count is honest (at least three), or null past three. */
+    private fun tooLongForTwo(
+        frame: ByteArray,
+        cap: Int,
+        fragId: Int,
+    ): List<ByteArray>? = FastFrameCodec.fragment(frame, cap - FastFrameCodec.COMMITMENT_BYTES, fragId)
 
     /**
      * [frame], or — when that is cheaper on the air — its **deflated** equivalent.
@@ -124,5 +162,7 @@ internal object LoraFrameCodec {
          * result is cheaper on the air than the frame it replaced.
          */
         val grewBy: Int = 0,
+        /** The frame rode the elided form, `0x06` ([encodeBest]'s `elide`). */
+        val elided: Boolean = false,
     )
 }

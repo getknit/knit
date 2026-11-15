@@ -92,10 +92,11 @@ class LoraDirectTransportTest {
             peerId: String,
             limit: Int,
             untakenOnly: Boolean,
+            maxBytes: Int,
         ): List<DirectDm> =
             unacked[peerId]
                 .orEmpty()
-                .filter { !untakenOnly || it.frameId !in took }
+                .filter { (!untakenOnly || it.frameId !in took) && it.plaintext.size <= maxBytes }
                 .take(limit)
                 .map { DirectDm(it.frameId, it.sentAtMs, it.plaintext, boardTook = it.frameId in took) }
 

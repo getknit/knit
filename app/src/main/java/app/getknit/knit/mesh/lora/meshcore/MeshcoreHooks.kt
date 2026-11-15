@@ -200,8 +200,9 @@ internal class MeshcoreHooks(
      *   foreign DM — never dropped unread by a throw, never a Knit frame.
      * - Everything else is counted and discarded: a foreign DM ([MeshcorePlaneCounters.foreignDms]), a post on another slot
      *   or of another data type ([MeshcorePlaneCounters.foreignPosts]), Public slot 0 until Stage 6
-     *   ([MeshcorePlaneCounters.publicDiscarded]), and a `0x04` fragment until Stage 5c's reassembler
-     *   ([MeshcorePlaneCounters.fragmentsRefused]).
+     *   ([MeshcorePlaneCounters.publicDiscarded]), and any unbound `0x04` fragment or a bound one (`0x07`) that does not
+     *   parse ([MeshcorePlaneCounters.fragmentsRefused]; Stage 5c-1 reads bound parts through the core's candidates,
+     *   `LoraFragCandidates`).
      *
      * Every live contact DM, Knit or not, is booked here first: our board answered it already ([bookAnswer]).
      */
@@ -226,7 +227,7 @@ internal class MeshcoreHooks(
         }
     }
 
-    /** Channel data: Knit's only on the board's Knit slot, under Knit's data type, and one whole packet until 5c. */
+    /** Channel data: Knit's only on the board's Knit slot, under Knit's data type, a fragment only of a set a post can be. */
     private fun routeChannelData(
         packet: BoardPacket,
         mc: MeshcorePacket,
@@ -249,9 +250,10 @@ internal class MeshcoreHooks(
                 PacketRoute.RETIRED
             }
 
-            // A fragment waits for Stage 5c's reassembler: the core's is keyed on a sender this kind never names, and the
-            // key is public, so anyone could poison or flush it. No 5a build sends one.
-            packet.payload[0] == FastFrameCodec.TAG_FRAG -> {
+            // An unbound fragment is the form a stranger on the public key can crowd (the 5c-1 reviews' B1): no MeshCore phone
+            // sends one, so none is read. A bound part goes to the core's candidates once it parses.
+            packet.payload[0] == FastFrameCodec.TAG_FRAG ||
+                (packet.payload[0] == FastFrameCodec.TAG_BOUND_FRAG && FastFrameCodec.parseBoundFragment(packet.payload) == null) -> {
                 discard(counters.fragmentsRefused)
             }
 
@@ -968,7 +970,7 @@ internal class MeshcorePlaneCounters {
     /** A post on Public slot 0, discarded until Stage 6 mirrors it. */
     val publicDiscarded = AtomicLong()
 
-    /** A Knit fragment (`0x04`), discarded until Stage 5c's reassembler can read one on the public key. */
+    /** An unbound Knit fragment (`0x04`), or a bound one (`0x07`) that does not parse, discarded (Stage 5c-1). */
     val fragmentsRefused = AtomicLong()
 
     /** A live direct DM to us whose acks (the larger of one flooded ack, or a multi-ack and the ack) were booked. */

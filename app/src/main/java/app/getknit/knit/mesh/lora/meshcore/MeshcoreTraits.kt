@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.lora.DutyPolicy
 import app.getknit.knit.mesh.lora.LoraAirtime
 import app.getknit.knit.mesh.lora.LoraBand
 import app.getknit.knit.mesh.lora.LoraDirectPolicy
+import app.getknit.knit.mesh.lora.LoraFragCandidates
 import app.getknit.knit.mesh.lora.PacketOutcome
 import app.getknit.knit.mesh.lora.PacketPrice
 import app.getknit.knit.mesh.lora.RadioParams
@@ -103,11 +104,14 @@ internal object MeshcoreTraits : BoardTraits {
     override val minGapMs: Long get() = 0L
 
     /**
-     * One packet until Stage 5c (ADR 2026-11.gsqu's Stage 5a-2 amendment): two elided packets carry about 200 B of text
-     * (§4, [ROOM_PART_LIMIT]), but a two-part post on the public Knit key needs 5c's reassembler (fragment ids seeded per
-     * process, candidates per part, capacity by airtime) before one may air or be read.
+     * Two elided packets (§4, [ROOM_PART_LIMIT]), since Stage 5c-1 brought the reassembler a two-part post on the public Knit
+     * key needs: fragment ids seeded per process, candidates per part verified by signature, capacity by airtime
+     * ([LoraFragCandidates]). 5a-2 staged it to one.
      */
-    override val roomPartLimit: Int get() = STAGED_ROOM_PART_LIMIT
+    override val roomPartLimit: Int get() = ROOM_PART_LIMIT
+
+    /** A room post's sender rides as a prefix, and an inbound post is resolved and verified (§4, Stage 5c-1). */
+    override val elidesRoom: Boolean get() = true
 
     /**
      * The companion's build default (`platformio.ini` `[arduino_base]`: 869.618 MHz, BW 62.5 kHz, SF8; CR 4/5, `MyMesh.h`):
@@ -278,11 +282,8 @@ internal object MeshcoreTraits : BoardTraits {
         bandwidthHz: Int,
     ): DutyPolicy = DutyPolicy(LoraBand.dutyPercent(freqKhz * HZ_PER_KHZ, bandwidthHz.toLong()), dedicatedSlot = false)
 
-    /** Own room posts in up to two elided packets (§4): [roomPartLimit] from Stage 5c. */
+    /** Own room posts in up to two elided packets (§4): [roomPartLimit] since Stage 5c-1. */
     const val ROOM_PART_LIMIT = 2
-
-    /** What [roomPartLimit] answers until Stage 5c: one packet, as on Meshtastic. */
-    const val STAGED_ROOM_PART_LIMIT = 1
 
     /**
      * The per-packet term on top of the formula: the uncertainty of Q5's 60-send measurement at 181 B (±17 ms), for the

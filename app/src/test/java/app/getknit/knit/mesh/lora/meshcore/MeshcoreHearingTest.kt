@@ -198,6 +198,7 @@ class MeshcoreHearingTest {
             peerId: String,
             limit: Int,
             untakenOnly: Boolean,
+            maxBytes: Int,
         ): List<DirectDm> = if (peerId == BOB) listOf(DirectDm("dm-1", WALL, byteArrayOf(1, 2, 3))) else emptyList()
 
         override suspend fun isUnacked(frameId: String): Boolean = frameId == "dm-1"

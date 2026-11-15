@@ -326,6 +326,25 @@ enum class FastPathDrop {
      * sender's transcoder and this build's rebuild disagree about a frame. Should be ~0; the flood copy heals it.
      */
     TRANSCODE_FAILED,
+
+    /**
+     * A waiting MeshCore bound part replaced at random by a newcomer once its side of the entry holds what the receiver can
+     * decode within the fragment window (`LoraFragCandidates.perPartFor`, ADR 2026-11.gsqu's Stage 5c-1 amendment): never
+     * reached by one window's radio input; past it, a store the window has not aged yet.
+     */
+    FRAG_CANDIDATES_FULL,
+
+    /**
+     * A bound pairing (each part naming the other) that did not decode and verify against a pinned author (the MeshCore
+     * reassembler): a stranger's post, a forger's own two parts, or an author whose key this phone does not hold.
+     */
+    FRAG_UNVERIFIED,
+
+    /**
+     * A whole elided (`0x06`) frame none of whose resolutions verified against a pinned author (MeshCore): a stranger's
+     * post, a forgery, or an author whose key this phone does not hold.
+     */
+    ELIDED_UNVERIFIED,
 }
 
 /**

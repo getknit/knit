@@ -557,6 +557,29 @@ the phones that read it, which is a ctl and needs no entry here.
 still carrying it", never "deleted". The retraction is readable by carriers, so they learn that this author withdrew
 this frame, and when. Weigh that against the feature before building it.
 
+### 16. An author tag in the LoRa fragment header
+
+**What.** Give a fragment a few bytes that name the frame's author (a prefix of the sender's node id, or a hash of it
+with the fragment id), at least on a plane whose packets name no sender (MeshCore), so a reassembler can key an entry on
+the author as well as the `fragId`.
+
+**Why it is parked.** The `0x04` header is `0x04 | fragId(u16) | part/count` (`FastFrameCodec.fragment`), read by every
+shipped build on Wi-Fi Aware, BLE and LoRa, so a field there is a new form. **It does not close the race it was first
+proposed for:** a forger who heard either part copies the real author's tag from it as easily as the `fragId`. What closes
+it is the binding the MeshCore plane already carries, additively (`0x07`, bound both ways, ADR 2026-11.gsqu's Stage 5c-1
+amendment, recorded in `WIRE_COMPAT.md`): each part commits to the other's slice, so no fake pairs with an honest part in
+any arrival order, and a fake costs a slot of memory, never a check — and a side holds what the receiver can decode within
+the whole fragment window, so no input fills it inside the window, however long the firmware held the honest part (its
+score delay of up to 32 s, CAD retries, every further hop). A first one-way form (part 0 committing to part 1)
+assumed the honest part 0 always reached a receiver first; behind a MeshCore repeater, which holds a packet up to
+5 × `tx_delay_factor` × its airtime, a forger's short part 0 routinely overtakes it. What a tag would still buy is a smaller
+memory cost for fakes.
+
+**At the break**, if ever: a tag beside the commitments on the bound form, the reassembler keying `(tag, fragId)`. **Agree
+the bound form, and any tag, with iOS before MeshCore reaches iOS** (gsqu's deferred list), as one paired change. If it
+comes while the MeshCore plane still has no fielded receivers, a new tag on that plane is additive, like `0x07`: record it
+in `WIRE_COMPAT.md` then and take it off this list.
+
 ---
 
 ## Deliberately *not* on this list

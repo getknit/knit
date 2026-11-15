@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.link.FastFrameCodec
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -30,7 +31,10 @@ class MeshtasticHooksTest {
         override val boardAir = MutableStateFlow<BoardAir?>(null)
         override val nodes = MutableStateFlow<Map<UInt, BoardOwner>>(emptyMap())
 
-        override fun nodeUser(node: UInt): StreamedUser? = null
+        /** What the board's NodeInfo stream last showed per node (none by default). */
+        var users: Map<UInt, StreamedUser> = emptyMap()
+
+        override fun nodeUser(node: UInt): StreamedUser? = users[node]
 
         override fun userSeq(): Long = 0
 
@@ -260,6 +264,48 @@ class MeshtasticHooksTest {
     fun aKeyIsTaughtOnlyToAMeshtasticBoard() {
         val holder = LoraBoardHolder(BoardAddr(9u), direct = true)
         assertEquals(KeyTeach.Refused, hooks.teachKey("bob", holder, BoardAddr.MeshCore(ByteArray(6)), sentAfter = 0))
+    }
+
+    /**
+     * The carried-forward half (Stage 1c's deferred unit-test finding): a contact whose profile key binds its board, and
+     * a NodeInfo stream that showed that board's keyed `User` before the refused send (so its key is set aside and only
+     * its names are read, `LoraContactPolicy.judge`): our Meshtastic board gets the `add_contact`, a MeshCore one nothing.
+     */
+    @Test
+    fun aKeyedStreamedUserBeforeTheSendGetsAMeshtasticBoardAWriteAndAMeshcoreOneNothing() {
+        val key = ByteArray(MeshtasticProto.NODE_PUBLIC_KEY_BYTES) { (it * 7 + 3).toByte() }
+        val node = LoraContactPolicy.crc32(key)
+        link.users = mapOf(node to StreamedUser(BoardOwnerRaw(LoraContactPolicy.contactUser(node, key, stored = null)), seq = 1))
+        val holder = LoraBoardHolder(BoardAddr(node), direct = true, loraKey = b64(key), contact = true)
+        assertTrue(hooks.teachKey("bob", holder, BoardAddr(OWN), sentAfter = 2) is KeyTeach.Write)
+        assertEquals(KeyTeach.Refused, hooks.teachKey("bob", holder, BoardAddr.MeshCore(ByteArray(6)), sentAfter = 2))
+    }
+
+    /**
+     * The other carried-forward case: our board's ACK of a PKI DM that came in on slot 0 (`onBound` false), on a 2.8.1
+     * board whose primary channel is AEAD. #243's byte rule: a routing unicast is never signed outside ham mode, and an AEAD
+     * channel adds its 12-byte tag — so the ACK costs its payload and 12 B, unsigned, and the bound slot's plain price does
+     * not apply.
+     */
+    @Test
+    fun ourBoardsAckOnAnAeadPrimarySlotPaysTheTagUnsigned() {
+        core.airtime.onBoard(SigningFacts("2.8.1.8e6a88d", hasXeddsa = true), primaryAead = true, knitAead = false)
+        val dm = byteArrayOf(LORA_DIRECT_TAG, 1)
+        hooks.bookDirectAck(
+            packet(MeshtasticProto.PORT_PRIVATE_APP, dm, channel = 0, to = OWN, wantAck = true),
+            BoardAddr(OWN),
+            onBound = false,
+        )
+        val tagged =
+            LoraAirtime().timeOnAirMs(
+                LoraDirectPolicy.ACK_PAYLOAD_BYTES + MeshtasticProto.AEAD_OVERHEAD_BYTES,
+                LoraAirtime.UNSIGNED,
+            )
+        assertEquals(tagged, core.airtime.snapshot(now).usedMs)
+        assertTrue(
+            "dearer than on the plain bound slot",
+            tagged > LoraAirtime().timeOnAirMs(LoraDirectPolicy.ACK_PAYLOAD_BYTES, LoraAirtime.UNSIGNED),
+        )
     }
 
     @Test

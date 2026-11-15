@@ -4,7 +4,9 @@ import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import app.getknit.knit.BuildConfig
+import app.getknit.knit.contacts.DirectContacts
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.settings.LoraPlaneStateStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
@@ -19,6 +21,8 @@ import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.BoardPlane
 import app.getknit.knit.mesh.lora.DirectDm
 import app.getknit.knit.mesh.lora.LoraAuthorCheck
+import app.getknit.knit.mesh.lora.LoraAuthorDirectory
+import app.getknit.knit.mesh.lora.LoraAuthorIds
 import app.getknit.knit.mesh.lora.LoraBoardHolder
 import app.getknit.knit.mesh.lora.LoraBoardMap
 import app.getknit.knit.mesh.lora.LoraConfig
@@ -29,6 +33,11 @@ import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreContacts
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import org.koin.core.module.Module
 import org.koin.core.qualifier.Qualifier
@@ -93,6 +102,20 @@ internal fun pinnedAuthorCheck(peers: () -> PeerRepository): LoraAuthorCheck =
     }
 
 /**
+ * The authors an elided room post may name ([LoraAuthorIds], ADR 2026-11.gsqu's Stage 5c-1 amendment): [accepted], the
+ * direct contacts (`DirectContacts.observe`), first, and every other peer whose key the table holds ([peers]) only on a
+ * miss. Node ids only; re-emitted only when either set changes, not on every `lastSeenAt` write.
+ */
+internal fun loraAuthorIds(
+    peers: Flow<List<PeerEntity>>,
+    accepted: Flow<Set<String>>,
+): LoraAuthorDirectory =
+    combine(
+        peers.map { rows -> rows.filter { it.pubKey != null }.mapTo(HashSet()) { it.nodeId } }.distinctUntilChanged(),
+        accepted.distinctUntilChanged(),
+    ) { pinned, contacts -> LoraAuthorIds(contacts, pinned) }
+
+/**
  * One board kind's plane, as one call (ADR 2026-11.gsqu, Stage 5a-2): the transport, its compact-DM sink, its public-channel
  * sink and its UI face, each under [kind]'s qualifier. What differs per kind is handed in: its [plane] (traits, link and
  * hooks, over the transport's own log), its [config], its [boardMap], and a [face] that stands in for the transport (the
@@ -121,13 +144,7 @@ internal fun Module.loraPlaneOf(
             inbox = LoraDirectInbox { frame -> get<MeshManager>().deliverLoraDirect(frame) },
             source =
                 object : LoraDirectSource {
-                    override suspend fun unackedTo(
-                        peerId: String,
-                        limit: Int,
-                        untakenOnly: Boolean,
-                    ): List<DirectDm> = get<MeshManager>().loraDirectSource().unackedTo(peerId, limit, untakenOnly)
-
-                    // The plane's own budget, passed through (ADR 2026-11.gsqu, Stage 1a.4).
+                    // The plane's own budget, passed through (ADR 2026-11.gsqu, Stage 1a.4; required since Stage 5c-1).
                     override suspend fun unackedTo(
                         peerId: String,
                         limit: Int,
@@ -155,6 +172,14 @@ internal fun Module.loraPlaneOf(
             log = log,
             // A hearing on a kind whose packets name no sender it vouches for (MeshCore); Meshtastic never asks it.
             authorCheck = pinnedAuthorCheck { get<PeerRepository>() },
+            // What an elided post's sender prefix resolves against (MeshCore only; Meshtastic never collects it). Resolved at
+            // collection, as the author check is: a graph without the peer table builds the plane all the same.
+            authorIds =
+                flow {
+                    emitAll(
+                        loraAuthorIds(get<PeerRepository>().observePeers(), getOrNull<DirectContacts>()?.observe() ?: flowOf(emptySet())),
+                    )
+                },
         )
     }
     // Where MeshManager offers the compact copy of a DM it sealed (ADR 2026-10.x9fa), resolved late by the router, since the

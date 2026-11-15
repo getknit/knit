@@ -98,29 +98,32 @@ internal fun interface LoraDirectInbox {
  */
 internal interface LoraDirectSource {
     /**
-     * Up to [limit] of our unacked DMs to [peerId], newest first. A resend carries no inline acks. [untakenOnly] leaves
-     * out the DMs a board took ([DirectDm.boardTook]) before the limit applies, so newer board-taken ones waiting on a ✓✓
-     * cannot hide an older stranded one from a catch-up.
-     */
-    suspend fun unackedTo(
-        peerId: String,
-        limit: Int,
-        untakenOnly: Boolean = false,
-    ): List<DirectDm>
-
-    /**
-     * [unackedTo], keeping only the DMs whose compact plaintext is at most [maxBytes] — the asking plane's own budget
-     * ([LoraDirectSink.budgetFor]) — before the limit applies, so a DM too long for this board cannot hide one that fits.
-     * Its default ignores [maxBytes] and asks the three-argument form, which a source sizes at Meshtastic's 168 B: a
-     * forward written before the budget was per board still compiles, and is right for a Meshtastic board alone (ADR
-     * 2026-11.gsqu, Stage 1a.4; Stage 5 makes it required).
+     * Up to [limit] of our unacked DMs to [peerId], newest first, keeping only those whose compact plaintext is at most
+     * [maxBytes] — the asking plane's own budget ([LoraDirectSink.budgetFor]) — before the limit applies, so a DM too long
+     * for this board cannot hide one that fits. A resend carries no inline acks. [untakenOnly] leaves out the DMs a board
+     * took ([DirectDm.boardTook]) before the limit applies, so newer board-taken ones waiting on a ✓✓ cannot hide an older
+     * stranded one from a catch-up.
+     *
+     * [maxBytes] is required (ADR 2026-11.gsqu, Stage 1a.4 staged it with a default; Stage 5c-1 made every source take it):
+     * a forward that dropped it would size every board's DMs at Meshtastic's 168 B, and a MeshCore board's 105 B copy
+     * would be pushed out by ones it can never carry.
      */
     suspend fun unackedTo(
         peerId: String,
         limit: Int,
         untakenOnly: Boolean,
         maxBytes: Int,
-    ): List<DirectDm> = unackedTo(peerId, limit, untakenOnly)
+    ): List<DirectDm>
+
+    /**
+     * [unackedTo] at Meshtastic's budget ([LoraDirectBudget.MESHTASTIC]): a reader that sizes nothing for a board (the
+     * manager's own tests). The plane core never calls it; it always passes its own kind's budget.
+     */
+    suspend fun unackedTo(
+        peerId: String,
+        limit: Int,
+        untakenOnly: Boolean = false,
+    ): List<DirectDm> = unackedTo(peerId, limit, untakenOnly, LoraDirectBudget.MESHTASTIC.plaintextBytes)
 
     /** Whether [frameId] is still one of ours without its ✓✓ (and inside the window): the at-send re-ask of a resend. */
     suspend fun isUnacked(frameId: String): Boolean
@@ -131,6 +134,7 @@ internal interface LoraDirectSource {
             peerId: String,
             limit: Int,
             untakenOnly: Boolean,
+            maxBytes: Int,
         ): List<DirectDm> = emptyList()
 
         override suspend fun isUnacked(frameId: String): Boolean = false

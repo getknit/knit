@@ -25,7 +25,9 @@ import app.getknit.knit.mesh.lora.LoraFrameCodec
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.lora.MeshtasticProto
+import app.getknit.knit.mesh.lora.meshcore.Cobs
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreProto
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreTraits
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameId
@@ -913,31 +915,133 @@ class CoordinationPlaneSizeBudgetTest {
     }
 
     /**
-     * [aRoomPostAtTheHintBudgetFitsOneLoraPacketAtTheMtuFloor] on a MeshCore board (ADR 2026-11.gsqu §4, Stage 5a-2): one
-     * channel-data packet ([MeshcoreProto.CHANNEL_DATA_CAP], 164 B) in the `0x05` form, which is what a room post rides until
-     * Stage 5c's elided two-part form. [LoraSizeHint.MESHCORE_ROOM_BODY_BYTES] of incompressible text fits; the slack more
-     * does not.
+     * The MeshCore column (ADR 2026-11.gsqu §4 and its Stage 5c-1 amendment): an own room post rides the elided form
+     * (`0x06`, the sender a 4-byte prefix) in at most two bound channel-data packets ([MeshcoreProto.CHANNEL_DATA_CAP],
+     * 164 B; each part carries 152 B of the frame beside its 8-byte commitment to the other), as
+     * `LoraFrameCodec.encodeBest(elide = true, bind = true)` builds it. Measured with incompressible text, as the
+     * Meshtastic budget is: [LoraSizeHint.MESHCORE_ONE_PACKET_ROOM_BODY_BYTES] fits one packet and
+     * [LoraSizeHint.MESHCORE_ROOM_BODY_BYTES], the composer's budget, fits two; [ROOM_SLACK_BYTES] more needs a further
+     * packet at each. Every form decodes back to the frame through a resolver that knows the author.
      */
     @Test
-    fun aMeshcoreRoomPostAtItsHintBudgetFitsOneChannelDataPacket() {
+    fun aMeshcoreRoomPostAtItsHintBudgetFitsTwoElidedPackets() {
         val alice = party()
-        val random = Random(seed = 13)
-        val room = LoraSizeHint.MESHCORE_ROOM_BODY_BYTES
         val cap = MeshcoreProto.CHANNEL_DATA_CAP
-        val ascii = String(CharArray(room) { (PRINTABLE_FIRST + random.nextInt(PRINTABLE_COUNT)).toChar() })
-        val emoji =
-            buildString {
-                while (LoraSizeHint.utf8Length(this) + EMOJI_BYTES <= room) appendCodePoint(EMOJI_FIRST + random.nextInt(EMOJI_COUNT))
-            }
-        for ((label, body) in listOf("ascii" to ascii, "emoji" to emoji)) {
-            assertEquals(
-                "a $label MeshCore room post at the hint budget is one packet",
-                1,
-                transcodedLoraParts(broadcastChat(alice, body), cap = cap),
-            )
+        val author = NodeId.toBytes(alice.nodeId)
+
+        fun parts(body: String): Int? {
+            val wire = broadcastChat(alice, body)
+            val encoded =
+                LoraFrameCodec.encodeBest(wire, fragId = 1, maxPayload = cap, transcode = true, elide = true, bind = true) ?: return null
+            assertTrue("rides elided", encoded.elided)
+            if (encoded.parts.size > 2) return encoded.parts.size
+            val frame =
+                if (encoded.parts.size == 1) {
+                    encoded.parts.single()
+                } else {
+                    encoded.parts.fold(ByteArray(0)) { acc, p -> acc + checkNotNull(FastFrameCodec.parseBoundFragment(p)).payload }
+                }
+            val back =
+                FastFrameCodec.decodeElided(
+                    frame,
+                ) { prefix -> listOf(author).filter { it.copyOf(prefix.size).contentEquals(prefix) } }
+            assertTrue("decodes back to the frame", back.any { it.signed.contentEquals(wire.signed) })
+            return encoded.parts.size
         }
-        val over = String(CharArray(room + ROOM_SLACK_BYTES) { (PRINTABLE_FIRST + random.nextInt(PRINTABLE_COUNT)).toChar() })
-        assertTrue("the budget is not slack", (transcodedLoraParts(broadcastChat(alice, over), cap = cap) ?: 0) > 1)
+
+        fun ascii(
+            random: Random,
+            bytes: Int,
+        ) = String(CharArray(bytes) { (PRINTABLE_FIRST + random.nextInt(PRINTABLE_COUNT)).toChar() })
+
+        fun emoji(
+            random: Random,
+            bytes: Int,
+        ) = buildString {
+            while (LoraSizeHint.utf8Length(this) + EMOJI_BYTES <=
+                bytes
+            ) {
+                appendCodePoint(EMOJI_FIRST + random.nextInt(EMOJI_COUNT))
+            }
+        }
+        for ((packets, budget) in listOf(
+            1 to LoraSizeHint.MESHCORE_ONE_PACKET_ROOM_BODY_BYTES,
+            2 to LoraSizeHint.MESHCORE_ROOM_BODY_BYTES,
+        )) {
+            for (seed in 0 until SIZE_SEEDS) {
+                val random = Random(seed)
+                for ((label, body) in listOf("ascii" to ascii(random, budget), "emoji" to emoji(random, budget))) {
+                    val took = parts(body)
+                    assertTrue(
+                        "a $label MeshCore room post of ${LoraSizeHint.utf8Length(body)} B fits $packets (was $took)",
+                        took != null && took <= packets,
+                    )
+                }
+                val over = parts(ascii(random, budget + ROOM_SLACK_BYTES))
+                assertTrue("the $packets-packet budget is not slack (was $over)", over == null || over > packets)
+            }
+            // The most incompressible ASCII that fits, printed for the record (the measured figure the budget sits under).
+            val most =
+                (budget..budget + ROOM_SLACK_BYTES).last { n ->
+                    (0 until SIZE_SEEDS).all {
+                        (parts(ascii(Random(it), n)) ?: 9) <=
+                            packets
+                    }
+                }
+            println("meshcore@$cap: an elided room post of random ASCII fits $packets packet(s) up to $most B (budget $budget B)")
+        }
+        assertEquals("more than two never airs", 2, MeshcoreTraits.roomPartLimit)
+    }
+
+    /**
+     * A MeshCore compact DM (ADR 2026-11.gsqu §2): the seal rides COBS-framed as a contact text DM, so its cap is
+     * [MeshcoreProto.DIRECT_SEAL_CAP] = 156 B, 157 B ([MeshcoreProto.DIRECT_TEXT_CAP]) on the air after COBS, whatever its
+     * bytes — the worst case, a seal with no zero byte, takes the one COBS byte and no more. The plaintext budget is that
+     * less the seal's 51 B, 105 B; the composer's body budget ([LoraSizeHint.dmBodyBytes]) and the inline acks out of it
+     * fit with incompressible bodies, and the budget is not slack.
+     */
+    @Test
+    fun aMeshcoreDmAtItsBudgetIsOneCompactTextAfterCobs() {
+        assertEquals(156, MeshcoreProto.DIRECT_SEAL_CAP)
+        assertEquals(157, MeshcoreProto.DIRECT_TEXT_CAP)
+        val budget = MeshcoreTraits.directBudget()
+        assertEquals(105, budget.plaintextBytes)
+        for (seal in listOf(
+            ByteArray(MeshcoreProto.DIRECT_SEAL_CAP) { 1 },
+            ByteArray(MeshcoreProto.DIRECT_SEAL_CAP) { (it % 7).toByte() },
+        )) {
+            val cobs = Cobs.encode(seal)
+            assertTrue("a 156-B seal is at most 157 B after COBS (was ${cobs.size})", cobs.size <= MeshcoreProto.DIRECT_TEXT_CAP)
+            assertTrue("and carries no zero byte", cobs.none { it.toInt() == 0 })
+        }
+        assertTrue(
+            "one more byte does not fit",
+            Cobs.encode(ByteArray(MeshcoreProto.DIRECT_SEAL_CAP + 1) { 1 }).size > MeshcoreProto.DIRECT_TEXT_CAP,
+        )
+        val body = LoraSizeHint.dmBodyBytes(budget)
+        val random = Random(seed = 17)
+
+        fun ascii(bytes: Int) = String(CharArray(bytes) { (PRINTABLE_FIRST + random.nextInt(PRINTABLE_COUNT)).toChar() })
+
+        fun plaintext(
+            text: String,
+            acks: Int,
+        ): Int =
+            MessageContent(body = text, acks = List(acks) { FrameId.new() }.takeIf { it.isNotEmpty() })
+                .sealBytes(v3 = true)
+                .plaintext.size
+        for (acks in 0..MAX_INLINE_ACKS) {
+            val bytes = body - acks * INLINE_ACK_BYTES
+            if (bytes < 0) continue
+            val size = plaintext(ascii(bytes), acks)
+            println("meshcore-direct: body=${bytes}B acks=$acks plaintext=${size}B cap=${budget.plaintextBytes}B")
+            assertTrue(
+                "a DM at the MeshCore budget with $acks inline acks fits ($size > ${budget.plaintextBytes})",
+                size <= budget.plaintextBytes,
+            )
+            assertTrue("its seal fits the COBS cap", size + LORA_DIRECT_OVERHEAD <= MeshcoreProto.DIRECT_SEAL_CAP)
+        }
+        assertTrue("the budget is not slack", plaintext(ascii(body + DM_SLACK_BYTES), acks = 0) > budget.plaintextBytes)
     }
 
     /**
@@ -1378,6 +1482,9 @@ class CoordinationPlaneSizeBudgetTest {
         const val HYBRID_TEMPLATE = "DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW"
         const val SIG_TEMPLATE = "ED25519_RAW"
         const val SPK_ID = 1
+
+        /** Seeds each MeshCore room budget is measured over. */
+        const val SIZE_SEEDS = 8
 
         /** A MeshCore companion's channel-data payload over BLE on an ESP32 board (the spike's Q1: 165 less one). */
         const val MESHCORE_PAYLOAD = 164

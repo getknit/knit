@@ -2260,11 +2260,13 @@ class LabNode internal constructor(
             inbox = { manager.deliverLoraDirect(it) },
             source =
                 object : LoraDirectSource {
+                    // The plane's own budget, passed through: required since Stage 5c-1 (ADR 2026-11.gsqu).
                     override suspend fun unackedTo(
                         peerId: String,
                         limit: Int,
                         untakenOnly: Boolean,
-                    ): List<DirectDm> = manager.loraDirectSource().unackedTo(peerId, limit, untakenOnly)
+                        maxBytes: Int,
+                    ): List<DirectDm> = manager.loraDirectSource().unackedTo(peerId, limit, untakenOnly, maxBytes)
 
                     override suspend fun isUnacked(frameId: String): Boolean = manager.loraDirectSource().isUnacked(frameId)
                 },

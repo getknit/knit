@@ -480,6 +480,19 @@ the literal map in `FrameTranscoderTest`); the layout is versioned by *tag*, nev
 reach — and the next break can (`docs/NEXT_WIRE_BREAK.md` item 8) — is the stored form: the 7-B empty nonce
 in custody, the text ids inside sealed payloads, the millisecond clock. `GoldenVectorTest` moved nothing.
 
+**Precedent: the `0x07` bound fragment, a framing tag for one plane with no fielded readers (ADR 2026-11.gsqu's Stage
+5c-1 amendment, 2026-11-14).** The MeshCore plane's two-part room post, bound both ways: each part carries the first 8
+bytes of SHA-256 over the other part's slice, and a receiver pairs a head and a tail only when each names the other, so a
+stranger on the public Knit channel key cannot pair a fake with either honest part, whatever order a repeater delivers them
+in. Additive because (1) it is a new **tag** in `FastFrameCodec`'s append-only registry, not a flag inside `0x04`: every
+shipped reader on every plane (Wi-Fi Aware, BLE, Meshtastic LoRa) drops an unknown non-printable tag as `UNKNOWN_TAG` and
+counts it, while a flagged `0x04` would have reached `parseFragment`, which reads every byte past the header as slice; (2)
+only the MeshCore plane emits or reads it, and that plane is debug-only behind `BuildConfig.MESHCORE_PLANE`, so no fielded
+build ever saw a MeshCore room post — which is also why the form could change in place (one-way binding to two-way, the
+same day) and its vector be regenerated; (3) the slices are still a complete `0x03` / `0x05` / `0x06` frame, so what is
+signed, stored and relayed never changes. Vectors: `vectors/lora-frag-v1.json` (`LoraFragVectorTest`); no other vector
+moved. To agree with iOS before MeshCore reaches iOS (a paired change then, not now).
+
 **Precedent: the DB v19 field reuse a sixth time — any emoji in a reaction (2026-09-01).** `ReactionContent.emoji`,
 `ReactionPayload.emoji` and `ReactionV2.emoji` were always free-form text; populating them with a skin-tone,
 flag or ZWJ sequence instead of one of six fixed glyphs changes nothing on the wire, and the `0x05`

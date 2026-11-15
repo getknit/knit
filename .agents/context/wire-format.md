@@ -79,7 +79,17 @@ opaque `@ByteString` CBOR (not kotlinx sealed polymorphism), a relay rewrites on
 passes `signed`+`sig` through byte-for-byte — see the verbatim-relay rule in `rules/mesh.md`. The two
 size-capped fast planes may carry `signed` *transcoded* (`mesh/link/FrameTranscoder`, tag `0x05`, ADR 060):
 a transport-local re-encoding the receiver rebuilds byte-exact before verifying, so the bytes that are
-signed, stored and relayed still never change — see `context/mesh-transport.md`.
+signed, stored and relayed still never change — see `context/mesh-transport.md`. **Before touching
+`FastFrameCodec.encodeElided` / `decodeElided`, `TAG_ELIDED` (`0x06`), `IdElision` or a reassembler that joins
+`0x04` parts it cannot key on a sender (`LoraFragCandidates`):** READ ADR 2026-11.gsqu's Stage 5c-1 amendment and
+the MeshCore entries in `context/lora.md`. `0x06` is the same kind of transport-local form (the sender as a 4-byte
+prefix, rebuilt against the receiver's own directory and kept only when the signature verifies); since Stage 5c-1
+only the LoRa plane's MeshCore kind emits it, an own room post, and no Wi-Fi Aware, BLE or Meshtastic path reads it.
+A MeshCore two-part post rides the bound fragment `0x07` (`FastFrameCodec.fragmentBound` / `parseBoundFragment`: each
+part commits to the other's slice, "bind both ways", the maintainer's decision of 2026-11-14), additive on a plane with no
+fielded readers (`docs/WIRE_COMPAT.md`, vectors `lora-frag-v1.json`); its reassembler pairs a head and a tail only when each
+names the other and verifies that one pairing. An author tag (`docs/NEXT_WIRE_BREAK.md` item 16) would not close the race
+the binding does.
 
 Note the **TTL constants** (`DEFAULT_TTL_MS`/`DEFAULT_BROADCAST_TTL_MS`) and the broadcast-chat
 classification are **convergence-critical** — treat changing them like a wire change (see

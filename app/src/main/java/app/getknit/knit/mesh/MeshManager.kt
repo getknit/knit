@@ -7028,14 +7028,8 @@ class MeshManager(
      */
     internal fun loraDirectSource(): LoraDirectSource =
         object : LoraDirectSource {
-            override suspend fun unackedTo(
-                peerId: String,
-                limit: Int,
-                untakenOnly: Boolean,
-            ): List<DirectDm> = unackedTo(peerId, limit, untakenOnly, maxBytes = LORA_DIRECT_PLAINTEXT_BYTES)
-
-            // The asking plane's own budget, filtered before the limit (ADR 2026-11.gsqu, Stage 1a.4): a DM too long for
-            // this board must not take the place of one that fits.
+            // The asking plane's own budget, filtered before the limit (ADR 2026-11.gsqu, Stage 1a.4; required since Stage
+            // 5c-1): a DM too long for this board must not take the place of one that fits.
             override suspend fun unackedTo(
                 peerId: String,
                 limit: Int,

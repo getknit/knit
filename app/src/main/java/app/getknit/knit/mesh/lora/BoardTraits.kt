@@ -128,8 +128,17 @@ internal interface BoardTraits {
     /** The pacer's shortest gap between two packets — the factory default of `LoraPacePolicy`, never an injected one. */
     val minGapMs: Long
 
-    /** The most packets an own room post may take (ADR 2026-10.rp3s: one on Meshtastic). */
+    /** The most packets an own room post may take (ADR 2026-10.rp3s: one on Meshtastic; two on MeshCore, gsqu §4). */
     val roomPartLimit: Int
+
+    /**
+     * Whether an own room post rides in the elided form (`0x06`, `FastFrameCodec.encodeElided`: the sender a 4-byte prefix)
+     * and an inbound one is read as such: resolved against the authors whose key we hold, and every fragment set joined by
+     * the combination whose signature verifies ([LoraFragCandidates]), since the kind's channel packets name no sender on a
+     * key anyone holds. False on Meshtastic, whose plane never reads `0x06`; true on MeshCore (ADR 2026-11.gsqu §4, Stage
+     * 5c-1).
+     */
+    val elidesRoom: Boolean
 
     /**
      * Whether [packet] came off the air just now — never a replay of the board's queue, an uplink, or a packet that did not
@@ -300,6 +309,7 @@ internal object MeshtasticTraits : BoardTraits {
     override val preambleSymbols: Double get() = LoraAirtime.PREAMBLE_SYMBOLS
     override val minGapMs: Long get() = LoraPacePolicy.MIN_GAP_MS
     override val roomPartLimit: Int get() = ROOM_PART_LIMIT
+    override val elidesRoom: Boolean get() = false
     override val fallbackRadio: RadioParams get() = FALLBACK_RADIO
     override val fallbackDutyPercent: Double get() = LoraAirtime.FALLBACK_PERCENT
     override val roomCeiling: Ceiling get() = Ceiling.FULL

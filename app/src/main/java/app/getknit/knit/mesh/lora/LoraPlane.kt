@@ -104,8 +104,9 @@ data class LoraFacts(
      */
     val floodSpent: Boolean = false,
     /**
-     * The room composer's body budget on [board]: what one room packet carries of incompressible text (ADR 2026-10.rp3s's
-     * one-packet rule, per kind; [LoraSizeHint.roomBodyBytes]). A constant of the kind, so it never re-emits the facts.
+     * The room composer's body budget on [board]: what an own room post's packets carry of incompressible text, one on
+     * Meshtastic (ADR 2026-10.rp3s) and two elided ones on MeshCore (ADR 2026-11.gsqu §4; [LoraSizeHint.roomBodyBytes]). A
+     * constant of the kind, so it never re-emits the facts.
      */
     val roomBodyBytes: Int = LoraSizeHint.ROOM_BODY_BYTES,
     /**
