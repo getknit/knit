@@ -58,12 +58,15 @@
     <string name="channel_dms_desc">Приватні повідомлення сам на сам</string>
     <string name="channel_meshtastic_name">Публічний канал Meshtastic</string>
     <string name="channel_meshtastic_desc">Дописи в основному каналі вашого радіо Meshtastic</string>
+    <string name="channel_meshcore_name">Публічний канал MeshCore</string>
+    <string name="channel_meshcore_desc">Дописи в каналі Public вашої плати MeshCore</string>
     <string name="channel_commons_name">Спільні кімнати</string>
     <string name="channel_commons_desc">Дописи в спільній кімнаті ретранслятора</string>
     <string name="mention_channel_name">Згадки</string>
     <string name="mention_channel_description">Сповіщення, коли хтось згадує вас через @</string>
     <string name="notif_title_nearby">Поруч</string>
     <string name="notif_title_meshtastic">Meshtastic</string>
+    <string name="notif_title_meshcore">MeshCore</string>
     <string name="notif_self_name">Ви</string>
     <string name="chat_gone">Цього чату більше немає на цьому телефоні</string>
     <string name="notif_action_reply">Відповісти</string>
@@ -580,6 +583,8 @@
     <string name="chat_status_arrived_lora">Отримано через LoRa</string>
     <string name="chat_status_lora_radio_reached">Дійшло до радіо LoRa співрозмовника</string>
     <string name="chat_status_pending_key">Ще не надіслано — очікуємо на ключ співрозмовника</string>
+    <string name="chat_status_post_not_sent">Не надіслано</string>
+    <string name="chat_status_post_unconfirmed">Можливо, допис не вийшов в ефір</string>
     <string name="chat_time_just_now">Щойно</string>
     <string name="chat_day_today">Сьогодні</string>
     <string name="chat_day_yesterday">Учора</string>
@@ -718,6 +723,7 @@
     </plurals>
     <string name="nearby_title">Поруч</string>
     <string name="meshtastic_title">Meshtastic</string>
+    <string name="meshcore_title">MeshCore</string>
     <string name="commons_title">Спільна кімната</string>
     <string name="chat_list_empty_preview">Повідомлень поки немає</string>
     <string name="chat_list_draft_preview">Чернетка: %1$s</string>
@@ -1565,6 +1571,8 @@
     <string name="lora_room_title">Кімната Meshtastic</string>
     <string name="lora_room_subtitle">Показувати власний канал вашого радіо як кімнату в Knit, щоб ви могли читати все інше, що в ньому є, і долучатися. Якщо вимкнути, кімната прихована й беззвучна, а Knit ігнорує цей канал — ваша плата все одно передає власні повідомлення Knit.</string>
     <string name="lora_room_subtitle_dedicated">Приховано, поки плата на окремій частоті: жодне публічне радіо її не чує, тож читати нема чого. Відновіть плату, щоб повернути кімнату.</string>
+    <string name="lora_meshcore_room_title">Кімната MeshCore</string>
+    <string name="lora_meshcore_room_subtitle">Показувати канал Public вашої плати MeshCore як кімнату в Knit, щоб ви могли читати все інше, що в ньому є, і долучатися. Якщо вимкнути, кімната прихована й беззвучна, а Knit ігнорує цей канал — ваша плата все одно передає власні повідомлення Knit.</string>
     <string name="lora_airtime">Ефірний час: %1$d%% поточного ліміту</string>
     <string name="lora_radio_config">Радіо %1$s</string>
     <string name="lora_public_channel">Головний канал %1$s</string>
@@ -1812,6 +1820,23 @@
     <string name="chat_mesh_consent_accept">Опублікувати</string>
     <string name="chat_mesh_consent_decline">Не зараз</string>
     <string name="chat_mesh_subtitle">Основний канал вашого радіо</string>
+    <string name="chat_meshcore_author">%1$s, у каналі MeshCore — ім’я не перевірено</string>
+    <string name="chat_meshcore_unnamed">Без імені</string>
+    <string name="chat_meshcore_name_clash">Таке саме ім’я, як у когось, кого ви знаєте, — особу не перевірено</string>
+    <string name="chat_meshcore_name_claimed">«%1$s» (не перевірено)</string>
+    <string name="chat_meshcore_room_notice">Незашифрований радіоканал — імена ніколи не перевіряються</string>
+    <string name="chat_meshcore_room_notice_keyed">Без наскрізного шифрування — імена ніколи не перевіряються</string>
+    <string name="chat_meshcore_room_body">Ця кімната показує канал Public плати MeshCore, сполученої з цим телефоном. Шифрування Knit сюди не поширюється: тут немає наскрізного шифрування, а в стандартному каналі Public ключ публічний, тож прочитати його може будь-хто з радіо. Будь-хто в зоні дії може писати сюди під будь-яким ім’ям, а Knit жодного імені не перевіряє: ім’я тут ніколи не означає, що це ваш контакт, навіть якщо воно схоже на ім’я одного з ваших контактів. Ніщо з цієї кімнати ніколи не потрапляє до власної mesh-мережі Knit.</string>
+    <string name="chat_meshcore_no_radio">Підключіть плату MeshCore, щоб писати сюди. Ця кімната — канал Public вашої власної плати.</string>
+    <string name="chat_meshcore_channel_unusable">Ця плата не може писати сюди: її не налаштовано для Knit на цьому телефоні або її перший канал порожній.</string>
+    <string name="chat_meshcore_post_not_set_up">Не опубліковано — цю плату не налаштовано для Knit на цьому телефоні, тож вона писала б під власним іменем</string>
+    <string name="chat_meshcore_post_no_channel">Не опубліковано — перший канал цієї плати порожній, тож допис ніхто не почув би</string>
+    <string name="chat_meshcore_post_room_off">Не опубліковано — кімнату MeshCore вимкнено в налаштуваннях LoRa</string>
+    <string name="chat_meshcore_consent_can_body">Будь-хто з радіо MeshCore у зоні дії. Ключ каналу публічний, тож кожен, хто слухає, може прочитати й зберегти те, що ви публікуєте, а деякі радіо передають це далі в інтернет.</string>
+    <string name="chat_meshcore_consent_name_title">Ім’я вашої плати йде разом із дописом</string>
+    <string name="chat_meshcore_consent_name_body">Кожен допис виходить у вигляді «%1$s: …». Це ім’я однакове в усіх дописах, і за ним можна впізнати вашу плату, тож люди, у яких ви є серед контактів, або ті, хто знає вашу плату, можуть зрозуміти, що це ви.</string>
+    <string name="chat_meshcore_consent_name_body_unknown">Кожен допис виходить під іменем вашої плати: «Knit» і чотири символи. Це ім’я однакове в усіх дописах, і за ним можна впізнати вашу плату, тож люди, у яких ви є серед контактів, або ті, хто знає вашу плату, можуть зрозуміти, що це ви.</string>
+    <string name="chat_meshcore_consent_rules">Допис не можна відкликати. Будь-хто може писати під будь-яким ім’ям, зокрема й під вашим. Користувачі MeshCore, які пишуть вашій платі напряму, не отримують відповіді: Knit не читає цих повідомлень.</string>
     <string name="chat_commons_subtitle">Усі на цьому ретрансляторі</string>
     <string name="commons_details_title">Про кімнату</string>
     <string name="commons_details_relay">Ретранслятор: %1$s</string>

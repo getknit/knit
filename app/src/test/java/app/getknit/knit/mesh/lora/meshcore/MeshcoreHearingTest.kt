@@ -362,6 +362,57 @@ class MeshcoreHearingTest {
             assertEquals(0, n.transport.status.value.boardsHeard)
         }
 
+    /**
+     * Stage 6 (lora-reviewer's design pass): a text on Public slot 0 is the kind's and never a hearing — not even one whose
+     * bytes are bob's valid, fresh, zero-hop, verified post. It never reaches the frame codec, the mark stays, no radio is
+     * counted; it goes to the room.
+     */
+    @Test
+    fun aPublicTextIsNoHearingEvenWhenItsBytesAreAVerifiedKnitPost() =
+        runTest {
+            val n = node()
+            markBobUnreachable(n)
+            val bytes = post(sentAt = WALL + testScheduler.currentTime)
+            hear(
+                n,
+                BoardPacket(
+                    from = null,
+                    toUs = false,
+                    channel = MeshcoreHooks.PUBLIC_SLOT,
+                    payload = bytes,
+                    rxSnr = 6f,
+                    rxRssi = null,
+                    hopsAway = 0,
+                    rxTimeMs = null,
+                    kind =
+                        MeshcorePacket(
+                            MeshcorePacket.Type.CHANNEL_TEXT,
+                            MeshcoreHooks.PUBLIC_SLOT,
+                            0,
+                            MeshcoreProto.TXT_TYPE_PLAIN,
+                            null,
+                            1_790_000_000L,
+                            live = true,
+                            cobs = false,
+                            text = bytes,
+                        ),
+                ),
+            )
+            assertEquals("never decoded as a frame", 0, n.postsDecoded())
+            assertFalse(n.heard())
+            assertEquals(1, n.transport.status.value.direct.unreachable)
+            assertEquals(0, n.transport.status.value.boardsHeard)
+            assertEquals(0, n.transport.status.value.heard)
+            assertEquals(
+                "handed to the room instead",
+                1L,
+                n
+                    .hooks()
+                    .counters.publicDelivered
+                    .get(),
+            )
+        }
+
     @Test
     fun aMultiHopFloodIsNoHearing() =
         runTest {

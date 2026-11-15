@@ -14,9 +14,14 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshcoreBoardHolder
+import app.getknit.knit.mesh.MeshcorePost
+import app.getknit.knit.mesh.PublicChannelAnswer
 import app.getknit.knit.mesh.PublicChannelSink
+import app.getknit.knit.mesh.PublicPostEnd
+import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
 import app.getknit.knit.mesh.crypto.MeshcoreBind
+import app.getknit.knit.mesh.crypto.MeshcoreKey
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.b64
@@ -34,7 +39,13 @@ import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPlaneStatus
+import app.getknit.knit.mesh.lora.PublicPostEnded
+import app.getknit.knit.mesh.lora.PublicPostKey
+import app.getknit.knit.mesh.lora.PublicPostResult
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreContacts
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreNames
+import app.getknit.knit.mesh.lora.meshcore.MeshcorePublicPost
+import app.getknit.knit.mesh.protocol.FrameId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -238,3 +249,49 @@ internal fun meshcoreBoardHolders(source: Flow<Map<String, MeshcoreBoardHolder>>
 
 /** Whether the MeshCore DM door is bound ([MeshManager.bindMeshcoreDirect]): only where the MeshCore child is built. */
 internal fun bindsMeshcoreDirect(kinds: List<BoardKind>): Boolean = BoardKind.MESHCORE in kinds
+
+/**
+ * The MeshCore room's row id for a Public post (ADR 2026-11.gsqu's Stage 6 amendment): [FrameId.forMeshcorePost] over
+ * the key every receiver reads the post under — a heard one's as drained, our own as queued — so the two sides of one
+ * post meet on one row.
+ */
+internal fun meshcoreRowId(key: PublicPostKey): String = FrameId.forMeshcorePost(key.timestampSecs, key.raw)
+
+/** A judged MeshCore Public post, carried across the seam as the room's own value ([MeshcorePost]), never the plane's. */
+internal fun meshcoreHeard(post: MeshcorePublicPost): MeshcorePost =
+    MeshcorePost(name = post.name, body = post.body, timestampSecs = post.key.timestampSecs, raw = post.key.raw)
+
+/**
+ * The MeshCore room's outbound half (ADR 2026-11.gsqu's Stage 6 amendment, security N13): [body] goes to the MeshCore
+ * plane's Public channel only while a MeshCore board is the [bound] one, else [PublicPostRefusal.NO_BOARD] — a room whose
+ * board is not bound shows its history and refuses, and never posts through another kind's board. Queued, the own row
+ * takes the id the post's receivers key it on ([meshcoreRowId]); a kind that hands back no key (none does here) gets a
+ * fresh id. [postPublic] is the MeshCore plane's `LoraMeshTransport.postPublic`, or null in a build that makes no MeshCore
+ * plane: a seam, so the bound-kind gate is tested against a plane that would answer.
+ */
+internal suspend fun postToMeshcorePublic(
+    bound: BoardKind?,
+    postPublic: (suspend (String) -> PublicPostResult)?,
+    body: String,
+): PublicChannelAnswer {
+    if (bound != BoardKind.MESHCORE || postPublic == null) return PublicChannelAnswer.Refused(PublicPostRefusal.NO_BOARD)
+    return when (val result = postPublic(body)) {
+        is PublicPostResult.Queued -> PublicChannelAnswer.Queued(result.key?.let(::meshcoreRowId) ?: FrameId.new())
+        is PublicPostResult.Refused -> PublicChannelAnswer.Refused(result.reason)
+    }
+}
+
+/**
+ * The MeshCore plane's ended posts ([PublicPostEnded]) as the room reads them (ADR 2026-11.gsqu's Stage 6 amendment): by
+ * the own row's id, `STALE` as never sent and every end at the write as one that may have aired.
+ */
+internal fun meshcorePostEnds(ended: Flow<PublicPostEnded>): Flow<PublicPostEnd> =
+    ended.map { PublicPostEnd(meshcoreRowId(it.key), neverSent = it.reason == PublicPostEnded.Reason.STALE) }
+
+/**
+ * The bound MeshCore board's own name, `Knit xxxx` ([MeshcoreNames.forKey]), from the key its claim holds
+ * ([MeshcoreClaimStore.boardKey]: written only while this phone's setup record consents for that board), or null with
+ * none or one that is no key. The name every MeshCore room post goes out under, since a post leaves only from a board
+ * named so (ADR 2026-11.gsqu's Stage 6 amendment): what the room's consent sheet shows and the bubble's clash set holds.
+ */
+internal fun meshcoreBoardName(key: String?): String? = key?.let(MeshcoreKey::bytesOrNull)?.let(MeshcoreNames::forKey)

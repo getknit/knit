@@ -28,6 +28,40 @@ class DeliveryStatusTest {
         assertEquals(DeliveryStatus.Delivered, DeliveryStatus.of(message(received = true)))
     }
 
+    /**
+     * A MeshCore room post of ours that ended without airing (ADR 2026-11.gsqu's Stage 6 amendment), marked on its row:
+     * `pendingKey` there is never sent, a plane gone back to unknown from LoRa is unconfirmed — and each says so in its
+     * own words, never "sent". Nowhere else do those columns mean it.
+     */
+    @Test
+    fun `an ended MeshCore post reads not sent or unconfirmed, and only in that room`() {
+        val room = Conversations.MESHCORE_PUBLIC
+        assertEquals(DeliveryStatus.Sent, DeliveryStatus.of(message(conversationId = room, receivedVia = DeliveryPlane.LoRa)))
+        assertEquals(
+            DeliveryStatus.NotSent,
+            DeliveryStatus.of(message(conversationId = room, pendingKey = true, receivedVia = DeliveryPlane.LoRa)),
+        )
+        assertEquals(DeliveryStatus.Unconfirmed, DeliveryStatus.of(message(conversationId = room)))
+        // The Meshtastic room and every other thread keep their own reading of the same columns.
+        assertEquals(DeliveryStatus.Pending, DeliveryStatus.of(message(conversationId = Conversations.MESHTASTIC, pendingKey = true)))
+        assertEquals(DeliveryStatus.Sent, DeliveryStatus.of(message(conversationId = Conversations.MESHTASTIC)))
+        assertEquals(DeliveryStatus.Sent, DeliveryStatus.of(message()))
+
+        assertEquals(
+            DeliveryText(R.string.chat_status_post_not_sent),
+            deliveryLabel(DeliveryStatus.NotSent, DeliveryPlane.Unknown, mine = true),
+        )
+        assertEquals(
+            DeliveryText(R.string.chat_status_post_unconfirmed),
+            deliveryLabel(DeliveryStatus.Unconfirmed, DeliveryPlane.Unknown, mine = true),
+        )
+        assertEquals(
+            DeliveryStatus.Unconfirmed,
+            DeliveryStatus.ofTick(received = false, radioReached = false, ended = DeliveryStatus.Unconfirmed),
+        )
+        assertNull(tickGlyph(DeliveryStatus.NotSent, DeliveryPlane.LoRa))
+    }
+
     @Test
     fun `our own message reports sent, delivered, or delivered over the Internet`() {
         assertEquals(
@@ -250,6 +284,7 @@ class DeliveryStatusTest {
         received: Boolean = false,
         pendingKey: Boolean = false,
         conversationId: String = Conversations.NEARBY,
+        receivedVia: DeliveryPlane = DeliveryPlane.Unknown,
     ) = MessageEntity(
         id = "m1",
         conversationId = conversationId,
@@ -258,5 +293,6 @@ class DeliveryStatusTest {
         sentAt = 0L,
         received = received,
         pendingKey = pendingKey,
+        receivedVia = receivedVia.code,
     )
 }

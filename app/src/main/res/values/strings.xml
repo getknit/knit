@@ -73,6 +73,9 @@
     <string name="channel_dms_desc">Private 1:1 messages</string>
     <string name="channel_meshtastic_name">Meshtastic public channel</string>
     <string name="channel_meshtastic_desc">Posts on your Meshtastic radio\'s primary channel</string>
+    <!-- The MeshCore room's own channel (ADR 2026-11.gsqu's Stage 6): a MeshCore board's Public channel, silent like the Meshtastic one. -->
+    <string name="channel_meshcore_name">MeshCore public channel</string>
+    <string name="channel_meshcore_desc">Posts on your MeshCore board\'s Public channel</string>
     <string name="channel_commons_name">Commons</string>
     <string name="channel_commons_desc">Posts in a relay\'s shared room</string>
     <string name="mention_channel_name">Mentions</string>
@@ -81,6 +84,7 @@
     <!-- Notification conversation titles (per channel) -->
     <string name="notif_title_nearby">Nearby</string>
     <string name="notif_title_meshtastic">Meshtastic</string>
+    <string name="notif_title_meshcore">MeshCore</string>
     <string name="notif_self_name">You</string>
     <!-- A chat a shortcut or a notification opens after it was deleted, blocked or left: the toast, and the message
          a disabled home-screen shortcut shows when tapped (ADR 2026-10.jbsa) -->
@@ -692,6 +696,11 @@
          packet, never their phone, so it must not read as delivered (ADR 040's 2026-10-31 amendment) -->
     <string name="chat_status_lora_radio_reached">Reached their LoRa radio</string>
     <string name="chat_status_pending_key">Not sent yet — waiting for their key</string>
+    <!-- A MeshCore room post of ours that waited too long for the radio and was never handed to it: safe to post again. -->
+    <string name="chat_status_post_not_sent">Not sent</string>
+    <!-- A MeshCore room post of ours the board gave up on as it wrote it: refused, or no answer came, so it may have
+         aired after all. Never "not sent". -->
+    <string name="chat_status_post_unconfirmed">May not have gone out</string>
     <string name="chat_time_just_now">Just now</string>
     <!-- The header above the first message of a day in a chat thread; older days show their weekday or date -->
     <string name="chat_day_today">Today</string>
@@ -860,6 +869,8 @@
     <!-- Chat list -->
     <string name="nearby_title">Nearby</string>
     <string name="meshtastic_title">Meshtastic</string>
+    <!-- The MeshCore room's title while its board does not say what its slot 0 is called. -->
+    <string name="meshcore_title">MeshCore</string>
     <!-- A commons: a relay's shared room for everyone on it (its operator can name it; this is the fallback). -->
     <string name="commons_title">Commons</string>
     <string name="chat_list_empty_preview">No messages yet</string>
@@ -1842,6 +1853,9 @@
     <string name="lora_room_subtitle">Show your radio\'s own channel as a room in Knit, so you can read and join whatever else is on it. Off, the room is hidden and silent and Knit ignores that channel — your board still carries Knit\'s own messages.</string>
     <!-- ADR 067: the room row's subtitle while the board is on a dedicated frequency. -->
     <string name="lora_room_subtitle_dedicated">Hidden while this board is on a dedicated frequency: no public radio can hear it, so there is no channel to read. Restore the board to get the room back.</string>
+    <!-- The MeshCore room's switch, shown while a MeshCore board is bound (ADR 2026-11.gsqu's Stage 6). -->
+    <string name="lora_meshcore_room_title">MeshCore room</string>
+    <string name="lora_meshcore_room_subtitle">Show your MeshCore board\'s Public channel as a room in Knit, so you can read and join whatever else is on it. Off, the room is hidden and silent and Knit ignores that channel — your board still carries Knit\'s own messages.</string>
     <string name="lora_airtime">Airtime %1$d%% of the current budget</string>
     <string name="lora_radio_config">Radio %1$s</string>
     <string name="lora_public_channel">Primary channel %1$s</string>
@@ -2135,6 +2149,31 @@
     <string name="chat_mesh_consent_accept">Post</string>
     <string name="chat_mesh_consent_decline">Not now</string>
     <string name="chat_mesh_subtitle">Your radio\'s primary channel</string>
+    <!-- The MeshCore room (ADR 2026-11.gsqu's Stage 6): a MeshCore board's Public channel. Every author is a stranger
+         whose name nothing checks — never a contact, never signed — so its words differ from the Meshtastic room's. -->
+    <string name="chat_meshcore_author">%1$s, on the MeshCore channel — name not verified</string>
+    <!-- A post that came with no name, or whose name content filtering hides. -->
+    <string name="chat_meshcore_unnamed">Unnamed</string>
+    <!-- Under a post whose name matches yours, your board\'s, or someone you know: anyone can post under any name. -->
+    <string name="chat_meshcore_name_clash">Same name as someone you know — not verified as them</string>
+    <!-- Every MeshCore room author's claimed name wherever a single line names it (the chat list, search, the pinned
+         bar, message details, the notification): quoted and marked, whatever it matches. -->
+    <string name="chat_meshcore_name_claimed">“%1$s” (unverified)</string>
+    <string name="chat_meshcore_room_notice">Unencrypted radio channel — names are never verified</string>
+    <string name="chat_meshcore_room_notice_keyed">Not end-to-end encrypted — names are never verified</string>
+    <string name="chat_meshcore_room_body">This room shows the Public channel of the MeshCore board paired to this phone. Knit\'s encryption does not reach it: nothing here is end-to-end encrypted, and on the standard Public channel the key is public, so anyone with a radio can read it. Anyone in range can post under any name, and Knit never checks one: a name here is never your contact, even one that reads like them. Nothing in this room ever enters Knit\'s own mesh.</string>
+    <string name="chat_meshcore_no_radio">Connect a MeshCore board to post here. This room is your own board\'s Public channel.</string>
+    <string name="chat_meshcore_channel_unusable">This board can\'t post here: it isn\'t set up for Knit on this phone, or its first channel is empty.</string>
+    <string name="chat_meshcore_post_not_set_up">Not posted — this board isn\'t set up for Knit on this phone, so it would post under its own name</string>
+    <string name="chat_meshcore_post_no_channel">Not posted — this board\'s first channel is empty, so nobody would hear it</string>
+    <string name="chat_meshcore_post_room_off">Not posted — the MeshCore room is switched off in LoRa settings</string>
+    <!-- The MeshCore room's first-use disclosure (security B3): its own words, since a MeshCore post carries the board's
+         name in front of every line and its key is public. %1$s is the board's own name, “Knit” and four characters. -->
+    <string name="chat_meshcore_consent_can_body">Anyone with a MeshCore radio in range. The channel\'s key is public, so anyone listening can read and keep what you post, and some radios pass it on to the Internet.</string>
+    <string name="chat_meshcore_consent_name_title">Your board\'s name goes with it</string>
+    <string name="chat_meshcore_consent_name_body">Every post goes out as “%1$s: …”. That name is the same on every post and identifies your board, so people who have you as a contact, or who know your board, can tell it is you.</string>
+    <string name="chat_meshcore_consent_name_body_unknown">Every post goes out under your board\'s name, “Knit” and four characters. That name is the same on every post and identifies your board, so people who have you as a contact, or who know your board, can tell it is you.</string>
+    <string name="chat_meshcore_consent_rules">A post can\'t be taken back. Anyone can post under any name, yours included. MeshCore users who message your board directly get no answer: Knit doesn\'t read those messages.</string>
     <string name="chat_commons_subtitle">Everyone on this relay</string>
     <!-- A commons' details screen: its name, its relay, its members and Leave. -->
     <string name="commons_details_title">Room info</string>

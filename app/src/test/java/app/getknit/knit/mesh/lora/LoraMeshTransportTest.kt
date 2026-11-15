@@ -20,6 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -639,6 +640,8 @@ class LoraMeshTransportTest {
         signaturePolicy: SignaturePolicy? = null,
         primaryAead: Boolean = false,
         knitAead: Boolean = false,
+        // How long the room takes over each post before it holds it (part 6c's ordering case); none by default.
+        roomDelayMs: (MeshPost) -> Long = { 0L },
     ): Rig {
         val r =
             rig(
@@ -651,7 +654,10 @@ class LoraMeshTransportTest {
                 signaturePolicy = signaturePolicy,
                 knitAead = knitAead,
                 pace = LoraPacePolicy(minGapMs = 0, airtime = LoraAirtime(dedicatedUnlocksDuty = true)),
-                onPublicPost = { posts += it },
+                onPublicPost = {
+                    delay(roomDelayMs(it))
+                    posts += it
+                },
                 state = state,
             ) { testScheduler.currentTime }
         r.transport.start()
@@ -690,6 +696,26 @@ class LoraMeshTransportTest {
             assertEquals("the NodeDB puts a name on the speaker", "Bob", post.name)
             assertEquals("LongFast", post.channel)
             assertEquals(1L, r.metrics.meshtastic().meshPostIngested)
+            r.transport.stop()
+        }
+
+    /**
+     * Part 6c: a replay at connect reaches the room in the order the board handed it over. The room takes the first post
+     * slowest, so a launch per post would land the later ones first; one at a time, each waits for the one before.
+     */
+    @Test
+    fun heardPostsReachTheRoomInTheOrderTheBoardHandedThemOver() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = bridgeRig(air, posts, roomDelayMs = { (REPLAY - it.packetId + REPLAY_BASE) * SLOW_ROOM_MS })
+
+            repeat(REPLAY) { i -> r.link.deliverPublicText(from = 0xdeadbeefu, body = "post $i", id = (REPLAY_BASE + i).toUInt()) }
+            // Every post's wait, end to end, and then some: the room is idle again.
+            advanceTimeBy(REPLAY * REPLAY * SLOW_ROOM_MS)
+            runCurrent()
+
+            assertEquals((0 until REPLAY).map { "post $it" }, posts.map { it.body })
             r.transport.stop()
         }
 
@@ -2545,6 +2571,11 @@ class LoraMeshTransportTest {
         }
 
     private companion object {
+        /** A replay's length, its first packet id, and how much slower the room is with each earlier post (part 6c). */
+        const val REPLAY = 6
+        const val REPLAY_BASE = 300
+        const val SLOW_ROOM_MS = 10L
+
         /** Far more clock reads than a loop that suspends between passes can make; a spin blows past it at once. */
         const val SPIN_CAP = 5_000
 

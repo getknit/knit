@@ -195,7 +195,7 @@ class MessageRequestsViewModel(
 
                 // No room is ever a request (Conversations.isAccepted), so none can be declined here; the
                 // arms exist so the compiler keeps saying so.
-                ConversationKind.NEARBY, ConversationKind.MESHTASTIC, ConversationKind.COMMONS -> Unit
+                ConversationKind.NEARBY, ConversationKind.MESHTASTIC, ConversationKind.MESHCORE, ConversationKind.COMMONS -> Unit
             }
         }
     }

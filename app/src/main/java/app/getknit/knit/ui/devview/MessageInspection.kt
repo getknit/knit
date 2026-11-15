@@ -10,6 +10,7 @@ import app.getknit.knit.data.message.hiddenByFilter
 import app.getknit.knit.data.receipt.MessageReceiptEntity
 import app.getknit.knit.mesh.ArrivingFile
 import app.getknit.knit.mesh.ForwardStore
+import app.getknit.knit.mesh.MeshPostOrigin
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameType
@@ -207,7 +208,9 @@ object MessageInspection {
                 add(InspectRow("styles", m.styles ?: ABSENT))
                 add(InspectRow("mentions", m.mentions.takeUnless { it == EMPTY_JSON_LIST } ?: ABSENT))
                 m.originNode?.let { node ->
-                    add(InspectRow("originNode", String.format(Locale.ROOT, "!%08x", node)))
+                    // A MeshCore room post carries the fixed sentinel, never a node (ADR 2026-11.gsqu's Stage 6 amendment).
+                    val label = if (MeshPostOrigin.isMeshcoreOrigin(node)) MESHCORE_ORIGIN else String.format(Locale.ROOT, "!%08x", node)
+                    add(InspectRow("originNode", label))
                     add(InspectRow("originHops", m.originHops?.toString() ?: ABSENT))
                     add(InspectRow("originSnr", m.originSnrDeci?.let { String.format(Locale.ROOT, "%.1f dB", it / DECI) } ?: ABSENT))
                     add(InspectRow("originViaMqtt", yesNo(m.originViaMqtt)))
@@ -232,6 +235,9 @@ object MessageInspection {
 
     private const val EMPTY_JSON_LIST = "[]"
     private const val DECI = 10.0
+
+    /** What the originNode row reads on a MeshCore room post, whose sentinel names no node: log notation, never `!hex`. */
+    private const val MESHCORE_ORIGIN = "meshcore (no node)"
 }
 
 /** The stored codes [MessageInspection] shows, by the name the code gives them. */

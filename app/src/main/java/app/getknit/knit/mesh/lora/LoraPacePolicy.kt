@@ -702,6 +702,12 @@ internal class OutboundFrame(
      * through per id per window, so a frame refused twice inside ten minutes keeps its slot the second time.
      */
     val sigKey: String? = null,
+    /**
+     * The sender timestamp, in seconds, a public post's packet carries, fixed when it was queued (MeshCore's Public post,
+     * ADR 2026-11.gsqu's Stage 6 amendment; `PlaneCore.enqueuePublic`): every write of this frame airs it, so a `Busy`
+     * retry is the same post and our own row's id matches what receivers read. Null on every other frame.
+     */
+    val timestampSecs: Long? = null,
 ) {
     /**
      * A frame addressed by a Meshtastic node number, [MeshtasticProto.BROADCAST] for the channel: the form before

@@ -91,6 +91,12 @@ data class LoraRadioUiState(
      * [enabled]). Off, slot 0 is never read into a room and the room's row leaves the chat list.
      */
     val roomEnabled: Boolean = true,
+    /**
+     * Whether the MeshCore room is mirrored at all (`SettingsStore.meshcoreRoomEnabled`, ADR 2026-11.gsqu's Stage 6
+     * amendment), and whether a MeshCore board is the bound one ([meshcoreBound]), which is when its switch is drawn.
+     */
+    val meshcoreRoomEnabled: Boolean = true,
+    val meshcoreBound: Boolean = false,
     val boardName: String? = null,
     val boardAddress: String? = null,
     val channel: Int = 0,
@@ -183,11 +189,16 @@ internal class LoraRadioViewModel(
     private val refresh = MutableStateFlow(0)
     private val showAll = MutableStateFlow(false)
 
-    /** The three per-plane switches, folded onto one arm so the state combine stays inside its five-flow arity. */
+    /**
+     * The per-plane switches — and the MeshCore room's, with whether a MeshCore board is bound — folded onto one arm so the
+     * state combine stays inside its five-flow arity.
+     */
     private data class Switches(
         val enabled: Boolean,
         val dms: Boolean,
         val room: Boolean,
+        val meshcoreRoom: Boolean,
+        val meshcoreBound: Boolean,
     )
 
     private val switches =
@@ -195,8 +206,9 @@ internal class LoraRadioViewModel(
             settings.loraEnabled,
             settings.loraDmEnabled,
             settings.loraRoomEnabled,
-            ::Switches,
-        )
+            settings.meshcoreRoomEnabled,
+            settings.boundBoardKind,
+        ) { enabled, dms, room, meshcoreRoom, bound -> Switches(enabled, dms, room, meshcoreRoom, bound == BoardKind.MESHCORE) }
 
     /** The bonded list is a Binder call into the Bluetooth service, so it is read on its own arm — never on link churn. */
     private data class Picker(
@@ -237,6 +249,8 @@ internal class LoraRadioViewModel(
                 enabled = switches.enabled,
                 dmEnabled = switches.dms,
                 roomEnabled = switches.room,
+                meshcoreRoomEnabled = switches.meshcoreRoom,
+                meshcoreBound = switches.meshcoreBound,
                 boardName = picker.bonded.firstOrNull { it.address == address }?.name ?: address,
                 boardAddress = address,
                 channel = channel,
@@ -347,6 +361,17 @@ internal class LoraRadioViewModel(
         viewModelScope.launch {
             settings.setLoraRoomEnabled(on)
             if (!on) notifier.clearConversation(Conversations.MESHTASTIC)
+        }
+    }
+
+    /**
+     * Switches the MeshCore room on or off (ADR 2026-11.gsqu's Stage 6 amendment): the plane stops delivering from this
+     * moment, and switching it off clears what the room already put on the shade, as [onToggleRoom] does for its room.
+     */
+    fun onToggleMeshcoreRoom(on: Boolean) {
+        viewModelScope.launch {
+            settings.setMeshcoreRoomEnabled(on)
+            if (!on) notifier.clearConversation(Conversations.MESHCORE_PUBLIC)
         }
     }
 

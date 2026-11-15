@@ -397,6 +397,16 @@ class SettingsStore(
     val meshtasticPostConsented: Flow<Boolean> = dataStore.data.map { it[KEY_MESHTASTIC_POST_CONSENTED] ?: false }
 
     /**
+     * Whether the user has read, and accepted, the disclosure behind posting into the **MeshCore room** (ADR
+     * 2026-11.gsqu's Stage 6 amendment, security B3): the board's own `Knit xxxx` goes on the front of every post and
+     * identifies the board, people who know it can tell the post is theirs, the channel key is public so anyone can keep
+     * what is posted, a post cannot be taken back, anyone can post under any name, and a MeshCore user's DM to the board
+     * goes unread. Its own answer, never [meshtasticPostConsented]'s: the two sheets say different things, and the
+     * Meshtastic consent never posts through a MeshCore board. One-way, like that one.
+     */
+    val meshcorePostConsented: Flow<Boolean> = dataStore.data.map { it[KEY_MESHCORE_POST_CONSENTED] ?: false }
+
+    /**
      * Whether the user has read, and accepted, the disclosure behind the composer's "Send location" pin —
      * what leaves the phone (the exact position and its accuracy, as a line in one message), who receives it
      * (that chat, or everyone in radio range in the Nearby room), and when Knit reads it (only between the
@@ -526,7 +536,8 @@ class SettingsStore(
 
     /**
      * Whether a MeshCore board's Public channel is mirrored here (ADR 2026-11.gsqu §7), the peer of [loraRoomEnabled]:
-     * default on, gated on `BuildConfig.LORA_PLANE` the same way. Read only for a MeshCore plane, which Stage 5 builds.
+     * default on, gated on `BuildConfig.LORA_PLANE` the same way. The MeshCore plane's config, the MeshCore room's row and
+     * composer read it, and the LoRa screen's MeshCore room switch writes it ([setMeshcoreRoomEnabled], Stage 6).
      */
     val meshcoreRoomEnabled: Flow<Boolean> =
         dataStore.data.map { BuildConfig.LORA_PLANE && (it[KEY_MESHCORE_ROOM_ENABLED] ?: true) }
@@ -919,6 +930,9 @@ class SettingsStore(
 
     suspend fun setLoraRoomEnabled(value: Boolean) = dataStore.edit { it[KEY_LORA_ROOM_ENABLED] = value }
 
+    /** Switches the MeshCore room on or off ([meshcoreRoomEnabled]): the peer of [setLoraRoomEnabled]. */
+    suspend fun setMeshcoreRoomEnabled(value: Boolean) = dataStore.edit { it[KEY_MESHCORE_ROOM_ENABLED] = value }
+
     /**
      * Records the chosen Meshtastic board's address + name in one write so the row can never show a name without an
      * address: [bindBoard] for [BoardKind.MESHTASTIC].
@@ -1094,6 +1108,9 @@ class SettingsStore(
 
     /** Records that the user accepted the disclosure behind [meshtasticPostConsented]. */
     suspend fun acceptMeshtasticPostConsent() = dataStore.edit { it[KEY_MESHTASTIC_POST_CONSENTED] = true }
+
+    /** Records that the user accepted the disclosure behind [meshcorePostConsented]. */
+    suspend fun acceptMeshcorePostConsent() = dataStore.edit { it[KEY_MESHCORE_POST_CONSENTED] = true }
 
     /** Records that the user accepted the disclosure behind [locationShareConsented]. */
     suspend fun acceptLocationShareConsent() = dataStore.edit { it[KEY_LOCATION_SHARE_CONSENTED] = true }
@@ -1348,6 +1365,7 @@ class SettingsStore(
         val KEY_LORA_PRIOR_LONG_NAME = stringPreferencesKey("lora_prior_long_name")
         val KEY_LORA_PRIOR_SHORT_NAME = stringPreferencesKey("lora_prior_short_name")
         val KEY_MESHCORE_ROOM_ENABLED = booleanPreferencesKey(SettingsKeys.MESHCORE_ROOM_ENABLED)
+        val KEY_MESHCORE_POST_CONSENTED = booleanPreferencesKey(SettingsKeys.MESHCORE_POST_CONSENTED)
         val KEY_RECENT_REACTIONS = stringPreferencesKey("recent_reactions")
     }
 }

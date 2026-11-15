@@ -229,16 +229,22 @@ interface MeshController {
     ): Boolean
 
     /**
-     * Puts a post typed in the **Meshtastic room** ([app.getknit.knit.data.message.Conversations.MESHTASTIC])
-     * on this phone's own board's primary channel, and stores it locally once the board has queued it. Nothing
-     * crosses Knit's mesh: the post is not flooded, not custodied, and never handed to another phone.
+     * Puts a post typed in a **bridged board room** ([conversationId]: the Meshtastic room,
+     * [app.getknit.knit.data.message.Conversations.MESHTASTIC], or the MeshCore room,
+     * [app.getknit.knit.data.message.Conversations.MESHCORE_PUBLIC]) on this phone's own board's public channel — the
+     * room's own kind's board, never whichever is bound (ADR 2026-11.gsqu's Stage 6 amendment) — and stores it locally
+     * once the board has queued it. Nothing crosses Knit's mesh: the post is not flooded, not custodied, and never handed
+     * to another phone.
      *
      * Separate from [sendChat] rather than a conversation id passed to it: `sendChat` reads the destination
      * off `recipientId`/`group`, so a room id handed to it would be taken for a peer node id and minted as a
      * DM addressed to nobody. The default refuses with [PublicPostRefusal.NO_BOARD], which is what a fake and
-     * a build without the LoRa plane both want.
+     * a build without the LoRa plane both want; so does any other thread.
      */
-    suspend fun sendPublicPost(text: String): PublicPostOutcome = PublicPostOutcome.Refused(PublicPostRefusal.NO_BOARD)
+    suspend fun sendPublicPost(
+        conversationId: String,
+        text: String,
+    ): PublicPostOutcome = PublicPostOutcome.Refused(PublicPostRefusal.NO_BOARD)
 
     /**
      * Posts [text] in the commons [conversationId] (docs/SPOOL_PROTOCOL.md §7.4): signed, stored, and handed

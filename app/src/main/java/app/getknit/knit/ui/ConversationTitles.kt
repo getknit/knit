@@ -12,7 +12,10 @@ import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.groupFaces
 import app.getknit.knit.data.message.groupTitle
+import app.getknit.knit.data.message.hiddenByFilter
 import app.getknit.knit.data.message.meshRoomChannel
+import app.getknit.knit.identity.NameKey
+import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.meshNodeLabel
 
@@ -41,20 +44,33 @@ internal data class ConversationTitle(
      */
     val faces: List<GroupFace> = emptyList(),
 ) {
-    val isRoom: Boolean get() = kind == ConversationKind.NEARBY || kind == ConversationKind.MESHTASTIC || kind == ConversationKind.COMMONS
+    val isRoom: Boolean get() = kind == ConversationKind.NEARBY || kind.isBridged || kind == ConversationKind.COMMONS
 }
 
 /**
- * The Meshtastic room's inputs: whether the user keeps the room ([enabled], `SettingsStore.loraRoomEnabled`),
- * whether a board is bound ([plane]), what the board calls slot 0 now ([liveChannel]) and what the newest
- * heard post named ([newestChannel]) — the two halves of [meshRoomChannel].
+ * A bridged room's inputs: whether the user keeps the room ([enabled], `SettingsStore.loraRoomEnabled` for the Meshtastic
+ * room, `meshcoreRoomEnabled` for the MeshCore room), whether its own kind's board is bound ([plane]), what the board
+ * calls slot 0 now ([liveChannel]) and what the newest heard post named ([newestChannel], the Meshtastic room's alone: a
+ * MeshCore post names no channel) — the two halves of [meshRoomChannel]. Each room's from its own kind's facts
+ * (`roomFactsFor`), never the bound kind's (ADR 2026-11.gsqu's Stage 6 amendment).
  */
 internal data class MeshRoomInputs(
     val enabled: Boolean,
     val plane: LoraPlane,
     val liveChannel: String?,
     val newestChannel: String?,
-)
+) {
+    companion object {
+        /** A room whose kind no input names: kept by default, no board, so its row stands on history alone. */
+        val NO_BOARD = MeshRoomInputs(enabled = true, plane = LoraPlane.Off, liveChannel = null, newestChannel = null)
+
+        /** A room's inputs off its own kind's [facts], with the newest heard post's channel where the room keeps one. */
+        fun of(
+            facts: LoraFacts,
+            newestChannel: String? = null,
+        ): MeshRoomInputs = MeshRoomInputs(facts.room, facts.plane, facts.primaryChannel, newestChannel)
+    }
+}
 
 /**
  * The title of [conversationId]: the Nearby room's fixed name; the Meshtastic room's channel
@@ -79,6 +95,11 @@ internal fun conversationTitle(
 
         ConversationKind.MESHTASTIC -> {
             ConversationTitle(conversationId, kind, meshRoomChannel ?: context.getString(R.string.meshtastic_title), null, null)
+        }
+
+        // The board's slot 0 as it is named now (whatever it holds, never a constant `Public`), else the generic name.
+        ConversationKind.MESHCORE -> {
+            ConversationTitle(conversationId, kind, meshRoomChannel ?: context.getString(R.string.meshcore_title), null, null)
         }
 
         ConversationKind.COMMONS -> {
@@ -132,8 +153,8 @@ internal fun ConversationTable.isPending(
 
 /**
  * Every thread a list surface shows, titled, in the list's own order before its sort: the Nearby room
- * (always present, even with no messages yet); the Meshtastic room while the user keeps it and either a
- * board is bound or history remains (the row stays while history does after the radio goes, and never
+ * (always present, even with no messages yet); each bridged room (Meshtastic's, then MeshCore's) while the user keeps it
+ * and either its own kind's board is bound or history remains (the row stays while history does after the radio goes, and never
  * exists on a phone with neither — a standing empty row there would offer something this install cannot
  * have); every active group from the groups table that is not a request (so a freshly created group shows
  * before its first message); and every DM thread with a message whose peer is not blocked and not a
@@ -149,18 +170,14 @@ internal fun visibleConversations(
     // Every commons this device has joined (`CommonsRepository.observeAll`): a row each, present from the
     // join on, like a freshly created group — the room exists before anyone has posted in it.
     commons: List<CommonsEntity> = emptyList(),
+    // The MeshCore room's own inputs (ADR 2026-11.gsqu's Stage 6 amendment), by the Meshtastic room's rule.
+    meshcoreRoom: MeshRoomInputs = MeshRoomInputs.NO_BOARD,
 ): List<ConversationTitle> {
     val verified = directory.verified
     val groupIds = groups.mapTo(HashSet()) { it.groupId }
     val nearby = conversationTitle(context, Conversations.NEARBY, null, directory, table.me, null)
-    val hasBridgedHistory = Conversations.MESHTASTIC in table.conversations
-    val bridged =
-        if (!meshRoom.enabled || (meshRoom.plane == LoraPlane.Off && !hasBridgedHistory)) {
-            null
-        } else {
-            val channel = meshRoomChannel(meshRoom.liveChannel, meshRoom.newestChannel)
-            conversationTitle(context, Conversations.MESHTASTIC, null, directory, table.me, channel)
-        }
+    val bridged = bridgedRoomTitle(context, Conversations.MESHTASTIC, meshRoom, table, directory)
+    val meshcore = bridgedRoomTitle(context, Conversations.MESHCORE_PUBLIC, meshcoreRoom, table, directory)
     val commonsTitles = commons.map { conversationTitle(context, it.conversationId, null, directory, table.me, null, it.name) }
     val groupTitles =
         groups
@@ -174,7 +191,23 @@ internal fun visibleConversations(
                     it !in groupIds &&
                     !table.isPending(it, accepted, verified)
             }.map { conversationTitle(context, it, null, directory, table.me, null) }
-    return listOf(nearby) + listOfNotNull(bridged) + commonsTitles + groupTitles + dms
+    return listOf(nearby) + listOfNotNull(bridged, meshcore) + commonsTitles + groupTitles + dms
+}
+
+/**
+ * A bridged room's row ([conversationId]: the Meshtastic or the MeshCore room) while the user keeps it ([room]'s
+ * switch) and either its own kind's board is bound or its history remains; null otherwise — a standing empty row on a
+ * phone with neither would offer something this install cannot have.
+ */
+private fun bridgedRoomTitle(
+    context: Context,
+    conversationId: String,
+    room: MeshRoomInputs,
+    table: ConversationTable,
+    directory: PeerDirectory,
+): ConversationTitle? {
+    if (!room.enabled || (room.plane == LoraPlane.Off && conversationId !in table.conversations)) return null
+    return conversationTitle(context, conversationId, null, directory, table.me, meshRoomChannel(room.liveChannel, room.newestChannel))
 }
 
 /**
@@ -192,8 +225,18 @@ internal fun speakerLabel(
     directory: PeerDirectory,
     me: String?,
     isDm: Boolean,
+    // Content filtering is on: a MeshCore room post it hides names nobody, since its name was screened with its words.
+    hideFlagged: Boolean = false,
 ): String? {
     message.originNode?.let { node ->
+        // A MeshCore room post (ADR 2026-11.gsqu's Stage 6 amendment, security B1, N2): never a contact and never the
+        // sentinel node's `!hex`. Its name is always quoted and marked on a line like this one — every author, whatever it
+        // matches, so "You: hello" can never read as our own post (the maintainer's call, 2026-11-15) — and a missing or
+        // hidden one (screened with the words, or by the name screen, ADR 2026-11.y4pc) is plainly "Unnamed".
+        if (message.conversationId == Conversations.MESHCORE_PUBLIC) {
+            val name = message.originName?.takeIf { !message.hiddenByFilter(hideFlagged) }?.let(directory::shown)
+            return meshcoreAuthorLine(context, name)
+        }
         val contact = message.originPeerId?.let { directory.label(it) }
         return contact?.text ?: message.originName?.let(directory::shown)?.takeIf { it.isNotBlank() } ?: meshNodeLabel(node)
     }
@@ -201,3 +244,42 @@ internal fun speakerLabel(
     if (isDm && !isOwn) return null
     return if (isOwn) context.getString(R.string.chat_self_name) else directory.label(message.senderId).text
 }
+
+/**
+ * A MeshCore room post's author on a single-line surface (ADR 2026-11.gsqu's Stage 6 amendment): its claimed [name], always
+ * quoted and marked (`chat_meshcore_name_claimed`) whatever it matches, or "Unnamed" for none. The chat-list and search
+ * previews ([speakerLabel]), the pinned bar and the details screen all read it; the notification's person is worded the
+ * same way off `NotificationLabels.claimedName`.
+ */
+internal fun meshcoreAuthorLine(
+    context: Context,
+    name: String?,
+): String =
+    name?.takeIf { it.isNotBlank() }?.let { context.getString(R.string.chat_meshcore_name_claimed, it) }
+        ?: context.getString(R.string.chat_meshcore_unnamed)
+
+/**
+ * The [NameKey]s a MeshCore room post's claimed name must not read as for the bubble to draw it unmarked (ADR
+ * 2026-11.gsqu's Stage 6 amendment, security N2): "You", [ownNames] (the person's display name and their board's
+ * `Knit xxxx`), and every name the screens render for a person — each peer's stored name and its label as drawn, the
+ * discriminated "Alice (QuietOtter)" and the alias a blank name shows, and our own label the same way. Blank names are
+ * left out. A name in it gets the bubble's "Same name as someone you know" line; the one-line surfaces mark every name.
+ */
+internal fun meshcoreRoomClashKeys(
+    context: Context,
+    ownNames: List<String?>,
+    directory: PeerDirectory,
+    me: String?,
+): Set<String> {
+    val people = directory.peers.map { it.nodeId } + listOfNotNull(me)
+    val names =
+        listOf(context.getString(R.string.chat_self_name)) + ownNames + directory.peers.map { it.name } +
+            people.flatMap { id -> directory.label(id).let { label -> listOf(label.text, label.name) } }
+    return names.mapNotNullTo(HashSet()) { name -> name?.let(NameKey::of)?.takeIf { it.isNotEmpty() } }
+}
+
+/** Whether a MeshCore room post's claimed [name] reads, by [NameKey], as one of [keys] ([meshcoreRoomClashKeys]). */
+internal fun meshcoreNameClashes(
+    name: String?,
+    keys: Set<String>,
+): Boolean = name != null && NameKey.of(name) in keys

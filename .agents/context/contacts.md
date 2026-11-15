@@ -60,6 +60,17 @@ lines.
   profile name/status is cleaned at store, a group name only where it is drawn (the stored name is what we sign).
   knit-ios mirrors all of it: `vectors/name-key-v1.json` (`NameKeyVectorTest`, and `ArtTextSemanticsTest` on ART)
   is the pin, and every case stays inside Unicode 11.
+- **When touching who a bridged room's heard post is drawn as — `MeshOrigin` (`meshcore`, `nameClash`, `peerId`),
+  `meshcoreRoomClashKeys`, `meshcoreAuthorLine`, `meshcoreSpeakerKey`, `speakerLabel`'s heard branch,
+  `InboundPipeline.heardSpeaker`, `MessageDetailsViewModel`'s sender, or
+  `MeshPostOrigin.MESHCORE_NODE`:** READ ADR 2026-11.gsqu's Stage 6 amendment (part 6b) and ADR 2026-09.26q3. A MeshCore
+  room post is **never** resolved to a contact, by name or otherwise: its name is a claim anyone on the key can make, ours
+  and our board's included. It wears no contact's styling, face or tap. On every one-line surface and in the shade its
+  name is always quoted and marked, whatever it matches (the maintainer's call, 2026-11-15); in the bubble, one that
+  collides by `NameKey` with "You", the user's name, their board's `Knit xxxx` or any name the screens render for a person
+  (a label's text and name included) carries the clash line. Its notification person is `mc:` + SHA-256 of the name, never
+  the raw name. (The Meshtastic room's node-number match, `findByLoraNode`, is that
+  room's alone.) Regression: `ChatViewModelTest`'s and `ChatMeshRoomTest`'s MeshCore cases, `InboundPipelineTest`'s.
 - **When touching `MeshManager.watchReachable`, its `flooded` memo / `refloodKey`, or `PROFILE_REFLOOD_MIN_MS`:**
   READ ADR 2026-09.uc8p. The first-sighting profile flood is the NAN-only key bootstrap; it goes to a peer once
   per (frame id, peer) per `SeenSet.DEFAULT_TTL_MS` — the receivers' own window, so every copy it withholds is

@@ -112,5 +112,37 @@ object FrameId {
                 .copyOf(ID_BYTES),
         )
 
+    /**
+     * The **row** id for a post on a MeshCore board's Public channel (the MeshCore room, ADR 2026-11.gsqu's Stage 6
+     * amendment): the first [ID_BYTES] of `SHA-256` over a domain string, the sender's timestamp in decimal, a `:`, and
+     * [raw] — the text exactly as the receiving board hands it up, the sending board's `"<name>: "` prefix included,
+     * before any cleaning or clamping (`mesh/lora/PublicPostKey`).
+     *
+     * A channel text names no sender and no packet id, so these two are all a receiver can key on, and they are stable
+     * across the board's offline-queue replay: the same frame, drained again, lands on the row it already wrote. Our own
+     * post's row is written under the same id from what we queued (`"Knit xxxx: "` + the text, stamped at enqueue), so a
+     * re-air of it after the board's seen ring forgot it dedups here, never by name. [timestampSecs] is the sender's
+     * claim and is read for nothing else: a row orders and ages by its arrival.
+     *
+     * Domain-separated from [forMeshPost], and the domain string is **frozen once shipped**: a change would give every
+     * replayed post a second row. Not a wire concern — nothing about a heard post is framed, signed or relayed.
+     */
+    fun forMeshcorePost(
+        timestampSecs: Long,
+        raw: ByteArray,
+    ): String =
+        fromBytes(
+            MessageDigest
+                .getInstance("SHA-256")
+                .apply {
+                    update("$MESHCORE_POST_SALT$timestampSecs:".encodeToByteArray())
+                    update(raw)
+                }.digest()
+                .copyOf(ID_BYTES),
+        )
+
     private const val MESH_POST_SALT = "knit-meshpost-id-v1:"
+
+    /** [forMeshcorePost]'s domain: frozen once shipped. */
+    private const val MESHCORE_POST_SALT = "knit-meshcore-public-id-v1:"
 }

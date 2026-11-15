@@ -91,3 +91,12 @@ uses; it is a roadmap item, and until then the room's strip says what it says. P
 `whenTwoPeersClaimOneNodeTheNewerProfileWins`, `aLaterProfileChangeNeverReattributesHistory`),
 `MeshManagerTest` (`aRefusedPublicPostStoresNothing`, the bound-board republish), and the ViewModel gate and
 refusal tests.
+
+## Amendment 2026-11-15 — heard posts reach the room in the board's order (ADR 2026-11.gsqu, part 6c)
+
+A heard post was handed to the room on a coroutine of its own, so a replay at connect could reach the room, and be
+stamped there, out of the order the board handed it over. `MeshtasticHooks` now queues each post on an
+`OrderedRoomSink`, which delivers one at a time in that order without the packet collector waiting on the room; a
+post the full queue refuses is counted (`meshPostRefused` under `ROOM_BACKLOG`) and logged. Under `heardPostLock`
+each heard post is stamped strictly after the last (`InboundPipeline.heardStamp`), since the room breaks a `sentAt` tie
+on the id, a hash. Pinned by `LoraMeshTransportTest.heardPostsReachTheRoomInTheOrderTheBoardHandedThemOver`.

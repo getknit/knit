@@ -133,6 +133,13 @@ internal object MeshcoreTraits : BoardTraits {
     override val roomCeiling: Ceiling get() = Ceiling.FLOOD
 
     /**
+     * A Public post floods every repeater as Knit's room posts do: admitted under the same flood ceiling (gsqu §4, which names
+     * the Public mirror a flood and rejects [Ceiling.HALF] for floods: 3.3 times jend's cap), sharing its 0.15 with them
+     * (ADR 2026-11.gsqu's Stage 6 amendment, closing the 5a-1 amendment's open question).
+     */
+    override val publicCeiling: Ceiling get() = Ceiling.FLOOD
+
+    /**
      * Drained after this connection's first `NO_MORE` (§5): anything earlier is the board's offline queue replayed, heard
      * while the phone was away. Any path: what the cover's lift reads (#294).
      */
@@ -189,7 +196,8 @@ internal object MeshcoreTraits : BoardTraits {
      *   no transport codes (a flooded ack is priced by [ackPhyBytes]);
      * - a PATH return, flooded: header, transport codes, path length, the two hashes, MAC, and AES over [payloadBytes] of
      *   path plaintext ([pathReturnPlaintext]);
-     * - a public post (`GRP_TXT` on slot 0, flooded): as a room flood, over the timestamp and flags before the text.
+     * - a public post (`GRP_TXT` on slot 0, flooded): as a room flood, over the timestamp, the flags and the board's
+     *   `"Knit xxxx: "` prefix ([PUBLIC_PREFIX_BYTES], `BaseChatMesh.cpp:523`) before the text.
      */
     override fun phyBytes(
         payloadBytes: Int,
@@ -213,7 +221,7 @@ internal object MeshcoreTraits : BoardTraits {
             }
 
             AirPurpose.PUBLIC_POST -> {
-                FLOOD_HEAD + HASH_BYTES + MAC_BYTES + aesPadded(TEXT_HEADER + payloadBytes)
+                FLOOD_HEAD + HASH_BYTES + MAC_BYTES + aesPadded(TEXT_HEADER + PUBLIC_PREFIX_BYTES + payloadBytes)
             }
         }
 
@@ -315,6 +323,19 @@ internal object MeshcoreTraits : BoardTraits {
     const val ROOM_PART_LIMIT = 2
 
     /**
+     * The `"%s: "` the firmware writes before a Public post's text from the board's own name (`BaseChatMesh.cpp:523`): a
+     * constant 11 B, since a post leaves only from a board named `Knit xxxx` (9 B, `MeshcoreNames.forKey`; ADR 2026-11.gsqu's
+     * Stage 6 amendment, lora B1 / security B2).
+     */
+    const val PUBLIC_PREFIX_BYTES = 11
+
+    /**
+     * The most text one Public post carries untrimmed: `MAX_TEXT_LEN` less the prefix (`BaseChatMesh.cpp:527` trims the
+     * whole to 160 silently), 149 B — 185 B on the air, about 1.16 s at the companion default.
+     */
+    const val PUBLIC_TEXT_CAP = MeshcoreProto.MAX_TEXT_LEN - PUBLIC_PREFIX_BYTES
+
+    /**
      * The per-packet term on top of the formula: the uncertainty of Q5's 60-send measurement at 181 B (±17 ms), for the
      * board's ramp and loop-poll latency the preamble does not already explain. Not a bound — the measurement's spread at
      * one size, which a small-packet bench point is still owed to replace.
@@ -369,9 +390,10 @@ private const val AES_BLOCK = 16
 /** Zero-padding to the AES block, as `Utils::encrypt` does: none for an exact multiple, never an extra block. */
 private fun aesPadded(plaintextBytes: Int): Int = (plaintextBytes + AES_BLOCK - 1) / AES_BLOCK * AES_BLOCK
 
-/** The largest payload a [purpose] takes: a sealed compact DM under its COBS byte, else channel data. */
+/** The largest payload a [purpose] takes: a sealed compact DM under its COBS byte, a Public post's text, else channel data. */
 private fun capOf(purpose: AirPurpose): Int =
     when (purpose) {
         AirPurpose.DIRECT_DM, AirPurpose.REPLY -> MeshcoreProto.DIRECT_SEAL_CAP
+        AirPurpose.PUBLIC_POST -> MeshcoreTraits.PUBLIC_TEXT_CAP
         else -> MeshcoreProto.CHANNEL_DATA_CAP
     }

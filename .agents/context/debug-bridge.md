@@ -303,7 +303,10 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `floodUsedMs`, `floodCeilingMs`, `braked`, the board's two utilisations), `law` (`dutyPercent`, `trailingTxSecs`,
   `limitSecs`, `holding`, `releaseInSecs`) and `counters` (`meshcoreForeignDms`, `meshcoreForeignPosts`, `meshcorePublicDiscarded`,
   `meshcoreFragmentsRefused`, `meshcoreAcksBooked`, `meshcorePathReturnsBooked`, `meshcoreAnswersReplayed`,
-  `meshcoreFloodSurcharges`, `meshcoreLawHolds`, `meshcoreZeroHopKnitPosts`, `meshcoreTeachRefused`, and the session's `meshcoreDirectFlooded`,
+  `meshcoreFloodSurcharges`, `meshcoreLawHolds`, `meshcoreZeroHopKnitPosts`, `meshcoreTeachRefused`, since Stage 6 the Public
+  mirror's `meshcorePublicHeard`, `meshcorePublicRoomOff`, `meshcorePublicRefused`, `meshcorePublicDelivered`,
+  `meshcorePublicPostsQueued`, `meshcorePublicPostsRefused`, `meshcorePublicPostsSent`, `meshcorePublicPostsEnded`
+  (`meshcorePublicDiscarded` now counts slot 0's channel data alone), and the session's `meshcoreDirectFlooded`,
   `meshcorePinFailures`, `meshcorePacketsDropped`, `meshcoreCommandsRefused`, `meshcoreUnexpected`, `meshcoreRejected`, and,
   since Stage 5c-1, the reassembler's `meshcoreFragCandidatesFull` (a waiting bound part replaced at random past its side's airtime
   cap), `meshcoreFragUnverified`, `meshcoreElidedUnverified`, read off the fast-path drops; `meshcoreFragmentsRefused` now counts any

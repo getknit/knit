@@ -11,7 +11,9 @@ import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.IdentitySource
 import app.getknit.knit.identity.PeerLabelIndex
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraFacts
+import app.getknit.knit.ui.chat.roomFactsFor
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -42,6 +44,9 @@ internal class OfferedConversations(
     // test supplies a fixed one.
     private val loraFacts: Flow<LoraFacts>,
     private val commons: CommonsRepository?,
+    // Each board kind's own facts (`LoraStatusRepository.perKind`): each bridged room is offered by its own kind's rule (ADR
+    // 2026-11.gsqu's Stage 6 amendment). Null reads [loraFacts] as its own kind's alone.
+    private val loraRooms: Flow<Map<BoardKind, LoraFacts>>? = null,
 ) {
     /** The offered conversation [ids] at one moment, with our own id and the label index their faces are named off. */
     class Snapshot(
@@ -54,12 +59,10 @@ internal class OfferedConversations(
         val me = identity.nodeId()
         val table = messages.observeConversationTable(setOf(MessageEntity.KIND_NORMAL), settings.blockedNodeIds, flowOf(me)).first()
         val directory = peers.observeDirectory().first()
-        val facts = loraFacts.first()
+        val perKind = loraRooms?.first() ?: loraFacts.first().let { mapOf(it.board to it) }
         val meshRoom =
-            MeshRoomInputs(
-                enabled = facts.room,
-                plane = facts.plane,
-                liveChannel = facts.primaryChannel,
+            MeshRoomInputs.of(
+                roomFactsFor(BoardKind.MESHTASTIC, perKind),
                 newestChannel = messages.observeNewestOriginChannel(Conversations.MESHTASTIC).first(),
             )
         val visible =
@@ -71,6 +74,7 @@ internal class OfferedConversations(
                 settings.acceptedConversations.first(),
                 meshRoom,
                 commons?.observeAll()?.first().orEmpty(),
+                meshcoreRoom = MeshRoomInputs.of(roomFactsFor(BoardKind.MESHCORE, perKind)),
             )
         return Snapshot(me, visible.mapTo(HashSet()) { it.id }, directory.labels)
     }

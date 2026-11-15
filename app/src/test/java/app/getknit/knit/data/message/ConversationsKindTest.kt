@@ -65,6 +65,39 @@ class ConversationsKindTest {
         )
     }
 
+    /**
+     * The MeshCore room (ADR 2026-11.gsqu's Stage 6 amendment, security N7): `kindFor`'s last arm is `else -> DM`, so an
+     * id it did not know would be a DM everywhere — a reply action, a DM notification channel, a peer alias.
+     */
+    @Test
+    fun `the MeshCore room is its own bridged kind, never a DM, and cannot collide with anything else`() {
+        val id = Conversations.MESHCORE_PUBLIC
+        assertEquals(ConversationKind.MESHCORE, Conversations.kindFor(id))
+        assertFalse(Conversations.kindFor(id) == ConversationKind.DM)
+        assertTrue(Conversations.kindFor(id).isBridged)
+        assertTrue(Conversations.isBridgedRoom(id))
+        assertTrue(Conversations.isPublicRoom(id))
+        assertTrue(Conversations.isAccepted(id, accepted = emptySet(), verifiedNodeIds = emptySet(), authoredConversationIds = emptySet()))
+        assertFalse(id.length == NodeId.LENGTH)
+        assertTrue(id.contains('-'))
+        assertFalse(id.startsWith(Conversations.GROUP_ID_PREFIX) || id.startsWith(Conversations.COMMONS_PREFIX))
+        assertFalse(id == Conversations.NEARBY || id == Conversations.MESHTASTIC)
+    }
+
+    @Test
+    fun `exactly the two board rooms are bridged`() {
+        assertTrue(Conversations.isBridgedRoom(Conversations.MESHTASTIC))
+        assertTrue(Conversations.isBridgedRoom(Conversations.MESHCORE_PUBLIC))
+        assertFalse(Conversations.isBridgedRoom(Conversations.NEARBY))
+        assertFalse(Conversations.isBridgedRoom(Conversations.commonsIdFor("ab".repeat(32))))
+        assertFalse(Conversations.isBridgedRoom(Conversations.groupIdFor(listOf("alice", "bob"))))
+        assertFalse(Conversations.isBridgedRoom("node1234"))
+        assertEquals(
+            setOf(ConversationKind.MESHTASTIC, ConversationKind.MESHCORE),
+            ConversationKind.entries.filter { it.isBridged }.toSet(),
+        )
+    }
+
     @Test
     fun groupIdIsGroupKind() {
         val groupId = Conversations.groupIdFor(listOf("alice", "bob"))

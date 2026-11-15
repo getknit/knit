@@ -431,7 +431,7 @@ private fun ThreadAvatar(
 ) {
     val size = HIT_AVATAR_DP.dp
     when (kind) {
-        ConversationKind.NEARBY, ConversationKind.MESHTASTIC, ConversationKind.COMMONS -> RoomAvatar(size = size)
+        ConversationKind.NEARBY, ConversationKind.MESHTASTIC, ConversationKind.MESHCORE, ConversationKind.COMMONS -> RoomAvatar(size = size)
 
         ConversationKind.GROUP -> GroupAvatar(photoHash = avatarHash, groupId = conversationId, faces = faces, size = size)
 

@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lora.meshcore
 
 import app.getknit.knit.mesh.MeshcoreBoardHolder
 import app.getknit.knit.mesh.MeshcoreRank
+import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.lora.AirPurpose
@@ -12,6 +13,7 @@ import app.getknit.knit.mesh.lora.Ceiling
 import app.getknit.knit.mesh.lora.Destination
 import app.getknit.knit.mesh.lora.DirectKind
 import app.getknit.knit.mesh.lora.DirectSend
+import app.getknit.knit.mesh.lora.FragmentOutcome
 import app.getknit.knit.mesh.lora.FrameClass
 import app.getknit.knit.mesh.lora.KeyTeach
 import app.getknit.knit.mesh.lora.KeyWrite
@@ -30,15 +32,23 @@ import app.getknit.knit.mesh.lora.PacketRoute
 import app.getknit.knit.mesh.lora.PlaneCore
 import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.lora.ProvisionResult
+import app.getknit.knit.mesh.lora.PublicPostEnded
+import app.getknit.knit.mesh.lora.PublicPostKey
+import app.getknit.knit.mesh.lora.PublicPostResult
 import app.getknit.knit.mesh.lora.RadioParams
+import app.getknit.knit.mesh.lora.RideGate
+import app.getknit.knit.mesh.lora.SendPurpose
 import app.getknit.knit.mesh.lora.SlotCheck
 import app.getknit.knit.mesh.lora.WallShift
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -104,6 +114,9 @@ class MeshcoreHooksTest {
 
         override fun pinnedZeroHop(from: BoardAddr.MeshCore): Boolean = pinned
 
+        /** The board as the session published it: what the Public post's gate reads (Stage 6). */
+        override var ready: BoardState.Ready? = null
+
         override val consent = MutableStateFlow<MeshcoreConsent?>(null)
 
         override suspend fun unbind(address: String): MeshcoreUnbind = MeshcoreUnbind.NOTHING
@@ -116,7 +129,27 @@ class MeshcoreHooksTest {
 
     private class Core : PlaneCore {
         override val airtime = LoraAirtime(traits = MeshcoreTraits)
-        override val config: LoraConfig? = LoraConfig(BOARD, 0)
+        override var config: LoraConfig? = LoraConfig(BOARD, 0)
+
+        /** The Public posts queued (Stage 6): text, ceiling and the timestamp the frame carries. */
+        val publicQueued = mutableListOf<Triple<ByteArray, Ceiling, Long>>()
+        var queueTakes = true
+        var faces = 0
+
+        override fun enqueuePublic(
+            text: ByteArray,
+            label: String,
+            ceiling: Ceiling,
+            timestampSecs: Long,
+        ): Boolean {
+            if (queueTakes) publicQueued += Triple(text, ceiling, timestampSecs)
+            return queueTakes
+        }
+
+        override fun faceMoved() {
+            faces++
+        }
+
         override val maxPayload = MeshcoreProto.CHANNEL_DATA_CAP
         override val restored = true
         val holds = mutableListOf<Long?>()
@@ -147,7 +180,7 @@ class MeshcoreHooksTest {
         }
     }
 
-    private val now = 10_000L
+    private var now = 10_000L
     private val ops = Ops()
     private val core = Core()
     private val logs = mutableListOf<String>()
@@ -157,16 +190,28 @@ class MeshcoreHooksTest {
     private val sigs = mutableListOf<ByteArray?>()
 
     private val scope = TestScope(UnconfinedTestDispatcher())
+
+    /** The posts the hooks handed the Public room (Stage 6). */
+    private val heard = mutableListOf<MeshcorePublicPost>()
     private val hooks = hooks(ops, core)
 
     private fun hooks(
         ops: Ops,
         core: Core,
-    ) = MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, sig, d ->
-        keys +=
-            k to d
-        sigs += sig
-    })
+    ) = MeshcoreHooks(
+        ops,
+        core,
+        scope,
+        clock = { now },
+        log = { logs += it },
+        wallClock = { WALL_NOW },
+        onBoardKey = { k, sig, d ->
+            keys +=
+                k to d
+            sigs += sig
+        },
+        onPublicPost = { heard += it },
+    )
 
     private val boardKey = ByteArray(32) { (0xA0 + it).toByte() }
 
@@ -177,6 +222,8 @@ class MeshcoreHooksTest {
         key: ByteArray = boardKey,
         capacity: Int = 100,
         dialled: String = "DD:DD",
+        namedForKnit: Boolean = true,
+        publicSlot: MeshcorePublicSlot? = PUBLIC,
     ) = MeshcoreDetail(
         publicKey = key,
         versionCode = 11,
@@ -187,10 +234,11 @@ class MeshcoreHooksTest {
         freqKhz = freqKhz,
         contactCapacity = capacity,
         slots = emptyList(),
-        namedForKnit = true,
+        namedForKnit = namedForKnit,
         manualAdd = 1,
         // The session's own address, deliberately not the plane's configured one ("AA:1"): the key goes out under this.
         dialled = dialled,
+        publicSlot = publicSlot,
     )
 
     private fun ready(
@@ -247,10 +295,10 @@ class MeshcoreHooksTest {
         assertEquals("no Knit slot on the board", PacketRoute.DROPPED, hooks.route(packet(channel), null))
         assertEquals("nothing in it", PacketRoute.DROPPED, hooks.route(packet(channel, payload = ByteArray(0)), KNIT_SLOT))
         assertEquals(4L, hooks.counters.foreignPosts.get())
-        // Public is Stage 6's: counted and discarded, data or text.
+        // Public's data is counted and discarded; its text is the kind's, for the room (Stage 6, the next block).
         assertEquals(PacketRoute.DROPPED, hooks.route(packet(channel, slot = 0), KNIT_SLOT))
-        assertEquals(PacketRoute.DROPPED, hooks.route(packet(MeshcorePacket.Type.CHANNEL_TEXT, slot = 0, dataType = null), KNIT_SLOT))
-        assertEquals(2L, hooks.counters.publicDiscarded.get())
+        assertEquals(PacketRoute.KIND, hooks.route(packet(MeshcorePacket.Type.CHANNEL_TEXT, slot = 0, dataType = null), KNIT_SLOT))
+        assertEquals(1L, hooks.counters.publicDiscarded.get())
         assertEquals(
             PacketRoute.DROPPED,
             hooks.route(packet(MeshcorePacket.Type.CHANNEL_TEXT, slot = KNIT_SLOT, dataType = null), KNIT_SLOT),
@@ -915,8 +963,318 @@ class MeshcoreHooksTest {
 
     private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(Locale.ROOT, it) }
 
+    // --- the Public mirror (Stage 6, ADR 2026-11.gsqu's Stage 6 amendment) ---
+
+    private fun publicText(
+        text: ByteArray,
+        live: Boolean = true,
+        slot: Int = MeshcoreHooks.PUBLIC_SLOT,
+        stamp: Long? = POST_STAMP,
+    ) = BoardPacket(
+        from = null,
+        toUs = false,
+        channel = slot,
+        payload = text,
+        rxSnr = 5f,
+        rxRssi = null,
+        hopsAway = 0,
+        rxTimeMs = null,
+        kind = MeshcorePacket(MeshcorePacket.Type.CHANNEL_TEXT, slot, 0, MeshcoreProto.TXT_TYPE_PLAIN, null, stamp, live, false, text),
+    )
+
+    /** What the core does with a packet: the route, and the kind's own hook for a [PacketRoute.KIND]. */
+    private fun land(packet: BoardPacket): PacketRoute =
+        hooks.route(packet, KNIT_SLOT).also { if (it == PacketRoute.KIND) hooks.onKindPacket(packet) }
+
+    /** A Ready board set up for Knit on this phone: named `Knit a0a1`, consented, slot 0 Public, its band 10 %. */
+    private fun knitBoardReady(
+        detail: MeshcoreDetail = detail(),
+        consented: Boolean = true,
+    ) {
+        val r = ready(detail = detail)
+        hooks.beforeReady(r)
+        ops.ready = r
+        ops.consent.value = consent(consented)
+    }
+
+    @Test
+    fun aPublicTextIsTheKindsAndNeverAKnitFrame() {
+        val text = "Knit 1a2b: north gate at noon".encodeToByteArray()
+        assertEquals(PacketRoute.KIND, land(publicText(text)))
+        // Bytes that are a Knit frame's tag are words on slot 0: judged, never routed as a frame.
+        val frameLike = byteArrayOf(FastFrameCodec.TAG_ELIDED, 1, 2, 3)
+        assertEquals(PacketRoute.KIND, land(publicText(frameLike)))
+        // Data on slot 0, and a text anywhere else, are not the room's: discarded as before.
+        assertEquals(PacketRoute.DROPPED, land(packet(MeshcorePacket.Type.CHANNEL_DATA, slot = 0)))
+        assertEquals(PacketRoute.DROPPED, land(publicText(text, slot = 2)))
+        assertEquals(1L, hooks.counters.publicDiscarded.get())
+        assertEquals(1L, hooks.counters.foreignPosts.get())
+        assertEquals(2, heard.size)
+        assertEquals("Knit 1a2b", heard[0].name)
+        assertEquals("north gate at noon", heard[0].body)
+        assertEquals(PublicPostKey(POST_STAMP, text), heard[0].key)
+        assertEquals(PublicPostKey(POST_STAMP, frameLike), heard[1].key)
+        assertEquals(2L, hooks.counters.publicDelivered.get())
+        assertEquals(2L, hooks.counters.publicHeard.get())
+    }
+
+    /**
+     * Part 6c: a drain reaches the room in the order the board handed it over. The room takes the first post slowest, so
+     * a launch per post would land the later ones first; one at a time, each waits for the one before.
+     */
+    @Test
+    fun postsReachTheRoomInTheOrderTheBoardHandedThemOver() {
+        val delivered = mutableListOf<String>()
+        val ordered =
+            MeshcoreHooks(
+                ops,
+                core,
+                scope,
+                clock = { now },
+                log = { logs += it },
+                wallClock = { WALL_NOW },
+                onBoardKey = { _, _, _ -> },
+                onPublicPost = { post ->
+                    delay((DRAIN - post.body.substringAfterLast(' ').toInt()) * SLOW_ROOM_MS)
+                    delivered += post.body
+                },
+            )
+        val texts = (1..DRAIN).map { "stock: drained $it" }
+        texts.forEach { text ->
+            val packet = publicText(text.encodeToByteArray(), live = false)
+            assertEquals(PacketRoute.KIND, ordered.route(packet, KNIT_SLOT))
+            ordered.onKindPacket(packet)
+        }
+        scope.testScheduler.advanceUntilIdle()
+        assertEquals(texts.map { it.removePrefix("stock: ") }, delivered)
+        assertEquals(DRAIN.toLong(), ordered.counters.publicDelivered.get())
+        assertEquals(0L, ordered.counters.publicBacklogDropped.get())
+    }
+
+    /** Security N13: the room switch is this plane's own config (`meshcoreRoomEnabled`), read where the post lands. */
+    @Test
+    fun theRoomSwitchDropsAPublicTextWhereItLandsAndAReplayIsDelivered() {
+        core.config = LoraConfig(BOARD, 0, room = false)
+        land(publicText("bob: one".encodeToByteArray()))
+        assertTrue(heard.isEmpty())
+        assertEquals(1L, hooks.counters.publicRoomOff.get())
+        core.config = null
+        land(publicText("bob: two".encodeToByteArray()))
+        assertEquals("no plane config: no room", 2L, hooks.counters.publicRoomOff.get())
+        core.config = LoraConfig(BOARD, 0, room = true)
+        // The board's offline queue replays what it heard while the phone was away: delivered, marked replayed.
+        land(publicText("bob: three".encodeToByteArray(), live = false))
+        assertEquals(1, heard.size)
+        assertFalse(heard.single().live)
+        // An empty body, and a drain with no stamp to key it on, are refused and counted.
+        land(publicText("bob:  ".encodeToByteArray()))
+        land(publicText("bob: four".encodeToByteArray(), stamp = null))
+        assertEquals(2L, hooks.counters.publicRefused.get())
+        // A slot 0 that is Knit's own (a hand-built board) has no public channel to mirror.
+        ops.ready = ready(detail = detail(publicSlot = PUBLIC.copy(knit = true)))
+        land(publicText("bob: five".encodeToByteArray()))
+        assertEquals(3L, hooks.counters.publicRefused.get())
+        assertEquals(1, heard.size)
+    }
+
+    @Test
+    fun aPostIsRefusedInTheBriefsOrderEachCountedAndNamed() {
+        run {
+            fun post(text: String = "hello") = runBlockingPost(text)
+            // Everything wrong at once: each fix uncovers the next refusal, in order.
+            core.config = LoraConfig(BOARD, 0, room = false)
+            assertEquals(PublicPostRefusal.ROOM_OFF, post())
+            core.config = LoraConfig(BOARD, 0)
+            assertEquals(PublicPostRefusal.NOT_READY, post())
+            // A board whose name is not Knit's: the firmware would put that name, maybe the user's own, in front.
+            knitBoardReady(detail(namedForKnit = false, publicSlot = PUBLIC.copy(empty = true)))
+            assertEquals(PublicPostRefusal.NOT_SET_UP, post())
+            // Named Knit's, but this connection holds no consent for it.
+            knitBoardReady(detail(publicSlot = PUBLIC.copy(empty = true)), consented = false)
+            assertEquals(PublicPostRefusal.NOT_SET_UP, post())
+            knitBoardReady(detail(publicSlot = PUBLIC.copy(empty = true)))
+            assertEquals("slot 0 cleared: it would air under the null key", PublicPostRefusal.NO_CHANNEL, post())
+            knitBoardReady(detail(publicSlot = null))
+            assertEquals(PublicPostRefusal.NO_CHANNEL, post())
+            knitBoardReady(detail(publicSlot = PUBLIC.copy(knit = true)))
+            assertEquals(PublicPostRefusal.KNIT_ON_PRIMARY, post())
+            knitBoardReady()
+            assertNull(post("first"))
+            // The floor claimed: slot 0 cleared again, the channel is refused before the floor is asked.
+            knitBoardReady(detail(publicSlot = PUBLIC.copy(empty = true)))
+            assertEquals("the channel before the floor", PublicPostRefusal.NO_CHANNEL, post())
+            knitBoardReady()
+            assertEquals("the floor before the size", PublicPostRefusal.TOO_SOON, post("x".repeat(150)))
+            now += LoraMeshTransport.PUBLIC_POST_FLOOR_MS
+            assertEquals("150 B: over 160 less `Knit a0a1: `", PublicPostRefusal.TOO_LARGE, post("x".repeat(150)))
+            assertEquals(PublicPostRefusal.TOO_LARGE, post("\u0000"))
+            // The floods' share spent by Knit's own room posts: no air now, the floor not claimed.
+            repeat(
+                200,
+            ) { core.airtime.record(MeshcoreProto.CHANNEL_DATA_CAP, now, core.airtime.price(AirPurpose.ROOM_FLOOD), Ceiling.FLOOD) }
+            assertEquals("the size before the air", PublicPostRefusal.TOO_LARGE, post("x".repeat(150)))
+            assertEquals(PublicPostRefusal.NO_AIR, post("x".repeat(149)))
+            assertEquals(1, core.publicQueued.size)
+            assertEquals("every refusal counted", 13L, hooks.counters.publicPostsRefused.get())
+            assertEquals(1L, hooks.counters.publicPostsQueued.get())
+            assertTrue(logs.any { it == "lora public post refused: NOT_SET_UP" })
+        }
+    }
+
+    /** Drives [MeshcoreHooks.postToPublicChannel] to its refusal, or null once queued. */
+    private fun runBlockingPost(text: String): PublicPostRefusal? = kotlinx.coroutines.runBlocking { hooks.postToPublicChannel(text) }
+
+    /**
+     * Lora N3: a post the flood ceiling of an empty window can never carry is too large, not owed air — on a 1 % band a 149-B
+     * post is past the floods' 0.15; the size the snapshot says fits is admitted.
+     */
+    @Test
+    fun aPostTheFloodCeilingCanNeverCarryIsTooLarge() {
+        knitBoardReady(detail(freqKhz = 868_100))
+        val fits = core.airtime.publicPostBytes()
+        assertTrue("a 1 % band carries less than the cap: $fits", fits in 1 until MeshcoreTraits.PUBLIC_TEXT_CAP)
+        assertEquals(PublicPostRefusal.TOO_LARGE, runBlockingPost("x".repeat(fits + 1)))
+        assertNull(runBlockingPost("x".repeat(fits)))
+    }
+
+    /**
+     * Lora N4 / security N5: the timestamp is fixed at enqueue, rides the frame, and every write of it — a `Busy` retry
+     * included — airs that one; the answer names the post as receivers read it, `Knit a0a1: ` and the text.
+     */
+    @Test
+    fun theStampIsFixedAtEnqueueAndEveryWriteOfTheFrameCarriesIt() =
+        runTest {
+            knitBoardReady()
+            val queued = hooks.postPublic("north gate") as PublicPostResult.Queued
+            val (text, ceiling, stamp) = core.publicQueued.single()
+            assertEquals("admitted and booked with Knit's floods", Ceiling.FLOOD, ceiling)
+            assertEquals(WALL_NOW / 1_000, stamp)
+            assertEquals(PublicPostKey(stamp, "Knit a0a1: north gate".encodeToByteArray()), queued.key)
+            val frame =
+                OutboundFrame(listOf(text), "public", FrameClass.ROOM, ceiling, Destination.Public, timestampSecs = stamp)
+            assertEquals("priced as what flies: the prefix included", AirPurpose.PUBLIC_POST, frame.purpose)
+            val written = mutableListOf<SendPurpose>()
+            val answers = ArrayDeque(listOf(FragmentOutcome.OWED, FragmentOutcome.SENT))
+            repeat(2) {
+                hooks.sendKindFrame(frame) { bytes, purpose ->
+                    assertArrayEquals(text, bytes)
+                    written += purpose
+                    answers.removeFirst()
+                }
+            }
+            assertEquals(listOf<SendPurpose>(SendPurpose.PublicPost(stamp), SendPurpose.PublicPost(stamp)), written)
+            assertEquals(1L, hooks.counters.publicPostsSent.get())
+            assertTrue(logs.contains("lora tx public ${text.size}B"))
+            // A frame with no stamp is never written: it is no post of this kind's.
+            hooks.sendKindFrame(OutboundFrame(listOf(text), "public", destination = Destination.Public)) { _, _ ->
+                error("an unstamped post is never written")
+            }
+        }
+
+    /**
+     * The 6a review: a post past its `freshUntil` is never written (kind frames skip the core's stale check), and every end
+     * without airing — stale, or given up at the write — is reported under the key the enqueue answered; one the board took
+     * is not.
+     */
+    @Test
+    fun aStalePostIsNeverWrittenAndEveryEndWithoutAiringIsReportedByItsKey() =
+        runTest {
+            knitBoardReady()
+            val ends = mutableListOf<PublicPostEnded>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { hooks.publicPostsEnded.collect { ends += it } }
+
+            fun frameOf(
+                queued: Triple<ByteArray, Ceiling, Long>,
+                freshUntil: Long?,
+            ) = OutboundFrame(
+                listOf(queued.first),
+                "public",
+                destination = Destination.Public,
+                gate = RideGate(freshUntil = freshUntil),
+                timestampSecs = queued.third,
+            )
+            val stale = hooks.postPublic("one") as PublicPostResult.Queued
+            hooks.sendKindFrame(frameOf(core.publicQueued.last(), WALL_NOW - 1)) { _, _ -> error("a stale post is never written") }
+            now += LoraMeshTransport.PUBLIC_POST_FLOOR_MS
+            val refused = hooks.postPublic("two") as PublicPostResult.Queued
+            hooks.sendKindFrame(frameOf(core.publicQueued.last(), WALL_NOW + 1)) { _, _ -> FragmentOutcome.ENDED }
+            now += LoraMeshTransport.PUBLIC_POST_FLOOR_MS
+            hooks.postPublic("three")
+            hooks.sendKindFrame(frameOf(core.publicQueued.last(), WALL_NOW + 1)) { _, _ -> FragmentOutcome.SENT }
+            assertEquals(
+                listOf(
+                    PublicPostEnded(requireNotNull(stale.key), PublicPostEnded.Reason.STALE),
+                    PublicPostEnded(requireNotNull(refused.key), PublicPostEnded.Reason.ENDED_AT_WRITE),
+                ),
+                ends,
+            )
+            assertEquals(2L, hooks.counters.publicPostsEnded.get())
+            assertTrue(logs.contains("lora public post stale at the write"))
+        }
+
+    @Test
+    fun aQueueThatWillNotTakeThePostLeavesTheFloorUnclaimed() {
+        knitBoardReady()
+        core.queueTakes = false
+        assertEquals(PublicPostRefusal.NO_AIR, runBlockingPost("one"))
+        core.queueTakes = true
+        assertNull("the floor was given back", runBlockingPost("two"))
+    }
+
+    /** Lora B2 / N5: the face reads slot 0 as found, and a post may leave only from a board set up for Knit. */
+    @Test
+    fun theFaceReadsSlotZeroAsFoundAndPostsOnlyFromABoardSetUpForKnit() {
+        val r = ready(detail = detail(publicSlot = MeshcorePublicSlot("friends", keyIsPublic = false, empty = false, knit = false)))
+        assertNull("no consent yet", hooks.statusOf(r, LoraStatus()).publicChannel?.takeIf { it.postable })
+        ops.consent.value = consent(true)
+        assertTrue("consent moves the face", core.faces > 0)
+        val face = requireNotNull(hooks.statusOf(r, LoraStatus()).publicChannel)
+        assertEquals("friends", face.name)
+        assertFalse("a re-keyed slot 0 is a private group's", face.keyIsPublic)
+        assertTrue(face.postable)
+        assertFalse(requireNotNull(hooks.statusOf(ready(detail = detail(namedForKnit = false)), LoraStatus()).publicChannel).postable)
+        assertFalse(
+            requireNotNull(hooks.statusOf(ready(detail = detail(publicSlot = PUBLIC.copy(empty = true))), LoraStatus()).publicChannel)
+                .postable,
+        )
+        assertNull(
+            hooks.statusOf(BoardState.Down(TransportHealth.Degraded, MeshcoreLinkState.Connecting), LoraStatus()).publicChannel,
+        )
+    }
+
+    /** Security N8: nothing a heard post or our own carries — name, text, timestamp — reaches a line or a counter. */
+    @Test
+    fun noLineNamesAPublicPostsNameTextOrTime() =
+        runTest {
+            land(publicText("Mallory Example: meet at the bridge".encodeToByteArray()))
+            knitBoardReady()
+            hooks.postPublic("my secret plan")
+            val stamp = core.publicQueued.single().third
+            hooks.sendKindFrame(
+                OutboundFrame(
+                    listOf("my secret plan".encodeToByteArray()),
+                    "public",
+                    destination = Destination.Public,
+                    timestampSecs = stamp,
+                ),
+            ) { _, _ -> FragmentOutcome.ENDED }
+            runBlockingPost("again")
+            val everything = logs.joinToString("\n") + hooks.counters.toString() + heard.toString() + hooks.lawState().toString()
+            for (word in listOf("Mallory", "bridge", "secret", "$POST_STAMP", "$stamp", "a0a1")) {
+                assertFalse("$word in: $everything", everything.contains(word))
+            }
+            assertEquals(1L, hooks.counters.publicPostsEnded.get())
+        }
+
     private companion object {
+        /** A drain's length, and how much slower the room is with each earlier post of it (part 6c's ordering case). */
+        const val DRAIN = 8
+        const val SLOW_ROOM_MS = 10L
+
+        /** Slot 0 as a companion boots it: `Public`, under the published key. */
+        val PUBLIC = MeshcorePublicSlot("Public", keyIsPublic = true, empty = false, knit = false)
         const val BOARD = "DD:DD"
+        const val POST_STAMP = 1_790_000_123L
         const val WALL_NOW = 1_800_000_000_000L
         const val KNIT_SLOT = 1
         const val SIGNED_PLAIN = 2

@@ -56,6 +56,19 @@ enum class PublicPostRefusal {
     /** Slot 0 on this board *is* the Knit channel (the lab shape), so there is no primary to post on. */
     KNIT_ON_PRIMARY,
 
+    /**
+     * The board is not set up for Knit on this phone (MeshCore, ADR 2026-11.gsqu's Stage 6 amendment): its name is not
+     * Knit's `Knit xxxx` or this phone holds no consent for it, and the firmware puts the board's own name in front of every
+     * post — which may be the user's real name.
+     */
+    NOT_SET_UP,
+
+    /**
+     * The board's public slot holds no channel (MeshCore's slot 0 cleared: a post would air under the all-zero key and reach
+     * nobody, ADR 2026-11.gsqu's Stage 6 amendment).
+     */
+    NO_CHANNEL,
+
     /** Inside the per-board floor: one post per 30 s, so a room cannot become a transmitter. */
     TOO_SOON,
 
@@ -69,7 +82,37 @@ enum class PublicPostRefusal {
     NAK,
 }
 
-/** What became of a post typed in the Meshtastic room ([MeshController.sendPublicPost]). */
+/**
+ * What a MeshCore board's Public channel did with a post typed in the MeshCore room (ADR 2026-11.gsqu's Stage 6
+ * amendment) — the MeshCore twin of [PublicChannelSink.postToPublicChannel]'s answer, carrying what that one cannot: the
+ * id the own row takes. A MeshCore post's receivers key it on the stamp fixed at enqueue and the text as they read it
+ * (`FrameId.forMeshcorePost`), so the row is written under that id and an echo of it, re-aired after the board's seen
+ * ring forgot it, dedups there. Public, beside the sink, so nothing above the seam learns a MeshCore type.
+ */
+sealed interface PublicChannelAnswer {
+    /** Queued on the board; the own row is written under [rowId]. */
+    data class Queued(
+        val rowId: String,
+    ) : PublicChannelAnswer
+
+    /** The board would not take it, for [reason]. Nothing stored. */
+    data class Refused(
+        val reason: PublicPostRefusal,
+    ) : PublicChannelAnswer
+}
+
+/**
+ * A MeshCore room post the board queued and then gave up without airing (`LoraMeshTransport.publicPostsEnded`, ADR
+ * 2026-11.gsqu's Stage 6 amendment), by its own row's [rowId]. [neverSent] is the plane's `STALE`: it waited past its
+ * freshness at the write and was never handed to the radio. Otherwise it ended at the write — refused there, or the
+ * write's answer never came — and **may** have aired: it is worded so, and nothing ever resends it.
+ */
+data class PublicPostEnd(
+    val rowId: String,
+    val neverSent: Boolean,
+)
+
+/** What became of a post typed in a bridged board room ([MeshController.sendPublicPost]). */
 sealed interface PublicPostOutcome {
     /** Queued on this phone's board. The only outcome that stores a row. */
     data object Queued : PublicPostOutcome

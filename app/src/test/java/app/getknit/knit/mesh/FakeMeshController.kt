@@ -72,8 +72,11 @@ class FakeMeshController : MeshController {
 
     val sentChats = mutableListOf<SentChat>()
 
-    /** Bodies passed to [sendPublicPost] — the bridged room's own origination path, never [sendChat]. */
+    /** Bodies passed to [sendPublicPost] — the bridged rooms' own origination path, never [sendChat]. */
     val sentPublicPosts = mutableListOf<String>()
+
+    /** The room each of [sentPublicPosts] was posted in, in order (ADR 2026-11.gsqu's Stage 6: routed by room). */
+    val sentPublicPostRooms = mutableListOf<String>()
     val sentGroupUpdates = mutableListOf<GroupInfo>()
     val sentGroupLeaves = mutableListOf<String>()
     val sentReactions = mutableListOf<Pair<String, String>>()
@@ -160,8 +163,12 @@ class FakeMeshController : MeshController {
         return sendChatResult
     }
 
-    override suspend fun sendPublicPost(text: String): PublicPostOutcome {
+    override suspend fun sendPublicPost(
+        conversationId: String,
+        text: String,
+    ): PublicPostOutcome {
         sentPublicPosts += text
+        sentPublicPostRooms += conversationId
         return publicPostOutcome
     }
 

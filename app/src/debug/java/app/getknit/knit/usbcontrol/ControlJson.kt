@@ -6,6 +6,7 @@ import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.receivedPlane
 import app.getknit.knit.data.message.writtenBy
 import app.getknit.knit.data.reaction.ReactionEntity
+import app.getknit.knit.mesh.MeshPostOrigin
 import app.getknit.knit.mesh.meshNodeLabel
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -62,6 +63,9 @@ internal object ControlJson {
     /** How many emoji a message object lists, and how many reactors under each. */
     const val MAX_REACTION_GROUPS = 32
     const val MAX_REACTORS = 16
+
+    /** What a MeshCore room post with no name is called on the wire (log notation, as every other label here). */
+    const val UNNAMED = "unnamed"
 
     /**
      * A message: the row, its live reactions ([reactions], tombstones left out), and its speaker named for this
@@ -148,7 +152,8 @@ internal object ControlJson {
             }
             row.originNode?.let { node ->
                 putJsonObject("origin") {
-                    put("node", meshNodeLabel(node))
+                    // A MeshCore room post's sentinel names no node (ADR 2026-11.gsqu's Stage 6 amendment): no `node` then.
+                    if (!MeshPostOrigin.isMeshcoreOrigin(node)) put("node", meshNodeLabel(node))
                     put("name", row.originName)
                 }
             }
@@ -197,6 +202,8 @@ internal object ControlJson {
         speakers: Speakers,
     ): String {
         row.originNode?.let { node ->
+            // A MeshCore room post: the name it came under, never a contact and never the sentinel's `!hex`.
+            if (MeshPostOrigin.isMeshcoreOrigin(node)) return row.originName?.takeIf { it.isNotBlank() } ?: UNNAMED
             return row.originPeerId?.let { speakers.label(it) }
                 ?: row.originName?.takeIf { it.isNotBlank() }
                 ?: meshNodeLabel(node)

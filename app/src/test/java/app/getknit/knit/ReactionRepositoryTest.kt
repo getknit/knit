@@ -148,7 +148,7 @@ class ReactionRepositoryTest : RoomDbTest() {
      * stays out of it.
      */
     @Test
-    fun aCommonsPostAndAMeshtasticPostShowAnyonesReactionAndADmStillOnlyItsPeers() =
+    fun aCommonsPostShowsAnyonesReactionABridgedRoomPostOnlyOursAndADmItsPeers() =
         runTest {
             val repo = repo()
             val commons = Conversations.commonsIdFor("5c09e1")
@@ -157,9 +157,12 @@ class ReactionRepositoryTest : RoomDbTest() {
                 MessageEntity(id = "mesh", senderId = ME, conversationId = Conversations.MESHTASTIC, body = "m", sentAt = 1L),
             )
             db.messageDao().upsert(
+                MessageEntity(id = "core", senderId = ME, conversationId = Conversations.MESHCORE_PUBLIC, body = "m", sentAt = 1L),
+            )
+            db.messageDao().upsert(
                 MessageEntity(id = "dm", senderId = ME, recipientId = "alice", conversationId = "alice", body = "dm", sentAt = 1L),
             )
-            listOf("commons", "mesh", "dm").forEach { id ->
+            listOf("commons", "mesh", "core", "dm").forEach { id ->
                 listOf(ME, "alice", "zed").forEachIndexed { i, who -> repo.apply(ReactionEntity(id, who, "👍", updatedAt = i + 1L)) }
             }
 
@@ -180,8 +183,12 @@ class ReactionRepositoryTest : RoomDbTest() {
             val everyone = setOf(ME, "alice", "zed")
             assertEquals("the commons thread", everyone, inThread(commons))
             assertEquals("the commons post's details", everyone, onMessage("commons"))
-            assertEquals("the Meshtastic thread", everyone, inThread(Conversations.MESHTASTIC))
-            assertEquals("the Meshtastic post's details", everyone, onMessage("mesh"))
+            // A bridged board room takes no tapback (ADR 2026-10.xhfr) and its rows' ids are public: nobody else's reaction
+            // shows there (ADR 2026-11.gsqu's Stage 6 amendment, security review round 1).
+            assertEquals("the Meshtastic thread", setOf(ME), inThread(Conversations.MESHTASTIC))
+            assertEquals("the Meshtastic post's details", setOf(ME), onMessage("mesh"))
+            assertEquals("the MeshCore thread", setOf(ME), inThread(Conversations.MESHCORE_PUBLIC))
+            assertEquals("the MeshCore post's details", setOf(ME), onMessage("core"))
             assertEquals("the DM thread", setOf(ME, "alice"), inThread("alice"))
             assertEquals("the DM's details", setOf(ME, "alice"), onMessage("dm"))
         }

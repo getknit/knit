@@ -43,7 +43,7 @@ internal object DebugReact {
             return Outcome.Sent
         }
         when (Conversations.kindFor(conv)) {
-            ConversationKind.MESHTASTIC -> {
+            ConversationKind.MESHTASTIC, ConversationKind.MESHCORE -> {
                 return Outcome.Refused
             }
 

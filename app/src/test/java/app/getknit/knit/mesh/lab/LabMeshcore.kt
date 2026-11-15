@@ -1,7 +1,10 @@
 package app.getknit.knit.mesh.lab
 
+import app.getknit.knit.mesh.lora.meshcore.FakeForeignClient
 import app.getknit.knit.mesh.lora.meshcore.FakeMeshcoreAir
+import app.getknit.knit.mesh.lora.meshcore.FakeMeshcoreBoard
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreChannel
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreProto
 import app.getknit.knit.mesh.lora.meshcore.quickMeshcoreAir
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
@@ -103,6 +106,80 @@ internal suspend fun MeshLab.meetOverMeshcore(vararg nodes: LabNode) {
     awaitAcquainted(*nodes)
     for ((a, b) in pairs) assertConverged(listOf(a, b), atLeast = 2) { it.dmWith(if (it === a) b else a) }
     pairs.forEach { (a, b) -> unlink(a, b) }
+}
+
+/**
+ * A stock MeshCore node on [air] (ADR 2026-11.gsqu's Stage 6 amendment): a board with no Knit behind it — only a stock
+ * client writing `SEND_CHANNEL_TXT_MSG` to it — that posts plain `name: text` on Public, slot 0, under whatever name it is
+ * given, as any radio on the public key can. Its topology is the air's ([meshcoreEdit]: `link("stock", "bob")`). A post is
+ * written on the air's serial context; what a receiver's plane makes of it is read at the receiver, never off the air.
+ */
+internal class StockMeshcoreNode private constructor(
+    private val lab: MeshLab,
+    val air: FakeMeshcoreAir,
+    val name: String,
+) {
+    private lateinit var board: FakeMeshcoreBoard
+    private lateinit var client: FakeForeignClient
+
+    /**
+     * Posts [text] on Public under [asName] — the board's advert name set first, as the stock app's rename would — stamped
+     * [stampSecs] (the board's own clock by default). The firmware puts `asName: ` in front; a name past 31 B is cut there
+     * as `SET_ADVERT_NAME` cuts it. Waits for the board to have a free packet first, as a stock app's next send waits on
+     * the last one's answer, and fails unless the board answered OK: a burst past its pool would otherwise be refused
+     * (`ERR_NOT_FOUND`) and never air, with nothing to say so.
+     */
+    suspend fun post(
+        text: String,
+        asName: String,
+        stampSecs: Long? = null,
+    ) {
+        val free = lab.tryAwait(1) { if (air.snapshot { board.hasFreePacket() }) 1 else 0 }
+        check(free) { "$name's board never had a free packet" }
+        val answer =
+            air.meshcoreEdit {
+                board.advertName = advertNameOf(asName).encodeToByteArray()
+                val frame =
+                    MeshcoreProto.sendChannelText(PUBLIC_SLOT, stampSecs ?: board.clockSecs, text.encodeToByteArray(), board.advertName)
+                val before = client.received.size
+                client.send(checkNotNull(frame) { "a stock post the firmware would trim: ${text.length} chars under $asName" })
+                client.received.drop(before).firstOrNull { it[0].toInt() == OK || it[0].toInt() == ERR }
+            }
+        check(answer?.get(0)?.toInt() == OK) { "$name's board refused a post: ${answer?.toList()}" }
+    }
+
+    companion object {
+        /** Public, as every stock board keeps it. */
+        const val PUBLIC_SLOT = 0
+
+        /** `NodePrefs.node_name`'s 32 B less its NUL: what `SET_ADVERT_NAME` keeps. */
+        const val MAX_NAME_BYTES = 31
+
+        /**
+         * The name a board advertises when told [asName]: cut at [MAX_NAME_BYTES] bytes, as `SET_ADVERT_NAME` cuts it — what
+         * every receiver reads in front of the post. ASCII names only (a cut through a multi-byte character is the judge's
+         * lenient decode, `MeshcorePublicJudgeTest`'s).
+         */
+        fun advertNameOf(asName: String): String =
+            asName.encodeToByteArray().let { it.copyOf(minOf(it.size, MAX_NAME_BYTES)) }.decodeToString()
+
+        /** `RESP_CODE_OK` and `RESP_CODE_ERR`: a command's answer. */
+        private const val OK = 0
+        private const val ERR = 1
+
+        /** A stock node called [name] on [lab]'s [air]: its board made there, Public on slot 0 as the firmware ships it. */
+        suspend fun on(
+            lab: MeshLab,
+            air: FakeMeshcoreAir,
+            name: String,
+        ): StockMeshcoreNode =
+            StockMeshcoreNode(lab, air, name).apply {
+                air.meshcoreEdit {
+                    board = board(name)
+                    client = FakeForeignClient(board)
+                }
+            }
+    }
 }
 
 /**

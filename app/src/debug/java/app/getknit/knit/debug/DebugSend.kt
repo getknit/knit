@@ -111,9 +111,10 @@ internal object DebugSend {
                     )
                 }
 
-                // The Meshtastic room posts through this phone's own board, and the outcome says why not.
-                ConversationKind.MESHTASTIC -> {
-                    return when (val outcome = mesh.sendPublicPost(text)) {
+                // A bridged board room (Meshtastic's, MeshCore's) posts through this phone's own board of its kind, and the
+                // outcome says why not.
+                ConversationKind.MESHTASTIC, ConversationKind.MESHCORE -> {
+                    return when (val outcome = mesh.sendPublicPost(conversation, text)) {
                         PublicPostOutcome.Queued -> Outcome.Queued
                         PublicPostOutcome.Blocked -> Outcome.Blocked
                         is PublicPostOutcome.Refused -> Outcome.Refused(outcome.reason)

@@ -7,6 +7,7 @@ import app.getknit.knit.mesh.lora.AirtimeSnapshot
 import app.getknit.knit.mesh.lora.BoardBattery
 import app.getknit.knit.mesh.lora.BoardDirectory
 import app.getknit.knit.mesh.lora.BoardInfo
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.BoardOwner
 import app.getknit.knit.mesh.lora.BoardRef
 import app.getknit.knit.mesh.lora.BoardSettings
@@ -55,6 +56,8 @@ class LoraRadioViewModelTest {
             every { loraEnabled } returns enabled
             every { loraDmEnabled } returns dms
             every { loraRoomEnabled } returns room
+            every { meshcoreRoomEnabled } returns MutableStateFlow(true)
+            every { boundBoardKind } returns MutableStateFlow(BoardKind.MESHTASTIC)
             every { loraDeviceAddress } returns address
             every { loraChannelIndex } returns channel
             every { loraBoardSetup } returns boardSetup

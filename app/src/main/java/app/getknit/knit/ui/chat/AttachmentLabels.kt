@@ -115,6 +115,8 @@ fun notificationLabels(context: Context): NotificationLabels =
         hidden = context.getString(R.string.moderation_preview_hidden),
         video = context.getString(R.string.chat_list_preview_video),
         reaction = context.getString(R.string.reaction_preview),
+        unnamed = context.getString(R.string.chat_meshcore_unnamed),
+        claimedName = context.getString(R.string.chat_meshcore_name_claimed),
     )
 
 /** What to say about an ingest that produced nothing. */

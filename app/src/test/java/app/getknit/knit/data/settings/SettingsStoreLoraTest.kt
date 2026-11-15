@@ -62,6 +62,30 @@ class SettingsStoreLoraTest {
             assertFalse(store.loraRoomEnabled.first())
         }
 
+    /**
+     * The MeshCore room's own switch and consent (ADR 2026-11.gsqu's Stage 6 amendment): each its own key, never the
+     * Meshtastic room's, so neither room's answer moves the other's.
+     */
+    @Test
+    fun theMeshcoreRoomsSwitchAndConsentAreItsOwn() =
+        runTest {
+            val store = newStore()
+            assertEquals(BuildConfig.LORA_PLANE, store.meshcoreRoomEnabled.first())
+            assertFalse(store.meshcorePostConsented.first())
+
+            store.setMeshcoreRoomEnabled(false)
+            store.acceptMeshcorePostConsent()
+            assertFalse(store.meshcoreRoomEnabled.first())
+            assertEquals(true, store.meshcorePostConsented.first())
+            assertEquals("the Meshtastic room's switch is its own", BuildConfig.LORA_PLANE, store.loraRoomEnabled.first())
+            assertFalse("and so is its consent", store.meshtasticPostConsented.first())
+
+            store.acceptMeshtasticPostConsent()
+            store.setMeshcoreRoomEnabled(true)
+            assertEquals(BuildConfig.LORA_PLANE, store.meshcoreRoomEnabled.first())
+            assertEquals(true, store.meshcorePostConsented.first())
+        }
+
     @Test
     fun aNewBoardForgetsTheOldBoardsNodeAndKey() =
         runTest {

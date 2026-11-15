@@ -114,8 +114,10 @@ class ReactionRepository(
     }
 
     private companion object {
-        // The rooms every reaction query lets anyone react in; a commons is matched by its prefix beside them.
-        val ROOMS = listOf(Conversations.NEARBY, Conversations.MESHTASTIC)
+        // The rooms every reaction query lets anyone react in; a commons is matched by its prefix beside them. Never a
+        // bridged board room: it takes no tapback (ADR 2026-10.xhfr) and anyone can derive its rows' ids from the air, so
+        // a reaction there is drawn and headed nowhere (ADR 2026-11.gsqu's Stage 6 amendment, `InboundPipeline.reactsIn`).
+        val ROOMS = listOf(Conversations.NEARBY)
 
         // A day comfortably exceeds any realistic out-of-order gap between a message and its reactions,
         // while still reclaiming rows left behind by a deleted message or conversation.

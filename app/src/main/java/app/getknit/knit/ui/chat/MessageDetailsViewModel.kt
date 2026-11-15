@@ -1,5 +1,7 @@
 package app.getknit.knit.ui.chat
 
+import android.annotation.SuppressLint
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.data.BlobRepository
@@ -17,10 +19,12 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.hiddenByFilter
 import app.getknit.knit.data.message.receivedPlane
+import app.getknit.knit.data.message.writtenBy
 import app.getknit.knit.data.receipt.MessageReceiptEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.LoraRadioReached
+import app.getknit.knit.ui.speakerLabel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -186,6 +190,9 @@ class MessageDetailsViewModel(
     // Who a contact's direct link proved holds the message's file ([shownPlane]). Null in the screen tests' rig, where
     // no file is the link's.
     blobs: BlobRepository? = null,
+    // StaticFieldLeak: Koin hands every ViewModel the application context (`androidContext()`), never an Activity. A
+    // post heard on a bridged room's board is named by the thread's own rule ([speakerLabel]), which reads its strings.
+    @field:SuppressLint("StaticFieldLeak") private val context: Context,
 ) : ViewModel() {
     private val myNodeId = MutableStateFlow<String?>(null)
 
@@ -264,13 +271,15 @@ class MessageDetailsViewModel(
                         attachmentAnimated = message.attachmentAnimated,
                         attachmentVideo = message.videoDurationMs != null,
                         moderationFlagged = message.hiddenByFilter(hideSensitive),
-                        mine = message.senderId == me,
-                        senderName = directory.label(message.senderId).text,
+                        // Our words only (`writtenBy`): a post a bridged room's board heard sits in our sender column by
+                        // convention and is somebody else's, so it never reads "You" or takes our delivery rows.
+                        mine = message.writtenBy(me),
+                        senderName = senderNameOf(message, directory, me, hideSensitive),
                         senderNodeId = message.senderId,
                         sentAt = message.sentAt,
                         arrivedAt = message.arrivedAt,
                         delivery = DeliveryStatus.of(message),
-                        plane = shownPlane(message.receivedPlane, message.senderId == me, me, message.conversationId, link),
+                        plane = shownPlane(message.receivedPlane, message.writtenBy(me), me, message.conversationId, link),
                         reactors = rows,
                         filters = filtersOf(rows),
                     ),
@@ -370,6 +379,23 @@ class MessageDetailsViewModel(
             }
         }
     }
+
+    /**
+     * Who [message] is from, by the thread's own rule: a post heard on a bridged room's board (`originNode` set) is its
+     * speaker's ([speakerLabel] — the contact, the board's name or `!hex` in the Meshtastic room; in the MeshCore room the
+     * claimed name, always marked, or "Unnamed"), never ours; anyone else by their directory label.
+     */
+    private fun senderNameOf(
+        message: MessageEntity,
+        directory: PeerDirectory,
+        me: String?,
+        hideFlagged: Boolean,
+    ): String =
+        if (message.originNode == null) {
+            directory.label(message.senderId).text
+        } else {
+            speakerLabel(context, message, directory, me, isDm = false, hideFlagged = hideFlagged).orEmpty()
+        }
 
     /** Lifts our own DM's [DeliveryStatus.Sent] to [DeliveryStatus.RadioReached] on its board's ack; a receipt wins. */
     private fun MessageDetailsUiState.withRadioReached(

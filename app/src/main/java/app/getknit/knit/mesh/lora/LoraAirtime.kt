@@ -91,6 +91,12 @@ internal data class AirtimeSnapshot(
      * MeshCore composer's budget reads (the 5c-1 reviews' N4): 0 on a band where no post ever airs.
      */
     val roomPacketsFit: Int? = null,
+    /**
+     * The most text the user's public-channel post can ever carry ([LoraAirtime.publicPostBytes]): the kind's cap, less
+     * where its ceiling of an empty window cannot carry it. What the MeshCore Public composer's budget reads (`LoraFacts
+     * .publicPostBytes`, ADR 2026-11.gsqu's Stage 6 amendment); the Meshtastic room reads [roomSignedUpTo] instead.
+     */
+    val publicPostBytes: Int = 0,
 ) {
     /** Whether the budget charges a Knit broadcast for the board's signature — the `…debug.LORA` dump's `signing`. */
     val signing: Boolean get() = knitSignedUpTo != LoraAirtime.UNSIGNED
@@ -638,7 +644,30 @@ internal class LoraAirtime(
             knitSignedUpTo = knitBroadcast().signedUpTo,
             roomSignedUpTo = price(AirPurpose.PUBLIC_POST).signedUpTo,
             roomPacketsFit = roomPacketsFit(),
+            publicPostBytes = publicPostBytes(),
         )
+    }
+
+    /**
+     * The most text the user's public-channel post can ever carry here: the kind's cap for it ([PacketPrice.cap] of
+     * [AirPurpose.PUBLIC_POST]), less where its own ceiling ([BoardTraits.publicCeiling]) of an empty window could never
+     * admit that much — the [Refusal.NEVER] test [refusal] makes, so the composer's budget and the enqueue's refusal are one
+     * rule (ADR 2026-11.gsqu's Stage 6 amendment, lora-reviewer N3). 0 where not one byte ever fits; the cap until the
+     * board's duty is known (a post on the fallback is refused for air at the enqueue, never for its size).
+     */
+    @Synchronized
+    fun publicPostBytes(): Int {
+        val price = price(AirPurpose.PUBLIC_POST)
+        if (duty == null) return price.cap
+        val ceiling = ceilingMs(traits.publicCeiling)
+        // The cost grows with the size, so the largest that fits is found by halving: a handful of formula reads a call.
+        var fits = 0
+        var tooBig = price.cap + 1
+        while (tooBig - fits > 1) {
+            val mid = (fits + tooBig) / 2
+            if (timeOnAirMs(mid, price) <= ceiling) fits = mid else tooBig = mid
+        }
+        return fits
     }
 
     /**

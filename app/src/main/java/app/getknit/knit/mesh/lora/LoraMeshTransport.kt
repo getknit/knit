@@ -270,6 +270,28 @@ internal class LoraMeshTransport(
                 to: BoardAddr?,
             ): Boolean = this@LoraMeshTransport.enqueue(parts, label, ceiling, destination, to = to)
 
+            override fun enqueuePublic(
+                text: ByteArray,
+                label: String,
+                ceiling: Ceiling,
+                timestampSecs: Long,
+            ): Boolean =
+                this@LoraMeshTransport.enqueue(
+                    OutboundFrame(
+                        listOf(text),
+                        label,
+                        FrameClass.ROOM,
+                        ceiling,
+                        Destination.Public,
+                        // Fresh as a fan-out is (ADR 039): a post never airs past this under its enqueue stamp. The kind asks
+                        // it at the write (kind frames skip [staleReason]).
+                        gate = RideGate(freshUntil = timestampSecs * PUBLIC_STAMP_MS + LoraFramePolicy.FRESH_MS),
+                        timestampSecs = timestampSecs,
+                    ),
+                )
+
+            override fun faceMoved() = publishStatus()
+
             override fun limitersMoved() {
                 stateWake.trySend(Unit)
             }
@@ -2076,6 +2098,19 @@ internal class LoraMeshTransport(
      */
     override suspend fun postToPublicChannel(body: String): PublicPostRefusal? = hooks.postToPublicChannel(body)
 
+    /**
+     * [postToPublicChannel] with what a queued post is on the air where the kind can say ([BoardKindHooks.postPublic]): on
+     * MeshCore the timestamp fixed at enqueue and the prefixed text a receiver reads, what the room's own row id is derived
+     * from (ADR 2026-11.gsqu's Stage 6 amendment). Called from `MeshManager`'s coroutine.
+     */
+    suspend fun postPublic(body: String): PublicPostResult = hooks.postPublic(body)
+
+    /**
+     * A post [postPublic] queued with a key that ended without airing — stale at the write, or given up there
+     * ([PublicPostEnded], ADR 2026-11.gsqu's Stage 6 amendment). Hot, no replay: collect it from the plane's start.
+     */
+    val publicPostsEnded: Flow<PublicPostEnded> get() = hooks.publicPostsEnded
+
     // --- the pacer ---
 
     private suspend fun pacerLoop() {
@@ -2908,6 +2943,9 @@ internal class LoraMeshTransport(
          * down, its queue full, the window's airtime spent).
          */
         const val IDLE_TICK_MS = 1_000L
+
+        /** A public post's stamp is in seconds; its freshness on the wall clock in milliseconds. */
+        private const val PUBLIC_STAMP_MS = 1_000L
 
         /** [resolveSelfId]'s backoff after a read that threw: doubling from the first to the second. */
         const val SELF_ID_RETRY_MIN_MS = 1_000L

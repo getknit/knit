@@ -5,6 +5,7 @@ package app.getknit.knit.ui.search
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import app.getknit.knit.R
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.group.GroupEntity
@@ -14,6 +15,7 @@ import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.MeshPostOrigin
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.ui.InMemoryMessages
 import app.getknit.knit.ui.directoryOf
@@ -117,6 +119,30 @@ class SearchViewModelTest {
             msg("dani", 40, Conversations.NEARBY, body = "Water refill at the kiosk", id = "n1"),
         )
     }
+
+    /**
+     * A MeshCore room hit names its author on one line, so the name is always marked, whatever it matches (ADR
+     * 2026-11.gsqu's Stage 6 amendment, security review round 2) — a plain "Bob" too; "Unnamed" stays plain.
+     */
+    @Test
+    fun aMeshcoreRoomHitAlwaysMarksItsAuthor() =
+        runTest {
+            store.add(
+                msg("me", 10, Conversations.MESHCORE_PUBLIC, body = "kiosk water refill", id = "mc1")
+                    .copy(originNode = MeshPostOrigin.MESHCORE_NODE, originName = "Bob"),
+                msg("me", 20, Conversations.MESHCORE_PUBLIC, body = "kiosk closed", id = "mc2")
+                    .copy(originNode = MeshPostOrigin.MESHCORE_NODE),
+            )
+            val vm = vm(inConversation = Conversations.MESHCORE_PUBLIC)
+            start(vm)
+            search(vm, "kiosk")
+
+            val senders =
+                vm.state.value.messages
+                    .associate { it.id to it.sender }
+            assertEquals(context.getString(R.string.chat_meshcore_name_claimed, "Bob"), senders["mc1"])
+            assertEquals(context.getString(R.string.chat_meshcore_unnamed), senders["mc2"])
+        }
 
     @Test
     fun aBlankQueryAnswersNothingAndIsNotSearching() =

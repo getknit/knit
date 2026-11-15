@@ -633,7 +633,7 @@ internal class FakeMeshcoreAir(
                     .Ed25519Sign(it.privateKey)
             }
 
-        /** `PUBLIC_GROUP_PSK` (`MyMesh.cpp:110`). */
+        /** `PUBLIC_GROUP_PSK` (`MyMesh.cpp:114`). */
         val PUBLIC_PSK: ByteArray = Base64.getDecoder().decode("izOH6cXN6mrJ5e26oRXNcg==")
     }
 }
@@ -1179,10 +1179,17 @@ internal class FakeMeshcoreBoard(
         writeAll(contactFrame(MeshcoreProto.PUSH_NEW_ADVERT, c))
     }
 
+    /**
+     * Whether a send now would find a free packet — [takePacket]'s own test: the radio's queue on a channel air, the
+     * [outbound] count without one. What a stock client waiting on the last send's answer reads.
+     */
+    fun hasFreePacket(): Boolean =
+        air.radios[name]?.let { it.queue.size + it.forced.size < MeshcoreHeadroom.POOL } ?: (outbound < MeshcoreHeadroom.POOL)
+
     /** One packet into the pool for [airMs]; false when the pool is full (`obtainNewPacket` null). */
     private fun takePacket(): Boolean {
-        air.radios[name]?.let { return it.queue.size + it.forced.size < MeshcoreHeadroom.POOL }
-        if (outbound >= MeshcoreHeadroom.POOL) return false
+        if (!hasFreePacket()) return false
+        if (air.radios[name] != null) return true
         outbound++
         air.scope.launch(air.ctx) {
             delay(air.airMs)
@@ -1562,7 +1569,14 @@ internal class FakeMeshcoreBoard(
         air.transmit(name, "grp_data", flood) { rx, hops -> rx.receiveGroup(secret, data, dataType, flood, hops) }
     }
 
+    /**
+     * `CMD_SEND_CHANNEL_TXT_MSG` (`MyMesh.cpp:1178-1197`): a type other than plain is `UNSUPPORTED_CMD` before anything else;
+     * any slot under the count is taken, an empty one too (`getChannel`, `BaseChatMesh.cpp:926-931`), and the post airs under
+     * its key; no free packet is `NOT_FOUND`. The text is the board's name, `": "` and the bytes as written — a NUL included
+     * (`sendGroupMessage` copies `len - i` bytes, `BaseChatMesh.cpp:518-531`), which every receiver then cuts at.
+     */
     private fun sendChannelText(frame: ByteArray) {
+        if (frame[1].toInt() != MeshcoreProto.TXT_TYPE_PLAIN) return err(MeshcoreProto.ERR_UNSUPPORTED_CMD)
         val slot = frame[2].toInt() and 0xFF
         if (slot >= maxChannels || !takePacket()) return err(MeshcoreProto.ERR_NOT_FOUND)
         val ts = MeshcoreProto.u32(frame, 3)
@@ -1618,6 +1632,11 @@ internal class FakeMeshcoreBoard(
         )
     }
 
+    /**
+     * A channel text on a secret this board holds (`onGroupDataRecv` → `onChannelMessageRecv`): an unnamed slot is skipped
+     * (`BaseChatMesh.cpp:401`), a byte-identical copy dropped; the text handed on up to its first NUL (`strlen`) and cut to
+     * `MAX_FRAME_SIZE` less the V3 frame's 11-B header (`MyMesh.cpp:577-580`).
+     */
     fun receiveGroupText(
         secret: ByteArray,
         ts: Long,
@@ -1625,9 +1644,11 @@ internal class FakeMeshcoreBoard(
         hops: Int,
         dedup: Boolean = true,
     ) {
-        val slot = channels.indexOfFirst { it.second.contentEquals(secret) }
+        val slot = channels.indexOfFirst { it.first.isNotEmpty() && it.second.contentEquals(secret) }
         if (slot < 0 || (dedup && !heard.add("txt:${secret.toList()}:$ts:${text.toList()}"))) return
-        queue(byteArrayOf(17, 32, 0, 0, slot.toByte(), hops.toByte(), 0) + u32(ts) + text)
+        val nul = text.indexOf(0.toByte()).takeIf { it >= 0 } ?: text.size
+        val drained = text.copyOf(minOf(nul, MAX_FRAME_SIZE - CHANNEL_MSG_V3_HEADER))
+        queue(byteArrayOf(17, 32, 0, 0, slot.toByte(), hops.toByte(), 0) + u32(ts) + drained)
     }
 
     /** Frames the offline queue dropped (full, and no channel message left to evict). */
@@ -1646,6 +1667,12 @@ internal class FakeMeshcoreBoard(
     }
 
     private companion object {
+        /** `MAX_FRAME_SIZE` (`BaseSerialInterface.h:5`): what a frame to the phone holds, its header included. */
+        const val MAX_FRAME_SIZE = 176
+
+        /** `RESP_CODE_CHANNEL_MSG_RECV_V3`'s header: code, SNR, two reserved, slot, `path_len`, type, the 4-B time. */
+        const val CHANNEL_MSG_V3_HEADER = 11
+
         /** `OFFLINE_QUEUE_SIZE`'s source default (`MyMesh.h:61-62`). */
         const val SOURCE_OFFLINE_CAP = 16
 

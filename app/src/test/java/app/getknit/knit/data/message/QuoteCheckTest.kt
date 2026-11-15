@@ -1,6 +1,7 @@
 package app.getknit.knit.data.message
 
 import app.getknit.knit.data.VoiceAudio
+import app.getknit.knit.mesh.MeshPostOrigin
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.ui.msg
@@ -52,6 +53,8 @@ class QuoteCheckTest {
 
         assertEquals(MessageEntity.REPLY_MISMATCH, quoteVerdict(reply(), notice))
         assertEquals(MessageEntity.REPLY_MISMATCH, quoteVerdict(reply(), heard))
+        // A MeshCore room post's sentinel origin (ADR 2026-11.gsqu's Stage 6 amendment) is as much somebody else's.
+        assertEquals(MessageEntity.REPLY_MISMATCH, quoteVerdict(reply(), original.copy(originNode = MeshPostOrigin.MESHCORE_NODE)))
         assertEquals(MessageEntity.REPLY_MISMATCH, quoteVerdict(self, self))
     }
 

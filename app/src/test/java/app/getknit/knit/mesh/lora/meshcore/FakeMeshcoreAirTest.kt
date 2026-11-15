@@ -48,6 +48,8 @@ class FakeMeshcoreAirTest {
         fun data(): List<McFrame.ChannelData> = queued().filterIsInstance<McFrame.ChannelData>()
 
         fun dms(): List<McFrame.ContactMessage> = queued().filterIsInstance<McFrame.ContactMessage>()
+
+        fun texts(): List<McFrame.ChannelMessage> = queued().filterIsInstance<McFrame.ChannelMessage>()
     }
 
     private fun TestScope.air(channel: MeshcoreChannel = MeshcoreChannel()) =
@@ -67,6 +69,58 @@ class FakeMeshcoreAirTest {
         advanceTimeBy(ms)
         runCurrent()
     }
+
+    /**
+     * Stage 6 (lora N9): a channel text the way the firmware hands it on — an unnamed slot skipped though its null key would
+     * match (`BaseChatMesh.cpp:401`), the text cut at its first NUL (`strlen`) and at `MAX_FRAME_SIZE` less the V3 header
+     * (`MyMesh.cpp:577-580`) — and a send of any type but plain refused before anything airs (`MyMesh.cpp:1178-1197`).
+     */
+    @Test
+    fun aChannelTextIsHandedOnAsTheFirmwareHandsItAndOnlyPlainIsSent() =
+        runTest {
+            val air = air()
+            val a = air.board("alice")
+            val b = air.board("bob")
+            air.link("alice", "bob")
+            val rx = Recorder(b)
+            b.receiveGroupText(ByteArray(MeshcoreProto.SECRET_BYTES), 1L, "x: on the null key".encodeToByteArray(), 0)
+            assertTrue("an unnamed slot hears nothing", rx.texts().isEmpty())
+            b.receiveGroupText(FakeMeshcoreAir.PUBLIC_PSK, 2L, "a: one".encodeToByteArray() + 0 + "hidden".encodeToByteArray(), 0)
+            assertEquals(
+                "a: one",
+                rx
+                    .texts()
+                    .single()
+                    .text
+                    .decodeToString(),
+            )
+            b.receiveGroupText(FakeMeshcoreAir.PUBLIC_PSK, 3L, ByteArray(200) { 0x41 }, 0)
+            assertEquals(
+                "176 less the 11-B header",
+                165,
+                rx
+                    .texts()
+                    .last()
+                    .text.size,
+            )
+            assertEquals(0, rx.texts().last().slot)
+            val from = Recorder(a)
+            a.handle(byteArrayOf(MeshcoreProto.CMD_SEND_CHANNEL_TXT_MSG.toByte(), 2, 0) + MeshcoreProto.u32(4L) + "hi".encodeToByteArray())
+            settle()
+            assertTrue(from.frames.last().contentEquals(byteArrayOf(1, MeshcoreProto.ERR_UNSUPPORTED_CMD.toByte())))
+            assertEquals("nothing aired", 2, rx.texts().size)
+            a.handle(requireNotNull(MeshcoreProto.sendChannelText(0, 5L, "hi".encodeToByteArray(), a.advertName)))
+            settle()
+            assertEquals(
+                "${a.advertName.decodeToString()}: hi",
+                rx
+                    .texts()
+                    .last()
+                    .text
+                    .decodeToString(),
+            )
+            assertEquals(5L, rx.texts().last().timestamp)
+        }
 
     @Test
     fun anAiringLandsAtItsEndAndTakesTheFormulasTime() =

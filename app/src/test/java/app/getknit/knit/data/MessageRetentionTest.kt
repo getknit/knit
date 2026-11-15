@@ -30,8 +30,17 @@ class MessageRetentionTest : RoomDbTest() {
         conversationId: String,
         sentAt: Long,
         sender: String = "them",
+        originNode: Long? = null,
     ) = db.messageDao().upsert(
-        MessageEntity(id = id, senderId = sender, recipientId = null, conversationId = conversationId, body = "", sentAt = sentAt),
+        MessageEntity(
+            id = id,
+            senderId = sender,
+            recipientId = null,
+            conversationId = conversationId,
+            body = "",
+            sentAt = sentAt,
+            originNode = originNode,
+        ),
     )
 
     private suspend fun ids(conversationId: String) =
@@ -184,5 +193,29 @@ class MessageRetentionTest : RoomDbTest() {
             repo().sweepRetention(now, protected = emptySet())
 
             assertEquals(setOf("n1", "n2", "n3"), ids(Conversations.NEARBY))
+        }
+
+    /**
+     * A bridged room's heard posts sit in our own sender column by convention, and we are always a known sender: before
+     * ADR 2026-11.gsqu's Stage 6 amendment (security N6) a busy channel was trimmed only with the user's own posts, so a
+     * flood evicted those first. Every heard row counts as a stranger's, in both bridged rooms.
+     */
+    @Test
+    fun `in a bridged room the heard posts go before the user's own, whatever their sender column says`() =
+        runTest {
+            val now = 10_000L
+            for ((room, heard) in listOf(Conversations.MESHTASTIC to 0x1234abcdL, Conversations.MESHCORE_PUBLIC to -1L)) {
+                // The user's two posts are the oldest in the room on purpose: newest-first alone would drop them both.
+                put("$room-own1", room, sentAt = now - 20, sender = "me")
+                put("$room-own2", room, sentAt = now - 19, sender = "me")
+                (1..3).forEach { put("$room-h$it", room, sentAt = now - it, sender = "me", originNode = heard) }
+            }
+
+            MessageRepository(db.messageDao(), nearbyMaxMessages = 3, roomMaxPerStranger = 100)
+                .sweepRetention(now, protected = emptySet(), knownSenders = setOf("me"))
+
+            for (room in listOf(Conversations.MESHTASTIC, Conversations.MESHCORE_PUBLIC)) {
+                assertEquals(room, setOf("$room-own1", "$room-own2", "$room-h1"), ids(room))
+            }
         }
 }

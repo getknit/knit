@@ -18,6 +18,10 @@ data class NotificationLabels(
     val video: String = "🎬 Video",
     /** Someone reacted to a message we wrote (ADR 2026-10.59fu): the emoji, then the message's opening words. */
     val reaction: String = $$"Reacted %1$s to “%2$s”",
+    /** A MeshCore room post that came with no name (ADR 2026-11.gsqu's Stage 6 amendment): who its notification names. */
+    val unnamed: String = "Unnamed",
+    /** A MeshCore room post's claimed name, as its notification names every one: quoted, then the marker. */
+    val claimedName: String = $$"“%1$s” (unverified)",
 ) {
     companion object {
         /** The English labels — the test rigs' default; the app hands the pipeline the reader's own. */
@@ -32,6 +36,8 @@ data class NotificationLabels(
                 hidden = "Message hidden",
                 video = "🎬 Video",
                 reaction = $$"Reacted %1$s to “%2$s”",
+                unnamed = "Unnamed",
+                claimedName = $$"“%1$s” (unverified)",
             )
     }
 }

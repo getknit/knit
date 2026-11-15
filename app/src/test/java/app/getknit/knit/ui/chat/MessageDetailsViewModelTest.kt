@@ -2,7 +2,10 @@
 
 package app.getknit.knit.ui.chat
 
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import app.getknit.knit.R
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MessageReceiptRepository
@@ -21,6 +24,7 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.LoraRadioReached
+import app.getknit.knit.mesh.MeshPostOrigin
 import app.getknit.knit.ui.directoryOf
 import app.getknit.knit.ui.msg
 import app.getknit.knit.ui.peer
@@ -43,6 +47,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -91,8 +96,22 @@ class MessageDetailsViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
+    private val context: Context = ApplicationProvider.getApplicationContext()
+
     private fun viewModel(blobs: BlobRepository? = null) =
-        MessageDetailsViewModel(MSG, messages, reactions, receipts, groups, peers, settings, identity, reachedFlow, blobs)
+        MessageDetailsViewModel(
+            MSG,
+            messages,
+            reactions,
+            receipts,
+            groups,
+            peers,
+            settings,
+            identity,
+            reachedFlow,
+            blobs,
+            context = context,
+        )
 
     /** Seeds a group we're in, and points the message at it. */
     private fun inGroup(vararg members: String) {
@@ -231,6 +250,64 @@ class MessageDetailsViewModelTest {
             assertEquals(listOf("👍" to 2, "❤️" to 1), state.filters.map { it.emoji to it.count })
             // The All chip's total is the row count it filters — the two can't disagree.
             assertEquals(state.reactors.size, state.filters.sumOf { it.count })
+        }
+
+    /**
+     * A post heard on a bridged room's board sits in our sender column by convention (ADR 2026-11.gsqu's Stage 6
+     * amendment, security review round 1): the details screen names its speaker by the thread's rule and never reads it
+     * as ours — no "You", no delivery rows, no own plane.
+     */
+    @Test
+    fun `a heard MeshCore post is never ours, and names its speaker by the room's rule`() =
+        runTest {
+            peersFlow.value = listOf(peer("sam", name = "Sam Rivera"))
+
+            fun heard(name: String?) =
+                msg(senderId = "me", id = MSG, conversationId = Conversations.MESHCORE_PUBLIC, originNode = MeshPostOrigin.MESHCORE_NODE)
+                    .copy(originName = name, receivedVia = DeliveryPlane.LoRa.code, arrivedAt = 5L)
+            val you = context.getString(R.string.chat_self_name)
+
+            messageFlow.value = heard("Bob")
+            var state = collect(viewModel())
+            assertFalse(state.mine)
+            assertEquals(context.getString(R.string.chat_meshcore_name_claimed, "Bob"), state.senderName)
+            assertEquals(DeliveryPlane.LoRa, state.plane)
+            assertFalse(state.showRecipients)
+
+            messageFlow.value = heard(null)
+            state = collect(viewModel())
+            assertEquals("plain, never marked", context.getString(R.string.chat_meshcore_unnamed), state.senderName)
+
+            // Every name is marked on this line, whatever it matches (security review round 2, the maintainer's call).
+            for (claimed in listOf(you, "alice", "Knit 1a2b", "Sam Rivera")) {
+                messageFlow.value = heard(claimed)
+                state = collect(viewModel())
+                assertFalse(claimed, state.mine)
+                assertEquals(claimed, context.getString(R.string.chat_meshcore_name_claimed, claimed), state.senderName)
+                assertNotEquals(you, state.senderName)
+            }
+        }
+
+    @Test
+    fun `a heard Meshtastic post is never ours either`() =
+        runTest {
+            peersFlow.value = listOf(peer("sam", name = "Sam Rivera"))
+            messageFlow.value =
+                msg(senderId = "me", id = MSG, conversationId = Conversations.MESHTASTIC, originNode = 0x1234abcdL, originName = "Bob")
+                    .copy(receivedVia = DeliveryPlane.LoRa.code)
+            var state = collect(viewModel())
+            assertFalse(state.mine)
+            assertEquals("Bob", state.senderName)
+
+            messageFlow.value =
+                msg(senderId = "me", id = MSG, conversationId = Conversations.MESHTASTIC, originNode = 0x1234abcdL, originPeerId = "sam")
+            state = collect(viewModel())
+            assertFalse(state.mine)
+            assertEquals("the contact the board resolved to", "Sam Rivera", state.senderName)
+
+            messageFlow.value = msg(senderId = "me", id = MSG, conversationId = Conversations.MESHTASTIC, originNode = 0x1234abcdL)
+            state = collect(viewModel())
+            assertEquals("!1234abcd", state.senderName)
         }
 
     @Test

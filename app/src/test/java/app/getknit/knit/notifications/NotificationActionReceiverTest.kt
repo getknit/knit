@@ -166,7 +166,15 @@ class NotificationActionReceiverTest {
     fun aMeshtasticReplyIsNeverSentFromTheNotification() {
         reply(Conversations.MESHTASTIC, "over the air")
         coVerify(exactly = 0) { mesh.sendChat(any(), any(), any(), any(), any(), any()) }
-        coVerify(exactly = 0) { mesh.sendPublicPost(any()) }
+        coVerify(exactly = 0) { mesh.sendPublicPost(any(), any()) }
+    }
+
+    @Test
+    fun aMeshcoreReplyIsNeverSentFromTheNotification() {
+        // The backstop asks the one bridged-room predicate ahead of every route (ADR 2026-11.gsqu's Stage 6 amendment).
+        reply(Conversations.MESHCORE_PUBLIC, "over the air")
+        coVerify(exactly = 0) { mesh.sendChat(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { mesh.sendPublicPost(any(), any()) }
     }
 
     @Test

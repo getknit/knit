@@ -49,12 +49,15 @@
     <string name="channel_dms_desc">一对一私密消息</string>
     <string name="channel_meshtastic_name">Meshtastic 公共频道</string>
     <string name="channel_meshtastic_desc">你在 Meshtastic 电台主频道上发送的消息</string>
+    <string name="channel_meshcore_name">MeshCore 公共频道</string>
+    <string name="channel_meshcore_desc">你的 MeshCore 开发板上“Public”频道中的消息</string>
     <string name="channel_commons_name">公共聊天室</string>
     <string name="channel_commons_desc">中继服务器的共享聊天室中的消息</string>
     <string name="mention_channel_name">提及</string>
     <string name="mention_channel_description">有人 @你时通知你</string>
     <string name="notif_title_nearby">附近</string>
     <string name="notif_title_meshtastic">Meshtastic</string>
+    <string name="notif_title_meshcore">MeshCore</string>
     <string name="notif_self_name">你</string>
     <string name="chat_gone">此聊天已不在本机上</string>
     <string name="notif_action_reply">回复</string>
@@ -550,6 +553,8 @@
     <string name="chat_status_arrived_lora">通过 LoRa 到达</string>
     <string name="chat_status_lora_radio_reached">已到达对方的 LoRa 电台</string>
     <string name="chat_status_pending_key">尚未发送：正在等待对方的密钥</string>
+    <string name="chat_status_post_not_sent">未发送</string>
+    <string name="chat_status_post_unconfirmed">可能没有发出</string>
     <string name="chat_time_just_now">刚刚</string>
     <string name="chat_day_today">今天</string>
     <string name="chat_day_yesterday">昨天</string>
@@ -679,6 +684,7 @@
     </plurals>
     <string name="nearby_title">附近</string>
     <string name="meshtastic_title">Meshtastic</string>
+    <string name="meshcore_title">MeshCore</string>
     <string name="commons_title">公共聊天室</string>
     <string name="chat_list_empty_preview">还没有消息</string>
     <string name="chat_list_draft_preview">草稿：%1$s</string>
@@ -1475,6 +1481,8 @@
     <string name="lora_room_title">Meshtastic 聊天室</string>
     <string name="lora_room_subtitle">将你电台自身的频道显示为 Knit 中的聊天室，以便你阅读并参与该频道上的其他内容。关闭后，该聊天室会隐藏且保持静默，Knit 也会忽略该频道，但你的开发板仍会传送 Knit 自己的消息。</string>
     <string name="lora_room_subtitle_dedicated">此开发板使用专用频率时会隐藏：没有公共电台能接收到它，因此没有可读的频道。恢复开发板设置即可找回聊天室。</string>
+    <string name="lora_meshcore_room_title">MeshCore 聊天室</string>
+    <string name="lora_meshcore_room_subtitle">将你 MeshCore 开发板的“Public”频道显示为 Knit 中的聊天室，以便你阅读并参与该频道上的其他内容。关闭后，该聊天室会隐藏且保持静默，Knit 也会忽略该频道，但你的开发板仍会传送 Knit 自己的消息。</string>
     <string name="lora_airtime">发射时间已用当前配额的 %1$d%%</string>
     <string name="lora_radio_config">电台 %1$s</string>
     <string name="lora_public_channel">主频道 %1$s</string>
@@ -1710,6 +1718,23 @@
     <string name="chat_mesh_consent_accept">发送</string>
     <string name="chat_mesh_consent_decline">以后再说</string>
     <string name="chat_mesh_subtitle">你的电台的主频道</string>
+    <string name="chat_meshcore_author">%1$s，来自 MeshCore 频道：名称未经验证</string>
+    <string name="chat_meshcore_unnamed">未命名</string>
+    <string name="chat_meshcore_name_clash">与你认识的人同名：未经验证是否为对方本人</string>
+    <string name="chat_meshcore_name_claimed">“%1$s”（未经验证）</string>
+    <string name="chat_meshcore_room_notice">未加密的电台频道：名称一律未经验证</string>
+    <string name="chat_meshcore_room_notice_keyed">非端到端加密：名称一律未经验证</string>
+    <string name="chat_meshcore_room_body">此聊天室显示与这部手机配对的 MeshCore 开发板上的“Public”频道。Knit 的加密覆盖不到这里：这里的任何内容都不是端到端加密的，而在标准的“Public”频道上，密钥是公开的，因此任何拥有电台的人都能读取。范围内的任何人都可以用任何名称发言，而 Knit 从不核对名称：这里的名称绝不代表你的联系人，即使看起来像是对方。此聊天室中的任何内容都不会进入 Knit 自己的 Mesh 网络。</string>
+    <string name="chat_meshcore_no_radio">连接一块 MeshCore 开发板即可在此发言。此聊天室是你自己开发板的“Public”频道。</string>
+    <string name="chat_meshcore_channel_unusable">此开发板无法在此发言：它尚未在这部手机上为 Knit 设置，或者它的第一个频道为空。</string>
+    <string name="chat_meshcore_post_not_set_up">未发送：此开发板尚未在这部手机上为 Knit 设置，因此发言会使用它自己的名称</string>
+    <string name="chat_meshcore_post_no_channel">未发送：此开发板的第一个频道为空，因此没有人能收到</string>
+    <string name="chat_meshcore_post_room_off">未发送：MeshCore 聊天室已在 LoRa 设置中关闭</string>
+    <string name="chat_meshcore_consent_can_body">范围内任何拥有 MeshCore 电台的人。此频道的密钥是公开的，因此任何正在收听的人都能读取并保存你发送的内容，而且有些电台会把它转发到互联网。</string>
+    <string name="chat_meshcore_consent_name_title">你的开发板名称会随之发出</string>
+    <string name="chat_meshcore_consent_name_body">每条发言都会以“%1$s: …”的形式发出。这个名称在每条发言中都相同，并能识别出你的开发板，因此把你加为联系人的人，或认识你开发板的人，都能认出这是你。</string>
+    <string name="chat_meshcore_consent_name_body_unknown">每条发言都会以你开发板的名称发出，即“Knit”加四个字符。这个名称在每条发言中都相同，并能识别出你的开发板，因此把你加为联系人的人，或认识你开发板的人，都能认出这是你。</string>
+    <string name="chat_meshcore_consent_rules">发言发出后无法撤回。任何人都可以用任何名称发言，包括你的名称。直接给你的开发板发消息的 MeshCore 用户不会收到回复：Knit 不会读取这些消息。</string>
     <string name="chat_commons_subtitle">此中继上的所有人</string>
     <string name="commons_details_title">聊天室信息</string>
     <string name="commons_details_relay">位于 %1$s</string>

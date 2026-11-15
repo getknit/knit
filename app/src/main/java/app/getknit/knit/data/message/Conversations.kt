@@ -17,12 +17,30 @@ enum class ConversationKind {
     MESHTASTIC,
 
     /**
+     * The MeshCore room ([Conversations.MESHCORE_PUBLIC], ADR 2026-11.gsqu's Stage 6 amendment) — a bound MeshCore
+     * board's Public channel (slot 0), mirrored the way [MESHTASTIC] mirrors a Meshtastic board's primary. The second
+     * bridged room: everything [MESHTASTIC] says holds, and more strictly — every author is a stranger whose name is a
+     * claim nothing on the channel can check, never resolved to a contact. A kind of its own so the two rooms keep their
+     * own notification channel, switch, consent and copy; the rules both share read [isBridged].
+     */
+    MESHCORE,
+
+    /**
      * A **commons** ([Conversations.COMMONS_PREFIX]) — a spool's shared room (docs/SPOOL_PROTOCOL.md §7.4),
      * the private instance's group chat with every peer on that relay. Its authors are pinned Knit peers
      * like a group's, but it has no roster and no ratchet: whoever holds the invite is in,
      * every member shares the room key, and a post lives on the spool rather than in custody.
      */
     COMMONS,
+    ;
+
+    /**
+     * Whether this is a **bridged board room** ([MESHTASTIC] or [MESHCORE]): this phone's own board's public channel,
+     * mirrored here and nowhere else, whose authors are not Knit peers — no relay, no custody, no typing cue, no tapback,
+     * no inline reply, no attachment. The one predicate every rule both rooms share reads ([Conversations.isBridgedRoom]
+     * for an id), so a rule written for one room cannot quietly miss the other.
+     */
+    val isBridged: Boolean get() = this == MESHTASTIC || this == MESHCORE
 }
 
 /**
@@ -47,6 +65,14 @@ object Conversations {
      * second bridged channel later without re-litigating the namespace.
      */
     const val MESHTASTIC: String = "m-public"
+
+    /**
+     * Stable id of the **MeshCore room** (ADR 2026-11.gsqu's Stage 6 amendment) — a bound MeshCore board's Public channel
+     * (slot 0, whatever it holds), mirrored into a room on this phone and this phone only, the second `m-` id
+     * [MESHTASTIC]'s note left room for. Nothing in it ever crosses Knit's mesh, and every post heard there is a
+     * stranger's.
+     */
+    const val MESHCORE_PUBLIC: String = "m-meshcore"
 
     /**
      * The conversation a message belongs to, from [selfId]'s perspective. A group message ([groupId]
@@ -95,6 +121,7 @@ object Conversations {
         when {
             conversationId == NEARBY -> ConversationKind.NEARBY
             conversationId == MESHTASTIC -> ConversationKind.MESHTASTIC
+            conversationId == MESHCORE_PUBLIC -> ConversationKind.MESHCORE
             conversationId.startsWith(GROUP_ID_PREFIX) -> ConversationKind.GROUP
             conversationId.startsWith(COMMONS_PREFIX) -> ConversationKind.COMMONS
             else -> ConversationKind.DM
@@ -109,7 +136,14 @@ object Conversations {
      * post, and its posts are cleartext inside the room's seal exactly as the Nearby room's are on the air.
      */
     fun isPublicRoom(conversationId: String): Boolean =
-        conversationId == NEARBY || conversationId == MESHTASTIC || conversationId.startsWith(COMMONS_PREFIX)
+        conversationId == NEARBY || isBridgedRoom(conversationId) || conversationId.startsWith(COMMONS_PREFIX)
+
+    /**
+     * Whether [conversationId] is a **bridged board room** — [MESHTASTIC] or [MESHCORE_PUBLIC], a board's public channel
+     * mirrored on this phone ([ConversationKind.isBridged]). The one predicate for the rules both rooms share: never
+     * relayed or custodied, no typing cue, no tapback, no inline reply, no call or transfer, text only.
+     */
+    fun isBridgedRoom(conversationId: String): Boolean = conversationId == MESHTASTIC || conversationId == MESHCORE_PUBLIC
 
     /**
      * Whether [conversationId] is an accepted/known chat rather than a stranger's **message request** —

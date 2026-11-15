@@ -1679,11 +1679,17 @@ internal fun ChatScreenContent(
                     }
 
                     state.publicPostGate == PublicPostGate.NoRadio -> {
-                        ComposerFooter(stringResource(R.string.chat_mesh_no_radio))
+                        ComposerFooter(
+                            stringResource(if (state.isMeshcoreRoom) R.string.chat_meshcore_no_radio else R.string.chat_mesh_no_radio),
+                        )
                     }
 
                     state.publicPostGate == PublicPostGate.ChannelUnusable -> {
-                        ComposerFooter(stringResource(R.string.chat_mesh_channel_unusable))
+                        ComposerFooter(
+                            stringResource(
+                                if (state.isMeshcoreRoom) R.string.chat_meshcore_channel_unusable else R.string.chat_mesh_channel_unusable,
+                            ),
+                        )
                     }
 
                     else -> {
@@ -1802,6 +1808,7 @@ internal fun ChatScreenContent(
                     if (state.isBridged) {
                         MeshRoomNotice(
                             keyIsPublic = state.publicChannelKeyIsPublic,
+                            meshcore = state.isMeshcoreRoom,
                             onClick = { showMeshInfo = true },
                         )
                     }
@@ -2143,7 +2150,11 @@ internal fun ChatScreenContent(
                 onDismissRequest = { showMeshInfo = false },
                 icon = { Icon(Icons.Outlined.Public, contentDescription = null) },
                 title = { Text(stringResource(R.string.chat_mesh_room_title)) },
-                text = { Text(stringResource(R.string.chat_mesh_room_body)) },
+                text = {
+                    Text(
+                        stringResource(if (state.isMeshcoreRoom) R.string.chat_meshcore_room_body else R.string.chat_mesh_room_body),
+                    )
+                },
                 confirmButton = {
                     TextButton(onClick = { showMeshInfo = false }) {
                         Text(stringResource(R.string.action_close))
@@ -2157,7 +2168,15 @@ internal fun ChatScreenContent(
                 onDismissRequest = onDismissPublicConsent,
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
-                PublicPostConsentBody(onAccept = onAcceptPublicConsent, onDecline = onDismissPublicConsent)
+                if (state.isMeshcoreRoom) {
+                    MeshcorePostConsentBody(
+                        boardName = state.meshcoreBoardName,
+                        onAccept = onAcceptPublicConsent,
+                        onDecline = onDismissPublicConsent,
+                    )
+                } else {
+                    PublicPostConsentBody(onAccept = onAcceptPublicConsent, onDecline = onDismissPublicConsent)
+                }
             }
         }
 
@@ -2600,6 +2619,65 @@ private fun PublicPostConsentBody(
 }
 
 /**
+ * The MeshCore room's first-use disclosure (ADR 2026-11.gsqu's Stage 6 amendment, security B3), its own words wherever
+ * the Meshtastic sheet's do not fit: a MeshCore board writes its own name in front of every post, so the sheet names it
+ * ([boardName], `Knit xxxx`; the generic wording while it is not known yet) and says what that name gives away; the
+ * channel key is public, so anyone listening keeps what is posted; a post cannot be taken back; anyone can post under any
+ * name; and a MeshCore user's DM to the board gets no answer. What does not go out is the Meshtastic sheet's, word for
+ * word. Decline first, accept second, as there.
+ */
+@Composable
+private fun MeshcorePostConsentBody(
+    boardName: String?,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit,
+) {
+    // Scrolls: it says more than the Meshtastic sheet, and every line of it must be reachable on a small screen.
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 32.dp)
+                .testTag("chat_meshcore_consent"),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(stringResource(R.string.chat_mesh_consent_title), style = MaterialTheme.typography.headlineSmall)
+        Text(stringResource(R.string.chat_mesh_consent_can_title), style = MaterialTheme.typography.titleSmall)
+        Text(stringResource(R.string.chat_meshcore_consent_can_body), style = MaterialTheme.typography.bodyMedium)
+        Text(stringResource(R.string.chat_meshcore_consent_name_title), style = MaterialTheme.typography.titleSmall)
+        Text(
+            text =
+                if (boardName != null) {
+                    stringResource(R.string.chat_meshcore_consent_name_body, boardName)
+                } else {
+                    stringResource(R.string.chat_meshcore_consent_name_body_unknown)
+                },
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(stringResource(R.string.chat_mesh_consent_cannot_title), style = MaterialTheme.typography.titleSmall)
+        Text(stringResource(R.string.chat_mesh_consent_cannot_body), style = MaterialTheme.typography.bodyMedium)
+        Text(
+            text = stringResource(R.string.chat_meshcore_consent_rules),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = onDecline) { Text(stringResource(R.string.chat_mesh_consent_decline)) }
+            Spacer(Modifier.width(8.dp))
+            Button(
+                onClick = onAccept,
+                modifier = Modifier.testTag("chat_mesh_consent_accept"),
+            ) { Text(stringResource(R.string.chat_mesh_consent_accept)) }
+        }
+    }
+}
+
+/**
  * The first-use disclosure behind the pin: what goes out, when Knit reads the position, and who receives it
  * in this thread — the room's line is the one that mentions strangers and the day a carried message can sit
  * with them. Shown once, before the system's own permission prompt (which on Android 10–12 the radios already
@@ -2753,6 +2831,8 @@ private fun ComposerFooter(
 private fun MeshRoomNotice(
     keyIsPublic: Boolean,
     onClick: () -> Unit,
+    // The MeshCore room (ADR 2026-11.gsqu's Stage 6 amendment): no name there is ever verified, so it says "never".
+    meshcore: Boolean = false,
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -2776,7 +2856,12 @@ private fun MeshRoomNotice(
             Text(
                 text =
                     stringResource(
-                        if (keyIsPublic) R.string.chat_mesh_room_notice else R.string.chat_mesh_room_notice_keyed,
+                        when {
+                            meshcore && keyIsPublic -> R.string.chat_meshcore_room_notice
+                            meshcore -> R.string.chat_meshcore_room_notice_keyed
+                            keyIsPublic -> R.string.chat_mesh_room_notice
+                            else -> R.string.chat_mesh_room_notice_keyed
+                        },
                     ),
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -2997,6 +3082,7 @@ internal fun MessageBubble(
                     when {
                         verifiedPeer != null -> stringResource(R.string.chat_mesh_author_verified, row.senderName)
                         matchedPeer != null -> stringResource(R.string.chat_mesh_author_contact, row.senderName)
+                        row.origin?.meshcore == true -> stringResource(R.string.chat_meshcore_author, row.senderName)
                         row.origin != null -> stringResource(R.string.chat_mesh_author, row.senderName)
                         else -> stringResource(R.string.chat_view_profile, row.senderName)
                     },
@@ -3400,7 +3486,12 @@ internal fun MessageBubble(
                             // DM their LoRa radio has acked, the LoRa mark ahead of the one check until the receipt.
                             if (row.mine) {
                                 val tickStatus =
-                                    DeliveryStatus.ofTick(received = row.received, radioReached = row.radioReached, read = row.read)
+                                    DeliveryStatus.ofTick(
+                                        received = row.received,
+                                        radioReached = row.radioReached,
+                                        read = row.read,
+                                        ended = row.postEnded,
+                                    )
                                 val tickDescription =
                                     deliveryLabel(
                                         status = tickStatus,
@@ -4717,6 +4808,19 @@ private fun MeshOriginLine(
     origin: MeshOrigin,
     senderName: String,
 ) {
+    // A MeshCore room post has no node, hops, signal or signature to tell (ADR 2026-11.gsqu's Stage 6 amendment): its line
+    // says only, where its claimed name reads as ours, our board's or someone we know, that the match proves nothing.
+    if (origin.meshcore) {
+        if (origin.nameClash) {
+            Text(
+                text = stringResource(R.string.chat_meshcore_name_clash),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("chat_meshcore_name_clash"),
+            )
+        }
+        return
+    }
     val parts =
         buildList {
             // The `!hex` id appears exactly once in the bubble. When the name line already *is* the id — the

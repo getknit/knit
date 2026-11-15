@@ -226,6 +226,7 @@ val appModule =
                 get<Identity>(),
                 get<LoraStatusRepository>().facts,
                 get<CommonsRepository>(),
+                loraRooms = get<LoraStatusRepository>().perKind,
             )
         }
         single {

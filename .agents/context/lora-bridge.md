@@ -1131,8 +1131,9 @@ Debug builds only (`MESHCORE_PLANE`): `di/LoraWiring.loraPlaneOf` builds each ki
 
 - **What is Knit's.** The board is Knit's alone. `MeshcoreHooks.route` reads the slot and the data type before a byte is
   decoded (the channel key is public): channel data on the board's own Knit slot under `KNIT_DATA_TYPE` is a Knit frame, a
-  contact DM in a COBS-decoded `0x11` seal's shape is a compact DM, and everything else — a foreign DM, another slot or data
-  type, Public slot 0 (Stage 6), a `0x04` fragment that does not parse or names more than two parts (since Stage 5c-1,
+  contact DM in a COBS-decoded `0x11` seal's shape is a compact DM, a text on Public slot 0 is the kind's (Stage 6, "MeshCore's
+  Public channel" below), and everything else — a foreign DM, another slot or data type, channel data on Public slot 0, a
+  `0x04` fragment that does not parse or names more than two parts (since Stage 5c-1,
   `meshcoreFragmentsRefused`) — is counted and discarded as `PacketRoute.DROPPED`: never a hearing, never stored, logged,
   shown, relayed or in custody.
 - **Our board's answers**, booked from one place (`route`), for every **live** plain or signed-plain contact DM, Knit's or not
@@ -1289,6 +1290,41 @@ claim write (`di/writeMeshcoreClaim`) keeps a stored signature that already prov
 fresh one — a `keep` check asked inside the store's own edit (`MeshcoreClaimStore.setBoardKey`), never a read before it —
 so a signer that were not deterministic would still mint nothing per reconnect. Oracles: `meshcore bind signed`,
 `meshcore bind unanswered: …`, `meshcore bind refused: …`, `meshcore bind skipped: …` — never a key, a prefix or a signature.
+
+### MeshCore's Public channel (ADR 2026-11.gsqu's Stage 6 amendment)
+
+The board is Knit's except slot 0, which setup keeps and the plane mirrors both ways (debug builds, `MESHCORE_PLANE`). This
+section is the plane (6a); the room, its rows and its composer are 6b's.
+
+- **Slot 0 as found.** The handshake's slot scan keeps `MeshcoreDetail.publicSlot`: the slot's name (cleaned), whether its
+  secret is `MeshcoreProto.PUBLIC_GROUP_PSK` (`MyMesh.cpp:114`), whether it is empty (unnamed, or the null key) or Knit's;
+  never the secret. `MeshcoreHooks.statusOf` renders it as `LoraStatus.publicChannel`, and `LoraStatusRepository` reads a
+  MeshCore plane's `primaryChannel`, `primaryKeyIsPublic` and `canPost` from it (posting needs the MeshCore room on, the
+  plane Live, the board named `Knit xxxx` with consent, and slot 0 a channel).
+- **In.** A `CHANNEL_TEXT` on slot 0 routes `KIND` (no hearing on this kind); `onKindPacket` counts it
+  (`meshcorePublicHeard`), drops it while `meshcoreRoomEnabled` is off (`…RoomOff`, the plane's own config), judges it
+  (`MeshcorePublicJudge`: the companion's `"%s: "` form, `BaseChatMesh.cpp:518-531`; split at the first `": "` behind
+  1–31 B) and launches `onPublicPost` with a `MeshcorePublicPost` (name or null, body, `PublicPostKey` of the sender's stamp
+  and the raw text, `live`). Replays from the board's 16-frame offline queue are delivered. Data on slot 0 stays discarded.
+- **Out.** `postPublic` (the transport's `postPublic` / `postToPublicChannel`) refuses `ROOM_OFF`, `NOT_READY`,
+  `NOT_SET_UP`, `NO_CHANNEL` / `KNIT_ON_PRIMARY`, `TOO_SOON` (30 s), `TOO_LARGE` (149 B, or what the band's flood ceiling can
+  never carry), `NO_AIR`, in that order; then queues one channel text under `Ceiling.FLOOD` with the wall clock's seconds as
+  its stamp (`OutboundFrame.timestampSecs`) and answers `PublicPostResult.Queued` with the post as receivers read it
+  (`Knit xxxx: ` + the text). At the write the session reads `SELF_INFO` and slot 0 again and refuses a board no longer
+  Knit's or a slot no longer a channel (`MeshcoreRefusal.NOT_SET_UP` / `NO_PUBLIC_SLOT`); a `Busy` retry writes the same
+  stamp, and the refusal republishes the Ready so the face and the enqueue gate follow. A post older than `FRESH_MS` past
+  its stamp is never written (`RideGate.freshUntil`, set at enqueue). Every end without airing is reported by key on
+  `LoraMeshTransport.publicPostsEnded` (`PublicPostEnded`: `STALE`, `ENDED_AT_WRITE`). Booked at `phyBytes(PUBLIC_POST)` with the 11-B prefix: 185 B, about 1.16 s, for a 149-B post at SF8 / BW 62.5.
+- **Oracles.** The MeshCore dump's `meshcorePublicHeard` / `…RoomOff` / `…Refused` / `…Delivered` / `…PostsQueued` /
+  `…PostsRefused` / `…PostsSent` / `…PostsEnded`; the lines `lora public post refused: <reason>` (at the enqueue),
+  `lora public post ended at the write` (refused, not set up any more, or unconfirmed), `lora public post stale at the write` and `lora tx public <n>B` (sizes and
+  reasons only: no name, text or stamp is ever logged).
+- **Trial recipe** (two V4s at companion v1.18.0, a stock MeshCore client on a third device; not run). Set up board A in
+  Knit and enable the MeshCore room. From the stock client post `hello` on Public: A's dump `meshcorePublicDelivered` +1,
+  `meshcorePublicHeard` +1. From Knit post 149 B: the stock client shows `Knit xxxx: <text>` whole, A's `floodUsedMs` rises
+  by about 1.16 s, `lora tx public 149B`. Post again within 30 s: `lora public post refused: TOO_SOON`. Rename A from the
+  stock client over USB, then post: `meshcorePublicPostsEnded` +1 and nothing on the stock client. `grep` logcat for the
+  stock post's words and sender name: zero hits.
 
 ## Board setup (once, Meshtastic CLI or app)
 

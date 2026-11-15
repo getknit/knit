@@ -31,12 +31,15 @@ import app.getknit.knit.mesh.LoraRadioReached
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshPause
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.transfer.TransferManager
 import app.getknit.knit.transfer.TransferState
 import app.getknit.knit.ui.ConversationTable
+import app.getknit.knit.ui.MeshRoomInputs
 import app.getknit.knit.ui.chat.DeliveryStatus
+import app.getknit.knit.ui.chat.roomFactsFor
 import app.getknit.knit.ui.observeConversationTable
 import app.getknit.knit.ui.whatsnew.WhatsNew
 import app.getknit.knit.ui.whatsnew.WhatsNewEntry
@@ -184,6 +187,10 @@ class ChatListViewModel(
     // Settings › Chats › Translation, which shows a translation the reader made in its message's place; never on in a
     // build without translation (TRANSLATE_WIRED). A parameter so a test can turn it on in either build.
     translationOn: Flow<Boolean> = if (TRANSLATE_WIRED) settings.translationEnabled else flowOf(false),
+    // Each board kind's own facts (`LoraStatusRepository.perKind`): each bridged room's row is drawn from its own kind's
+    // binding, plane, slot-0 name and switch, never the bound kind's aggregate (ADR 2026-11.gsqu's Stage 6 amendment).
+    // Null, as in the positional test rigs, reads [loraFacts] as its own kind's alone.
+    loraRooms: Flow<Map<BoardKind, LoraFacts>>? = null,
     // Who has read our newest message in each thread (ADR 2026-11.z6jw). Nullable and last for the same reason
     // as [commons]; null reads as "nobody has read anything", so the tick stays at ✓✓.
     private val receipts: MessageReceiptRepository? = null,
@@ -228,10 +235,10 @@ class ChatListViewModel(
         val meshStopped: Boolean,
         val relayPlane: RelayPlane,
         val loraPlane: LoraPlane,
-        /** The board's primary channel as the Meshtastic room names it, while live — the row's title. */
-        val publicChannel: String?,
-        /** Whether the Meshtastic room exists on this phone at all (`SettingsStore.loraRoomEnabled`). */
-        val loraRoom: Boolean,
+        /** The Meshtastic room's own inputs, off its own kind's facts (the newest heard channel filled in at build). */
+        val meshtasticRoom: MeshRoomInputs,
+        /** The MeshCore room's own inputs, off its own kind's facts (ADR 2026-11.gsqu's Stage 6 amendment). */
+        val meshcoreRoom: MeshRoomInputs = MeshRoomInputs.NO_BOARD,
     )
 
     // Reactions to our own messages, per thread — empty until our id is known, rather than holding the whole
@@ -324,10 +331,16 @@ class ChatListViewModel(
         relayFacts.map { planeFor(it) }.distinctUntilChanged()
 
     // Same collapse for the LoRa plane: the facts also carry the DM switch and the battery, which this screen
-    // never reads. The primary channel's name rides beside the plane because the Meshtastic room's row is
-    // titled by it, and the room switch because it decides whether that row exists.
+    // never reads. The header's plane is the bound kind's (the aggregate); each bridged room's row reads its own kind's
+    // plane, slot-0 name and switch, which decide whether the row exists and what it is called.
     private val loraRoom =
-        loraFacts.map { Triple(it.plane, it.primaryChannel, it.room) }.distinctUntilChanged()
+        combine(loraFacts, loraRooms ?: loraFacts.map { mapOf(it.board to it) }) { bound, perKind ->
+            Triple(
+                bound.plane,
+                MeshRoomInputs.of(roomFactsFor(BoardKind.MESHTASTIC, perKind)),
+                MeshRoomInputs.of(roomFactsFor(BoardKind.MESHCORE, perKind)),
+            )
+        }.distinctUntilChanged()
 
     // The clone notice is two persisted stamps, so it survives a restart and a mesh that is off; paired with
     // the relay plane to keep the combine below on its typed five-flow overload.
@@ -368,7 +381,7 @@ class ChatListViewModel(
             banners,
             relayPlane,
             loraRoom,
-        ) { count, health, banners, plane, (loraPlane, channel, room) ->
+        ) { count, health, banners, plane, (loraPlane, meshtastic, meshcore) ->
             MeshStatus(
                 count,
                 health,
@@ -378,8 +391,8 @@ class ChatListViewModel(
                 banners.meshStopped,
                 plane,
                 loraPlane,
-                channel,
-                room,
+                meshtastic,
+                meshcore,
             )
         }
 
@@ -547,7 +560,7 @@ class ChatListViewModel(
                 // stays only while a radio is bound — the honest way to say "not interested" in a channel that
                 // arrives unasked. Cleared posts don't come back: custody still holds them, so no peer's
                 // digest re-serves them, and every copy expires on the frame's own stamp.
-                ConversationKind.NEARBY, ConversationKind.MESHTASTIC, ConversationKind.DM -> {
+                ConversationKind.NEARBY, ConversationKind.MESHTASTIC, ConversationKind.MESHCORE, ConversationKind.DM -> {
                     messages.deleteByConversation(conversationId)
                 }
 

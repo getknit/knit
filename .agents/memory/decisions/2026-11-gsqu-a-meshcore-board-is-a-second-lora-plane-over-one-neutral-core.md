@@ -1768,3 +1768,275 @@ and hex. Boards: a fresh setup binds within one connection and Bob stores the ke
 power-cycle and relaunch moves no `meshcore_sealed_version`; a rebind to a second V4 mints once keyless and once keyed;
 deleting the stored signature re-signs byte-identically; a second central on `123456` obtains a valid bind for a foreign
 node id (the residual above).
+
+## Amendment 2026-11-15 — Stage 6: the Public channel mirrored both ways, part 6a (the plane) (draft)
+
+The maintainer decided on 2026-11-12/13 that a MeshCore board is Knit-only **except Public (slot 0)**, which setup keeps and
+v1 mirrors into its own room (`Conversations.MESHCORE_PUBLIC`, Stage 6b): posts always unsigned and drawn as strangers, never
+relayed, custodied, signed or originated; outbound under a 30 s floor, the room switch and a consent sheet. Built under the
+Stage 6 design pass (lora- and security-reviewer, 2026-11-15), whose findings were binding. This part is the plane; 6b, the
+room, its delivery, notifications and composer, and 6c, the lab, amend this section when they land. Firmware lines are
+`companion-v1.18.0`.
+
+- **Admission: `Ceiling.FLOOD`** (`BoardTraits.publicCeiling`, `MeshcoreTraits.publicCeiling`). §4 already names the Public
+  mirror a flood and rejects `HALF` for floods (3.3 times jend's cap); a Public post is `sendGroupMessage` →
+  `sendFloodScoped` (`BaseChatMesh.cpp:518-536`), re-aired once by every repeater. This closes the 5a-1 amendment's open
+  question ("decide with Stage 6 how a Public post is admitted"). Public and Knit room posts share the 0.15 flood share: a
+  busy Public room can hold Knit's room posts for a window (skipped under the ceiling, and a Knit post may age out at
+  `FRESH_MS`). A Public post is unbraked (`OutboundFrame.braked` is Knit's room post alone), as a stock client's is.
+- **The price** (lora N3). The firmware writes `"%s: "` from the board's `node_name` before the text
+  (`BaseChatMesh.cpp:523`) and trims the whole to `MAX_TEXT_LEN` 160 silently (`:527`). A post leaves only from a board named
+  `Knit xxxx` (next item), so the prefix is a constant `MeshcoreTraits.PUBLIC_PREFIX_BYTES` 11, priced in
+  `phyBytes(PUBLIC_POST)`, and the cap `PUBLIC_TEXT_CAP` 149 (`capOf(PUBLIC_POST)`): 185 B on the air, about 1.16 s at the
+  companion default (SF8 / BW 62.5), so about five per 45-s window's flood share on a 10 % band, shared with Knit's room
+  posts. Admission, booking and the composer's budget read the one price: `LoraAirtime.publicPostBytes` (`AirtimeSnapshot`,
+  `LoraFacts.publicPostBytes`) is the cap less where the flood ceiling of an empty window can never carry that much (about
+  64 B on a 1 % sub-band), the same `NEVER` test the enqueue asks, so a post the band can never carry is `TOO_LARGE`, never
+  `NO_AIR`. The encoder's refusal (`MeshcoreProto.sendChannelText`, `channelTextCap`) stays the only size gate at the write.
+- **A post goes out only under Knit's name, from a board set up for Knit** (lora B1, security B2). The firmware puts the
+  board's own name in front of every post, which may be the user's real name (a board never set up, a Restore, a rebind,
+  another app's rename). `MeshcoreHooks.postPublic` refuses `NOT_SET_UP` unless the Ready says the board is named
+  `MeshcoreNames.forKey(key)` (`MeshcoreDetail.namedForKnit`) **and** this connection consents (the session's actor's
+  `MeshcoreConsent`, as the offers read it). At the write, `MeshcoreSession.sendPublic` reads `SELF_INFO` and slot 0 again
+  — a companion serves BLE, USB and Wi-Fi clients at once (`MultiSerialInterface`, `main.cpp:15-70`), so another client can
+  rename the board or clear slot 0 under a live connection — and answers `Rejected(NOT_SET_UP)` unless `knitBoard(c)`, or
+  `Rejected(NO_PUBLIC_SLOT)` unless slot 0 holds a channel that is not Knit's; no answer to either read is `Busy`. `ERR
+  NOT_FOUND` stays `Busy` (no free packet: `getChannel` takes any index, `BaseChatMesh.cpp:926-931`). **Cost:** two round
+  trips a post (a post at most every 30 s), and `APP_START` stops a contacts iterator another client may be running
+  (`MyMesh.cpp:1083`); Knit's own listings run on the session's actor, never beside a write.
+- **Slot 0 is whatever it holds** (lora B2). The companion adds Public at boot and its saved channels replace it
+  (`MyMesh.cpp:1002-1003`); setup keeps slot 0 as it finds it. The handshake keeps `MeshcoreDetail.publicSlot`
+  (`MeshcorePublicSlot`): the slot's own name cleaned, whether its secret is the published Public key
+  (`MeshcoreProto.PUBLIC_GROUP_PSK`, `izOH6cXN6mrJ5e26oRXNcg==`, `MyMesh.cpp:114`), whether it is empty (no name — receivers
+  skip it, `BaseChatMesh.cpp:401` — or the all-zero key, under which a post would reach nobody) and whether it is Knit's; never
+  the secret. A post to an empty slot 0 is `NO_CHANNEL`, to a Knit one `KNIT_ON_PRIMARY`. The face (`LoraStatus.publicChannel`,
+  `PublicChannelFace`) carries name, key and `postable`; `LoraFacts` on MeshCore read `primaryChannel` and
+  `primaryKeyIsPublic` from it (unknown reads public, the safe half), and `canPost` = the MeshCore room on ∧ Live ∧ set up
+  for Knit ∧ slot 0 a channel. Facts stay the bound kind's; 6b gates each room on its own kind. A consent change republishes
+  the face (`PlaneCore.faceMoved`). The face reads the Ready, so a rename by another client shows only at the next
+  handshake; the write's re-read is the authority.
+- **The refusals, in order** (`PublicPostRefusal`, gaining `NOT_SET_UP` and `NO_CHANNEL`): `ROOM_OFF` (this plane's
+  config, folded from `meshcoreRoomEnabled` alone), `NOT_READY`, `NOT_SET_UP`, `NO_CHANNEL` / `KNIT_ON_PRIMARY`, `TOO_SOON`
+  (`PUBLIC_POST_FLOOR_MS`, the constant the Meshtastic room shares; a per-hooks monotonic stamp, in memory, unpersisted,
+  claimed at enqueue by compare-and-set and given back when the queue refuses the frame), `TOO_LARGE` (over 149 B, empty
+  once a NUL is dropped — no receiver reads past one, `strlen`, `MyMesh.cpp:577` — or a `NEVER` once the duty is known),
+  `NO_AIR`. Each is counted (`meshcorePublicPostsRefused`) and logged `lora public post refused: <reason>`.
+- **The stamp is fixed at enqueue** (lora N4, security N5). The sender timestamp (the wall clock, in seconds) rides the frame
+  (`OutboundFrame.timestampSecs`, `PlaneCore.enqueuePublic`, `SendPurpose.PublicPost.timestampSecs`), so every write of it —
+  a `Busy` retry never aired — writes the same one. `postPublic` hands it back (`PublicPostResult.Queued.key`, a
+  `PublicPostKey` of the stamp and `"Knit xxxx: " + text`), so 6b writes our own row's id as `forMeshcorePost(ts, raw)` and a
+  re-air of our post after the board's 160-entry seen ring forgot it (`SimpleMeshTables.h:9`; the firmware marks our own
+  flood seen at origination) dedups by id. **Never by name:** a name match is a claim and would drop another Knit user whose
+  board's two-byte tag is ours.
+- **The judge** (`MeshcorePublicJudge`, pure; security N1, N10). The text splits at its first `": "` only when what precedes
+  it is 1–31 B (`char node_name[32]`, `NodePrefs.h:17`); otherwise no name and the whole text is the body; a name holding
+  `": "` splits early. Decoded leniently (U+FFFD); the name through `TextLimits.cleanReceived` at the display-name limit, null
+  when its `NameKey` is empty; the body trimmed, clamped to `TextLimits.MESSAGE`, refused empty. The id's inputs are the
+  sender's timestamp and the **raw** bytes as drained, before cleaning (`PublicPostKey`): stable across an offline-queue
+  replay (same frame, `app_target_ver` fixed at 3). The brief's "plain text only" filter is dropped: the board always reports
+  `TXT_TYPE_PLAIN` (`MyMesh.cpp:574`) and passes every group text whose flags are under 4 (`BaseChatMesh.cpp:418`), so a
+  signed-plain sender's 4-byte prefix arrives as text. A slot-0 text never reaches `LoraFrameCodec`, COBS or `IdElision`: a
+  text whose bytes are a valid `0x06` frame is a plain post.
+- **Routing.** A `CHANNEL_TEXT` on slot 0 is `PacketRoute.KIND`; the core asks `noteHeard` first, which hears no sender on
+  this kind (`hearsSender` false), so a Public post is never a hearing (pinned:
+  `MeshcoreHearingTest.aPublicTextIsNoHearingEvenWhenItsBytesAreAVerifiedKnitPost`). `onKindPacket` drops and counts it while
+  the MeshCore room is off (`meshcorePublicRoomOff`, read in the hooks off this plane's config, never the bound kind's facts:
+  security N13) or slot 0 is Knit's, else judges it and launches `meshcorePlane`'s `onPublicPost` (`MeshcorePublicPost`:
+  name, body, key, `live`), as the Meshtastic hooks launch theirs. Offline-queue replays are delivered. Slot-0 `CHANNEL_DATA`
+  stays discarded (`meshcorePublicDiscarded`). The sink is a no-op in `di/MeshModule` until 6b. Counters only, never a name,
+  a text or a timestamp in a line (security N8): `meshcorePublicHeard`, `…RoomOff`, `…Refused`, `…Delivered`,
+  `…PostsQueued`, `…PostsRefused`, `…PostsSent`, `…PostsEnded` in the MeshCore dump.
+- **The fake** (lora N9). `FakeMeshcoreAir.sendChannelText` refuses a type other than plain with `UNSUPPORTED_CMD` before
+  anything else (`MyMesh.cpp:1178-1197`); `receiveGroupText` skips an unnamed slot, stops at a NUL and cuts at
+  `MAX_FRAME_SIZE` less the V3 header (`MyMesh.cpp:577-580`).
+
+**The 6a review (lora-reviewer, 2026-11-15), applied:** no blocking finding; the two open questions answered (the extra
+`APP_START` at the write is safe; a queued post gets a freshness bound) and two fixes made.
+
+- **A refusal at the write reaches the face.** When `sendPublic` refuses `NOT_SET_UP` or `NO_PUBLIC_SLOT`, the session
+  publishes its Ready again with what the write just read (`namedForKnit`, `publicSlot`), so `canPost`, the face and the
+  hooks' enqueue gate refuse up front until the board changes back, rather than each post claiming the floor and ending
+  at the write until the next reconnect.
+- **A queued post is fresh for `FRESH_MS` past its stamp** (ADR 039's fan-out freshness, 15 minutes): the core sets
+  `RideGate.freshUntil` at `enqueuePublic`, and `MeshcorePublicChannel.send` asks it before the write (kind frames skip the
+  core's `staleReason`); a stale post is never written under its old stamp, which a stock client would file hours back
+  and a Knit receiver draw as new. Counted ended, logged `lora public post stale at the write`.
+- **The end of a post is reported** (`LoraMeshTransport.publicPostsEnded`, `BoardKindHooks.publicPostsEnded`, a hot
+  `Flow<PublicPostEnded>` with no replay): the key the enqueue answered and `STALE` or `ENDED_AT_WRITE` (a refusal at the
+  write, a board's refusal, or an unconfirmed write — which may have aired after all). A post the core sheds from a full
+  queue or drains as `NEVER` before its write is not reported.
+
+**What it costs** (recorded, not accounted):
+
+- **Admission reads only what the window booked** (lora N6): `LoraAirtime.admits` reads `spentMs` / `floodSpentMs`, never
+  what is queued, so a Public post admitted behind queued Knit room posts can still be skipped under the ceiling and wait,
+  up to its `freshUntil` (the review, above), while its row reads sent; its end is then reported. The Meshtastic room's
+  `HALF` path has the same gap.
+- **The board's offline queue** (security N12): 16 frames (`MyMesh.h:62`); full, it evicts the oldest channel message
+  (`MyMesh.cpp:224-237`), Knit's own `CHANNEL_DATA_RECV` included, so a busy Public channel while the phone is away pushes
+  Knit's queued room posts out first. A reconnect delivers at most the last 16.
+- **The name is a claim.** Any radio on the key can post under any name, `Knit <our tag>` and `You` included; the room draws
+  every heard post as a stranger (6b).
+- **A text over 162 B** (only a non-companion sender can make one) is cut by the board at 165 (V3) and, on an ESP32, may be
+  cut again by the notify (Q8); the cut is the same on every drain of one board, so the id still holds there.
+
+Owed to 6b: `Conversations.MESHCORE_PUBLIC` and its predicate, `InboundPipeline.deliverMeshcorePost` with the sentinel
+`originNode` (security B1), `FrameId.forMeshcorePost` (its domain string frozen once shipped), the per-id dedup at connect,
+the notification channel, the composer reading `LoraFacts.publicPostBytes` and `canPost`, the MeshCore consent copy (security
+B3, lora N8: MeshCore users who DM the board get no answer), the room switch's setter, and wiring `onPublicPost` and a
+MeshCore `PublicChannelSink` through `LoraMeshTransport.postPublic`. Owed to 6c: the lab scenarios.
+
+**Trials owed** (boards at companion v1.18.0; none run here): a 149-B Knit post reads `Knit xxxx: <text>` whole on a stock
+client and `floodUsedMs` rises by about the 185-B price; a stock post reaches the plane once (`meshcorePublicDelivered`) and
+nothing about it reaches a BLE peer; a second post inside 30 s is `TOO_SOON`; the room off drops (`meshcorePublicRoomOff`)
+and a later post lands once it is back on; phone away, three stock posts, reconnect: each once (at most the last 16);
+Restore or a stock-app rename over USB while a post is queued: nothing airs under the other name
+(`meshcorePublicPostsEnded`, no channel text on the stock client); slot 0 cleared or re-keyed on a spare board: the post is
+refused or the face follows the slot; a 10-minute busy-mesh walk shows no second copy of our own post (6b's id); logcat, the
+field log and a bug report hold no stranger's name or text.
+
+### Part 6b: the room (2026-11-15, draft)
+
+The app side: the MeshCore room, its delivery, notification, composer and switch, over 6a's plane API, under the same
+design pass. Nothing in `mesh/lora/` changed.
+
+- **The room and its predicate** (security N7). `Conversations.MESHCORE_PUBLIC` (`"m-meshcore"`, the second `m-` id) is
+  `ConversationKind.MESHCORE`, never `DM`; `ConversationKind.isBridged` / `Conversations.isBridgedRoom` is the one predicate
+  for "a bridged board room", read by every rule the two rooms share: `isPublicRoom`, `RelayReach.Silent`, the composer's
+  gate and carry (`publicPostGateFor`, `loraCarryFor`), the chat's no-call, no-transfer, no-typing, no-tapback,
+  text-only rules, `MeshManager.sendTyping`, the notifier's missing reply action and the action receiver's backstop, which
+  asks the predicate ahead of every route. The Meshtastic-only sites got MeshCore twins: its own notification channel
+  (`NotificationChannels.MESHCORE`, `knit_msg_meshcore_public`, `IMPORTANCE_LOW`, registered only where
+  `BuildConfig.MESHCORE_PLANE`), title (slot 0's name, else "MeshCore"), shortcut title, face and avatar.
+- **Delivery** (`InboundPipeline.deliverMeshcorePost`, over `MeshPostSink.onMeshcorePostHeard` and the seam value
+  `MeshcorePost`; the plane's `MeshcorePublicPost` crosses in `di/LoraWiring.meshcoreHeard`). A local-only envelope into
+  `MESHCORE_PUBLIC` on LoRa, `ack = false`, `sentAt` this phone's clock (security N4): the sender's stamp is read only inside
+  `FrameId.forMeshcorePost`, SHA-256 over `knit-meshcore-public-id-v1:` + the stamp in decimal + `:` + the raw text — a
+  domain **frozen once shipped**. Never `findByLoraNode`, `judgeMeshPostSignature` or a blocklist read: a channel text names
+  no identity.
+- **The sentinel** (security B1). Every heard row carries `MeshPostOrigin.MESHCORE_NODE` (−1, never a Meshtastic number,
+  which is 32 unsigned bits) as its `originNode`, so the rules that read `originNode != null` as "somebody else's words" hold
+  with no change: not `writtenBy`, absent from `conversationsIAuthoredIn` and `recentOwnSends`, never an own message for the
+  reaction query or the quote verdict, counted unread. Every reader that turned `originNode` into a label asks the room
+  first and draws the post's own name, or "Unnamed", never `!ffffffff`: `speakerLabel` (the chat list's and search's
+  preview), `ChatViewModel.meshOriginFor` (the bubble, the pinned bar; `MeshOrigin.meshcore`, no provenance line),
+  `InboundPipeline.heardSpeaker` (the notification) and `MessageInspection`; the debug USB control's JSON too.
+- **Names** (security N2, N3). The room moderator reads `"<name>: <body>"`, the line as the channel carried it, once; a
+  flagged post hides its name with its words wherever the filter hides it (bubble, pinned bar, preview, notification). A
+  name that collides by `NameKey` with "You", the person's display name, their own board's `Knit xxxx` or any known peer's
+  (`meshcoreClashKeys`) is drawn with a marker line (`chat_meshcore_name_clash`), never with contact styling, an avatar or a
+  tap. The notification's person is keyed `mc:` + SHA-256 of the name, in hex (`meshcoreSpeakerKey`), never the raw name,
+  with no face. The room's notice says names are **never** verified.
+- **One delivery at a time** (security N9). Both rooms' deliveries run under one `InboundPipeline.heardPostLock`: a board's
+  offline-queue replay racing a live copy at connect found no row on both sides and notified twice (the Meshtastic room had
+  the same race). A per-id map buys nothing at a board's rate.
+- **Retention** (security N6). The room sweep's strangers-first tier (`MessageDao.deleteOldestFromStrangersIn`) counts
+  every row with an `originNode` as a stranger's, whatever its sender column says, in both bridged rooms; the user's own
+  posts are no longer the first a busy channel evicts.
+- **Posting by room** (security N13). `MeshController.sendPublicPost(conversationId, text)` routes by the room, never the
+  bound board: the Meshtastic room through its sink, the MeshCore room through `MeshManager`'s `meshcorePublicChannel`
+  (`di/LoraWiring.postToMeshcorePublic`), which refuses `NO_BOARD` unless `boundBoardKind` is MeshCore and answers a
+  `PublicChannelAnswer.Queued` with the row id the post's receivers key it on (`meshcoreRowId`: the stamp fixed at enqueue
+  and `"Knit xxxx: "` + the text). Our own row is written under it, so a re-air after the board's seen ring forgot it lands
+  there (lora N4, security N5).
+- **The composer reads its own kind** (lora N5). Each bridged room is titled, gated, budgeted and listed by its own kind's
+  facts (`LoraStatusRepository.perKind`, `roomFactsFor`), never the bound kind's aggregate: with a MeshCore board bound the
+  Meshtastic room reads an Off plane — history shown, composer refused as no radio — which closes the 6a review's round-1
+  finding 3. The MeshCore budget is `LoraFacts.publicPostBytes` (149 B before a ledger). Consent is per kind
+  (`SettingsStore.meshcorePostConsented`, `acceptMeshcorePostConsent`). `NOT_SET_UP`, `NO_CHANNEL` and the room off have
+  their own words.
+- **The consent sheet** (security B3, lora N8): its own strings, scrolling, the Meshtastic sheet's only where the words fit
+  both. It names the board's own `Knit xxxx` (`di/LoraWiring.meshcoreBoardName`, off the claimed key) and says the name is
+  the same on every post and identifies the board, so contacts and people who know the board can tell it is you; the key
+  is public, so anyone listening, or uploading, can keep what is posted; a post cannot be taken back; anyone can post under
+  any name, yours included; a MeshCore user's DM to the board gets no answer.
+- **The switch.** The LoRa screen draws the MeshCore room's switch while a MeshCore board is bound
+  (`SettingsStore.setMeshcoreRoomEnabled`); off clears the room's notifications.
+- **A post that ended without airing** (6a's `publicPostsEnded`, collected in `MeshManager.start` ahead of the transport).
+  Marked on the own row itself, one statement each (`MessageRepository.markPublicPostEnded`), no schema change: `STALE` sets
+  `pendingKey` — the column's own words, written locally and never sent, on a row with no recipient that no resend path
+  reads — and reads "Not sent"; `ENDED_AT_WRITE` puts `receivedVia` back to unknown from the LoRa it was queued on and reads
+  "May not have gone out" (`DeliveryStatus.NotSent` / `Unconfirmed`, read only in the MeshCore room). Never worded as not
+  sent when it may have aired, and **nothing resends either** (lora-reviewer's rulings on 6a's ended signal). An end that
+  outruns the own row's save (the row id comes back with the enqueue, the save follows it) is held in memory, bounded,
+  and the save marks it.
+
+**What it costs** (recorded, not built): an end can be lost — a restart, a post the core sheds, an end with nobody
+collecting — and the row then reads sent, as a Meshtastic room post's always does; there is no persistence for ends. A
+heard post's name is screened with its words, so a flagged name hides an innocent body too. The clash marker reads every
+known peer's name, Nearby strangers' included: it can mark a name the user would not call a contact, never miss one.
+
+**The 6b security review (round 1, 2026-11-15), applied:**
+
+- **The details screen was a reader B1 missed** (blocking). `MessageDetailsViewModel` read `mine` off the sender column, so a
+  heard row — either bridged room's — read "You" and took our delivery rows and plane. It now reads `writtenBy`, and a row
+  with an `originNode` is named by the thread's own rule (`speakerLabel`): the Meshtastic room's contact, board name or
+  `!hex`; the MeshCore room's claimed name, marked, or "Unnamed".
+- **The name-clash marker reaches every surface that names a post's author** (blocking). One set
+  (`mesh/meshcoreClashKeys`, by `NameKey`: "You", the display name, the board's `Knit xxxx`, every known peer's name)
+  feeds the bubble's marker line, and on the single-line surfaces — the chat-list and search previews (`speakerLabel`),
+  the pinned bar, the details screen — and the notification's person a clashing name is quoted and marked
+  (`chat_meshcore_name_claimed`, `“%1$s” (unverified)`), never drawn bare: "You: hello" no longer reads as our own post.
+  The UI's own names arrive as `di/LoraWiring.meshcoreOwnNames`; the pipeline reads `PeerRepository.names()` and the
+  board's name off the claim (`InboundPipeline.ownBoardName`, `mesh/meshcoreBoardName`).
+- **A bridged board room takes no tapback, inbound too.** `InboundPipeline.reactsIn` / `readsThread` refuse anyone but us
+  in either bridged room (`REACTION_OUTSIDE_THREAD`), and `ReactionRepository.ROOMS` holds Nearby alone: the rooms' row ids
+  are derivable from the air (`forMeshcorePost`), so any Knit identity could have put "Reacted 👍 to …" on our own post in
+  a room the UI says takes none. The Meshtastic room went into `ROOMS` with ADR 2026-10.59fu as one of "the rooms", with no
+  reason of its own recorded, and ADR 2026-10.xhfr says it has no tapback form, so both rooms take the gate.
+
+**The 6b security review, round 2 (2026-11-15):** every MeshCore author is marked on single-line surfaces, maintainer
+2026-11-15, after two rounds found gaps in name matching. The chat-list and search previews (`speakerLabel`), the pinned
+bar, the details screen and the notification's person draw every MeshCore room author as `chat_meshcore_name_claimed`
+(`ui/meshcoreAuthorLine`, `NotificationLabels.claimedName`), whatever it matches; a missing or filtered-out name stays the
+plain "Unnamed", and our own rows still read as ours. The clash plumbing those surfaces alone read is gone (round 1's
+notification and list sets, `InboundPipeline.ownBoardName`, `PeerRepository.names`, `di/LoraWiring.meshcoreOwnNames`).
+The bubble keeps its "Same name as someone you know" line, over one set (`ui/meshcoreRoomClashKeys`, by `NameKey`): "You",
+the display name, the board's `Knit xxxx`, and every person's name as stored and as the screens render it — their label's
+text, disambiguation included, and its name, the alias where the stored name is blank — ours included.
+
+**Residuals recorded (round 1, not built):**
+
+- **A board's advert may carry a position** (refs #285). Setup leaves `advert_loc_policy` and a set latitude and longitude as
+  it finds them (the `SELF_INFO` read passes over both, `MeshcoreProto.kt:545-547`), and a post ties the user's words, under
+  the board's name, to an advert that may carry a position set earlier. The consent sheet does not say so. Owed to Stage 7:
+  setup reads `advert_loc_policy` and a non-zero position from `SELF_INFO`, and the sheet shows a line about it only then
+  (or setup offers to clear the position).
+- **Heard-row ids share the `messages` key space with Knit frame ids.** This is the #301 class; the detail is kept with that
+  issue. The decision is the maintainer's.
+
+Translations of the new strings are the main session's. The trials above stand.
+
+### Part 6c: the lab (2026-11-15, draft)
+
+- **A lab MeshCore node is wired as the app is.** `LabNode.meshcoreOn` passes `meshcorePlane` the room's `onPublicPost`
+  (`MeshManager.onMeshcorePostHeard(meshcoreHeard(post))`), and the manager `meshcorePublicChannel`
+  (`di/LoraWiring.postToMeshcorePublic` over this node's plane) and `meshcorePostsEnded` (`meshcorePostEnds`).
+  `LabNode.postPublic` posts as the composer does once the consent sheet is past; `meshcorePostsHandled` counts each heard
+  post the pipeline returned from — the one event a duplicate leaves, since it writes and notifies nothing.
+  `postToMeshcorePublic` now takes the plane's `postPublic` as a seam, not the transport, so its bound-kind gate is tested
+  against a plane that would answer (the unit-test review's finding).
+- **A stock node** (`StockMeshcoreNode`, `LabMeshcore.kt`): a fake board with a stock client and no Knit, posting plain
+  `name: text` on slot 0 under any advert name and stamp. It waits for a free packet and fails unless the board answered
+  OK, since a burst past the board's pool is refused (`ERR_NOT_FOUND`) and never airs.
+- **A board out of range** (`LabNode.meshcoreOutOfRange`): every dial fails and the board stays powered. Powering it off
+  across a calendar jump reads as a reboot to the duty law, whose pre-boot term then holds the pacer for up to an hour;
+  out of range, the board's uptime runs with the calendar and nothing is held.
+- **The scenarios** (`MeshcorePublicLabTest`, each ending in the oracle on Nearby over a link: mirror rooms take no
+  receipts, so their own rows would fail its tick leg). A contact's post is a stranger under `Knit xxxx` at the other
+  phone, one row per id each side, the two mirrors' ids equal after a fence. Five hostile names (the contact's board name,
+  "You", a display name, a namesake's label, a blank name's alias) are strangers under exactly the claimed name, their
+  notification keyed on the name's hash, quoted unverified, faceless. Our own post re-aired after the ring is evicted is
+  handed up and stays one row. A phone off the board gets nothing: no custody moved, nothing about the post over the
+  link, no board send (a two-part fence airs after it). Phone away for twenty posts: the board keeps the last sixteen,
+  each lands once, in drain order, stamped on arrival. Room off drops at the count; back on, a later post lands. A post held past `FRESH_MS` with the board out of range reads
+  "Not sent" and never reaches the board. A fork's reaction in either bridged room counts `REACTION_OUTSIDE_THREAD`, draws
+  and notifies nothing, and is still custodied.
+- **Drain order is a promise** (the coordinator's ruling on 6c's open question, 2026-11-15). Both planes hand heard
+  posts to the room through one `OrderedRoomSink` each, in place of a launch per post: one delivery at a time, in the
+  order the board handed them over, on the plane's scope (a post handed over is delivered after the session ends), and
+  the packet collector never waits on the room. Bounded at 512 waiting, past any board's queue at connect; a refusal is
+  counted (`meshcorePublicBacklogDropped`; Meshtastic's `meshPostRefused` under `ROOM_BACKLOG`) and logged, never silent.
+  The room orders by `sentAt`, then by id, a hash: under `heardPostLock` each heard post is stamped strictly after the
+  last (`InboundPipeline.heardStamp`), so posts drained in one millisecond keep their order. The offline scenario checks
+  the sixteen rows in the room's display order against the board's.

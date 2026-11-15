@@ -33,6 +33,7 @@ import app.getknit.knit.data.message.isStatusNotice
 import app.getknit.knit.data.message.receivedPlane
 import app.getknit.knit.data.message.settledWith
 import app.getknit.knit.data.message.videoInfo
+import app.getknit.knit.data.message.writtenBy
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
@@ -144,6 +145,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -502,6 +504,9 @@ class InboundPipelineTest {
         /** When set, hears the `isRoom` scope each inbound classification ran under. */
         var onClassifyScope: ((isRoom: Boolean) -> Unit)? = null
 
+        /** When set, hears each classified text first — and may suspend there, as the real moderator's inference does. */
+        var onClassifyText: (suspend (String) -> Unit)? = null
+
         /** `(name, body)` for every post the pipeline handed to the foreign public channel. */
         val pipeline: InboundPipeline
 
@@ -673,6 +678,7 @@ class InboundPipelineTest {
                     flushPending = { flushed += it },
                     classifyText = { text, _, isRoom ->
                         if (failClassify) error("moderation boom")
+                        onClassifyText?.invoke(text)
                         onClassifyScope?.invoke(isRoom)
                         flagWhen?.invoke(text) ?: flagText
                     },
@@ -6129,6 +6135,320 @@ class InboundPipelineTest {
             assertEquals("Bob", notification.captured.senderName)
             assertEquals("keyed on the speaker, not on us", "!1234abcd", notification.captured.senderId)
             assertNull("a stranger wears no face", notification.captured.avatarBytes)
+        }
+
+    // --- The MeshCore room (ADR 2026-11.gsqu's Stage 6 amendment): a post a bound MeshCore board heard on its Public
+    //     channel, always a stranger's, never resolved, keyed on what every drain of it carries. ---
+
+    private val meshcoreStamp = 1_763_200_000L
+
+    private fun meshcorePost(
+        body: String,
+        name: String? = "Bob",
+        stamp: Long = meshcoreStamp,
+        raw: ByteArray = (name?.let { "$it: " }.orEmpty() + body).encodeToByteArray(),
+    ) = MeshcorePost(name = name, body = body, timestampSecs = stamp, raw = raw)
+
+    @Test
+    fun aMeshcorePostLandsInItsRoomAsAStrangerUnderTheSentinel() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            rig.nowMs = 9_000L
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("anyone around?"))
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertEquals(
+                "keyed on the stamp and the raw text",
+                FrameId.forMeshcorePost(meshcoreStamp, "Bob: anyone around?".encodeToByteArray()),
+                row.id,
+            )
+            assertEquals(Conversations.MESHCORE_PUBLIC, row.conversationId)
+            assertEquals("anyone around?", row.body)
+            // Our sender column by convention, and the fixed sentinel beside it says the words are somebody else's
+            // (security B1): never null, never a node number.
+            assertEquals(rig.self.nodeId, row.senderId)
+            assertEquals(MeshPostOrigin.MESHCORE_NODE, row.originNode)
+            assertFalse("not ours to write", row.writtenBy(rig.self.nodeId))
+            assertEquals("Bob", row.originName)
+            assertNull("never resolved to a contact", row.originPeerId)
+            assertEquals("never signed", MessageEntity.ORIGIN_UNSIGNED, row.originSigned)
+            assertNull("a channel text names no channel", row.originChannel)
+            assertNull(row.originHops)
+            assertEquals(DeliveryPlane.LoRa.code, row.receivedVia)
+            // Ordered and aged by its arrival (security N4): the sender's stamp is inside the id and nowhere else.
+            assertEquals(9_000L, row.sentAt)
+            assertEquals(9_000L, row.arrivedAt)
+        }
+
+    /** A bridged room's rows as the room's query lists them (`sentAt`, then `id`), as their bodies. */
+    private fun Rig.roomOrder(conversationId: String): List<String> =
+        msgMap.values
+            .filter { it.conversationId == conversationId }
+            .sortedWith(compareBy<MessageEntity>({ it.sentAt }, { it.id }))
+            .map { it.body }
+
+    /**
+     * Part 6c: two heard Meshtastic posts delivered in the same millisecond are stamped `t` and `t + 1` in delivery order
+     * ([InboundPipeline.heardStamp]), so the room lists them as the board handed them over. The first delivered is the one
+     * whose id sorts last: on equal stamps the room's id tie-break would list them the other way round.
+     */
+    @Test
+    fun twoMeshtasticPostsInOneMillisecondAreListedInDeliveryOrder() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            rig.nowMs = 9_000L
+            val (first, second) = listOf(9_901L, 9_902L).sortedByDescending { FrameId.forMeshPost(0x1234abcd, it) }
+
+            rig.pipeline.deliverMeshPost(heardPost("first", packetId = first))
+            rig.pipeline.deliverMeshPost(heardPost("second", packetId = second))
+            advanceUntilIdle()
+
+            assertEquals(
+                listOf(9_000L, 9_001L),
+                listOf("first", "second").map { b ->
+                    rig.msgMap.values
+                        .single { it.body == b }
+                        .sentAt
+                },
+            )
+            assertEquals(listOf("first", "second"), rig.roomOrder(Conversations.MESHTASTIC))
+        }
+
+    /** [twoMeshtasticPostsInOneMillisecondAreListedInDeliveryOrder]'s MeshCore twin: the room's other call site. */
+    @Test
+    fun twoMeshcorePostsInOneMillisecondAreListedInDeliveryOrder() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            rig.nowMs = 9_000L
+            val (first, second) =
+                listOf("north", "south").sortedByDescending { FrameId.forMeshcorePost(meshcoreStamp, "Bob: $it".encodeToByteArray()) }
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost(first))
+            rig.pipeline.deliverMeshcorePost(meshcorePost(second))
+            advanceUntilIdle()
+
+            assertEquals(
+                listOf(9_000L, 9_001L),
+                listOf(first, second).map { b ->
+                    rig.msgMap.values
+                        .single { it.body == b }
+                        .sentAt
+                },
+            )
+            assertEquals(listOf(first, second), rig.roomOrder(Conversations.MESHCORE_PUBLIC))
+        }
+
+    @Test
+    fun aMeshcorePostIsNeverAckedResolvedOrOriginated() =
+        runTest {
+            val rig = Rig(backgroundScope)
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("hi"))
+            advanceUntilIdle()
+
+            assertEquals(1, rig.msgMap.size)
+            assertTrue("nothing is originated for a heard post", rig.originated.isEmpty())
+            assertEquals(0, rig.metrics.receipts().receiptsResent)
+            assertTrue("no peer row for its speaker", rig.peerMap.isEmpty())
+            // The Meshtastic room's two resolutions are never asked: a channel text names no node, and no name is ever
+            // looked up (security B1).
+            coVerify(exactly = 0) { rig.peers.findByLoraNode(any()) }
+            assertEquals(0L, rig.metrics.meshtastic().meshPostMatched)
+        }
+
+    @Test
+    fun aMeshcorePostUnderAContactsNameIsStillAStranger() =
+        runTest {
+            // Anyone on the key can write any name, a contact's and our own board's included.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, name = "Alice"))
+            val notification = slot<NotifMessage>()
+            coEvery { rig.notifier.notify(capture(notification), any(), any(), any(), any()) } returns Unit
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("it's me", name = "Alice"))
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single { it.conversationId == Conversations.MESHCORE_PUBLIC }
+            assertNull(row.originPeerId)
+            assertEquals("Alice", row.originName)
+            // Keyed on a hash of the name (security N3): never the contact's id, never the raw name, never a face.
+            assertEquals(meshcoreSpeakerKey("Alice"), notification.captured.senderId)
+            assertNotEquals(alice.nodeId, notification.captured.senderId)
+            assertFalse(notification.captured.senderId.contains("Alice"))
+            assertTrue(notification.captured.senderId.startsWith("mc:"))
+            // A contact's name is marked, never drawn bare (security review round 1).
+            assertEquals(NotificationLabels.ENGLISH.claimedName.format("Alice"), notification.captured.senderName)
+            assertNull("a stranger wears no face", notification.captured.avatarBytes)
+        }
+
+    @Test
+    fun anUnnamedMeshcorePostNotifiesAsUnnamedNeverAsAHexNode() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val notification = slot<NotifMessage>()
+            coEvery { rig.notifier.notify(capture(notification), any(), any(), any(), any()) } returns Unit
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("hi", name = null))
+            advanceUntilIdle()
+
+            assertNull(
+                rig.msgMap.values
+                    .single()
+                    .originName,
+            )
+            assertEquals(NotificationLabels.ENGLISH.unnamed, notification.captured.senderName)
+            assertEquals(meshcoreSpeakerKey(null), notification.captured.senderId)
+            assertFalse(notification.captured.senderName.startsWith("!"))
+        }
+
+    @Test
+    fun aMeshcorePostsNameIsModeratedWithItsWordsAndAHiddenOneNamesNobody() =
+        runTest {
+            // The name is the sender's own words too (security N2): the room moderator reads the line as the channel
+            // carried it, and a post it flags notifies as hidden under no name.
+            val rig = Rig(backgroundScope)
+            val texts = mutableListOf<String>()
+            val scopes = mutableListOf<Boolean>()
+            rig.onClassifyText = { texts += it }
+            rig.onClassifyScope = { scopes += it }
+            rig.flagWhen = { it.startsWith("Slurname") }
+            rig.settings.contentFilteringEnabled.value = true
+            val notification = slot<NotifMessage>()
+            coEvery { rig.notifier.notify(capture(notification), any(), any(), any(), any()) } returns Unit
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("hello", name = "Slurname"))
+            advanceUntilIdle()
+
+            assertEquals(listOf("Slurname: hello"), texts)
+            assertEquals(listOf(true), scopes)
+            assertEquals(
+                MessageEntity.MODERATION_TEXT_FLAGGED,
+                rig.msgMap.values
+                    .single()
+                    .moderation,
+            )
+            assertEquals(NotificationLabels.ENGLISH.hidden, notification.captured.body)
+            assertEquals(NotificationLabels.ENGLISH.unnamed, notification.captured.senderName)
+        }
+
+    /**
+     * Security review round 2 (the maintainer's call, 2026-11-15): every MeshCore room author is marked in the shade,
+     * whatever its name matches — "You", a contact, our own board's `Knit xxxx` and a plain "Bob" alike; "Unnamed" stays
+     * plain.
+     */
+    @Test
+    fun everyMeshcoreAuthorIsMarkedInTheShade() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, name = "Alice"))
+            val names = mutableListOf<String>()
+            coEvery { rig.notifier.notify(any(), any(), any(), any(), any()) } answers { names += firstArg<NotifMessage>().senderName }
+
+            val claimed = listOf("You", "alice", "Knit 1a2b", "Bob")
+            for ((i, name) in claimed.withIndex()) rig.pipeline.deliverMeshcorePost(meshcorePost("post $i", name = name))
+            rig.pipeline.deliverMeshcorePost(meshcorePost("post 9", name = null))
+            advanceUntilIdle()
+
+            val claimedName = NotificationLabels.ENGLISH.claimedName
+            assertEquals(claimed.map { claimedName.format(it) } + NotificationLabels.ENGLISH.unnamed, names)
+        }
+
+    /**
+     * Security review round 1 (finding 3): a bridged board room takes no tapback, and its rows' ids anyone can derive
+     * from the air, our own post's included. A Knit identity's reaction to one is refused and counted, in either room, and
+     * nothing notifies.
+     */
+    @Test
+    fun aReactionToABridgedRoomRowIsRefusedAndCounted() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val carol = party()
+            rig.pin(carol)
+            rig.ownMessage("mc-own", conversationId = Conversations.MESHCORE_PUBLIC)
+            rig.msgMap["mc-heard"] =
+                MessageEntity(
+                    id = "mc-heard",
+                    senderId = rig.self.nodeId,
+                    conversationId = Conversations.MESHCORE_PUBLIC,
+                    body = "hi",
+                    sentAt = 1L,
+                    originNode = MeshPostOrigin.MESHCORE_NODE,
+                )
+            rig.ownMessage("mt-own", conversationId = Conversations.MESHTASTIC)
+
+            for (id in listOf("mc-own", "mc-heard", "mt-own")) rig.deliver(carol, rig.reaction(carol, messageId = id, emoji = "👍"))
+
+            coVerify(exactly = 0) { rig.reactions.apply(any()) }
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            assertEquals(3L, rig.drops(DropReason.REACTION_OUTSIDE_THREAD))
+        }
+
+    @Test
+    fun theBoardReplayingAMeshcorePostWritesOneRowAndNotifiesOnce() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            var notified = 0
+            coEvery { rig.notifier.notify(any(), any(), any(), any(), any()) } answers { notified += 1 }
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("hi"))
+            rig.pipeline.deliverMeshcorePost(meshcorePost("hi"))
+            advanceUntilIdle()
+
+            assertEquals(1, rig.msgMap.size)
+            assertEquals(1, notified)
+        }
+
+    @Test
+    fun aReplayRacingALiveCopyAtConnectNotifiesOnceInEitherRoom() =
+        runTest {
+            // At connect the board's offline queue can hand up a post while a live copy of it lands: each on its own
+            // coroutine (security N9). Both read no row, and the moderator's inference is a suspension between that
+            // read and the write — without the heard-post lock both notify.
+            val rig = Rig(backgroundScope)
+            rig.onClassifyText = { yield() }
+            var notified = 0
+            coEvery { rig.notifier.notify(any(), any(), any(), any(), any()) } answers { notified += 1 }
+
+            launch { rig.pipeline.deliverMeshcorePost(meshcorePost("hi")) }
+            launch { rig.pipeline.deliverMeshcorePost(meshcorePost("hi")) }
+            launch { rig.pipeline.deliverMeshPost(heardPost("hi")) }
+            launch { rig.pipeline.deliverMeshPost(heardPost("hi")) }
+            advanceUntilIdle()
+
+            assertEquals(2, rig.msgMap.size)
+            assertEquals("one notification per post, whichever copy won", 2, notified)
+        }
+
+    @Test
+    fun ourOwnMeshcorePostReAiredLandsOnOurRowAndNeverNotifies() =
+        runTest {
+            // The board marks our flood seen at origination, but its 160-entry ring forgets: a repeater's re-air then
+            // reaches us as a stranger's post named after our board. Our row was written under the same id (the stamp
+            // fixed at enqueue, `Knit xxxx: ` + the text), so it dedups there — never by the name.
+            val rig = Rig(backgroundScope)
+            val raw = "Knit 1a2b: hello mesh".encodeToByteArray()
+            val own =
+                MessageEntity(
+                    id = FrameId.forMeshcorePost(meshcoreStamp, raw),
+                    senderId = rig.self.nodeId,
+                    conversationId = Conversations.MESHCORE_PUBLIC,
+                    body = "hello mesh",
+                    sentAt = 7L,
+                    receivedVia = DeliveryPlane.LoRa.code,
+                )
+            rig.msgMap[own.id] = own
+            var notified = 0
+            coEvery { rig.notifier.notify(any(), any(), any(), any(), any()) } answers { notified += 1 }
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("hello mesh", name = "Knit 1a2b", raw = raw))
+            advanceUntilIdle()
+
+            assertEquals(own, rig.msgMap.values.single())
+            assertEquals(0, notified)
         }
 
     // --- The commons door (docs/SPOOL_PROTOCOL.md §7.4) ---
@@ -13387,7 +13707,10 @@ class InboundPipelineTest {
             rig.deliver(alice, rig.reaction(alice, messageId = "nowhere", emoji = "👍"))
             rig.deliver(alice, rig.reaction(alice, messageId = "mine", emoji = "👍"))
 
-            coVerify(exactly = 2) { rig.reactions.apply(any()) }
+            // The orphan is kept; the bridged room's row takes no tapback at all (ADR 2026-11.gsqu's Stage 6 amendment).
+            coVerify(exactly = 1) { rig.reactions.apply(match { it.messageId == "nowhere" }) }
+            coVerify(exactly = 0) { rig.reactions.apply(match { it.messageId == "mine" }) }
+            assertEquals(1L, rig.drops(DropReason.REACTION_OUTSIDE_THREAD))
             coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
         }
 

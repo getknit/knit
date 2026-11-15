@@ -4,6 +4,7 @@ import app.getknit.knit.data.RoomDbTest
 import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.mesh.MeshPostOrigin
 import app.getknit.knit.ui.group
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -185,6 +186,34 @@ class ReactionDaoTest : RoomDbTest() {
                 ),
                 heads.map { listOf(it.target.conversationId, it.target.id, it.reactorNodeId, it.emoji, it.reactedAt.toString()) }.toSet(),
             )
+        }
+
+    /**
+     * A MeshCore room post sits in our sender column under the sentinel `originNode` (ADR 2026-11.gsqu's Stage 6
+     * amendment, security B1): a reaction to it is never a reaction to our words — the SQL's own `originNode` guard, beneath
+     * `ReactionRepository`'s room list.
+     */
+    @Test
+    fun `observeNewestOnOwnMessages never takes a MeshCore room post for our words`() =
+        runTest {
+            val room = Conversations.MESHCORE_PUBLIC
+            db.messageDao().upsert(
+                MessageEntity(
+                    id = "heard",
+                    senderId = ME,
+                    conversationId = room,
+                    body = "hi",
+                    sentAt = 1L,
+                    originNode = MeshPostOrigin.MESHCORE_NODE,
+                ),
+            )
+            db.messageDao().upsert(MessageEntity(id = "mine", senderId = ME, conversationId = room, body = "hello", sentAt = 2L))
+            dao.upsert(ReactionEntity("heard", "zed", emoji = "👍", updatedAt = 10L))
+            dao.upsert(ReactionEntity("mine", "zed", emoji = "👋", updatedAt = 5L))
+
+            val heads = dao.observeNewestOnOwnMessages(ME, emptyList(), rooms = listOf(room), commonsGlob = "c-*").first()
+
+            assertEquals(listOf("mine"), heads.map { it.target.id })
         }
 
     @Test

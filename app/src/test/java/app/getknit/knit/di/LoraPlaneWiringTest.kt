@@ -10,12 +10,22 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.LoraDoorClaim
 import app.getknit.knit.mesh.MeshcoreBoardReport
+import app.getknit.knit.mesh.MeshcorePost
+import app.getknit.knit.mesh.PublicChannelAnswer
+import app.getknit.knit.mesh.PublicPostEnd
+import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.crypto.MeshcoreBindFixture
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.lora.BoardKind
+import app.getknit.knit.mesh.lora.PublicPostEnded
+import app.getknit.knit.mesh.lora.PublicPostKey
+import app.getknit.knit.mesh.lora.PublicPostResult
+import app.getknit.knit.mesh.lora.meshcore.MeshcorePublicPost
+import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.Protocol
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -192,4 +202,68 @@ class LoraPlaneWiringTest {
                 meshcoreBoardHolders(kotlinx.coroutines.flow.emptyFlow()).toList(),
             )
         }
+
+    /**
+     * The MeshCore room's seam (ADR 2026-11.gsqu's Stage 6 amendment, security N13): a post goes to the MeshCore plane only
+     * while a MeshCore board is the bound one — a room whose board is not bound refuses as no board, and the plane, built
+     * and willing, is never asked. Bound, the plane's queued key comes back as the row id its receivers key the post on.
+     */
+    @Test
+    fun aMeshcorePostReachesNoPlaneUnlessAMeshcoreBoardIsBound() =
+        runTest {
+            val key = PublicPostKey(1_763_200_000, "Knit 1a2b: hi".encodeToByteArray())
+            val asked = mutableListOf<String>()
+            val plane: suspend (String) -> PublicPostResult = { body ->
+                asked += body
+                PublicPostResult.Queued(key)
+            }
+            for (bound in listOf(null, BoardKind.MESHTASTIC)) {
+                assertEquals(
+                    "$bound",
+                    PublicChannelAnswer.Refused(PublicPostRefusal.NO_BOARD),
+                    postToMeshcorePublic(bound, postPublic = plane, body = "hi"),
+                )
+            }
+            assertEquals("a plane asked while another kind's board is bound", emptyList<String>(), asked)
+            assertEquals(
+                "no plane built",
+                PublicChannelAnswer.Refused(PublicPostRefusal.NO_BOARD),
+                postToMeshcorePublic(BoardKind.MESHCORE, postPublic = null, body = "hi"),
+            )
+
+            assertEquals(
+                PublicChannelAnswer.Queued(meshcoreRowId(key)),
+                postToMeshcorePublic(BoardKind.MESHCORE, postPublic = plane, body = "hi"),
+            )
+            assertEquals("asked once, with the body", listOf("hi"), asked)
+        }
+
+    /** Both sides of one post meet on one row: a heard post's id and our own's are [FrameId.forMeshcorePost] over its key. */
+    @Test
+    fun aMeshcorePostCrossesTheSeamUnderItsKeysRowId() =
+        runTest {
+            val key = PublicPostKey(1_763_200_000, "Knit 1a2b: hi".encodeToByteArray())
+            assertEquals(FrameId.forMeshcorePost(1_763_200_000, "Knit 1a2b: hi".encodeToByteArray()), meshcoreRowId(key))
+
+            val heard = meshcoreHeard(MeshcorePublicPost(name = "Knit 1a2b", body = "hi", key = key, live = true))
+            assertEquals(MeshcorePost("Knit 1a2b", "hi", 1_763_200_000, "Knit 1a2b: hi".encodeToByteArray()), heard)
+
+            val ends =
+                meshcorePostEnds(
+                    flowOf(PublicPostEnded(key, PublicPostEnded.Reason.STALE), PublicPostEnded(key, PublicPostEnded.Reason.ENDED_AT_WRITE)),
+                ).toList()
+            assertEquals(
+                listOf(PublicPostEnd(meshcoreRowId(key), neverSent = true), PublicPostEnd(meshcoreRowId(key), neverSent = false)),
+                ends,
+            )
+        }
+
+    /** What the MeshCore room's consent sheet names: the board's own `Knit xxxx`, off the claimed key; nothing off no key. */
+    @Test
+    fun theMeshcoreBoardIsNamedOffItsClaimedKey() {
+        // RFC 8032's first test key, d75a9801…: the name is its first two bytes in lower-case hex.
+        assertEquals("Knit d75a", meshcoreBoardName(MeshcoreBindFixture.KEY))
+        assertNull(meshcoreBoardName(null))
+        assertNull(meshcoreBoardName("not a key"))
+    }
 }

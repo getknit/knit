@@ -14,7 +14,6 @@ import app.getknit.knit.data.message.writtenBy
 import app.getknit.knit.data.reaction.ReactionHead
 import app.getknit.knit.location.GeoUri
 import app.getknit.knit.ui.ConversationTitle
-import app.getknit.knit.ui.MeshRoomInputs
 import app.getknit.knit.ui.chat.DeliveryStatus
 import app.getknit.knit.ui.chat.callPreview
 import app.getknit.knit.ui.chat.messagePreview
@@ -37,13 +36,14 @@ internal class ChatListAssembler(
     private val table = s.table
     private val me = table.me
     private val directory: PeerDirectory = s.directory
+
     private val activeGroups = s.inputs.groups.filter { !it.left }
 
     fun build(): ChatListUiState {
         // Which threads exist and what they are called is `visibleConversations`'s rule, shared with search:
         // the Nearby room always, the Meshtastic room by the radio's state, active non-request groups, and
         // DM threads once they have a message. Most-recent first.
-        val meshRoom = MeshRoomInputs(s.mesh.loraRoom, s.mesh.loraPlane, s.mesh.publicChannel, s.inputs.bridgedChannel)
+        val meshRoom = s.mesh.meshtasticRoom.copy(newestChannel = s.inputs.bridgedChannel)
         val rows =
             visibleConversations(
                 context,
@@ -53,6 +53,7 @@ internal class ChatListAssembler(
                 s.inputs.accepted,
                 meshRoom,
                 s.inputs.commons,
+                meshcoreRoom = s.mesh.meshcoreRoom,
             ).map(::rowFor)
         val requestCount = requestCount()
         // The list is never literally empty — the Nearby room always has a row — so a fresh install
@@ -129,7 +130,7 @@ internal class ChatListAssembler(
                 lastDeliveredVia = mineLast?.receivedPlane ?: DeliveryPlane.Unknown,
                 lastMineId = mineLast?.id,
                 discriminator = thread.discriminator,
-                isBridged = thread.kind == ConversationKind.MESHTASTIC,
+                isBridged = thread.kind.isBridged,
             )
         // An empty group sorts/labels by its creation time so it isn't stranded at the bottom.
         val createdAt = thread.group?.createdAt
@@ -158,7 +159,7 @@ internal class ChatListAssembler(
     private fun requestCount(): Int =
         table.conversations.count {
             it != Conversations.NEARBY &&
-                it != Conversations.MESHTASTIC &&
+                !Conversations.isBridgedRoom(it) &&
                 Conversations.kindFor(it) != ConversationKind.GROUP &&
                 isPending(it)
         } + activeGroups.count { isPending(it.groupId) }
@@ -247,7 +248,7 @@ internal class ChatListAssembler(
         translated: String?,
     ): String {
         val body = translated ?: messagePreview(context, message, s.inputs.hideFlagged)
-        val speaker = speakerLabel(context, message, directory, me, isDm) ?: return body
+        val speaker = speakerLabel(context, message, directory, me, isDm, s.inputs.hideFlagged) ?: return body
         return context.getString(R.string.chat_list_preview_with_sender, speaker, body)
     }
 }

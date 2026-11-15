@@ -124,6 +124,11 @@ class RelayReachTest {
         val odd = covered.copy(coveredLabels = covered.coveredLabels + Conversations.MESHTASTIC)
         assertEquals(RelayReach.Silent, reachFor(Conversations.MESHTASTIC, odd))
         assertEquals(RelayReach.Silent, noticeFor(Conversations.MESHTASTIC, covered, roomNoticeDismissed = false))
+        // The MeshCore room by the same predicate (ADR 2026-11.gsqu's Stage 6 amendment).
+        assertEquals(RelayReach.Silent, reachFor(Conversations.MESHCORE_PUBLIC, covered))
+        val meshcoreOdd = covered.copy(coveredLabels = covered.coveredLabels + Conversations.MESHCORE_PUBLIC)
+        assertEquals(RelayReach.Silent, reachFor(Conversations.MESHCORE_PUBLIC, meshcoreOdd))
+        assertEquals(RelayReach.Silent, noticeFor(Conversations.MESHCORE_PUBLIC, covered, roomNoticeDismissed = false))
     }
 
     @Test

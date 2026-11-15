@@ -143,6 +143,14 @@ internal interface BoardTraits {
      */
     val roomCeiling: Ceiling
 
+    /**
+     * The [Ceiling] the user's post on the board's public channel is admitted under: Meshtastic's [Ceiling.HALF] (ADR
+     * 2026-10.ug4a); MeshCore's Public post floods every repeater, so [Ceiling.FLOOD] beside Knit's own room posts (ADR
+     * 2026-11.gsqu §4, its Stage 6 amendment). What `AirtimeSnapshot.publicPostBytes` reads the most a post can ever carry
+     * under.
+     */
+    val publicCeiling: Ceiling get() = Ceiling.HALF
+
     /** The pacer's shortest gap between two packets — the factory default of `LoraPacePolicy`, never an injected one. */
     val minGapMs: Long
 

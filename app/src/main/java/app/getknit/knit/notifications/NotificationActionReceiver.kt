@@ -103,19 +103,21 @@ class NotificationActionReceiver :
         // An empty reply still re-posts the notification (with a blank echo) to clear its "sending" spinner.
         if (text.isNotBlank()) {
             // Route exactly as ChatViewModel.send / DebugBridgeReceiver.handleSend, by the conversation kind.
-            when (Conversations.kindFor(conv)) {
-                ConversationKind.NEARBY -> mesh.sendChat(text, recipientId = null, group = null)
+            val kind = Conversations.kindFor(conv)
+            when {
+                // Inline reply is not offered for a bridged board room (the Meshtastic room, the MeshCore room): a post
+                // there needs the first-use disclosure and the byte budget, which live in the composer, and the
+                // notification carries no reply action for it (MessageNotifier). This is the backstop, not the gate, and it
+                // asks the one predicate both rooms share, ahead of every route, so a third bridged room is refused too.
+                kind.isBridged -> Unit
 
-                ConversationKind.DM -> mesh.sendChat(text, recipientId = conv)
+                kind == ConversationKind.NEARBY -> mesh.sendChat(text, recipientId = null, group = null)
 
-                ConversationKind.GROUP -> groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo()) }
+                kind == ConversationKind.DM -> mesh.sendChat(text, recipientId = conv)
 
-                // Inline reply is not offered for the Meshtastic room: a post there needs the first-use
-                // disclosure and the byte budget, which live in the composer, and the notification carries no
-                // reply action for it (MessageNotifier). This is the backstop, not the gate.
-                ConversationKind.MESHTASTIC -> Unit
+                kind == ConversationKind.GROUP -> groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo()) }
 
-                ConversationKind.COMMONS -> mesh.sendCommons(conv, text, emptyList(), null)
+                kind == ConversationKind.COMMONS -> mesh.sendCommons(conv, text, emptyList(), null)
             }
         }
         val me = identity.nodeId()

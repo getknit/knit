@@ -79,7 +79,58 @@ class MeshcoreTraitsTest {
         assertEquals("eleven: two", 1 + 4 + 1 + 2 + 2 + 32, phy(AirPurpose.PATH_RETURN, MeshcoreTraits.pathReturnPlaintext(11, signed)))
         // The hash size rides path_len's top bits: three 2-byte hashes are six path bytes.
         assertEquals(1 + 6 + 1 + 6, MeshcoreTraits.pathReturnPlaintext((1 shl 6) or 3, plain))
-        assertEquals("GRP_TXT: timestamp + flags + text, flooded", 9 + 16, phy(AirPurpose.PUBLIC_POST, 11))
+        // Stage 6: the board writes its 11-B `Knit xxxx: ` in front of the text (BaseChatMesh.cpp:523), priced too.
+        assertEquals("GRP_TXT: timestamp + flags + prefix + 11 B = 27, two blocks, flooded", 9 + 32, phy(AirPurpose.PUBLIC_POST, 11))
+        assertEquals("5 + 11 + 16 = 32: still two blocks", 9 + 32, phy(AirPurpose.PUBLIC_POST, 16))
+        assertEquals("the largest post, 149 B: 165 of plaintext in 176 of AES, 185 on the air", 185, phy(AirPurpose.PUBLIC_POST, 149))
+    }
+
+    /**
+     * Stage 6 (lora B1 / N3): a Public post leaves only from a board named `Knit xxxx`, so the prefix is a constant 11 B and the
+     * cap 160 less it, the encoder's own refusal at that name; admitted under the flood ceiling, never `HALF`.
+     */
+    @Test
+    fun aPublicPostIsPricedWithTheKnitPrefixCappedAt149AndAdmittedAsAFlood() {
+        val name = MeshcoreNames.forKey(ByteArray(32) { 0x5A })
+        assertEquals(MeshcoreTraits.PUBLIC_PREFIX_BYTES, "$name: ".encodeToByteArray().size)
+        assertEquals(149, MeshcoreTraits.PUBLIC_TEXT_CAP)
+        assertEquals(
+            "the encoder's own cap at Knit's name",
+            MeshcoreTraits.PUBLIC_TEXT_CAP,
+            MeshcoreProto.channelTextCap(name.encodeToByteArray()),
+        )
+        assertEquals(
+            MeshcoreTraits.PUBLIC_TEXT_CAP,
+            traits.price(AirPurpose.PUBLIC_POST, SigningFacts(), primaryAead = false, knitAead = false).cap,
+        )
+        assertEquals(
+            "a room flood keeps channel data's cap",
+            MeshcoreProto.CHANNEL_DATA_CAP,
+            traits.price(AirPurpose.ROOM_FLOOD, SigningFacts(), false, false).cap,
+        )
+        assertEquals(Ceiling.FLOOD, MeshcoreTraits.publicCeiling)
+        assertEquals("the Meshtastic room keeps its half", Ceiling.HALF, BoardTraits.MESHTASTIC.publicCeiling)
+    }
+
+    /**
+     * What a Public post can ever carry ([LoraAirtime.publicPostBytes], the composer's budget): the whole 149 B on a 10 % band,
+     * less on a 1 % one where the flood ceiling of an empty window cannot carry that much — the very `NEVER` the enqueue asks —
+     * and the cap while no duty is known.
+     */
+    @Test
+    fun whatAPublicPostCanEverCarryIsTheCapLessWhatTheFloodCeilingNeverAdmits() {
+        val air = LoraAirtime(traits = MeshcoreTraits)
+        assertEquals("no duty known: the cap", 149, air.publicPostBytes())
+        val radio = RadioParams(8, 62_500, 5)
+        air.onRadio(radio, MeshcoreTraits.dutyPolicy(869_525, 62_500))
+        assertEquals("a 10 % band carries the whole post", 149, air.publicPostBytes())
+        assertEquals(149, air.snapshot(0).publicPostBytes)
+        air.onRadio(radio, MeshcoreTraits.dutyPolicy(868_100, 62_500))
+        val fits = air.publicPostBytes()
+        assertTrue("a 1 % band carries less: $fits", fits in 1 until 149)
+        val price = air.price(AirPurpose.PUBLIC_POST)
+        assertEquals(null, air.refusal(Ceiling.FLOOD, listOf(fits), 0, price))
+        assertEquals(LoraAirtime.Refusal.NEVER, air.refusal(Ceiling.FLOOD, listOf(fits + 1), 0, price))
     }
 
     @Test

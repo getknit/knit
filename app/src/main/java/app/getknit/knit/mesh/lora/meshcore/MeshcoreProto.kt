@@ -228,6 +228,33 @@ internal object MeshcoreProto {
     /** A channel secret: 128-bit only (`MyMesh.cpp:1762`). */
     const val SECRET_BYTES = 16
 
+    /**
+     * The Public channel's key, `PUBLIC_GROUP_PSK` = `izOH6cXN6mrJ5e26oRXNcg==` (`MyMesh.cpp:114`), which every companion adds
+     * at boot before its saved channels replace it (`MyMesh.cpp:1002-1003`): published in the firmware source, so held by
+     * every radio and every uploader. Only compared against slot 0's secret (ADR 2026-11.gsqu's Stage 6 amendment), never
+     * written. A copy each read.
+     */
+    val PUBLIC_GROUP_PSK: ByteArray
+        get() =
+            byteArrayOf(
+                0x8B.toByte(),
+                0x33,
+                0x87.toByte(),
+                0xE9.toByte(),
+                0xC5.toByte(),
+                0xCD.toByte(),
+                0xEA.toByte(),
+                0x6A,
+                0xC9.toByte(),
+                0xE5.toByte(),
+                0xED.toByte(),
+                0xBA.toByte(),
+                0xA1.toByte(),
+                0x15,
+                0xCD.toByte(),
+                0x72,
+            )
+
     /** `MAX_PATH_SIZE`. */
     const val PATH_FIELD = 64
 

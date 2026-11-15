@@ -25,6 +25,7 @@ import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.CallPreferenceStore
 import app.getknit.knit.data.settings.HiddenKnownStore
 import app.getknit.knit.data.settings.IncomingCallStore
+import app.getknit.knit.data.settings.MeshcoreClaimStore
 import app.getknit.knit.data.settings.OwnIceStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.settings.TicketKeyStore
@@ -64,6 +65,7 @@ import app.getknit.knit.ui.share.OutsideUris
 import app.getknit.knit.ui.yourmesh.YourMeshViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.module.dsl.viewModel
 import org.koin.dsl.module
@@ -108,6 +110,9 @@ val uiModule =
                 pins = get<PinRepository>(),
                 localDelete = get<LocalMessageDelete>(),
                 outsideUris = get<OutsideUris>(),
+                // Each bridged room by its own kind's facts, and the MeshCore board's own name (ADR 2026-11.gsqu, Stage 6).
+                loraRooms = get<LoraStatusRepository>().perKind,
+                meshcoreBoardName = get<MeshcoreClaimStore>().boardKey.map(::meshcoreBoardName),
             )
         }
         viewModel {
@@ -126,6 +131,7 @@ val uiModule =
                 get<CommonsRepository>(),
                 get<ReactionRepository>(),
                 receipts = get<MessageReceiptRepository>(),
+                loraRooms = get<LoraStatusRepository>().perKind,
             )
         }
         viewModel { ContactsViewModel(get(), get(), get(), get(), get(), get()) }
@@ -141,6 +147,7 @@ val uiModule =
                 androidContext(),
                 get<CommonsRepository>(),
                 inConversation = params.getOrNull(),
+                loraRooms = get<LoraStatusRepository>().perKind,
             )
         }
         viewModel {
@@ -232,6 +239,7 @@ val uiModule =
                 get(),
                 get<MeshController>().loraRadioReached,
                 blobs = get(),
+                context = androidContext(),
             )
         }
         // GroupDetailsViewModel takes the group id as a runtime param; the rest are resolved by type.

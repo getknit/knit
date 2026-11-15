@@ -300,7 +300,16 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   jump moves the plane's decisions (the re-probe gap, the fragment window, a hold) and never the session's waits. Wait on
   the receiving side's event — `loraBoundPartsTaken` at the receiver's plane, `meshcoreRepinsDone`, a counter or the board
   read back (`meshcoreCommands`, `meshcoreWrites`) — never on `air.airings`, which is written before the receiver's board,
-  session or plane has run. `MeshcoreRoomLabTest`, `MeshcoreDirectLabTest` and `MeshcoreProfileLabTest` are the set.
+  session or plane has run. `MeshcoreRoomLabTest`, `MeshcoreDirectLabTest`, `MeshcoreProfileLabTest` and
+  `MeshcorePublicLabTest` are the set. The last is the Public room (ADR 2026-11.gsqu's Stage 6 amendment, part 6c): the node
+  wires the room's hooks as `di/MeshModule` does, `LabNode.postPublic` posts as the composer does, and a
+  `StockMeshcoreNode` posts plain `name: text` on slot 0 under any name (it waits for a free packet: a burst past the
+  board's pool is refused and never airs). Await a heard post at `LabNode.meshcorePostsHandled` (the pipeline returned),
+  since a duplicate writes and notifies nothing. Take a board away with `LabNode.meshcoreOutOfRange`, never `powered =
+  false` across a calendar jump: a reboot's pre-boot term holds the pacer for up to an hour. A mirror room takes no
+  receipts, so its own rows fail the oracle's tick leg: run the oracle on Nearby over a link. And on a node with a board,
+  `awaitAcquainted` does not wait for its manager's link-up pass to finish: a frame count read right after a meeting can
+  still move from that pass, so compare what crossed or what a node without a board originated.
 - **`SideChannelLabTest` is the BLE side-channel set** (ADR 2026-09.sjaa, 2026-09-17): `lab.node(name, pages =
   pages)` puts the node's radio on a shared `LabPages` — one radio range, joined the way a board joins a
   `FakeMeshtasticAir` — and `LabTransport` then declares `hasFastPlane` and routes `fastFanout`/`fastSend`
@@ -695,8 +704,9 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   (`awaitNeighborsObserved`); the 100 ms `SETTLE_MS` stays only for a node with a board, whose manager reads
   the composite's own `StateFlow` on top. Don't reintroduce a bare `delay` for this.
 - **`awaitAcquainted` means the whole link-up.** Pinned keys *and* custody parity among the nodes, then every node's
-  newcomer hooks returned, then what they sent handled. A scenario may cut, hold or count on the link the moment it
-  returns. `RoomTickPlanesLabTest` cut the link on the pins alone and, on one throttled core, stranded two of
+  newcomer hooks returned, then what they sent handled. On a node without a board, a scenario may cut, hold or count
+  on the link the moment it returns; on a node with a board the newcomer-hooks wait returns early (see the MeshCore lab
+  bullet), so count only what crossed or what a node without a board did. `RoomTickPlanesLabTest` cut the link on the pins alone and, on one throttled core, stranded two of
   Alice's profile stamps on her side with only the air left to carry them (the LoRa gossip is minutes); the oracle
   then waited on custody forever. Parity alone was not enough either (#201): `watchNeighbors` runs the key re-ask,
   the tick re-offer and the group-seed flush after the digest, and a flush still running re-sent a seed into

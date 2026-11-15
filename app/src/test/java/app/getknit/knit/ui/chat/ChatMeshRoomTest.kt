@@ -9,11 +9,13 @@ import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextInputSelection
 import androidx.compose.ui.test.performTextReplacement
@@ -490,5 +492,118 @@ class ChatMeshRoomTest {
 
         compose.onNodeWithTag("chat_mesh_consent_accept").performClick()
         assertTrue("accepting has to reach the ViewModel", consentAccepted)
+    }
+
+    // --- The MeshCore room (ADR 2026-11.gsqu's Stage 6 amendment): every author a stranger, every name a claim. ---
+
+    private val meshcoreOrigin =
+        MeshOrigin(nodeLabel = "Bob", name = "Bob", peerId = null, hops = null, snrDeci = null, viaMqtt = false, meshcore = true)
+
+    private fun renderMeshcore(
+        rows: List<ChatRow>,
+        showConsent: Boolean = false,
+        gate: PublicPostGate = PublicPostGate.Open,
+        keyIsPublic: Boolean = true,
+        boardName: String? = "Knit 1a2b",
+    ) = render(
+        Conversations.MESHCORE_PUBLIC,
+        ChatUiState(
+            rows = rows,
+            isRoom = false,
+            isBridged = true,
+            isMeshcoreRoom = true,
+            meshcoreBoardName = boardName,
+            canSendFile = false,
+            publicPostBudget = 149,
+            publicPostGate = gate,
+            publicChannelKeyIsPublic = keyIsPublic,
+            myNodeId = "me",
+            title = "Public",
+        ),
+        showConsent = showConsent,
+    )
+
+    @Test
+    fun theMeshcoreRoomSaysNamesAreNeverVerified() {
+        renderMeshcore(listOf(row(origin = meshcoreOrigin)))
+        compose.onNodeWithText("Unencrypted radio channel — names are never verified").assertIsDisplayed()
+        compose.onNodeWithText("names not verified unless marked", substring = true).assertDoesNotExist()
+
+        compose.onNodeWithTag("chat_mesh_notice").performClick()
+        compose.onNodeWithText("Knit never checks one", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("a shield beside it", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun aMeshcoreAuthorIsAnInertStrangerWithNoNodeLine() {
+        renderMeshcore(listOf(row(origin = meshcoreOrigin)))
+        compose.onNodeWithText("Bob").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Bob, on the MeshCore channel — name not verified").assertHasNoClickAction()
+        // No `!hex` id, hops, SNR or signature to tell: no provenance line at all, and no marker without a clash.
+        compose.onAllNodesWithTag("chat_mesh_origin", useUnmergedTree = true).assertCountEquals(0)
+        compose.onAllNodesWithTag("chat_meshcore_name_clash", useUnmergedTree = true).assertCountEquals(0)
+    }
+
+    @Test
+    fun aMeshcoreNameThatReadsAsSomeoneYouKnowCarriesTheMarker() {
+        renderMeshcore(listOf(row(origin = meshcoreOrigin.copy(nodeLabel = "Sam", name = "Sam", nameClash = true))))
+        compose.onNodeWithTag("chat_meshcore_name_clash", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithContentDescription("Sam, on the MeshCore channel — name not verified").assertHasNoClickAction()
+    }
+
+    @Test
+    fun theMeshcoreDisclosureNamesTheBoardAndWhatItsNameGivesAway() {
+        // Security B3: the board's own name goes on every post and identifies it; the key is public; a post cannot be
+        // taken back; anyone can post under any name; a DM to the board gets no answer.
+        renderMeshcore(listOf(row(origin = meshcoreOrigin)), showConsent = true)
+        compose.onNodeWithTag("chat_meshcore_consent").assertIsDisplayed()
+        // The sheet scrolls on a small screen: each line is brought into view before it is read.
+        for (line in listOf(
+            "Every post goes out as “Knit 1a2b: …”",
+            "can tell it is you",
+            "The channel's key is public",
+            "A post can't be taken back",
+            "Anyone can post under any name",
+            "get no answer",
+        )) {
+            compose.onNodeWithText(line, substring = true).performScrollTo().assertIsDisplayed()
+        }
+        // Never the Meshtastic sheet's words about a radio, where they differ.
+        compose.onNodeWithText("Anyone with a Meshtastic radio", substring = true).assertDoesNotExist()
+        compose.onNodeWithTag("chat_mesh_consent_accept").performScrollTo().performClick()
+        assertTrue(consentAccepted)
+    }
+
+    @Test
+    fun theMeshcoreDisclosureStillSaysWhatTheNameIsBeforeTheBoardIsKnown() {
+        renderMeshcore(listOf(row(origin = meshcoreOrigin)), showConsent = true, boardName = null)
+        compose.onNodeWithText("“Knit” and four characters", substring = true).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun theMeshcoreRoomsFootersNameItsOwnBoard() {
+        renderMeshcore(listOf(row(origin = meshcoreOrigin)), gate = PublicPostGate.NoRadio)
+        compose.onNodeWithText("Connect a MeshCore board to post here", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Pair a Meshtastic radio", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun anOwnMeshcorePostThatMayNotHaveAiredNeverSaysSent() {
+        val own =
+            ChatRow(
+                id = "own",
+                body = "hello mesh",
+                mine = true,
+                senderName = "Alice",
+                senderNodeId = "me",
+                avatarHash = null,
+                sentAt = 1_700_000_000_000L,
+                received = false,
+                postEnded = DeliveryStatus.Unconfirmed,
+            )
+        renderMeshcore(listOf(own, own.copy(id = "stale", postEnded = DeliveryStatus.NotSent)))
+        compose.onNodeWithContentDescription("May not have gone out", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithContentDescription("Not sent", useUnmergedTree = true).assertIsDisplayed()
+        compose.onAllNodesWithContentDescription("Sent", useUnmergedTree = true).assertCountEquals(0)
     }
 }

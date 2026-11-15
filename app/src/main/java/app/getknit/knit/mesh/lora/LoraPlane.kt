@@ -61,7 +61,9 @@ data class LoraFacts(
     val primaryChannel: String? = null,
     /**
      * Whether a post typed in the Meshtastic room can leave this device now: the [room] is switched on, the
-     * link is live and slot 0 is not the Knit channel itself. Structural only — the 30 s floor and the airtime
+     * link is live and slot 0 is not the Knit channel itself. On a MeshCore board (ADR 2026-11.gsqu's Stage 6 amendment)
+     * the MeshCore room's own switch, the board set up for Knit (named `Knit xxxx`, consented) and slot 0 holding a channel,
+     * off the kind's face (`LoraStatus.publicChannel`). Structural only — the 30 s floor and the airtime
      * budget are answered per send, by the outcome the board hands back.
      */
     val canPost: Boolean = false,
@@ -124,6 +126,13 @@ data class LoraFacts(
      * Meshtastic.
      */
     val lawHeld: Boolean = false,
+    /**
+     * On a kind whose public-channel post the flood ceiling admits (MeshCore, ADR 2026-11.gsqu's Stage 6 amendment), the
+     * most text one post may carry: 149 B (160 less the board's 11-B `Knit xxxx: ` prefix), less where the band's flood
+     * ceiling can never carry that much (`AirtimeSnapshot.publicPostBytes`). Null on Meshtastic, whose room composer reads
+     * [roomSignedUpTo], and with no ledger to read. Not gated on the link, as [roomSignedUpTo] is not.
+     */
+    val publicPostBytes: Int? = null,
 )
 
 /**

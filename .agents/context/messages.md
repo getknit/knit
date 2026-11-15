@@ -26,6 +26,28 @@ lines.
   reciprocal: off, nothing shows read anywhere, though incoming reads are still recorded. A group shows read only once
   every current member has; a DM once its peer has. The wire, `ReadSync` and LoRa halves are in
   `.agents/context/crypto.md` and `.agents/context/lora-bridge.md`.
+- **When touching the bridged board rooms — `Conversations.MESHCORE_PUBLIC` / `isBridgedRoom`, `ConversationKind.MESHCORE` /
+  `isBridged`, `InboundPipeline.deliverMeshcorePost` / `heardPostLock`, `MeshPostSink.onMeshcorePostHeard`, `MeshcorePost`,
+  `MeshPostOrigin.MESHCORE_NODE`, `meshcoreSpeakerKey`, `FrameId.forMeshcorePost`, `MeshController.sendPublicPost`'s room,
+  `PublicChannelAnswer`, `PublicPostEnd`, `MeshManager.markPublicPostEnded`, `MessageRepository.markPublicPostEnded`,
+  `BridgedRoomQueries`,
+  `DeliveryStatus.NotSent` / `Unconfirmed`, `bridgedBoardOf` / `roomFactsFor`, `meshcoreRoomClashKeys` / `meshcoreNameClashes`,
+  `meshcoreAuthorLine`, `MessageDetailsViewModel`'s sender, `MeshOrigin.meshcore` /
+  `nameClash`, `NotificationChannels.MESHCORE`, `SettingsStore.meshcorePostConsented` / `setMeshcoreRoomEnabled`, or a
+  reader that turns `originNode` into a label:** READ ADR 2026-11.gsqu's Stage 6 amendment (part 6b), then "The Meshtastic
+  room" and "MeshCore's Public channel" in `lora-bridge.md`. Every rule both rooms share reads the one predicate. A MeshCore
+  room post is always a stranger's: the fixed sentinel `originNode`, never resolved, never `!hex`, named by its own claim or
+  "Unnamed", moderated with its name, marked when the name reads as someone the user knows, keyed `mc:`+SHA-256 in the
+  shade; its row id is the post's stamp and raw text, ordered by arrival; both rooms deliver under one lock and count heard
+  rows as strangers' in the room sweep. Every MeshCore author is marked on a single-line surface (`chat_meshcore_name_claimed`
+  in the previews, the pinned bar, the details screen and the shade), whatever it matches; the bubble draws the name with
+  a "Same name as someone you know" line when it reads, by `NameKey`, as "You", ours, our board's or any name the screens
+  render for a person. The details screen reads `writtenBy`; neither bridged room takes anyone's reaction but ours. Each room is gated and titled by its own kind's facts (`perKind`), posts by room
+  through its own kind's board and consent, and an own MeshCore post that ended without airing reads "Not sent" or "May
+  not have gone out" off its row, never resent. Regression: `ConversationsKindTest`, `MeshcorePostIdTest`,
+  `InboundPipelineTest`'s MeshCore block, `MeshManagerTest`'s MeshCore posts, `MessageDaoTest`'s sentinel and ended cases,
+  `MessageRetentionTest`, `ChatViewModelTest`'s and `ChatMeshRoomTest`'s MeshCore room, `ChatListViewModelTest`,
+  `LoraReachTest`, `DeliveryStatusTest`, the notification tests, `LoraRadioViewModelTest`, `LoraPlaneWiringTest`.
 - **When touching what a message request fetches — `Conversations.isAccepted` as read by `AcceptanceSnapshot`,
   `InboundPipeline.notifyPendingRequests`, or any attachment want in a conversation nobody accepted:** READ ADR 009
   and ADR 2026-11.qu98. A request's row is stored and acked, but its attachment is not fetched, echoed or pulled off

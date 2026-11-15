@@ -88,7 +88,7 @@ class MeshtasticBoardLinkTest {
             link.seq = 41
             val knit = board.send(payload, SendPurpose.KnitFrame(channel = 2))
             board.send(payload, SendPurpose.DirectDm(channel = 2, to = BoardAddr(0x1234u)))
-            board.send(payload, SendPurpose.PublicPost)
+            board.send(payload, SendPurpose.PublicPost())
             board.send(payload, SendPurpose.AutoReply(BoardAddr(0x99u)))
             board.send(payload, SendPurpose.Admin(BoardAddr(0xA1u)))
 

@@ -116,6 +116,12 @@ internal interface MeshcoreBoardOps {
      * hearing or delivery keys on a prefix. Any thread.
      */
     fun pinnedZeroHop(from: app.getknit.knit.mesh.lora.BoardAddr.MeshCore): Boolean = false
+
+    /**
+     * The board as the session last published it, while it is Ready (`BoardLink.state`); null otherwise. What the Public
+     * post's gate reads at enqueue (ADR 2026-11.gsqu's Stage 6 amendment); the session re-asks it at the write. Any thread.
+     */
+    val ready: BoardState.Ready? get() = null
 }
 
 /** One channel slot as the session keeps it: never a foreign slot's name or secret (binding rule "contacts" 4). */
@@ -163,6 +169,12 @@ internal class MeshcoreDetail(
      * under, so a late Ready from a board the user has since replaced writes nothing back. Null only in a test's detail.
      */
     val dialled: String? = null,
+    /**
+     * Slot 0 as the handshake read it (ADR 2026-11.gsqu's Stage 6 amendment): its name, whether its key is the published
+     * Public key, whether it holds a channel at all — never its secret. What the Public post's gate and the room's face read;
+     * null only in a test's detail.
+     */
+    val publicSlot: MeshcorePublicSlot? = null,
 ) {
     private val key = publicKey.copyOf()
 
@@ -447,6 +459,15 @@ internal object MeshcoreRefusal {
 
     /** A purpose this kind has no form for (the auto-reply, a Meshtastic admin write, a non-MeshCore address). */
     const val UNSUPPORTED = -13
+
+    /**
+     * A Public post off a board not set up for Knit at the write (ADR 2026-11.gsqu's Stage 6 amendment): no consent on this
+     * connection, or its name is no longer `Knit xxxx` — the firmware would put that name in front of the post.
+     */
+    const val NOT_SET_UP = -14
+
+    /** A Public post to a slot 0 that holds no channel, or Knit's own, at the write (Stage 6). */
+    const val NO_PUBLIC_SLOT = -15
 
     /**
      * What a synchronous refusal means: our own board without the destination's contact — no record, a pin that failed,

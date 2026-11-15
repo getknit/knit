@@ -723,8 +723,74 @@ class MeshcoreSessionTest {
             val r = rig()
             up(r)
             val cap = MeshcoreProto.channelTextCap(r.alice.advertName)
-            assertEquals(SendResult.TooLarge, r.session.send(ByteArray(cap + 1) { 0x41 }, SendPurpose.PublicPost).result)
-            assertTrue(r.session.send(ByteArray(cap) { 0x41 }, SendPurpose.PublicPost).result is SendResult.Queued)
+            assertEquals(SendResult.TooLarge, r.session.send(ByteArray(cap + 1) { 0x41 }, SendPurpose.PublicPost(PUBLIC_STAMP)).result)
+            assertTrue(r.session.send(ByteArray(cap) { 0x41 }, SendPurpose.PublicPost(PUBLIC_STAMP)).result is SendResult.Queued)
+        }
+
+    // --- the Public post at the write (Stage 6, ADR 2026-11.gsqu's Stage 6 amendment; lora B1, security B2) ---
+
+    /** The channel texts alice's board was handed, as written. */
+    private fun Rig.publicWrites(): List<ByteArray> = ch.writes.filter { it[0].toInt() == MeshcoreProto.CMD_SEND_CHANNEL_TXT_MSG }
+
+    @Test
+    fun aPublicPostIsWrittenUnderTheStampItWasQueuedWithAfterTheNameAndSlotZeroAreReadAgain() =
+        runTest {
+            val r = rig()
+            up(r)
+            val before = r.ch.writes.size
+            assertTrue(r.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP)).result is SendResult.Queued)
+            val written = r.ch.writes.drop(before)
+            // SELF_INFO and slot 0 again (another client may have renamed the board or cleared the slot), then the text.
+            assertEquals(listOf(MeshcoreProto.CMD_APP_START, MeshcoreProto.CMD_GET_CHANNEL), written.take(2).map { it[0].toInt() })
+            assertArrayEquals(byteArrayOf(MeshcoreProto.CMD_GET_CHANNEL.toByte(), 0), written[1])
+            val text = r.publicWrites().single()
+            assertEquals("the stamp as queued, not the wall clock now", PUBLIC_STAMP, MeshcoreProto.u32(text, 3))
+            // No stamp, no post: a Public post's id needs the one it airs under.
+            val unstamped = r.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost()).result
+            assertEquals(MeshcoreRefusal.UNSUPPORTED, (unstamped as SendResult.Rejected).res)
+        }
+
+    @Test
+    fun aRenameWhileAPostIsQueuedRefusesItAtTheWrite() =
+        runTest {
+            val r = rig()
+            up(r)
+            // Another client on the board's other interface renames it: the firmware would prefix this name.
+            FakeForeignClient(r.alice).send(requireNotNull(MeshcoreProto.setAdvertName("Ana's radio")))
+            runCurrent()
+            val result = r.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP)).result
+            assertEquals(MeshcoreRefusal.NOT_SET_UP, (result as SendResult.Rejected).res)
+            assertTrue("nothing aired under another name", r.publicWrites().isEmpty())
+            // The refusal reaches the face: the Ready is published again with the name just read (the 6a review).
+            assertFalse((r.ready.detail as MeshcoreDetail).namedForKnit)
+        }
+
+    @Test
+    fun aClearedSlotZeroOrABoardNotSetUpRefusesAtTheWrite() =
+        runTest {
+            val r = rig()
+            up(r)
+            FakeForeignClient(r.alice).send(MeshcoreProto.clearChannel(0))
+            runCurrent()
+            val cleared = r.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP)).result
+            assertEquals(MeshcoreRefusal.NO_PUBLIC_SLOT, (cleared as SendResult.Rejected).res)
+            assertTrue("the Ready says so now", requireNotNull((r.ready.detail as MeshcoreDetail).publicSlot).empty)
+            val stock = rig(consented = false)
+            up(stock)
+            val unconsented = stock.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP)).result
+            assertEquals(MeshcoreRefusal.NOT_SET_UP, (unconsented as SendResult.Rejected).res)
+            assertTrue(r.publicWrites().isEmpty() && stock.publicWrites().isEmpty())
+            assertEquals("both refusals are no key's", RefusalClass.OTHER, MeshcoreRefusal.classOf(cleared))
+        }
+
+    @Test
+    fun theReadyCarriesSlotZeroAsFoundNeverItsSecret() =
+        runTest {
+            val r = rig()
+            r.alice.setChannel(0, "friends", ByteArray(16) { 3 })
+            up(r)
+            val slot = requireNotNull((r.ready.detail as MeshcoreDetail).publicSlot)
+            assertEquals(MeshcorePublicSlot("friends", keyIsPublic = false, empty = false, knit = false), slot)
         }
 
     // --- targeted re-pins (binding rule "sends" 2) ---
@@ -1048,7 +1114,7 @@ class MeshcoreSessionTest {
                 if (frame[0].toInt() == MeshcoreProto.CMD_SEND_CHANNEL_TXT_MSG) r.ch.inject(byteArrayOf(0))
                 GattResult.Ok(Unit)
             }
-            val result = r.session.send("hi".encodeToByteArray(), SendPurpose.PublicPost).result
+            val result = r.session.send("hi".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP)).result
             assertTrue("$result", result is SendResult.Timeout)
             assertEquals(
                 1L,
@@ -1056,7 +1122,7 @@ class MeshcoreSessionTest {
                     .get(),
             )
             r.ch.writeResult = { GattResult.Ok(Unit) }
-            assertTrue(r.session.send("hi".encodeToByteArray(), SendPurpose.PublicPost).result is SendResult.Queued)
+            assertTrue(r.session.send("hi".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP)).result is SendResult.Queued)
         }
 
     @Test
@@ -3266,6 +3332,9 @@ class MeshcoreSessionTest {
         }
 
     private companion object {
+        /** The sender timestamp a Public post's frame carries (Stage 6: fixed at enqueue, written as given). */
+        const val PUBLIC_STAMP = 1_790_000_000L
+
         /** Our node id, as the bind's tests run the session with it. */
         val OWN_NODE: String = NodeId.derive("alice's phone")
 

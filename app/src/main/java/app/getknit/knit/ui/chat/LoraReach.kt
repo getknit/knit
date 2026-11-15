@@ -5,6 +5,7 @@ import app.getknit.knit.R
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.relay.RelayReach
 import app.getknit.knit.mesh.TransportKind
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraDirectBudget
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
@@ -175,7 +176,30 @@ fun loraGroupReachFor(
     }
 
 /**
- * Whether the Meshtastic room's composer may post from this device, and if not, what stands in its way.
+ * The board kind whose public channel [conversationId] mirrors — [BoardKind.MESHTASTIC] for the Meshtastic room,
+ * [BoardKind.MESHCORE] for the MeshCore room (ADR 2026-11.gsqu's Stage 6 amendment) — or null for any other thread.
+ */
+fun bridgedBoardOf(conversationId: String): BoardKind? =
+    when (conversationId) {
+        Conversations.MESHTASTIC -> BoardKind.MESHTASTIC
+        Conversations.MESHCORE_PUBLIC -> BoardKind.MESHCORE
+        else -> null
+    }
+
+/**
+ * The facts a bridged room is drawn and gated by: its **own** kind's ([perKind], `LoraStatusRepository.perKind`), never the
+ * bound kind's aggregate (ADR 2026-11.gsqu's Stage 6 amendment, lora N5). Each kind's facts carry its own binding, plane
+ * and room switch, so with a MeshCore board bound the Meshtastic room reads an Off plane — history shown, composer
+ * refused — and the MeshCore room its own Live one. A kind the build does not construct reads as no board at all: its
+ * switch's default, an Off plane, nothing to post on.
+ */
+fun roomFactsFor(
+    kind: BoardKind,
+    perKind: Map<BoardKind, LoraFacts>,
+): LoraFacts = perKind[kind] ?: LoraFacts(board = kind)
+
+/**
+ * Whether a bridged room's composer may post from this device, and if not, what stands in its way.
  * [Open] in every other thread. The room posts through this phone's own radio, so the answer follows the
  * radio: none bound, bound but down, or bound and live but with nothing to post on.
  */
@@ -186,13 +210,16 @@ enum class PublicPostGate {
     ChannelUnusable,
 }
 
-/** The [PublicPostGate] for [conversationId] given the plane's [facts]. */
+/**
+ * The [PublicPostGate] for [conversationId] given the [facts] of the room's own kind ([roomFactsFor]): a bridged room
+ * whose kind's board is not the bound one reads an Off plane, so it shows its history and refuses as no radio.
+ */
 fun publicPostGateFor(
     conversationId: String,
     facts: LoraFacts,
 ): PublicPostGate =
     when {
-        conversationId != Conversations.MESHTASTIC -> PublicPostGate.Open
+        !Conversations.isBridgedRoom(conversationId) -> PublicPostGate.Open
         facts.plane == LoraPlane.Off -> PublicPostGate.NoRadio
         facts.plane == LoraPlane.Down -> PublicPostGate.RadioDown
         !facts.canPost -> PublicPostGate.ChannelUnusable
@@ -202,7 +229,7 @@ fun publicPostGateFor(
 /**
  * The [LoraCarry] for a draft in [conversationId].
  *
- * The **Meshtastic** room is [LoraCarry.None] whatever the plane is doing, because its length rule is not
+ * A **bridged** room (Meshtastic's, MeshCore's) is [LoraCarry.None] whatever the plane is doing, because its length rule is not
  * this one: a post there is capped hard in the composer at what a Meshtastic frame carries
  * ([PublicPostPolicy.MAX_ON_AIR_BYTES]). Left as a DM it would take the DM's larger hint and hang a soft "may not
  * reach people over LoRa" under a field that has already refused the 201st byte — and it would follow the
@@ -215,7 +242,7 @@ fun loraCarryFor(
 ): LoraCarry =
     when {
         facts.plane != LoraPlane.Live -> LoraCarry.None
-        conversationId == Conversations.MESHTASTIC -> LoraCarry.None
+        Conversations.isBridgedRoom(conversationId) -> LoraCarry.None
         conversationId == Conversations.NEARBY -> LoraCarry.Room
         isGroup -> LoraCarry.None
         facts.dms -> LoraCarry.Dm

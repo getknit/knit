@@ -29,6 +29,61 @@ interface MeshPostSink {
      * for one packet changes nothing.
      */
     suspend fun onPublicPostHeard(post: MeshPost)
+
+    /**
+     * Delivers one post heard on a bound MeshCore board's Public channel (slot 0) into the MeshCore room
+     * (`Conversations.MESHCORE_PUBLIC`, ADR 2026-11.gsqu's Stage 6 amendment) — a stranger's, always.
+     *
+     * Idempotent the same way: the row id is derived from what every drain of the post carries
+     * ([app.getknit.knit.mesh.protocol.FrameId.forMeshcorePost]), so the board's offline-queue replay, and a copy racing
+     * it at connect, land on one row and notify once.
+     */
+    suspend fun onMeshcorePostHeard(post: MeshcorePost)
+}
+
+/**
+ * One post heard on a MeshCore board's Public channel, judged by the plane (`mesh/lora/meshcore/MeshcorePublicJudge`) and
+ * handed across the seam into the MeshCore room — the MeshCore twin of [MeshPost], with far less in it: a channel text
+ * names no sender, carries no packet id, no hop count and no signature.
+ *
+ * [name] is the self-chosen display name the sender's board put in front of the text (cleaned, null when there was none)
+ * and proves nothing: anyone on the key can post under any name, `You` and our own board's `Knit xxxx` included, so it is
+ * never resolved to a contact. [body] is the words, cleaned and clamped. [timestampSecs] and [raw] — the sender's stamp and
+ * the text exactly as drained, before any cleaning — are what the row id is derived from and nothing else: a row orders
+ * and ages by its arrival.
+ *
+ * Equal by content. [toString] names neither the text nor the name: a stranger's words never reach a log.
+ */
+class MeshcorePost(
+    val name: String?,
+    val body: String,
+    val timestampSecs: Long,
+    raw: ByteArray,
+) {
+    private val bytes = raw.copyOf()
+
+    /** A copy of the text as the receiving board drained it. */
+    val raw: ByteArray get() = bytes.copyOf()
+
+    override fun equals(other: Any?): Boolean =
+        other is MeshcorePost &&
+            other.name == name &&
+            other.body == body &&
+            other.timestampSecs == timestampSecs &&
+            other.bytes.contentEquals(bytes)
+
+    override fun hashCode(): Int {
+        var h = name.hashCode()
+        h = h * PRIME + body.hashCode()
+        h = h * PRIME + timestampSecs.hashCode()
+        return h * PRIME + bytes.contentHashCode()
+    }
+
+    override fun toString(): String = "MeshcorePost(named=${name != null}, ${body.length} ch)"
+
+    private companion object {
+        const val PRIME = 31
+    }
 }
 
 /**
@@ -121,7 +176,22 @@ data class MeshPostOrigin(
      * [peerId]. `ORIGIN_SIGNED_BY_CONTACT` is the one value that makes the attribution a verified one.
      */
     val signed: Int = 0,
-)
+) {
+    companion object {
+        /**
+         * The `originNode` every post heard in the MeshCore room is stored under (ADR 2026-11.gsqu's Stage 6 amendment,
+         * security B1): a channel text names no node, but a heard row needs a non-null `originNode` — it is the one mark
+         * that says a row in our sender column holds somebody else's words, which `writtenBy`, the own-send and
+         * authored-thread queries, the reaction and quote rules all read. Negative, so it is never a Meshtastic node
+         * number (32 unsigned bits, widened). No reader may turn it into a label: every one asks the room first
+         * ([isMeshcoreOrigin]) and draws the post's own name, or "unnamed" — never `!ffffffff`.
+         */
+        const val MESHCORE_NODE: Long = -1L
+
+        /** Whether a stored `originNode` is [MESHCORE_NODE] — a MeshCore room post, which has no node to show. */
+        fun isMeshcoreOrigin(node: Long?): Boolean = node == MESHCORE_NODE
+    }
+}
 
 /**
  * How Meshtastic writes a node number: `!` and eight lowercase hex digits, zero-padded (`NodeInfo`'s
@@ -133,6 +203,21 @@ data class MeshPostOrigin(
  * depend on the radio package.
  */
 fun meshNodeLabel(node: Long): String = "!%08x".format(Locale.ROOT, node and MESH_NODE_MASK)
+
+/**
+ * Who a MeshCore room post's notification is keyed on (ADR 2026-11.gsqu's Stage 6 amendment, security N3): `mc:` and the
+ * SHA-256 of the name it was posted under, in hex — never the raw name, which the system keeps in its conversation
+ * store. Posts under one name group under one person, which is all a name can say; an unnamed post keys on the empty
+ * name.
+ */
+fun meshcoreSpeakerKey(name: String?): String =
+    "mc:" +
+        java.security.MessageDigest
+            .getInstance("SHA-256")
+            .digest(name.orEmpty().encodeToByteArray())
+            .joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and BYTE_MASK) }
+
+private const val BYTE_MASK = 0xFF
 
 /** A Meshtastic node number is 32 unsigned bits; mask so a widened negative can never print sixteen digits. */
 private const val MESH_NODE_MASK = 0xFFFFFFFFL

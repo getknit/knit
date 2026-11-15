@@ -213,6 +213,18 @@ class MessageNotifierTest {
     }
 
     @Test
+    fun theMeshcoreRoomOffersOnlyMarkReadOnItsOwnChannel() {
+        // Its own channel, and no inline reply (ADR 2026-11.gsqu's Stage 6 amendment): a reply from the shade would skip
+        // the room's consent sheet and byte budget. Keyed on the hashed name, never on us or the raw name.
+        val room = NotifConversation(Conversations.MESHCORE_PUBLIC, title = null, avatarBytes = null, kind = ConversationKind.MESHCORE)
+        receive(room, sender = "mc:0123abcd")
+
+        val markRead = app.getString(R.string.notif_action_mark_read)
+        assertEquals(listOf(markRead), conversations().getValue(Conversations.MESHCORE_PUBLIC).actionTitles())
+        assertEquals(NotificationChannels.MESHCORE, conversations().getValue(Conversations.MESHCORE_PUBLIC).channelId)
+    }
+
+    @Test
     fun suggestedRepliesAnswerAMessageButNotAReactionToOurOwn() {
         val alice = dm("alice")
         receive(alice, body = "lunch?")

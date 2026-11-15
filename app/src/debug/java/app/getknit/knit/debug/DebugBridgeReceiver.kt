@@ -975,6 +975,10 @@ class DebugBridgeReceiver :
                     return reply("error", "the Meshtastic room carries text only: $conv")
                 }
 
+                ConversationKind.MESHCORE -> {
+                    return reply("error", "the MeshCore room carries text only: $conv")
+                }
+
                 // Keyed and relay-only (ADR 2026-10.xhfr); false when the room is not joined or the seal failed.
                 ConversationKind.COMMONS -> {
                     mesh.sendCommons(conv, text, emptyList(), replyTo = null, attachment = ingested)
@@ -2875,6 +2879,15 @@ class DebugBridgeReceiver :
                     .put("meshcoreKeysSkipped", c?.keysSkipped?.get() ?: 0)
                     .put("meshcoreRemovedUntaught", c?.removedUntaught?.get() ?: 0)
                     .put("meshcoreAcksBookedDirect", c?.acksBookedDirect?.get() ?: 0)
+                    .put("meshcorePublicHeard", c?.publicHeard?.get() ?: 0)
+                    .put("meshcorePublicRoomOff", c?.publicRoomOff?.get() ?: 0)
+                    .put("meshcorePublicRefused", c?.publicRefused?.get() ?: 0)
+                    .put("meshcorePublicDelivered", c?.publicDelivered?.get() ?: 0)
+                    .put("meshcorePublicBacklogDropped", c?.publicBacklogDropped?.get() ?: 0)
+                    .put("meshcorePublicPostsQueued", c?.publicPostsQueued?.get() ?: 0)
+                    .put("meshcorePublicPostsRefused", c?.publicPostsRefused?.get() ?: 0)
+                    .put("meshcorePublicPostsSent", c?.publicPostsSent?.get() ?: 0)
+                    .put("meshcorePublicPostsEnded", c?.publicPostsEnded?.get() ?: 0)
                     .put("meshcoreContactListings", sc.contactListings.get())
                     .put("meshcoreListingsShort", sc.listingsShort.get())
                     .put("meshcoreReconciles", sc.reconciles.get())

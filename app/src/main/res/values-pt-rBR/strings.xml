@@ -55,12 +55,15 @@
     <string name="channel_dms_desc">Mensagens privadas 1:1</string>
     <string name="channel_meshtastic_name">Canal público Meshtastic</string>
     <string name="channel_meshtastic_desc">Publicações no canal principal do seu rádio Meshtastic</string>
+    <string name="channel_meshcore_name">Canal público MeshCore</string>
+    <string name="channel_meshcore_desc">Publicações no canal Public da sua placa MeshCore</string>
     <string name="channel_commons_name">Salas comuns</string>
     <string name="channel_commons_desc">Publicações na sala compartilhada de um retransmissor</string>
     <string name="mention_channel_name">Menções</string>
     <string name="mention_channel_description">Notificações quando alguém menciona você com @</string>
     <string name="notif_title_nearby">Por Perto</string>
     <string name="notif_title_meshtastic">Meshtastic</string>
+    <string name="notif_title_meshcore">MeshCore</string>
     <string name="notif_self_name">Você</string>
     <string name="chat_gone">Essa conversa não está mais neste celular</string>
     <string name="notif_action_reply">Responder</string>
@@ -570,6 +573,8 @@
     <string name="chat_status_arrived_lora">Chegou por LoRa</string>
     <string name="chat_status_lora_radio_reached">Chegou ao rádio LoRa da pessoa</string>
     <string name="chat_status_pending_key">Ainda não enviada — aguardando a chave da pessoa</string>
+    <string name="chat_status_post_not_sent">Não enviada</string>
+    <string name="chat_status_post_unconfirmed">Pode não ter saído</string>
     <string name="chat_time_just_now">Agora mesmo</string>
     <string name="chat_day_today">Hoje</string>
     <string name="chat_day_yesterday">Ontem</string>
@@ -705,6 +710,7 @@
     </plurals>
     <string name="nearby_title">Por Perto</string>
     <string name="meshtastic_title">Meshtastic</string>
+    <string name="meshcore_title">MeshCore</string>
     <string name="commons_title">Sala comum</string>
     <string name="chat_list_empty_preview">Nenhuma mensagem ainda</string>
     <string name="chat_list_draft_preview">Rascunho: %1$s</string>
@@ -1535,6 +1541,8 @@
     <string name="lora_room_title">Sala Meshtastic</string>
     <string name="lora_room_subtitle">Mostra o canal do seu próprio rádio como uma sala no Knit, para você ler e participar do que mais estiver nele. Desativado, a sala fica oculta e em silêncio e o Knit ignora esse canal — sua placa continua levando as mensagens do próprio Knit.</string>
     <string name="lora_room_subtitle_dedicated">Oculta enquanto esta placa está numa frequência exclusiva: nenhum rádio público consegue ouvi-la, então não há canal para ler. Restaure a placa para ter a sala de volta.</string>
+    <string name="lora_meshcore_room_title">Sala MeshCore</string>
+    <string name="lora_meshcore_room_subtitle">Mostra o canal Public da sua placa MeshCore como uma sala no Knit, para você ler e participar do que mais estiver nele. Desativado, a sala fica oculta e em silêncio e o Knit ignora esse canal — sua placa continua levando as mensagens do próprio Knit.</string>
     <string name="lora_airtime">Tempo de transmissão: %1$d%% da cota atual</string>
     <string name="lora_radio_config">Rádio %1$s</string>
     <string name="lora_public_channel">Canal principal %1$s</string>
@@ -1778,6 +1786,23 @@
     <string name="chat_mesh_consent_accept">Publicar</string>
     <string name="chat_mesh_consent_decline">Agora não</string>
     <string name="chat_mesh_subtitle">Canal principal do seu rádio</string>
+    <string name="chat_meshcore_author">%1$s, no canal MeshCore — nome não verificado</string>
+    <string name="chat_meshcore_unnamed">Sem nome</string>
+    <string name="chat_meshcore_name_clash">Nome igual ao de alguém que você conhece — sem verificação de que seja essa pessoa</string>
+    <string name="chat_meshcore_name_claimed">“%1$s” (sem verificação)</string>
+    <string name="chat_meshcore_room_notice">Canal de rádio sem criptografia — nomes nunca são verificados</string>
+    <string name="chat_meshcore_room_notice_keyed">Sem criptografia de ponta a ponta — nomes nunca são verificados</string>
+    <string name="chat_meshcore_room_body">Esta sala mostra o canal Public da placa MeshCore pareada com este celular. A criptografia do Knit não chega até ele: nada aqui tem criptografia de ponta a ponta, e no canal Public padrão a chave é pública, então qualquer pessoa com um rádio pode ler. Qualquer pessoa no alcance pode publicar com qualquer nome, e o Knit nunca verifica nenhum: um nome aqui nunca é um contato seu, mesmo que pareça ser. Nada desta sala entra na mesh do próprio Knit.</string>
+    <string name="chat_meshcore_no_radio">Conecte uma placa MeshCore para publicar aqui. Esta sala é o canal Public da sua própria placa.</string>
+    <string name="chat_meshcore_channel_unusable">Esta placa não pode publicar aqui: ela não está configurada para o Knit neste celular, ou o primeiro canal dela está vazio.</string>
+    <string name="chat_meshcore_post_not_set_up">Não publicado — esta placa não está configurada para o Knit neste celular, então ela publicaria com o próprio nome</string>
+    <string name="chat_meshcore_post_no_channel">Não publicado — o primeiro canal desta placa está vazio, então ninguém ouviria</string>
+    <string name="chat_meshcore_post_room_off">Não publicado — a sala MeshCore está desativada nas configurações de LoRa</string>
+    <string name="chat_meshcore_consent_can_body">Qualquer pessoa com um rádio MeshCore no alcance. A chave do canal é pública, então qualquer pessoa ouvindo pode ler e guardar o que você publica, e alguns rádios repassam isso para a internet.</string>
+    <string name="chat_meshcore_consent_name_title">O nome da sua placa vai junto</string>
+    <string name="chat_meshcore_consent_name_body">Toda publicação sai como “%1$s: …”. Esse nome é o mesmo em todas as publicações e identifica sua placa, então as pessoas que têm você como contato, ou que conhecem sua placa, conseguem saber que é você.</string>
+    <string name="chat_meshcore_consent_name_body_unknown">Toda publicação sai com o nome da sua placa, “Knit” e quatro caracteres. Esse nome é o mesmo em todas as publicações e identifica sua placa, então as pessoas que têm você como contato, ou que conhecem sua placa, conseguem saber que é você.</string>
+    <string name="chat_meshcore_consent_rules">Não dá para desfazer uma publicação. Qualquer pessoa pode publicar com qualquer nome, inclusive o seu. Quem usa MeshCore e manda mensagem direta para sua placa não recebe resposta: o Knit não lê essas mensagens.</string>
     <string name="chat_commons_subtitle">Todos neste retransmissor</string>
     <string name="commons_details_title">Informações da sala</string>
     <string name="commons_details_relay">Em %1$s</string>

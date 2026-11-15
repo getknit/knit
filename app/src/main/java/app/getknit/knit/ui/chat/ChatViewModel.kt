@@ -96,11 +96,13 @@ import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.b64d
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraDirectBudget
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.lora.PublicPostPolicy
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreTraits
 import app.getknit.knit.mesh.meshNodeLabel
 import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.LinkCard
@@ -127,6 +129,9 @@ import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.translate.TranslateOutcome
 import app.getknit.knit.translate.TranslateTarget
+import app.getknit.knit.ui.meshcoreAuthorLine
+import app.getknit.knit.ui.meshcoreNameClashes
+import app.getknit.knit.ui.meshcoreRoomClashKeys
 import app.getknit.knit.ui.share.OutsideUris
 import app.getknit.knit.ui.share.OwnFile
 import app.getknit.knit.ui.translate.LanguageNames
@@ -290,6 +295,9 @@ data class ChatRow(
     // Our DM's compact LoRa copy was acked by their own board and no receipt is back yet (ADR 040's 2026-10-31
     // amendment): the tick's middle state. Always false once [received], and outside a DM of ours.
     val radioReached: Boolean = false,
+    // One of our MeshCore room posts that ended without (confirmed) airing (ADR 2026-11.gsqu's Stage 6 amendment):
+    // [DeliveryStatus.NotSent] or [DeliveryStatus.Unconfirmed], which the tick shows instead of "sent". Null otherwise.
+    val postEnded: DeliveryStatus? = null,
     // True when content filtering hides this message — the on-device text moderator flagged its body, or the
     // words it quotes (`MessageEntity.hiddenByFilter`); the bubble collapses it behind a tap-to-reveal instead
     // of showing the text outright.
@@ -413,6 +421,16 @@ data class MeshOrigin(
     val viaMqtt: Boolean,
     /** What the post's signature proved at ingest; frozen on the row like [peerId]. */
     val signed: MeshSignature = MeshSignature.NONE,
+    /**
+     * A MeshCore room post (ADR 2026-11.gsqu's Stage 6 amendment): no node, no hops, no signature, never a contact —
+     * [nodeLabel] is the name it came under (or "unnamed") and the colour key, never a `!hex` id.
+     */
+    val meshcore: Boolean = false,
+    /**
+     * The MeshCore name collides (by `NameKey`) with ours, our own board's or a known peer's (security N2): drawn with a
+     * marker that says a name here is never theirs by being the same, and never with their styling or face.
+     */
+    val nameClash: Boolean = false,
 ) {
     /** The match is a verified one: the words came from the radio [peerId]'s own profile names. */
     val verified: Boolean get() = signed == MeshSignature.CONTACT
@@ -640,6 +658,12 @@ data class ChatUiState(
     val publicChannelKeyIsPublic: Boolean = true,
     // Whether a post here still needs the first-use disclosure. Read only by [isBridged] threads.
     val needsPublicConsent: Boolean = false,
+    // True when this bridged room is the **MeshCore room** (ADR 2026-11.gsqu's Stage 6 amendment): its own copy wherever
+    // the Meshtastic room's words do not fit (no signature, a name never verified, a board set up for Knit, its own sheet).
+    val isMeshcoreRoom: Boolean = false,
+    // The bound MeshCore board's own name (`Knit xxxx`), which goes on the front of every post — what the MeshCore room's
+    // consent sheet names (security B3). Null outside that room, or with none known yet.
+    val meshcoreBoardName: String? = null,
     // Whether the thread holds messages older than the loaded window, so the screen can draw a loading row
     // above the oldest bubble and ask for the next page as the reader reaches it. See [ChatWindow].
     val hasOlder: Boolean = false,
@@ -735,6 +759,13 @@ class ChatViewModel(
     // Which URIs from another app (a share, a paste, a keyboard insert, a picker) may be read at all (#284, ADR
     // 2026-11.vdx4). No default: every rig names the rule it runs under, and an admit-all default would fail open.
     private val outsideUris: OutsideUris,
+    // Each board kind's own facts (`LoraStatusRepository.perKind`): a bridged room is titled, gated and budgeted by its own
+    // kind's, never the bound kind's aggregate (ADR 2026-11.gsqu's Stage 6 amendment, lora N5). Null, as in the test rigs,
+    // reads [loraFacts] as its own kind's alone. A plain parameter, read by the initializers alone.
+    loraRooms: Flow<Map<BoardKind, LoraFacts>>? = null,
+    // The bound MeshCore board's own name, `Knit xxxx` (`MeshcoreNames.forKey` over the claimed key), or null with none
+    // known: what the MeshCore room's consent sheet shows and the name-clash marker compares (security B3, N2).
+    meshcoreBoardName: Flow<String?> = flowOf(null),
 ) : ViewModel() {
     // Null by a constant in a build without translation (TRANSLATE_WIRED), so R8 drops every path that reads it.
     private val translation: ChatTranslation? = if (TRANSLATE_WIRED) translation else null
@@ -742,8 +773,17 @@ class ChatViewModel(
     /** This thread is the broadcast room (vs a 1:1 DM keyed by the peer's node id). */
     private val isRoom = conversationId == Conversations.NEARBY
 
-    /** This thread is the Meshtastic room — the paired radio's primary channel; its authors are not peers. */
-    private val isBridged = conversationId == Conversations.MESHTASTIC
+    /**
+     * This thread is a bridged board room — the Meshtastic room or the MeshCore room, a paired radio's public channel;
+     * its authors are not peers ([Conversations.isBridgedRoom]).
+     */
+    private val isBridged = Conversations.isBridgedRoom(conversationId)
+
+    /** The board kind whose channel this room mirrors ([bridgedBoardOf]); null in every other thread. */
+    private val bridgedBoard = bridgedBoardOf(conversationId)
+
+    /** This thread is the MeshCore room (ADR 2026-11.gsqu's Stage 6 amendment): every author a stranger, every name a claim. */
+    private val isMeshcoreRoom = bridgedBoard == BoardKind.MESHCORE
 
     /**
      * This thread is a commons — a relay's private room (§7.4). A room like Nearby (addressed to nobody,
@@ -1437,6 +1477,8 @@ class ChatViewModel(
     private data class LoraThread(
         val facts: LoraFacts,
         val audience: LoraAudience,
+        // The facts a bridged room is titled, gated and budgeted by: its own kind's ([roomFactsFor]). [facts] elsewhere.
+        val room: LoraFacts = facts,
     )
 
     // Which peers the notice reasons over — one shape per conversation kind, decided by the thread's id at
@@ -1478,13 +1520,17 @@ class ChatViewModel(
                     ConversationKind.DM -> LoraAudience.Peer(transports[conversationId])
 
                     // A commons post never leaves by a radio at all, so it has no LoRa audience either.
-                    ConversationKind.MESHTASTIC, ConversationKind.COMMONS -> LoraAudience.Bridged
+                    ConversationKind.MESHTASTIC, ConversationKind.MESHCORE, ConversationKind.COMMONS -> LoraAudience.Bridged
                 }
             }.distinctUntilChanged()
 
     private val loraThread =
-        combine(loraFacts, loraAudience) { facts, audience ->
-            LoraThread(facts, audience)
+        combine(
+            loraFacts,
+            loraAudience,
+            loraRooms ?: loraFacts.map { mapOf(it.board to it) },
+        ) { facts, audience, perKind ->
+            LoraThread(facts, audience, bridgedBoard?.let { roomFactsFor(it, perKind) } ?: facts)
         }.distinctUntilChanged()
 
     // The relay plane's facts + whether the user has dismissed the room's notice, folded the same way and
@@ -1533,16 +1579,27 @@ class ChatViewModel(
         val commonsRoom: CommonsEntity?,
         val commonsMembers: List<String>,
         val directLinksOn: Boolean,
+        // The MeshCore board's own `Knit xxxx`, in the MeshCore room alone (null elsewhere).
+        val boardName: String? = null,
     )
+
+    // The room's own kind's consent, never the other's (security N13): the Meshtastic sheet never posts through a MeshCore
+    // board. Ridden with the board's name, which only the MeshCore room reads.
+    private val publicConsent: Flow<Pair<Boolean, String?>> =
+        if (isMeshcoreRoom) {
+            combine(settings.meshcorePostConsented, meshcoreBoardName) { consented, board -> consented to board }
+        } else {
+            settings.meshtasticPostConsented.map { it to null }
+        }
 
     private val publicIdentity: Flow<PublicInputs> =
         combine(
             settings.displayName,
-            settings.meshtasticPostConsented,
+            publicConsent,
             if (isCommons) commons?.observe(conversationId) ?: flowOf(null) else flowOf(null),
             if (isCommons) commons?.observeMemberIds(conversationId) ?: flowOf(emptyList()) else flowOf(emptyList()),
             directLinksOn,
-        ) { name, consented, room, roster, linksOn -> PublicInputs(name, consented, room, roster, linksOn) }
+        ) { name, (consented, board), room, roster, linksOn -> PublicInputs(name, consented, room, roster, linksOn, board) }
 
     // The peer directory, read once for this screen: the thread state and the pinned bar both name senders from it, and
     // each change to the peer table reads the whole table and rebuilds its label index, so it is shared, not collected
@@ -1615,6 +1672,14 @@ class ChatViewModel(
 
             fun label(nodeId: String) = labels.getOrPut(nodeId) { directory.label(nodeId) }
             val selfLabel = context.getString(R.string.chat_self_name)
+            // The names a MeshCore room post's claimed name gets the bubble's clash line for (security N2): "You", ours, our own
+            // board's `Knit xxxx`, and every person's name as stored and as the screens render it. Empty elsewhere.
+            val clashKeys =
+                if (isMeshcoreRoom) {
+                    meshcoreRoomClashKeys(context, listOf(myName, publicId.boardName), directory, me)
+                } else {
+                    emptySet()
+                }
             val rows =
                 msgs.map { m ->
                     // A heard post's author is the Meshtastic speaker, NOT the row's sender — that is this
@@ -1623,7 +1688,7 @@ class ChatViewModel(
                     // wears that contact's name and face; an unverified match unless the radio's signature
                     // checked out (`MeshOrigin.verified`), so the bubble keeps the muted name and the
                     // caveat-first avatar until it did.
-                    val origin = m.originNode?.let { node -> meshOriginFor(m, node, directory) }
+                    val origin = m.originNode?.let { node -> meshOriginFor(m, node, directory, m.hiddenByFilter(hideSensitive), clashKeys) }
                     val mine = m.senderId == me && origin == null
                     val contact = origin?.peerId?.let { label(it) }
                     val senderLabel = if (mine || origin != null) null else label(m.senderId)
@@ -1679,6 +1744,8 @@ class ChatViewModel(
                                 },
                         // The shared fold: a receipt wins, and only a DM of ours lifts.
                         radioReached = mine && DeliveryStatus.of(m, bundle.radioReached[m.id]) == DeliveryStatus.RadioReached,
+                        // A MeshCore room post of ours that ended without (confirmed) airing: the tick says which.
+                        postEnded = DeliveryStatus.of(m).takeIf { mine && it.ended },
                         moderationFlagged = m.hiddenByFilter(hideSensitive),
                         attachmentHash = m.attachmentHash,
                         attachmentMime = m.attachmentMime,
@@ -1812,11 +1879,17 @@ class ChatViewModel(
                             context.getString(R.string.nearby_title)
                         }
 
+                        // The MeshCore room's: slot 0's name as the board holds it now (a post names no channel), else the
+                        // generic one — the chat list's rule (`conversationTitle`).
+                        isMeshcoreRoom -> {
+                            mesh.lora.room.primaryChannel ?: context.getString(R.string.meshcore_title)
+                        }
+
                         // The live board's primary channel (`LongFast`, `MediumFast`, or a name the user
                         // gave it), else the newest post's, else the generic label — one rule with the
                         // chat list (`meshRoomChannel`), so the two agree.
                         isBridged -> {
-                            meshRoomChannel(mesh.lora.facts.primaryChannel, newestOriginChannel(msgs))
+                            meshRoomChannel(mesh.lora.room.primaryChannel, newestOriginChannel(msgs))
                                 ?: context.getString(R.string.meshtastic_title)
                         }
 
@@ -1843,9 +1916,20 @@ class ChatViewModel(
                 commonsStale = isCommons && conversationId in relay.staleRooms,
                 // The board's slot-0 signature cliff where it signs (so every post leaves signed), else the 200-byte
                 // client convention.
-                publicPostBudget = if (isBridged) PublicPostPolicy.onAirBudget(mesh.lora.facts.roomSignedUpTo) else null,
-                publicChannelKeyIsPublic = mesh.lora.facts.primaryKeyIsPublic,
+                publicPostBudget =
+                    when {
+                        // MeshCore's own budget (Stage 6): 149 B, less where the band's flood ceiling can never carry that
+                        // much — never Meshtastic's signing cliff. Unknown (no ledger yet) takes the cap.
+                        isMeshcoreRoom -> mesh.lora.room.publicPostBytes ?: MeshcoreTraits.PUBLIC_TEXT_CAP
+
+                        isBridged -> PublicPostPolicy.onAirBudget(mesh.lora.room.roomSignedUpTo)
+
+                        else -> null
+                    },
+                publicChannelKeyIsPublic = mesh.lora.room.primaryKeyIsPublic,
                 needsPublicConsent = isBridged && !publicConsented,
+                isMeshcoreRoom = isMeshcoreRoom,
+                meshcoreBoardName = publicId.boardName.takeIf { isMeshcoreRoom },
                 isBlocked = isPeerThread && conversationId in blocked,
                 canCall = calls?.liveEnabled == true && callable && offers(Protocol.CAP_CALL),
                 canMeshCall = calls?.walkieEnabled == true && callable && offers(Protocol.CAP_WALKIE),
@@ -1898,7 +1982,8 @@ class ChatViewModel(
                 loraCarry = loraCarryFor(conversationId, isGroup, mesh.lora.facts),
                 loraDirectBudget = mesh.lora.facts.directBudget,
                 loraRoomBudget = mesh.lora.facts.roomBodyBytes,
-                publicPostGate = publicPostGateFor(conversationId, mesh.lora.facts),
+                // The room's own kind's facts (Stage 6): a room whose board is not the bound one reads no radio.
+                publicPostGate = publicPostGateFor(conversationId, mesh.lora.room),
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom, isLoading = true))
 
@@ -1933,21 +2018,45 @@ class ChatViewModel(
             }
         }
 
-    /** The render shape of a heard post's attribution — the row's `origin*` columns, the `!hex` id derived. */
+    /**
+     * The render shape of a heard post's attribution — the row's `origin*` columns, the `!hex` id derived. A MeshCore room
+     * post (ADR 2026-11.gsqu's Stage 6 amendment, security B1) has no node to derive one from (its `originNode` is the
+     * fixed sentinel): it is named by the name it came under, else "unnamed", never a contact, never signed; a name the
+     * filter hides ([hidden], screened with the words) or the name screen hides (`directory.shown`, ADR 2026-11.y4pc)
+     * shows as unnamed; and one that collides with ours, our board's or a known peer's ([clashKeys], by `NameKey`)
+     * carries the marker.
+     */
     private fun meshOriginFor(
         m: MessageEntity,
         node: Long,
         directory: PeerDirectory,
-    ) = MeshOrigin(
-        nodeLabel = meshNodeLabel(node),
-        // The board's long name as names are shown (ADR 2026-11.y4pc): a hidden one falls back to the node label.
-        name = m.originName?.let(directory::shown)?.takeIf { it.isNotBlank() },
-        peerId = m.originPeerId,
-        hops = m.originHops,
-        snrDeci = m.originSnrDeci,
-        viaMqtt = m.originViaMqtt,
-        signed = MeshSignature.fromRow(m.originSigned),
-    )
+        hidden: Boolean = false,
+        clashKeys: Set<String> = emptySet(),
+    ): MeshOrigin {
+        if (m.conversationId == Conversations.MESHCORE_PUBLIC) {
+            val name = m.originName?.let(directory::shown)?.takeIf { it.isNotBlank() && !hidden }
+            return MeshOrigin(
+                nodeLabel = name ?: context.getString(R.string.chat_meshcore_unnamed),
+                name = name,
+                peerId = null,
+                hops = null,
+                snrDeci = null,
+                viaMqtt = false,
+                meshcore = true,
+                nameClash = meshcoreNameClashes(name, clashKeys),
+            )
+        }
+        return MeshOrigin(
+            nodeLabel = meshNodeLabel(node),
+            // The board's long name as names are shown (ADR 2026-11.y4pc): a hidden one falls back to the node label.
+            name = m.originName?.let(directory::shown)?.takeIf { it.isNotBlank() },
+            peerId = m.originPeerId,
+            hops = m.originHops,
+            snrDeci = m.originSnrDeci,
+            viaMqtt = m.originViaMqtt,
+            signed = MeshSignature.fromRow(m.originSigned),
+        )
+    }
 
     /**
      * This thread's pinned messages, newest pin first — the bar under the title (#42). A pin on a blocked sender's
@@ -1967,10 +2076,16 @@ class ChatViewModel(
                 .filter { it.message.senderId !in blocked }
                 .map { pin ->
                     val m = pin.message
-                    val origin = m.originNode?.let { node -> meshOriginFor(m, node, directory) }
+                    val origin = m.originNode?.let { node -> meshOriginFor(m, node, directory, m.hiddenByFilter(hideFlagged)) }
                     PinnedView(
                         messageId = m.id,
-                        author = senderName(origin, m.senderId, me, selfName = selfLabel) { directory.label(it).text },
+                        // A MeshCore room author on this one line is always marked, or "Unnamed" (`meshcoreAuthorLine`).
+                        author =
+                            if (origin?.meshcore == true) {
+                                meshcoreAuthorLine(context, origin.name)
+                            } else {
+                                senderName(origin, m.senderId, me, selfName = selfLabel) { directory.label(it).text }
+                            },
                         preview = messagePreview(context, m, hideFlagged),
                     )
                 }
@@ -2483,7 +2598,7 @@ class ChatViewModel(
         viewModelScope.launch {
             var accepted = false
             try {
-                when (val outcome = meshManager.sendPublicPost(text)) {
+                when (val outcome = meshManager.sendPublicPost(conversationId, text)) {
                     PublicPostOutcome.Queued -> {
                         accepted = true
                         // The same clean slate an accepted chat send leaves: nothing is ever staged here,
@@ -2512,26 +2627,55 @@ class ChatViewModel(
         }
     }
 
-    /** What the composer says for a board's refusal — exhaustive, so a new reason cannot go unsaid. */
+    /**
+     * What the composer says for a board's refusal — exhaustive, so a new reason cannot go unsaid. The MeshCore room takes
+     * its own words where the Meshtastic room's name the wrong board or the wrong fix (ADR 2026-11.gsqu's Stage 6 amendment).
+     */
     private fun refusalMessage(reason: PublicPostRefusal): Int =
         when (reason) {
-            PublicPostRefusal.NO_BOARD, PublicPostRefusal.NOT_READY -> R.string.chat_mesh_post_not_connected
+            PublicPostRefusal.NO_BOARD, PublicPostRefusal.NOT_READY -> {
+                R.string.chat_mesh_post_not_connected
+            }
 
-            PublicPostRefusal.KNIT_ON_PRIMARY -> R.string.chat_mesh_post_channel_unusable
+            PublicPostRefusal.KNIT_ON_PRIMARY -> {
+                R.string.chat_mesh_post_channel_unusable
+            }
 
-            PublicPostRefusal.TOO_SOON -> R.string.chat_mesh_post_too_soon
+            // A MeshCore board not named for Knit or not consented on this phone: it would post under its own name.
+            PublicPostRefusal.NOT_SET_UP -> {
+                R.string.chat_meshcore_post_not_set_up
+            }
 
-            PublicPostRefusal.TOO_LARGE -> R.string.chat_mesh_post_too_large
+            // A MeshCore board whose slot 0 holds no channel: a post would air under the all-zero key and reach nobody.
+            PublicPostRefusal.NO_CHANNEL -> {
+                R.string.chat_meshcore_post_no_channel
+            }
 
-            PublicPostRefusal.NO_AIR -> R.string.chat_mesh_post_no_air
+            PublicPostRefusal.TOO_SOON -> {
+                R.string.chat_mesh_post_too_soon
+            }
 
-            PublicPostRefusal.NAK -> R.string.chat_mesh_post_refused
+            PublicPostRefusal.TOO_LARGE -> {
+                R.string.chat_mesh_post_too_large
+            }
+
+            PublicPostRefusal.NO_AIR -> {
+                R.string.chat_mesh_post_no_air
+            }
+
+            PublicPostRefusal.NAK -> {
+                R.string.chat_mesh_post_refused
+            }
 
             // Only reachable on a screen that outlived its own row (the switch flipped while the thread was
             // open); the row and its composer both go with the setting.
-            PublicPostRefusal.ROOM_OFF -> R.string.chat_mesh_post_room_off
+            PublicPostRefusal.ROOM_OFF -> {
+                if (isMeshcoreRoom) R.string.chat_meshcore_post_room_off else R.string.chat_mesh_post_room_off
+            }
 
-            PublicPostRefusal.DEDICATED -> R.string.chat_mesh_post_dedicated
+            PublicPostRefusal.DEDICATED -> {
+                R.string.chat_mesh_post_dedicated
+            }
         }
 
     /**
@@ -2541,7 +2685,8 @@ class ChatViewModel(
      */
     fun acceptPublicConsent() {
         viewModelScope.launch {
-            settings.acceptMeshtasticPostConsent()
+            // The room's own kind's answer, never the other's (security N13).
+            if (isMeshcoreRoom) settings.acceptMeshcorePostConsent() else settings.acceptMeshtasticPostConsent()
             _showPublicConsent.value = false
         }
     }
@@ -3445,7 +3590,7 @@ class ChatViewModel(
      */
     private suspend fun refusalForCall(kind: CallKind): Int? {
         val members = groups.find(conversationId)?.let { GroupMembersStore.decode(it.members) }.orEmpty()
-        if (isRoom || conversationId == Conversations.MESHTASTIC || members.isNotEmpty()) return R.string.chat_call_needs_dm
+        if (isRoom || isBridged || members.isNotEmpty()) return R.string.chat_call_needs_dm
         if (kind == CallKind.LIVE && (peers.find(conversationId)?.capabilities ?: 0L) and Protocol.CAP_CALL == 0L) {
             return R.string.chat_call_peer_too_old
         }
@@ -3462,7 +3607,7 @@ class ChatViewModel(
         // A group is a roster, not a row: the group repository answers for every id (a relaxed double included),
         // so the same members test refusalForFile uses is the honest one here.
         val members = groups.find(conversationId)?.let { GroupMembersStore.decode(it.members) }.orEmpty()
-        if (isRoom || conversationId == Conversations.MESHTASTIC || members.isNotEmpty()) return R.string.chat_transfer_needs_dm
+        if (isRoom || isBridged || members.isNotEmpty()) return R.string.chat_transfer_needs_dm
         if (!transfers.mayOffer()) return R.string.chat_transfer_cannot_host
         if ((peers.find(conversationId)?.capabilities ?: 0L) and Protocol.CAP_DIRECT_TRANSFER == 0L) {
             return R.string.chat_transfer_peer_too_old

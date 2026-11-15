@@ -24,9 +24,11 @@ import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.FakeMeshController
 import app.getknit.knit.mesh.LoraRadioReached
+import app.getknit.knit.mesh.MeshPostOrigin
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.ui.InMemoryMessages
@@ -52,6 +54,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -102,6 +105,9 @@ class ChatListViewModelTest {
     private val relayFlow = MutableStateFlow(RelayFacts())
     private val loraFlow = MutableStateFlow(LoraFacts())
 
+    /** Each kind's own facts (ADR 2026-11.gsqu's Stage 6 amendment), for [vmByKind]. */
+    private val loraRoomsFlow = MutableStateFlow<Map<BoardKind, LoraFacts>>(emptyMap())
+
     @Before
     fun setUp() {
         Dispatchers.setMain(mainDispatcher)
@@ -147,6 +153,155 @@ class ChatListViewModelTest {
             context,
             commons,
         )
+
+    /** The production shape: each bridged room drawn from its own kind's facts. */
+    private fun vmByKind() =
+        ChatListViewModel(
+            messages,
+            peers,
+            settings,
+            identity,
+            mesh,
+            groups,
+            drafts,
+            mockk(relaxed = true) { every { states } returns MutableStateFlow(emptyMap()) },
+            relayFlow,
+            loraFlow,
+            context,
+            commons,
+            loraRooms = loraRoomsFlow,
+        )
+
+    @Test
+    fun eachBridgedRoomsRowFollowsItsOwnKind() =
+        runTest {
+            // A bound MeshCore board makes the MeshCore room's row, and says nothing of the Meshtastic one — whose own kind
+            // has no board and no history here (lora N5).
+            val vm = vmByKind()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraFlow.value = LoraFacts(plane = LoraPlane.Down, board = BoardKind.MESHCORE)
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to loraFlow.value, BoardKind.MESHTASTIC to LoraFacts())
+            advanceUntilIdle()
+
+            val rows = vm.state.value.conversations
+            val meshcore = rows.single { it.id == Conversations.MESHCORE_PUBLIC }
+            assertEquals(context.getString(R.string.meshcore_title), meshcore.title)
+            assertTrue(meshcore.isRoom && meshcore.isBridged)
+            assertTrue(rows.none { it.id == Conversations.MESHTASTIC })
+
+            // Its own switch hides it, history and all.
+            store.set(
+                msg(
+                    senderId = "me",
+                    body = "hi",
+                    sentAt = 100,
+                    conversationId = Conversations.MESHCORE_PUBLIC,
+                    originNode = MeshPostOrigin.MESHCORE_NODE,
+                    originName = "Bob",
+                ),
+            )
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to loraFlow.value.copy(room = false))
+            advanceUntilIdle()
+            assertTrue(
+                vm.state.value.conversations
+                    .none { it.id == Conversations.MESHCORE_PUBLIC },
+            )
+        }
+
+    @Test
+    fun aMeshcorePreviewNamesThePostsOwnNameNeverYouOrAHexNode() =
+        runTest {
+            // Security B1: the row sits in our sender column under the sentinel node, and is somebody else's words.
+            val vm = vmByKind()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to LoraFacts(plane = LoraPlane.Live, board = BoardKind.MESHCORE))
+
+            fun heard(
+                name: String?,
+                at: Long,
+            ) = msg(
+                senderId = "me",
+                body = "hi",
+                sentAt = at,
+                conversationId = Conversations.MESHCORE_PUBLIC,
+                originNode = MeshPostOrigin.MESHCORE_NODE,
+                originName = name,
+                id = "h$at",
+            )
+            store.set(heard("Bob", 100))
+            advanceUntilIdle()
+            val row =
+                vm.state.value.conversations
+                    .single { it.id == Conversations.MESHCORE_PUBLIC }
+            assertEquals(context.getString(R.string.chat_meshcore_name_claimed, "Bob") + ": hi", row.lastPreview)
+            assertNull("somebody else's words earn no tick", row.lastStatus)
+
+            store.set(heard(null, 200))
+            advanceUntilIdle()
+            assertEquals(
+                context.getString(R.string.chat_meshcore_unnamed) + ": hi",
+                vm.state.value.conversations
+                    .single { it.id == Conversations.MESHCORE_PUBLIC }
+                    .lastPreview,
+            )
+        }
+
+    @Test
+    fun everyMeshcorePreviewNameIsMarked() =
+        runTest {
+            // Security review rounds 1 and 2: "You: hello" on one line would read as our own last post, so every MeshCore
+            // author is marked here, whatever it matches (the maintainer's call, 2026-11-15) — a plain "Bob" too.
+            val vm = vmByKind()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to LoraFacts(plane = LoraPlane.Live, board = BoardKind.MESHCORE))
+            peersFlow.value = listOf(peer("sam", name = "Sam"))
+            val you = context.getString(R.string.chat_self_name)
+            for (claimed in listOf(you, "sam", "alice", "Knit 1a2b", "Bob")) {
+                store.set(
+                    msg(
+                        senderId = "me",
+                        body = "hello",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHCORE_PUBLIC,
+                        originNode = MeshPostOrigin.MESHCORE_NODE,
+                        originName = claimed,
+                    ),
+                )
+                advanceUntilIdle()
+                val preview =
+                    vm.state.value.conversations
+                        .single { it.id == Conversations.MESHCORE_PUBLIC }
+                        .lastPreview
+                assertEquals(claimed, context.getString(R.string.chat_meshcore_name_claimed, claimed) + ": hello", preview)
+                assertNotEquals("$you: hello", preview)
+            }
+        }
+
+    @Test
+    fun anOwnMeshcorePostThatNeverAiredHeadsItsRowAsNotSent() =
+        runTest {
+            val vm = vmByKind()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to LoraFacts(plane = LoraPlane.Live, board = BoardKind.MESHCORE))
+            store.set(
+                msg(
+                    senderId = "me",
+                    body = "hello mesh",
+                    sentAt = 100,
+                    conversationId = Conversations.MESHCORE_PUBLIC,
+                    pendingKey = true,
+                    receivedVia = DeliveryPlane.LoRa.code,
+                ),
+            )
+            advanceUntilIdle()
+
+            assertEquals(
+                DeliveryStatus.NotSent,
+                vm.state.value.conversations
+                    .single { it.id == Conversations.MESHCORE_PUBLIC }
+                    .lastStatus,
+            )
+        }
 
     @Test
     fun aJoinedCommonsHasARowBeforeAnyoneHasPostedAndLeavesWithTheRoom() =

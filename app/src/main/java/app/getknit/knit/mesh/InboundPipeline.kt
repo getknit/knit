@@ -1232,6 +1232,33 @@ class InboundPipeline(
      *   the radio cannot keep — but a post from a blocked contact's own board is dropped like their chat is.
      */
     internal suspend fun deliverMeshPost(post: MeshPost) {
+        heardPostLock.withLock { deliverMeshPostLocked(post) }
+    }
+
+    /**
+     * Serialises the two bridged rooms' deliveries ([deliverMeshPost], [deliverMeshcorePost]; ADR 2026-11.gsqu's Stage 6
+     * amendment, security N9). Each board hands its posts up on a coroutine of their own, and at connect a board's
+     * offline-queue replay can race a live copy of the same post: both would read no row under its id in
+     * [deliverChat], both moderate, and both notify. Under this lock the second finds the first's row and is a no-op. One
+     * lock for both rooms — a board's rate makes a per-id map buy nothing — and never taken inside a transaction or the
+     * ratchet mutex: nothing here reaches either but through [deliverChat]'s own writes.
+     */
+    private val heardPostLock = Mutex()
+
+    /**
+     * The last stamp a heard post took ([heardStamp]), under [heardPostLock]. The room orders by `sentAt` and then by
+     * id, and a heard post's id is a hash: two posts of one drain stamped in the same millisecond would be drawn in hash
+     * order. Each heard post is therefore stamped past the last (ADR 2026-11.gsqu's Stage 6 amendment, part 6c), so the
+     * room shows them in the order the plane handed them over. In memory: the first after a restart takes the clock.
+     * Not seeded from the room's newest row: every row in every thread is stamped on this clock, so a clock stepped back
+     * reorders them all alike, and a seed would carry one row stamped while the clock ran ahead onto every later post.
+     */
+    private var lastHeardAt = Long.MIN_VALUE
+
+    /** A heard post's arrival stamp: this phone's clock, strictly after the last one's. Call under [heardPostLock]. */
+    private fun heardStamp(): Long = maxOf(clock(), lastHeardAt + 1).also { lastHeardAt = it }
+
+    private suspend fun deliverMeshPostLocked(post: MeshPost) {
         val me = identity.nodeId()
         val claimant = peers.findByLoraNode(post.node)
         val signed = judgeMeshPostSignature(post, claimant)
@@ -1251,7 +1278,7 @@ class InboundPipeline(
                 type = FrameType.CHAT,
                 id = FrameId.forMeshPost(post.node, post.packetId),
                 senderId = me,
-                sentAt = clock(),
+                sentAt = heardStamp(),
                 payload = ByteArray(0),
             )
         deliverChat(
@@ -1274,6 +1301,65 @@ class InboundPipeline(
                     signed = signed,
                 ),
             ack = false,
+        )
+    }
+
+    /**
+     * One post a bound MeshCore board heard on its Public channel (slot 0) — [MeshPostSink.onMeshcorePostHeard], judged by
+     * the plane — delivered into [Conversations.MESHCORE_PUBLIC] here and nowhere else (ADR 2026-11.gsqu's Stage 6
+     * amendment). Like [deliverMeshPost] there is no frame: the [RelayEnvelope] below is a local carrier for
+     * [deliverChat]'s reads, never originated, custodied or relayed. Unlike it, nothing is resolved:
+     *
+     * - **Always a stranger** (security B1). A channel text names no sender: [MeshcorePost.name] is whatever the sending
+     *   board put in front of its text, and any radio on the key can write any name, ours included. So there is no
+     *   [PeerRepository.findByLoraNode], no signature to judge, no contact and no blocklist entry to read — and the row
+     *   carries the fixed [MeshPostOrigin.MESHCORE_NODE] as its `originNode`, the one mark every reader takes for "these
+     *   words are somebody else's" (the sender column is this phone by convention, as in the Meshtastic room).
+     * - **The id, from what every drain carries** ([FrameId.forMeshcorePost]: the sender's stamp and the raw text), so an
+     *   offline-queue replay lands on the row it wrote, and our own post re-aired after the board's seen ring forgot it
+     *   lands on the own row `MeshManager.sendPublicPost` wrote under the same id. Serialised with the Meshtastic room's
+     *   deliveries ([heardPostLock]), so a replay racing a live copy at connect notifies once.
+     * - **Ordered and aged by its arrival** (security N4): `sentAt` is this phone's clock ([heardStamp]: strictly after the
+     *   last heard post's, so one drain keeps its order); the sender's stamp is read inside the id and nowhere else, so a
+     *   stranger's far-past or far-future stamp moves nothing.
+     * - **The name is moderated with the words** (security N2): the room moderator reads `"<name>: <body>"`, the line as
+     *   the channel carried it, so an abusive name hides the post (and the name with it) as an abusive body would.
+     *
+     * No receipt (`ack = false`), never relayed or in custody ([RelayReach.Silent] by the room). Nothing about it is
+     * logged. Never throws.
+     */
+    internal suspend fun deliverMeshcorePost(post: MeshcorePost) {
+        runCatchingUnlessCancelled { heardPostLock.withLock { deliverMeshcorePostLocked(post) } }
+            .onFailure { Log.w(TAG, "meshcore public post dropped: ${it.javaClass.simpleName}") }
+    }
+
+    private suspend fun deliverMeshcorePostLocked(post: MeshcorePost) {
+        val me = identity.nodeId()
+        val env =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = FrameId.forMeshcorePost(post.timestampSecs, post.raw),
+                senderId = me,
+                sentAt = heardStamp(),
+                payload = ByteArray(0),
+            )
+        deliverChat(
+            env = env,
+            content = ChatContent(body = post.body),
+            me = me,
+            conversationId = Conversations.MESHCORE_PUBLIC,
+            plane = DeliveryPlane.LoRa,
+            origin =
+                MeshPostOrigin(
+                    node = MeshPostOrigin.MESHCORE_NODE,
+                    name = post.name,
+                    channel = null,
+                    hops = null,
+                    snrDeci = null,
+                    viaMqtt = false,
+                ),
+            ack = false,
+            moderationText = post.name?.let { "$it: ${post.body}" } ?: post.body,
         )
     }
 
@@ -4206,6 +4292,9 @@ class InboundPipeline(
         // frame still owes — the DM ratchet step and its inline acks, or a compact copy's inline acks. Such a hook
         // refuses the row itself, inside its write; every other door stops at the check before the row is built.
         persistDecides: Boolean = false,
+        // What the moderator reads for this row, when it is more than [content]'s body: a MeshCore room post's name with
+        // its words ([deliverMeshcorePost]), so a name the room would flag hides the post. The body otherwise.
+        moderationText: String = content.body,
     ) {
         // Which sender holds this id. A row another sender holds is not this frame's: nothing is built, written, shown,
         // pulled or acknowledged for it. A re-serve of a row its own sender holds goes on as before.
@@ -4226,7 +4315,7 @@ class InboundPipeline(
         // inside the room's seal, and the room's own pass fetches its bytes — never the radios.
         val commons = Conversations.kindFor(conversationId) == ConversationKind.COMMONS
         val attachmentKey = sealed?.attachmentKey ?: content.attachmentKey?.takeIf { commons }
-        val moderation = inboundModeration(isNew, content.body, conversationId)
+        val moderation = inboundModeration(isNew, moderationText, conversationId)
         val (declaredSize, video) = deliveredDescription(content, sealed)
         val fetch = deliveredFetch(hash, declaredSize, isNew, env, me, conversationId)
         // Clamp the inbound body: our sender-side TextLimits.MESSAGE only bounds what we originate, not what a peer
@@ -4868,7 +4957,10 @@ class InboundPipeline(
         hidden: Boolean,
         origin: MeshPostOrigin? = null,
     ) {
-        notifyWithBody(env, conversationId, notificationBody(content, fileName, hidden), origin)
+        // A MeshCore room post the filter hides was flagged on its name as much as its words (deliverMeshcorePost), so
+        // the hidden line names nobody either.
+        val shown = if (hidden && origin != null && MeshPostOrigin.isMeshcoreOrigin(origin.node)) origin.copy(name = null) else origin
+        notifyWithBody(env, conversationId, notificationBody(content, fileName, hidden), shown)
     }
 
     /**
@@ -4945,6 +5037,16 @@ class InboundPipeline(
         shown: (String) -> String = { it },
         label: (id: String, name: String?) -> String,
     ): HeardSpeaker {
+        // A MeshCore room post (security B1, N2, N3): keyed on a hash of the name it came under ([meshcoreSpeakerKey]), never
+        // the raw name and never `!ffffffff`, and never a face — no contact is ever resolved. The person it names is always
+        // the claimed name quoted and marked, whatever it matches (the maintainer's call, 2026-11-15), or "Unnamed" —
+        // as it is when the name screen hides it ([shown], ADR 2026-11.y4pc).
+        if (MeshPostOrigin.isMeshcoreOrigin(origin.node)) {
+            val name = origin.name?.let(shown)?.takeIf(String::isNotBlank)
+            val texts = notificationLabels()
+            val line = name?.let { texts.claimedName.format(Locale.getDefault(), it) } ?: texts.unnamed
+            return HeardSpeaker(meshcoreSpeakerKey(name), line, null)
+        }
         val contact = origin.peerId?.let { peers.find(it) }
         val id = origin.peerId ?: meshNodeLabel(origin.node)
         val name =
@@ -5054,16 +5156,21 @@ class InboundPipeline(
     /**
      * Whether a reaction from [reactor] may land on a post held in [conversationId] (#301): ours, the DM's peer, anyone on
      * the group's founding roster (members and departed: a reaction a member made before leaving, delivered after the
-     * leave, is still theirs), anyone in a room. `ReactionDao.observeForConversation` and `observeForMessage` draw by the
-     * same rule, so an orphan that lands before its target shows only when this would have let it in. Wider than
-     * [readsThread] by the departed alone.
+     * leave, is still theirs), anyone in a room — but nobody else in a bridged board room, which takes no tapback (ADR
+     * 2026-10.xhfr) and whose rows' ids anyone can derive from the air (`FrameId.forMeshcorePost`, our own post's
+     * included): a Knit identity's reaction there would notify on a thread the UI says takes none (ADR 2026-11.gsqu's
+     * Stage 6 amendment). `ReactionDao.observeForConversation` and `observeForMessage` draw by the same rule, so an orphan
+     * that lands before its target shows only when this would have let it in. Wider than [readsThread] by the departed
+     * alone.
      */
     private suspend fun reactsIn(
         reactor: String,
         conversationId: String,
     ): Boolean {
         if (reactor == identity.nodeId()) return true
-        return when (Conversations.kindFor(conversationId)) {
+        val kind = Conversations.kindFor(conversationId)
+        if (kind.isBridged) return false
+        return when (kind) {
             ConversationKind.DM -> {
                 reactor == conversationId
             }
@@ -5079,12 +5186,16 @@ class InboundPipeline(
         }
     }
 
-    /** Whether [nodeId] reads [conversationId]: the DM's peer, a member on the group's roster, anyone in a room. */
+    /**
+     * Whether [nodeId] reads [conversationId]: the DM's peer, a member on the group's roster, anyone in a room — no Knit
+     * identity in a bridged board room ([reactsIn]: it takes no tapback).
+     */
     private suspend fun readsThread(
         nodeId: String,
         conversationId: String,
     ): Boolean =
         when (Conversations.kindFor(conversationId)) {
+            ConversationKind.MESHTASTIC, ConversationKind.MESHCORE -> false
             ConversationKind.DM -> nodeId == conversationId
             ConversationKind.GROUP -> groups.find(conversationId)?.let { nodeId in GroupMembersStore.decode(it.members) } == true
             else -> true

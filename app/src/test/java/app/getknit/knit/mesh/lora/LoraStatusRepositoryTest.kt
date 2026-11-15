@@ -319,4 +319,82 @@ class LoraStatusRepositoryTest {
                     .plane,
             )
         }
+
+    /**
+     * Stage 6 (lora B2, N5): a MeshCore plane's Public facts come off the face its kind renders from the Ready's slot table —
+     * the slot's own name, its key against the published Public key, posting only from a board set up for Knit with a
+     * channel in slot 0 and the MeshCore room on — and the composer's budget off the ledger, never Meshtastic's cliff.
+     */
+    @Test
+    fun `a MeshCore plane's Public facts are slot 0 as found and its own room switch`() =
+        runTest {
+            val meshcoreRoom = MutableStateFlow(true)
+            val kinds =
+                mockk<SettingsStore> {
+                    every { loraEnabled } returns enabled
+                    every { loraDeviceAddress } returns MutableStateFlow(null)
+                    every { loraDmEnabled } returns dms
+                    every { loraRoomEnabled } returns MutableStateFlow(false)
+                    every { meshcoreDeviceAddress } returns MutableStateFlow("BB:BB")
+                    every { meshcoreRoomEnabled } returns meshcoreRoom
+                    every { boundBoardKind } returns MutableStateFlow(BoardKind.MESHCORE)
+                }
+            val face = PublicChannelFace("Public", keyIsPublic = true, postable = true)
+            val air =
+                AirtimeSnapshot(
+                    ModemPreset.LONG_FAST,
+                    LoraRegion.UNSET,
+                    known = true,
+                    usedMs = 0,
+                    allowanceMs = 4_500,
+                    publicPostBytes = 64,
+                )
+            val meshcoreStatus = MutableStateFlow(LoraStatus(state = ready, airtime = air, publicChannel = face))
+            val meshcore =
+                object : LoraPlaneStatus {
+                    override val status: StateFlow<LoraStatus> = meshcoreStatus
+                    override val boardKind = BoardKind.MESHCORE
+
+                    override suspend fun provisionKnitChannel(
+                        mode: ProvisionMode,
+                        previous: BoardSettings?,
+                    ): ProvisionResult = ProvisionResult.NotReady(LinkState.Idle)
+                }
+            val both = LoraStatusRepository(kinds, mapOf(BoardKind.MESHTASTIC to lora, BoardKind.MESHCORE to meshcore))
+            val live = both.facts.first()
+            assertEquals(BoardKind.MESHCORE, live.board)
+            assertEquals("Public", live.primaryChannel)
+            assertTrue(live.primaryKeyIsPublic)
+            assertTrue("the MeshCore room's own switch, the Meshtastic one off", live.canPost)
+            assertEquals("the flood ceiling's, never the signing cliff", 64, live.publicPostBytes)
+            assertEquals(
+                "Meshtastic's facts carry no MeshCore budget",
+                null,
+                both.perKind
+                    .first()
+                    .getValue(BoardKind.MESHTASTIC)
+                    .publicPostBytes,
+            )
+
+            // A re-keyed slot 0 is a private group's; a board not set up for Knit posts nothing.
+            meshcoreStatus.value = LoraStatus(state = ready, airtime = air, publicChannel = PublicChannelFace("friends", false, false))
+            val rekeyed = both.facts.first()
+            assertEquals("friends", rekeyed.primaryChannel)
+            assertFalse(rekeyed.primaryKeyIsPublic)
+            assertFalse(rekeyed.canPost)
+
+            // The MeshCore room off takes posting with it.
+            meshcoreStatus.value = LoraStatus(state = ready, airtime = air, publicChannel = face)
+            meshcoreRoom.value = false
+            assertFalse(both.facts.first().canPost)
+            meshcoreRoom.value = true
+
+            // Down: no name, nothing to post on, and the safe half of the key's claim; the budget stays the band's.
+            meshcoreStatus.value = LoraStatus(state = LinkState.Connecting, airtime = air, publicChannel = face)
+            val down = both.facts.first()
+            assertEquals(null, down.primaryChannel)
+            assertFalse(down.canPost)
+            assertTrue(down.primaryKeyIsPublic)
+            assertEquals(64, down.publicPostBytes)
+        }
 }

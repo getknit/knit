@@ -95,11 +95,15 @@ class ConversationFacesTest {
         runTest {
             val nearby = faces.resolve(Conversations.NEARBY, ME, labels)
             val meshtastic = faces.resolve(Conversations.MESHTASTIC, ME, labels)
+            val meshcore = faces.resolve(Conversations.MESHCORE_PUBLIC, ME, labels)
             val commons = faces.resolve(COMMONS, ME, labels)
 
             assertNull(nearby.title)
             assertNull(nearby.avatarBytes)
             assertNull("never a heard speaker's unverified name", meshtastic.title)
+            assertNull(meshcore.title)
+            assertNull(meshcore.avatarBytes)
+            assertEquals(ConversationKind.MESHCORE, meshcore.kind)
             assertEquals("Hilltop", commons.title)
             assertNull(commons.avatarBytes)
         }

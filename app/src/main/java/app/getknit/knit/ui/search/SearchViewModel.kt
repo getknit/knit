@@ -20,10 +20,12 @@ import app.getknit.knit.data.search.Snippets
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.PeerLabel
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.ui.ConversationTable
 import app.getknit.knit.ui.ConversationTitle
 import app.getknit.knit.ui.MeshRoomInputs
+import app.getknit.knit.ui.chat.roomFactsFor
 import app.getknit.knit.ui.contacts.contactIds
 import app.getknit.knit.ui.observeConversationTable
 import app.getknit.knit.ui.speakerLabel
@@ -123,6 +125,9 @@ class SearchViewModel(
     commons: CommonsRepository? = null,
     /** The one thread this search is scoped to, or null for app-wide. */
     val inConversation: String? = null,
+    // Each board kind's own facts (`LoraStatusRepository.perKind`), so each bridged room is listed by its own kind (ADR
+    // 2026-11.gsqu's Stage 6 amendment); null reads [loraFacts] as its own kind's alone.
+    loraRooms: Flow<Map<BoardKind, LoraFacts>>? = null,
 ) : ViewModel() {
     /** The field's text, exactly as typed. */
     val query = MutableStateFlow("")
@@ -150,6 +155,7 @@ class SearchViewModel(
         val hideFlagged: Boolean,
         val meshRoom: MeshRoomInputs,
         val commons: List<CommonsEntity> = emptyList(),
+        val meshcoreRoom: MeshRoomInputs = MeshRoomInputs.NO_BOARD,
     )
 
     // The two thread tables (groups, joined commons) are paired ahead of the combine below, which sits on
@@ -163,9 +169,13 @@ class SearchViewModel(
             threadTables,
             messages.observeNewestOriginChannel(Conversations.MESHTASTIC).distinctUntilChanged(),
             settings.contentFilteringEnabled.distinctUntilChanged(),
-            loraFacts.map { Triple(it.plane, it.primaryChannel, it.room) }.distinctUntilChanged(),
-        ) { accepted, (groupList, rooms), newestChannel, hideFlagged, (plane, liveChannel, room) ->
-            Inputs(accepted, groupList, hideFlagged, MeshRoomInputs(room, plane, liveChannel, newestChannel), rooms)
+            (loraRooms ?: loraFacts.map { mapOf(it.board to it) })
+                .map { perKind ->
+                    MeshRoomInputs.of(roomFactsFor(BoardKind.MESHTASTIC, perKind)) to
+                        MeshRoomInputs.of(roomFactsFor(BoardKind.MESHCORE, perKind))
+                }.distinctUntilChanged(),
+        ) { accepted, (groupList, rooms), newestChannel, hideFlagged, (meshtastic, meshcore) ->
+            Inputs(accepted, groupList, hideFlagged, meshtastic.copy(newestChannel = newestChannel), rooms, meshcore)
         }
 
     // A quarter-second after the last keystroke; clearing is instant, so Back-then-retype never waits.
@@ -202,7 +212,16 @@ class SearchViewModel(
         val tokens = SearchQuery.tokens(s.query)
         if (tokens.isEmpty()) return SearchUiState(forQuery = s.query)
         val visible =
-            visibleConversations(context, s.table, s.inputs.groups, s.directory, s.inputs.accepted, s.inputs.meshRoom, s.inputs.commons)
+            visibleConversations(
+                context,
+                s.table,
+                s.inputs.groups,
+                s.directory,
+                s.inputs.accepted,
+                s.inputs.meshRoom,
+                s.inputs.commons,
+                meshcoreRoom = s.inputs.meshcoreRoom,
+            )
         if (inConversation != null) {
             return SearchUiState(forQuery = s.query, messages = messagesFor(s, visible.filter { it.id == inConversation }, tokens))
         }
@@ -284,7 +303,15 @@ class SearchViewModel(
             kind = thread.kind,
             avatarHash = thread.avatarHash,
             faces = thread.faces,
-            sender = speakerLabel(context, row, s.directory, s.table.me, isDm = thread.kind == ConversationKind.DM),
+            sender =
+                speakerLabel(
+                    context,
+                    row,
+                    s.directory,
+                    s.table.me,
+                    isDm = thread.kind == ConversationKind.DM,
+                    hideFlagged = s.inputs.hideFlagged,
+                ),
             snippet = snippet.text,
             hit = snippet.hit,
             sentAt = row.sentAt,

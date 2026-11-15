@@ -30,11 +30,14 @@ import app.getknit.knit.mesh.lora.PacketRoute
 import app.getknit.knit.mesh.lora.PlaneCore
 import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.lora.ProvisionResult
+import app.getknit.knit.mesh.lora.PublicPostEnded
+import app.getknit.knit.mesh.lora.PublicPostResult
 import app.getknit.knit.mesh.lora.SeenStamp
 import app.getknit.knit.mesh.lora.SendPurpose
 import app.getknit.knit.mesh.lora.SlotCheck
 import app.getknit.knit.mesh.lora.WallShift
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import java.security.MessageDigest
@@ -48,11 +51,16 @@ import java.util.concurrent.atomic.AtomicLong
  * session, and the board's key reported for the profile. Made per plane instance by the core, over the session it drives
  * ([session]) and the core it reaches back into ([core]).
  *
- * **The board is Knit's alone** (the maintainer's Stage 5 decisions): what is not a Knit frame — a contact DM that is not a
- * compact DM, a post on a slot that is neither Knit's nor Public, Public itself until Stage 6 — is counted
- * ([MeshcorePlaneCounters]) and discarded here, before anything decodes it: never stored, logged, shown, relayed or put in
- * custody, and never a hearing ([PacketRoute.DROPPED]). The channel key is public, so the slot and the data type are read
- * first.
+ * **The board is Knit's alone, except Public** (the maintainer's Stage 5 and 6 decisions): what is not a Knit frame — a
+ * contact DM that is not a compact DM, a post on a slot that is neither Knit's nor Public, channel data on Public — is
+ * counted ([MeshcorePlaneCounters]) and discarded here, before anything decodes it: never stored, logged, shown, relayed or
+ * put in custody, and never a hearing ([PacketRoute.DROPPED]). The channel key is public, so the slot and the data type are
+ * read first.
+ *
+ * **Public (slot 0) is mirrored both ways** (Stage 6, ADR 2026-11.gsqu's Stage 6 amendment): a text heard there is judged
+ * ([MeshcorePublicJudge]) and handed to the room ([onPublicPost]) as a stranger's, never a hearing; the user's own post
+ * leaves only from a board set up for Knit, under the flood ceiling, one per 30 s ([postPublic]). Nothing about a post is
+ * logged: counters only.
  *
  * **The board's contacts are Knit's taught set** (Stage 5b-2, [MeshcoreContacts]): each board map ([onBoardMap]) decides
  * the ranked keys the session may DM and pin, cut to the board's capacity; a key that leaves the set (a contact removed or
@@ -64,11 +72,9 @@ import java.util.concurrent.atomic.AtomicLong
  * record in its handshake and moves it in its own setup, Restore and unbind; these hooks only observe it
  * ([MeshcoreBoardOps.consent]) and derive the taught set, the offers and the profile's claim from it.
  *
- * Not yet: two-part room posts are 5c's, the Public mirror Stage 6's.
- *
  * State: the duty law ([MeshcoreDutyLaw], `@Synchronized`), the board its ring is for and the band's duty, guarded by
- * [lock], which is never held across a call into the core; the contact policy is `@Synchronized`; counters are atomics;
- * the setup record, the board map and the board's facts are volatile.
+ * [lock], which is never held across a call into the core; the contact policy is `@Synchronized`; counters and the Public
+ * post's floor are atomics; the setup record, the board map and the board's facts are volatile.
  */
 @Suppress("TooManyFunctions") // one seam per kind: every behaviour the core calls, grouped as BoardKindHooks groups it
 internal class MeshcoreHooks(
@@ -86,6 +92,11 @@ internal class MeshcoreHooks(
      * consent alone ([onConsent]); null key withdraws both.
      */
     private val onBoardKey: suspend (key: ByteArray?, sig: ByteArray?, dialled: String?) -> Unit = { _, _, _ -> },
+    /**
+     * Delivers a post heard on the board's slot 0 into the MeshCore Public room (Stage 6), launched on the plane's scope as
+     * the Meshtastic room's is: the sink writes the row, never this.
+     */
+    onPublicPost: suspend (MeshcorePublicPost) -> Unit = {},
 ) : BoardKindHooks,
     MeshcoreSessionObserver {
     override val kind: BoardKind get() = BoardKind.MESHCORE
@@ -147,6 +158,10 @@ internal class MeshcoreHooks(
     @Volatile
     private var consent: Boolean? = null
 
+    /** Slot 0, mirrored both ways (Stage 6): the half of these hooks that is the Public room's. */
+    private val public =
+        MeshcorePublicChannel(session, core, scope, clock, wallClock, log, counters, consent = { consent }, onPublicPost)
+
     @Volatile
     override var provisioning = false
         private set
@@ -175,7 +190,7 @@ internal class MeshcoreHooks(
     override fun statusOf(
         state: BoardState,
         status: LoraStatus,
-    ): LoraStatus = status.copy(state = linkStateOf(state), boardNodeNum = null)
+    ): LoraStatus = status.copy(state = linkStateOf(state), boardNodeNum = null, publicChannel = public.face(state))
 
     /** The band's law as it stands now: the MeshCore dump's `law` block and the plane's face. */
     fun lawState(): MeshcoreLawState =
@@ -200,8 +215,11 @@ internal class MeshcoreHooks(
      * - A contact DM whose text decoded as COBS to a `0x11` seal's shape is a compact DM ([PacketRoute.DIRECT]); whether it
      *   opens is the core's to count. COBS decoding is no proof: anything else falls back to the text it was and is a
      *   foreign DM — never dropped unread by a throw, never a Knit frame.
+     * - A text on Public slot 0 is the kind's ([PacketRoute.KIND], Stage 6): [onKindPacket] judges it for the room. The core
+     *   asks `noteHeard` first, which hears no sender on this kind (`BoardTraits.hearsSender`), so a Public post is never a
+     *   hearing; and it never reaches `LoraFrameCodec`, COBS or `IdElision`.
      * - Everything else is counted and discarded: a foreign DM ([MeshcorePlaneCounters.foreignDms]), a post on another slot
-     *   or of another data type ([MeshcorePlaneCounters.foreignPosts]), Public slot 0 until Stage 6
+     *   or of another data type ([MeshcorePlaneCounters.foreignPosts]), channel data on Public slot 0
      *   ([MeshcorePlaneCounters.publicDiscarded]), and any unbound `0x04` fragment or a bound one (`0x07`) that does not
      *   parse ([MeshcorePlaneCounters.fragmentsRefused]; Stage 5c-1 reads bound parts through the core's candidates,
      *   `LoraFragCandidates`).
@@ -224,7 +242,7 @@ internal class MeshcoreHooks(
             }
 
             MeshcorePacket.Type.CHANNEL_TEXT -> {
-                discard(if (mc.slot == PUBLIC_SLOT) counters.publicDiscarded else counters.foreignPosts)
+                if (mc.slot == PUBLIC_SLOT) PacketRoute.KIND else discard(counters.foreignPosts)
             }
         }
     }
@@ -335,8 +353,14 @@ internal class MeshcoreHooks(
         onBound: Boolean,
     ) = Unit
 
-    /** [route] never answers [PacketRoute.KIND]: what is not Knit's was discarded there. */
-    override fun onKindPacket(packet: BoardPacket) = Unit
+    /**
+     * A text on Public slot 0 ([route]'s one [PacketRoute.KIND]), on the packet collector: [MeshcorePublicChannel.onText]
+     * drops it while the MeshCore room is off, else judges it into the room. Counters only (security N8). Returns at once.
+     */
+    override fun onKindPacket(packet: BoardPacket) {
+        val mc = packet.kind as? MeshcorePacket ?: return
+        if (mc.type == MeshcorePacket.Type.CHANNEL_TEXT && mc.slot == PUBLIC_SLOT) public.onText(mc)
+    }
 
     /** The board's own Knit slot, as its session read it (`Ready.channel`): there is no slot setting for this kind. */
     override fun boundSlot(
@@ -371,14 +395,19 @@ internal class MeshcoreHooks(
 
     // --- the kind's own public channel: Stage 6 ---
 
-    /** No MeshCore Public post until Stage 6 builds the mirror and its consent. */
-    override suspend fun postToPublicChannel(body: String): PublicPostRefusal? = PublicPostRefusal.NOT_READY
+    override suspend fun postToPublicChannel(body: String): PublicPostRefusal? = postPublic(body).refusal
 
-    /** Nothing of the kind's own is ever queued (no Public post, no auto-reply on this kind). */
+    /** The user's post on slot 0 ([MeshcorePublicChannel.post]: the refusals in order, the stamp fixed at enqueue). */
+    override suspend fun postPublic(body: String): PublicPostResult = public.post(body)
+
+    /** Queued Public posts that ended without airing ([MeshcorePublicChannel.ended]). */
+    override val publicPostsEnded: Flow<PublicPostEnded> get() = public.ended
+
+    /** A queued Public post, written under its frame's stamp ([MeshcorePublicChannel.send]): the only kind frame queued. */
     override suspend fun sendKindFrame(
         frame: OutboundFrame,
         send: suspend (ByteArray, SendPurpose) -> FragmentOutcome,
-    ) = Unit
+    ) = public.send(frame, send)
 
     // --- the kind's limiters that outlive the process ---
 
@@ -494,6 +523,8 @@ internal class MeshcoreHooks(
         if (holders != null) reteach()
         core.holdersMoved()
         if (!c.unread && c.granted) claim(c.address, c.key, c.sig)
+        // Whether a Public post may leave rests on this consent (the room's face, Stage 6).
+        core.faceMoved()
     }
 
     /** The claim edit owed, the latest winning, retried until it lands ([claim]). */
@@ -855,7 +886,7 @@ internal class MeshcoreHooks(
     override fun bookKeyReply(now: Long) = Unit
 
     companion object {
-        /** MeshCore's Public channel (gsqu §7): mirrored from Stage 6, counted and discarded until then. */
+        /** MeshCore's Public channel (gsqu §7): its texts mirrored into the Public room since Stage 6, its data discarded. */
         const val PUBLIC_SLOT = 0
 
         /**
@@ -973,8 +1004,41 @@ internal class MeshcorePlaneCounters {
     /** A post on a slot that is neither Knit's nor Public, or of another data type, discarded. */
     val foreignPosts = AtomicLong()
 
-    /** A post on Public slot 0, discarded until Stage 6 mirrors it. */
+    /** Channel data on Public slot 0, discarded: only its texts are posts (Stage 6). */
     val publicDiscarded = AtomicLong()
+
+    /** `meshcorePublicHeard`: a text on Public slot 0 (Stage 6), before the room switch and the judge. */
+    val publicHeard = AtomicLong()
+
+    /** `meshcorePublicRoomOff`: of [publicHeard], dropped because the MeshCore room is switched off. */
+    val publicRoomOff = AtomicLong()
+
+    /** `meshcorePublicRefused`: of [publicHeard], refused by the judge (no text, empty) or on a slot 0 that is Knit's. */
+    val publicRefused = AtomicLong()
+
+    /**
+     * `meshcorePublicDelivered`: of [publicHeard], judged a post and offered to the room's queue (part 6c) — stored, or
+     * a duplicate the room writes nothing for, unless [publicBacklogDropped] counts it refused.
+     */
+    val publicDelivered = AtomicLong()
+
+    /**
+     * `meshcorePublicBacklogDropped`: of the posts [publicDelivered] counts, refused because the room's inbound queue
+     * was full (`OrderedRoomSink.CAPACITY` waiting: a stalled room or a forged flood, past any board's queue at connect).
+     */
+    val publicBacklogDropped = AtomicLong()
+
+    /** `meshcorePublicPostsQueued`: the user's Public posts queued. */
+    val publicPostsQueued = AtomicLong()
+
+    /** `meshcorePublicPostsRefused`: the user's Public posts refused before the queue (the `lora public post refused` line). */
+    val publicPostsRefused = AtomicLong()
+
+    /** `meshcorePublicPostsSent`: queued Public posts the board took. */
+    val publicPostsSent = AtomicLong()
+
+    /** `meshcorePublicPostsEnded`: queued Public posts given up at the write (refused, unconfirmed, not set up any more). */
+    val publicPostsEnded = AtomicLong()
 
     /** An unbound Knit fragment (`0x04`), or a bound one (`0x07`) that does not parse, discarded (Stage 5c-1). */
     val fragmentsRefused = AtomicLong()
@@ -1028,7 +1092,11 @@ internal class MeshcorePlaneCounters {
             "pathReturnsSeen=$pathReturnsSeen, answersReplayed=$answersReplayed, floodSurcharges=$floodSurcharges, " +
             "lawHolds=$lawHolds, zeroHopKnitPosts=$zeroHopKnitPosts, acksBookedDirect=$acksBookedDirect, " +
             "teachRefused=$teachRefused, teachWritten=$teachWritten, " +
-            "keysWanted=$keysWanted, keysSkipped=$keysSkipped, removedUntaught=$removedUntaught)"
+            "keysWanted=$keysWanted, keysSkipped=$keysSkipped, removedUntaught=$removedUntaught, " +
+            "publicHeard=$publicHeard, publicRoomOff=$publicRoomOff, publicRefused=$publicRefused, " +
+            "publicDelivered=$publicDelivered, publicBacklogDropped=$publicBacklogDropped, " +
+            "publicPostsQueued=$publicPostsQueued, publicPostsRefused=$publicPostsRefused, " +
+            "publicPostsSent=$publicPostsSent, publicPostsEnded=$publicPostsEnded)"
 }
 
 /**
@@ -1043,7 +1111,9 @@ internal fun meshcorePlane(
     log: (String) -> Unit,
     wallClock: () -> Long,
     onBoardKey: suspend (key: ByteArray?, sig: ByteArray?, dialled: String?) -> Unit,
+    /** The MeshCore Public room's inbound sink (Stage 6): a heard post, judged, as a stranger's. */
+    onPublicPost: suspend (MeshcorePublicPost) -> Unit = {},
 ): BoardPlane =
     BoardPlane(MeshcoreTraits, session) { core ->
-        MeshcoreHooks(session, core, scope, clock, log, wallClock, onBoardKey)
+        MeshcoreHooks(session, core, scope, clock, log, wallClock, onBoardKey, onPublicPost)
     }

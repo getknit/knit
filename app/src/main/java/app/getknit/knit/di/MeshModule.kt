@@ -128,6 +128,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
@@ -511,6 +512,9 @@ val meshModule =
                                 writeMeshcoreClaim(get(), { get<Identity>().nodeId() }, key, sig, dialled = it)
                             }
                         },
+                        // The MeshCore room's inbound half (ADR 2026-11.gsqu's Stage 6 amendment): a judged stranger's post off
+                        // slot 0, delivered into `Conversations.MESHCORE_PUBLIC` across the seam as the room's own value.
+                        onPublicPost = { post -> get<MeshPostSink>().onMeshcorePostHeard(meshcoreHeard(post)) },
                     )
                 },
                 // The board reports its own Knit slot (`MeshcoreHooks.boundSlot`): the config's index is never read.
@@ -597,6 +601,28 @@ val meshModule =
                 // from an unmetered one (ADR 2026-10.js2p, a5yj).
                 blobMetered = get<InternetGate>()::isMetered,
                 publicChannel = { body -> get<PublicChannelSink>(loraPlane(BoardKind.MESHTASTIC)).postToPublicChannel(body) },
+                // The MeshCore room's (Stage 6): its own kind's plane, and only while a MeshCore board is the bound one.
+                meshcorePublicChannel = { body ->
+                    postToMeshcorePublic(
+                        bound = get<SettingsStore>().boundBoardKind.first(),
+                        postPublic =
+                            if (BoardKind.MESHCORE in
+                                BUILT_BOARD_KINDS
+                            ) {
+                                get<LoraMeshTransport>(loraPlane(BoardKind.MESHCORE))::postPublic
+                            } else {
+                                null
+                            },
+                        body = body,
+                    )
+                },
+                // ...and what became of a post it queued: resolved at collection, as the plane is lazy.
+                meshcorePostsEnded =
+                    if (BoardKind.MESHCORE in BUILT_BOARD_KINDS) {
+                        flow { emitAll(meshcorePostEnds(get<LoraMeshTransport>(loraPlane(BoardKind.MESHCORE)).publicPostsEnded)) }
+                    } else {
+                        emptyFlow()
+                    },
                 onTransferSignal = { sender, payload, sentAt -> get<TransferManager>().onSignal(sender, payload, sentAt) },
                 // Voice calls (experimental, `CALLS_WIRED` — di/CallWiring): resolved late like the transfer hook, and
                 // never allowed to throw into the inbound path (rules/mesh.md). Nothing in a build that wires no calls.

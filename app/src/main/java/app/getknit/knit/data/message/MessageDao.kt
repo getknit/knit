@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.Flow
 // A data-access interface: one method per query, so the count naturally exceeds detekt's interface limit.
 @Suppress("TooManyFunctions")
 @Dao
-interface MessageDao {
+interface MessageDao : BridgedRoomQueries {
     // There is deliberately no `SELECT * FROM messages` and no whole-thread read here: an accepted thread
     // has no retention cap, so any such query would grow without bound. The chat screen reads a window
     // (below), the list screens read per-thread summaries (further down), and search reads through the
@@ -847,12 +847,16 @@ interface MessageDao {
     suspend fun countIn(conversationId: String): Int
 
     /**
-     * Deletes the oldest [limit] messages in [conversationId] whose sender is **not** in [keepFrom] — the
-     * room sweep's first tier, so a flood of strangers' posts evicts strangers' posts before a contact's.
+     * Deletes the oldest [limit] messages in [conversationId] whose sender is **not** in [keepFrom], or which were
+     * **heard** on a bridged room's board (`originNode` set) — the room sweep's first tier, so a flood of strangers'
+     * posts evicts strangers' posts before a contact's. A heard post sits in our own sender column by convention, and
+     * our id is always in [keepFrom]: without the second half a busy channel's posts were trimmed only with the user's
+     * own, so a flood evicted the user's posts first (ADR 2026-11.gsqu's Stage 6 amendment, security N6). Both bridged
+     * rooms; no other room holds a heard row.
      */
     @Query(
         "DELETE FROM messages WHERE conversationId = :conversationId AND id IN " +
-            "(SELECT id FROM messages WHERE conversationId = :conversationId AND senderId NOT IN (:keepFrom) " +
+            "(SELECT id FROM messages WHERE conversationId = :conversationId AND (senderId NOT IN (:keepFrom) OR originNode IS NOT NULL) " +
             "ORDER BY sentAt ASC, id ASC LIMIT :limit)",
     )
     suspend fun deleteOldestFromStrangersIn(

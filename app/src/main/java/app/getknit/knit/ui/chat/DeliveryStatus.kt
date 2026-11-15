@@ -4,6 +4,7 @@ import androidx.annotation.StringRes
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Sensors
@@ -55,15 +56,51 @@ enum class DeliveryStatus {
      */
     Read,
 
+    /**
+     * One of our MeshCore room posts the board never sent (ADR 2026-11.gsqu's Stage 6 amendment): it waited past its
+     * freshness and was never handed to the radio. Safe to post again by hand; nothing resends it.
+     */
+    NotSent,
+
+    /**
+     * One of our MeshCore room posts the board gave up at the write — refused there, or the write's answer never came — so
+     * it **may** have aired (ADR 2026-11.gsqu's Stage 6 amendment). Never worded as not sent, and never resent.
+     */
+    Unconfirmed,
+
     ;
 
+    /** A MeshCore room post that ended without (confirmed) airing: [NotSent] or [Unconfirmed]. */
+    val ended: Boolean get() = this == NotSent || this == Unconfirmed
+
     companion object {
-        /** The status the stored row implies. Order matters: `pendingKey` outranks the (always false) tick. */
+        /**
+         * The status the stored row implies. Order matters: `pendingKey` outranks the (always false) tick. In the MeshCore
+         * room an own post's end is marked on the row itself (`MessageRepository.markPublicPostEnded`): `pendingKey` there
+         * is [NotSent] — written locally, never sent, with no key to wait for — and a plane gone back to unknown from the
+         * LoRa it was queued on is [Unconfirmed].
+         */
         fun of(message: MessageEntity): DeliveryStatus =
             when {
-                message.pendingKey -> Pending
-                message.received -> Delivered
-                else -> Sent
+                message.conversationId == Conversations.MESHCORE_PUBLIC && message.pendingKey -> {
+                    NotSent
+                }
+
+                message.pendingKey -> {
+                    Pending
+                }
+
+                message.received -> {
+                    Delivered
+                }
+
+                message.conversationId == Conversations.MESHCORE_PUBLIC && message.receivedVia == DeliveryPlane.Unknown.code -> {
+                    Unconfirmed
+                }
+
+                else -> {
+                    Sent
+                }
             }
 
         /**
@@ -81,16 +118,19 @@ enum class DeliveryStatus {
         }
 
         /**
-         * The bubble's status, which reads booleans off its row rather than a [MessageEntity]: [read] first (a read is a
-         * delivery too, whatever the tick column says), then [received], then [radioReached]. The bubble never shows
+         * The bubble's status, which reads booleans off its row rather than a [MessageEntity]: [ended] first, then [read] (a
+         * read is a delivery too, whatever the tick column says), then [received], then [radioReached]. The bubble never shows
          * [Pending]. [read] is already folded with the setting and, on a group, with the whole roster.
          */
         fun ofTick(
             received: Boolean,
             radioReached: Boolean,
             read: Boolean = false,
+            // A MeshCore room post's end ([of]): it outranks the rest, which a post that never aired never reaches.
+            ended: DeliveryStatus? = null,
         ): DeliveryStatus =
             when {
+                ended != null -> ended
                 read -> Read
                 received -> Delivered
                 radioReached -> RadioReached
@@ -158,6 +198,16 @@ fun deliveryLabel(
 
         status == DeliveryStatus.Delivered -> {
             countedText(delivered, total, read) ?: deliveredText(plane)
+        }
+
+        // A MeshCore room post that never aired, and one that may or may not have: never the same words (ADR 2026-11.gsqu's
+        // Stage 6 amendment).
+        status == DeliveryStatus.NotSent -> {
+            DeliveryText(R.string.chat_status_post_not_sent)
+        }
+
+        status == DeliveryStatus.Unconfirmed -> {
+            DeliveryText(R.string.chat_status_post_unconfirmed)
         }
 
         else -> {
@@ -309,6 +359,7 @@ fun deliveryIcon(status: DeliveryStatus): ImageVector =
         DeliveryStatus.Sent, DeliveryStatus.RadioReached -> Icons.Filled.Done
         DeliveryStatus.Delivered -> Icons.Filled.DoneAll
         DeliveryStatus.Read -> KnitIcons.ReadTick
+        DeliveryStatus.NotSent, DeliveryStatus.Unconfirmed -> Icons.Filled.ErrorOutline
     }
 
 /**

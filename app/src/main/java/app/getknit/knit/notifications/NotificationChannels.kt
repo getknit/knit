@@ -41,6 +41,10 @@ object NotificationChannels {
     // plus whatever bots and MQTT uplinks are on it. Its own channel, so muting that firehose costs nothing else.
     const val MESHTASTIC = "knit_msg_meshtastic_v2"
 
+    // The MeshCore room (ADR 2026-11.gsqu's Stage 6 amendment) — a MeshCore board's Public channel. LOW and its own for
+    // the Meshtastic room's reasons, and apart from it: a person may want one board's channel and not the other's.
+    const val MESHCORE = "knit_msg_meshcore_public"
+
     // A commons — a relay's private room for a household or team. DEFAULT like Nearby: its authors are
     // pinned peers the user chose to sit in a room with, but it is a room, so a post is not a DM's heads-up.
     const val COMMONS = "knit_msg_commons_v2"
@@ -132,6 +136,7 @@ object NotificationChannels {
             ConversationKind.GROUP -> GROUPS
             ConversationKind.DM -> DMS
             ConversationKind.MESHTASTIC -> MESHTASTIC
+            ConversationKind.MESHCORE -> MESHCORE
             ConversationKind.COMMONS -> COMMONS
         }
 
@@ -208,6 +213,20 @@ object NotificationChannels {
                 old = old[MESHTASTIC],
             ),
         )
+        // Registered only where the MeshCore plane is built (`BuildConfig.MESHCORE_PLANE`, debug-only): nothing else posts
+        // into the MeshCore room, and a channel is a row in the OS's settings.
+        if (BuildConfig.MESHCORE_PLANE) {
+            manager.createNotificationChannel(
+                channel(
+                    context,
+                    MESHCORE,
+                    GROUP_MESSAGES,
+                    NotificationManagerCompat.IMPORTANCE_LOW,
+                    R.string.channel_meshcore_name,
+                    R.string.channel_meshcore_desc,
+                ),
+            )
+        }
         // A channel is a row in the OS's notification settings, so a build that hides the commons
         // (`BuildConfig.COMMONS`) registers none; no post can arrive there to need it.
         if (BuildConfig.COMMONS) {

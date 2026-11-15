@@ -121,6 +121,8 @@ internal class MeshcoreSession(
     private val _state = MutableStateFlow<BoardState>(down(MeshcoreLinkState.Idle))
     override val state: StateFlow<BoardState> = _state.asStateFlow()
 
+    override val ready: BoardState.Ready? get() = _state.value as? BoardState.Ready
+
     /**
      * Drained messages, held until collected, so a drain before anyone collects loses nothing the firmware popped. Its
      * contract, which Stage 5 honours: one collector — the plane core — and no more; a second would split them. When that
@@ -1427,6 +1429,7 @@ internal class MeshcoreSession(
                 namedForKnit = self.name.contentEquals(MeshcoreNames.forKey(self.key).encodeToByteArray()),
                 manualAdd = self.manualAdd,
                 dialled = c.address,
+                publicSlot = c.publicSlot,
             )
         val ready =
             BoardState.Ready(
@@ -1474,6 +1477,8 @@ internal class MeshcoreSession(
         val f =
             requestMatched(c, MeshcoreProto.getChannel(index)) { it is McFrame.ChannelInfo && it.index == index }
         val info = f as? McFrame.ChannelInfo ?: return null
+        // Slot 0's name and whether its key is Public, for the Public mirror's gate and face (Stage 6); never its secret.
+        if (index == PUBLIC_SLOT) c.publicSlot = MeshcorePublicSlot.of(info.name, info.secret)
         val empty = info.name.isEmpty() && info.secret.all { it.toInt() == 0 }
         val knit = info.name.contentEquals(KnitChannel.NAME.encodeToByteArray()) && info.secret.contentEquals(KnitChannel.PSK)
         return MeshcoreSlot(index, empty, knit)
@@ -2000,8 +2005,9 @@ internal class MeshcoreSession(
                             ?: unsupported()
                     }
 
-                    SendPurpose.PublicPost -> {
-                        sendPublic(c, payload, handle)
+                    // A Public post is written under the timestamp fixed when it was queued (Stage 6): none, none written.
+                    is SendPurpose.PublicPost -> {
+                        purpose.timestampSecs?.let { sendPublic(c, payload, it, handle) } ?: unsupported()
                     }
 
                     is SendPurpose.AutoReply, is SendPurpose.Admin -> {
@@ -2064,17 +2070,41 @@ internal class MeshcoreSession(
     }
 
     /**
-     * A post on the board's Public slot (0) as a channel text: the firmware prefixes the board's name and trims the whole
-     * to 160 B, so the encoder refuses one it would trim. A `NOT_FOUND` here is no free packet, not a missing slot.
+     * A post on the board's Public slot (0) as a channel text, under the sender [timestampSecs] fixed when it was queued (ADR
+     * 2026-11.gsqu's Stage 6 amendment). The firmware prefixes the board's own `node_name` (`BaseChatMesh.cpp:523`), so the
+     * gate the hooks asked at enqueue is asked again here, on this connection, at the write (lora B1, security B2): the board
+     * set up for Knit ([knitBoard]: its Knit slot, its name `Knit xxxx` as this connection last read it, and consent), and slot
+     * 0 holding a channel that is not Knit's. Both are read again first (`SELF_INFO` and slot 0's `CHANNEL_INFO`, two round
+     * trips a post, a post at most every 30 s): a companion serves BLE, USB and Wi-Fi clients at once
+     * (`MultiSerialInterface`, `main.cpp:15-70`), so another client can rename the board or clear or re-key slot 0 under this
+     * connection, and a Restore on our own actor moves the name too. No answer is `Busy`: the post is owed, never written
+     * under a name or a slot nobody read. The firmware trims the whole to 160 B silently (`BaseChatMesh.cpp:527`), so
+     * the encoder's refusal is the one size gate. A `NOT_FOUND` here is no free packet, not a missing slot (`getChannel`
+     * takes any index under the slot count, `BaseChatMesh.cpp:926-931`).
      */
     private suspend fun sendPublic(
         c: Conn,
         payload: ByteArray,
+        timestampSecs: Long,
         handle: UInt,
     ): SendResult {
-        val name = requireNotNull(c.self).name
-        val bytes = MeshcoreProto.sendChannelText(PUBLIC_SLOT, wallClock() / MS_PER_SECOND, payload, name) ?: return SendResult.TooLarge
+        // A board with no free packet is asked nothing: its retries must not cost two reads each.
         if (headroomPolicy.holding) return SendResult.Busy
+        if (selfOf(c) == null || readSlot(c, PUBLIC_SLOT) == null) return SendResult.Busy
+        // A refusal here is news the Ready did not carry (another client renamed the board or cleared slot 0): the Ready is
+        // published again with what was just read, so the face, `canPost` and the hooks' enqueue gate refuse up front from
+        // now on rather than each post claiming the floor and ending here (lora-reviewer's 6a pass).
+        if (!knitBoard(c)) {
+            publishReady(c)
+            return SendResult.Rejected(handle, MeshcoreRefusal.NOT_SET_UP)
+        }
+        val slot = c.publicSlot
+        if (slot == null || slot.empty || slot.knit) {
+            publishReady(c)
+            return SendResult.Rejected(handle, MeshcoreRefusal.NO_PUBLIC_SLOT)
+        }
+        val name = requireNotNull(c.self).name
+        val bytes = MeshcoreProto.sendChannelText(PUBLIC_SLOT, timestampSecs, payload, name) ?: return SendResult.TooLarge
         val judged = writeJudged(c, bytes)
         return when (judged.answer) {
             Answer.OK -> queued(handle)
@@ -3192,6 +3222,9 @@ internal class MeshcoreSession(
         var self: McFrame.SelfInfo? = null
         var slots: List<MeshcoreSlot> = emptyList()
         var knitSlot: Int? = null
+
+        /** Slot 0 as the last read of it found it (Stage 6), or null before one. */
+        var publicSlot: MeshcorePublicSlot? = null
         var defaultScope = false
         var authenticated = false
         var live = false

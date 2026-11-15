@@ -466,10 +466,10 @@ class MessageNotifier internal constructor(
                 .setContentIntent(openChatIntent(r.tag, r.conversationId))
                 .setDeleteIntent(dismissIntent(r.tag))
                 .apply {
-                    // No inline reply for the Meshtastic room: a post there needs the first-use disclosure
-                    // and the byte budget, both of which live in the composer. A reply typed from the shade
-                    // would be echoed as sent and go nowhere.
-                    if (r.kind != ConversationKind.MESHTASTIC) {
+                    // No inline reply for a bridged board room (Meshtastic's or MeshCore's): a post there needs the
+                    // first-use disclosure and the byte budget, both of which live in the composer. A reply typed from
+                    // the shade would be echoed as sent and go nowhere.
+                    if (!r.kind.isBridged) {
                         // The system's suggested replies answer the newest line, and a reaction's line quotes our
                         // own message: it would offer "You're welcome" to our own thanks. Only a keyed line is a
                         // reaction, so suggestions wait for a real message.

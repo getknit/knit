@@ -55,12 +55,15 @@
     <string name="channel_dms_desc">Messages privés en tête-à-tête</string>
     <string name="channel_meshtastic_name">Canal public Meshtastic</string>
     <string name="channel_meshtastic_desc">Messages publiés sur le canal principal de votre radio Meshtastic</string>
+    <string name="channel_meshcore_name">Canal public MeshCore</string>
+    <string name="channel_meshcore_desc">Messages publiés sur le canal Public de votre carte MeshCore</string>
     <string name="channel_commons_name">Salons communs</string>
     <string name="channel_commons_desc">Messages publiés dans le salon commun d’un relais</string>
     <string name="mention_channel_name">Mentions</string>
     <string name="mention_channel_description">Notifications quand quelqu’un vous mentionne avec le signe @</string>
     <string name="notif_title_nearby">À proximité</string>
     <string name="notif_title_meshtastic">Meshtastic</string>
+    <string name="notif_title_meshcore">MeshCore</string>
     <string name="notif_self_name">Vous</string>
     <string name="chat_gone">Cette discussion n’est plus sur ce téléphone</string>
     <string name="notif_action_reply">Répondre</string>
@@ -570,6 +573,8 @@
     <string name="chat_status_arrived_lora">Reçu via LoRa</string>
     <string name="chat_status_lora_radio_reached">Reçu par sa radio LoRa</string>
     <string name="chat_status_pending_key">Pas encore envoyé — en attente de sa clé</string>
+    <string name="chat_status_post_not_sent">Non envoyé</string>
+    <string name="chat_status_post_unconfirmed">Envoi non confirmé</string>
     <string name="chat_time_just_now">À l’instant</string>
     <string name="chat_day_today">Aujourd’hui</string>
     <string name="chat_day_yesterday">Hier</string>
@@ -705,6 +710,7 @@
     </plurals>
     <string name="nearby_title">À proximité</string>
     <string name="meshtastic_title">Meshtastic</string>
+    <string name="meshcore_title">MeshCore</string>
     <string name="commons_title">Salon commun</string>
     <string name="chat_list_empty_preview">Aucun message pour l’instant</string>
     <string name="chat_list_draft_preview">Brouillon : %1$s</string>
@@ -1535,6 +1541,8 @@
     <string name="lora_room_title">Salon Meshtastic</string>
     <string name="lora_room_subtitle">Affichez le canal de votre radio comme un salon dans Knit, pour lire tout ce qui s’y échange et y participer. Si cette option est désactivée, le salon est masqué et silencieux, et Knit ignore ce canal — votre carte transporte toujours les messages de Knit.</string>
     <string name="lora_room_subtitle_dedicated">Masqué tant que cette carte est sur une fréquence dédiée : aucune radio publique ne peut l’entendre, il n’y a donc aucun canal à lire. Restaurez la carte pour retrouver le salon.</string>
+    <string name="lora_meshcore_room_title">Salon MeshCore</string>
+    <string name="lora_meshcore_room_subtitle">Affichez le canal Public de votre carte MeshCore comme un salon dans Knit, pour lire tout ce qui s’y échange et y participer. Si cette option est désactivée, le salon est masqué et silencieux, et Knit ignore ce canal — votre carte transporte toujours les messages de Knit.</string>
     <string name="lora_airtime">Temps d’antenne : %1$d %% du budget actuel</string>
     <string name="lora_radio_config">Radio %1$s</string>
     <string name="lora_public_channel">Canal principal %1$s</string>
@@ -1778,6 +1786,23 @@
     <string name="chat_mesh_consent_accept">Publier</string>
     <string name="chat_mesh_consent_decline">Plus tard</string>
     <string name="chat_mesh_subtitle">Le canal principal de votre radio</string>
+    <string name="chat_meshcore_author">%1$s, sur le canal MeshCore — nom non vérifié</string>
+    <string name="chat_meshcore_unnamed">Sans nom</string>
+    <string name="chat_meshcore_name_clash">Même nom qu’une personne que vous connaissez — rien ne vérifie que c’est elle</string>
+    <string name="chat_meshcore_name_claimed">« %1$s » (sans vérification)</string>
+    <string name="chat_meshcore_room_notice">Canal radio non chiffré — les noms ne sont jamais vérifiés</string>
+    <string name="chat_meshcore_room_notice_keyed">Non chiffré de bout en bout — les noms ne sont jamais vérifiés</string>
+    <string name="chat_meshcore_room_body">Ce salon affiche le canal Public de la carte MeshCore associée à ce téléphone. Le chiffrement de Knit ne s’y applique pas : rien ici n’est chiffré de bout en bout, et sur le canal Public standard la clé est publique, donc toute personne disposant d’une radio peut le lire. Toute personne à portée peut publier sous n’importe quel nom, et Knit n’en vérifie aucun : un nom affiché ici ne désigne jamais votre contact, même s’il ressemble au sien. Rien de ce salon n’entre jamais dans le réseau mesh de Knit.</string>
+    <string name="chat_meshcore_no_radio">Connectez une carte MeshCore pour publier ici. Ce salon est le canal Public de votre propre carte.</string>
+    <string name="chat_meshcore_channel_unusable">Cette carte ne peut pas publier ici : elle n’est pas configurée pour Knit sur ce téléphone, ou son premier canal est vide.</string>
+    <string name="chat_meshcore_post_not_set_up">Non publié — cette carte n’est pas configurée pour Knit sur ce téléphone, elle publierait donc sous son propre nom</string>
+    <string name="chat_meshcore_post_no_channel">Non publié — le premier canal de cette carte est vide, donc personne ne le capterait</string>
+    <string name="chat_meshcore_post_room_off">Non publié — le salon MeshCore est désactivé dans les paramètres LoRa</string>
+    <string name="chat_meshcore_consent_can_body">Toute personne disposant d’une radio MeshCore à portée. La clé du canal est publique, donc toute personne à l’écoute peut lire et conserver ce que vous publiez, et certaines radios le relaient vers Internet.</string>
+    <string name="chat_meshcore_consent_name_title">Le nom de votre carte accompagne vos messages</string>
+    <string name="chat_meshcore_consent_name_body">Chaque message part sous la forme « %1$s: … ». Ce nom est le même sur chaque message et identifie votre carte : les personnes qui vous ont dans leurs contacts, ou qui connaissent votre carte, peuvent donc savoir que c’est vous.</string>
+    <string name="chat_meshcore_consent_name_body_unknown">Chaque message part sous le nom de votre carte, « Knit » suivi de quatre caractères. Ce nom est le même sur chaque message et identifie votre carte : les personnes qui vous ont dans leurs contacts, ou qui connaissent votre carte, peuvent donc savoir que c’est vous.</string>
+    <string name="chat_meshcore_consent_rules">Un message publié ne peut pas être retiré. N’importe qui peut publier sous n’importe quel nom, y compris le vôtre. Un message MeshCore envoyé directement à votre carte reste sans réponse : Knit ne lit pas ces messages.</string>
     <string name="chat_commons_subtitle">Tout le monde sur ce relais</string>
     <string name="commons_details_title">Infos du salon</string>
     <string name="commons_details_relay">Sur %1$s</string>

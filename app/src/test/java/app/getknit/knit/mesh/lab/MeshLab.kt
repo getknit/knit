@@ -75,7 +75,10 @@ import app.getknit.knit.data.settings.TicketKeyStore
 import app.getknit.knit.di.bindingAddress
 import app.getknit.knit.di.loraAuthorIds
 import app.getknit.knit.di.meshcoreBoardHolders
+import app.getknit.knit.di.meshcoreHeard
+import app.getknit.knit.di.meshcorePostEnds
 import app.getknit.knit.di.pinnedAuthorCheck
+import app.getknit.knit.di.postToMeshcorePublic
 import app.getknit.knit.di.writeMeshcoreClaim
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
@@ -92,6 +95,9 @@ import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.PartialBlobs
+import app.getknit.knit.mesh.PublicChannelAnswer
+import app.getknit.knit.mesh.PublicPostEnd
+import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.RatchetPeerState
 import app.getknit.knit.mesh.ReadSync
 import app.getknit.knit.mesh.SPOOL_COVER_MS
@@ -200,9 +206,11 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -1061,7 +1069,9 @@ class MeshLab {
     /**
      * Waits until the link-up among [nodes] is over: every pair has pinned the other's key, the custody stores
      * agree, every node's newcomer hooks have run, and what those hooks sent has been handled. A scenario may act
-     * on the link the moment this returns: cut it, hold it, mint a group, count frames.
+     * on the link the moment this returns — cut it, hold it, mint a group, count frames — on a node without a board. On
+     * one with a board the newcomer-hooks wait returns early (the composite re-publishes the link set to its manager), so
+     * that node's own originated count can still move.
      *
      * - **Keys and custody.** The profile push and the digest exchange are the handshake's two halves, and met
      *   means both: a node with a board and no link has nothing to fan an old profile stamp with
@@ -1695,6 +1705,12 @@ class LabNode internal constructor(
     internal var meshcoreBoard: FakeMeshcoreBoard? = null
         private set
 
+    /**
+     * MeshCore Public posts this node's plane handed the room and the pipeline returned from (Stage 6), across restarts: the
+     * event a scenario awaits, since a duplicate (an echo, a replay) writes no row and notifies nobody.
+     */
+    internal val meshcorePostsHandled = AtomicInteger()
+
     /** This boot's MeshCore session, plane and dialer, beside [meshcoreBoard]; null without one. */
     internal var meshcoreSession: MeshcoreSession? = null
         private set
@@ -2296,6 +2312,9 @@ class LabNode internal constructor(
                 // The engine's decision lines in every failure report (`MeshLab.report` reads warnings): ids and steps only.
                 presenceDebugLog = ::onPresenceDebug,
                 blobMetered = { metered },
+                // The MeshCore room's outbound half and its ended posts (Stage 6), as `di/MeshModule` wires them.
+                meshcorePublicChannel = ::postToOwnMeshcore,
+                meshcorePostsEnded = meshcorePostsEnded(),
             )
         countDrainsDownstream()
         buildLinks(scope, meshTransport)
@@ -2459,6 +2478,12 @@ class LabNode internal constructor(
                                 meshcoreClaimWritesEver.incrementAndGet()
                             }
                         },
+                        // The MeshCore room's inbound half (Stage 6), as `di/MeshModule` wires it; counted once the pipeline
+                        // returns, so a scenario awaits the delivery itself — a duplicate writes nothing to wait on.
+                        onPublicPost = { post ->
+                            manager.onMeshcorePostHeard(meshcoreHeard(post))
+                            meshcorePostsHandled.incrementAndGet()
+                        },
                     ),
                 config =
                     combine(
@@ -2497,6 +2522,16 @@ class LabNode internal constructor(
             )
         return plane
     }
+
+    /**
+     * The MeshCore room's outbound half (Stage 6), as `di/MeshModule` wires it: this node's own MeshCore plane, and only
+     * while a MeshCore board is the bound one ([postToMeshcorePublic]).
+     */
+    private suspend fun postToOwnMeshcore(body: String): PublicChannelAnswer =
+        postToMeshcorePublic(settings.boundBoardKind.first(), meshcore?.let { plane -> plane::postPublic }, body)
+
+    /** What became of the MeshCore room's queued posts (Stage 6): this boot's plane's ends by row id, or none without one. */
+    private fun meshcorePostsEnded(): Flow<PublicPostEnd> = meshcore?.let { meshcorePostEnds(it.publicPostsEnded) } ?: emptyFlow()
 
     /** This boot's pair seal beside [meshcore]; null without a MeshCore board. */
     private var meshcoreSeal: LoraDirectSeal? = null
@@ -2621,6 +2656,17 @@ class LabNode internal constructor(
                 }
             } != null
         check(ok) { "$name's board never held its ${holders.size} contacts taught, pinned and sealable after the restart" }
+    }
+
+    /**
+     * Takes this node's MeshCore board out of the phone's Bluetooth range ([out]) or back into it: while out every dial
+     * fails at once, and the board stays powered — its uptime, counters and offline queue running on, so nothing about it
+     * reads as a reboot to the duty law. Call it on the air's serial context ([meshcoreEdit]); dropping the open link is
+     * the caller's (a write that fails, as a link lost under it does).
+     */
+    internal fun meshcoreOutOfRange(out: Boolean) {
+        checkNotNull(meshcoreDialer) { "$name has no MeshCore board" }.dialResult =
+            if (out) ({ NusDialResult.Failed(GATT_ERROR, "out of range") }) else null
     }
 
     /**
@@ -2933,6 +2979,15 @@ class LabNode internal constructor(
                 draftTranslatedFrom = draftTranslatedFrom,
             )
         }
+
+    /**
+     * Posts [text] in a bridged board room ([room], the MeshCore one by default) as its composer does once the consent
+     * sheet is past (`MeshManager.sendPublicPost`): the board's Public channel, and our own row under the post's id.
+     */
+    suspend fun postPublic(
+        text: String,
+        room: String = Conversations.MESHCORE_PUBLIC,
+    ): PublicPostOutcome = spaced { manager.sendPublicPost(room, text) }
 
     /** The call ids whose end this node's call layer has written to its settings file (C-3.4-3). */
     suspend fun savedCallTombs(): Set<String> = CallTombStore(dataStore).load().mapTo(HashSet()) { it.id }

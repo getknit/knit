@@ -409,6 +409,15 @@ class MeshManager(
     // other direction: the two ends construct each other, so one of them has to be late-bound. The default
     // refuses with NO_BOARD, which is what every test and every board-less build wants.
     private val publicChannel: suspend (body: String) -> PublicPostRefusal? = { PublicPostRefusal.NO_BOARD },
+    // The MeshCore room's outbound half (ADR 2026-11.gsqu's Stage 6 amendment): a bound MeshCore board's Public channel,
+    // answering with the id our own row takes ([PublicChannelAnswer.Queued.rowId], what the post's receivers key it on).
+    // Late-bound for publicChannel's reason; the default refuses with NO_BOARD, as every test and board-less build wants.
+    private val meshcorePublicChannel: suspend (body: String) -> PublicChannelAnswer = {
+        PublicChannelAnswer.Refused(PublicPostRefusal.NO_BOARD)
+    },
+    // The MeshCore room's posts that the board queued and then gave up without airing ([PublicPostEnd]), by row id: our own
+    // row is marked never sent or unconfirmed ([markPublicPostEnded]). A hot flow with no replay, collected from start.
+    private val meshcorePostsEnded: Flow<PublicPostEnd> = emptyFlow(),
     // A sealed CTL_TRANSFER landed (transfer/TransferManager.onSignal): direct-transfer signaling, late-bound
     // like publicChannel because the manager sends through this class. The default admits nothing. Not a
     // property: the only reader is [pipeline]'s initializer, which hands it straight to onTransferCtl.
@@ -1507,8 +1516,9 @@ class MeshManager(
         relayedPresence.start()
         router = newRouter(session)
         router.start()
-        // Ahead of the transport, so the LoRa plane's first compact DM finds its pair index built or building.
-        loraSeal?.let { watchLoraPairs(session, it) }
+        // Ahead of the transport: the LoRa plane's first compact DM finds its pair index built or building, and no MeshCore
+        // room post can end before its end is listened for.
+        watchLoraPlanes(session)
         watchReads(session)
         // The profile half of who must prove a link (ADR 2026-11.264w), read once per start. A plane may admit an unproven
         // claim before it lands; the seed's notifications close that link as a profile gaining the bit would (R4).
@@ -4415,12 +4425,12 @@ class MeshManager(
         if (!settings.typingIndicatorsEnabled.first()) return
         val me = identity.nodeId()
         val kind = Conversations.kindFor(conversationId)
-        // The bridged public room has no typing cue and must not fall through to one. A `typing` frame
+        // The bridged board rooms have no typing cue and must not fall through to one. A `typing` frame
         // carries its scope in `recipientId` or `TypingContent.groupId` and this room is neither, so an
         // unguarded cue from here would arrive on every phone in the pocket as a *Nearby* one. The UI
         // already refuses to raise it; this is the net under that, at the layer that mints the frame.
         // The same net under a commons: its scope carries no typing frame at all (§7.4).
-        if (kind == ConversationKind.MESHTASTIC || kind == ConversationKind.COMMONS) return
+        if (kind.isBridged || kind == ConversationKind.COMMONS) return
         val recipientId = if (kind == ConversationKind.DM) conversationId else null
         val groupId = if (kind == ConversationKind.GROUP) conversationId else null
         val env =
@@ -6800,6 +6810,12 @@ class MeshManager(
     override suspend fun onPublicPostHeard(post: MeshPost) = pipeline.deliverMeshPost(post)
 
     /**
+     * [MeshPostSink]: one post a bound MeshCore board heard on its Public channel, delivered into the MeshCore room — a
+     * stranger's, always, with no frame, signature, custody or fan-out ([InboundPipeline.deliverMeshcorePost]).
+     */
+    override suspend fun onMeshcorePostHeard(post: MeshcorePost) = pipeline.deliverMeshcorePost(post)
+
+    /**
      * A post a Knit user typed in the Meshtastic room — the only thing in Knit written for an audience outside
      * it, and the one send that never touches Knit's mesh: it goes to this phone's own board ([publicChannel])
      * and, once the board has queued it, into the local room as our own row. A refusal stores nothing, so the
@@ -6814,21 +6830,85 @@ class MeshManager(
      * nothing on the channel acks — so the bubble keeps the single "sent" tick, and the details screen can
      * name the plane.
      */
-    override suspend fun sendPublicPost(text: String): PublicPostOutcome {
+    override suspend fun sendPublicPost(
+        conversationId: String,
+        text: String,
+    ): PublicPostOutcome {
+        // Routed by the room, never by the bound board (security N13): each room posts through its own kind's sink, and the
+        // MeshCore sink refuses unless a MeshCore board is the bound one, so neither room's consent ever posts through the
+        // other's board.
+        if (!Conversations.isBridgedRoom(conversationId)) return PublicPostOutcome.Refused(PublicPostRefusal.NO_BOARD)
         if (isTextFlagged(text, "outgoing", isRoom = true)) return PublicPostOutcome.Blocked
-        publicChannel(text)?.let { return PublicPostOutcome.Refused(it) }
+        val rowId =
+            if (conversationId == Conversations.MESHTASTIC) {
+                publicChannel(text)?.let { return PublicPostOutcome.Refused(it) }
+                FrameId.new()
+            } else {
+                // MeshCore (ADR 2026-11.gsqu's Stage 6 amendment): the row takes the id the post's receivers key it on —
+                // the stamp fixed at enqueue and `"Knit xxxx: "` + the text — so an echo of it, re-aired after the board's
+                // seen ring forgot it, lands here and dedups ([InboundPipeline.deliverMeshcorePost]), never by name.
+                when (val answer = meshcorePublicChannel(text)) {
+                    is PublicChannelAnswer.Refused -> return PublicPostOutcome.Refused(answer.reason)
+                    is PublicChannelAnswer.Queued -> answer.rowId
+                }
+            }
         messages.save(
             MessageEntity(
-                id = FrameId.new(),
+                id = rowId,
                 senderId = identity.nodeId(),
-                conversationId = Conversations.MESHTASTIC,
+                conversationId = conversationId,
                 body = text,
                 sentAt = clock(),
                 received = false,
                 receivedVia = DeliveryPlane.LoRa.code,
             ),
         )
+        // An end that outran this save (the pacer can give a post up at the write before the row lands) marks it now.
+        synchronized(endsAheadOfRow) { endsAheadOfRow.remove(rowId) }?.let { neverSent ->
+            messages.markPublicPostEnded(rowId, identity.nodeId(), neverSent)
+        }
         return PublicPostOutcome.Queued
+    }
+
+    /**
+     * Ends [markPublicPostEnded] found no row for yet, by row id: the post was queued and given up before
+     * [sendPublicPost] saved its row, which then marks it. Bounded ([ENDS_AHEAD_MAX], oldest out); one a deleted row left
+     * waits there until pushed out, and marks nothing.
+     */
+    private val endsAheadOfRow = LinkedHashMap<String, Boolean>()
+
+    /**
+     * A MeshCore room post the board queued and then gave up without airing ([meshcorePostsEnded], ADR 2026-11.gsqu's Stage
+     * 6 amendment): its own row stops reading as sent. A post that waited past its freshness ([PublicPostEnd.neverSent]) is
+     * marked never sent; one given up at the write — refused, or its answer never came, so it may have aired — is marked
+     * unconfirmed, and nothing ever resends it. One statement per mark, our own row in that room only; a row the user or
+     * the sweep deleted meanwhile stays gone. An end that never reaches here (a restart, a shed queue) leaves the row
+     * reading sent, as a Meshtastic room post's always does.
+     */
+    internal suspend fun markPublicPostEnded(end: PublicPostEnd) {
+        // Held before the mark and dropped once it lands: a save between the two then finds it held, or its row is there
+        // for the mark — either way one of the two marks it (a second mark changes nothing).
+        synchronized(endsAheadOfRow) {
+            endsAheadOfRow[end.rowId] = end.neverSent
+            while (endsAheadOfRow.size > ENDS_AHEAD_MAX) endsAheadOfRow.remove(endsAheadOfRow.keys.first())
+        }
+        if (messages.markPublicPostEnded(end.rowId, identity.nodeId(), end.neverSent)) {
+            synchronized(endsAheadOfRow) { endsAheadOfRow.remove(end.rowId) }
+        }
+    }
+
+    /**
+     * The LoRa planes' session watches, launched ahead of the transport's start: the compact DM's pair index (where the
+     * build seals one), and [meshcorePostsEnded], each end marking its row ([markPublicPostEnded]) — no MeshCore room post
+     * can end before anyone listens, since the flow keeps no replay.
+     */
+    private fun watchLoraPlanes(session: CoroutineScope) {
+        loraSeal?.let { watchLoraPairs(session, it) }
+        session.launch {
+            meshcorePostsEnded.collect { end ->
+                runRound({ Log.w(TAG, "public post end not marked: ${it.javaClass.simpleName}") }) { markPublicPostEnded(end) }
+            }
+        }
     }
 
     /**
@@ -7542,6 +7622,12 @@ class MeshManager(
 
         /** Debug-bridge root fingerprint length — enough to compare eras across devices, nothing more. */
         const val ROOT_HASH_HEX_CHARS = 8
+
+        /**
+         * MeshCore room ends held for a row not saved yet ([markPublicPostEnded]): one post per 30 s, so a handful is hours of
+         * them.
+         */
+        const val ENDS_AHEAD_MAX = 16
 
         /** Nanoseconds in a millisecond, for the default monotonic clock. */
         const val NANOS_PER_MS = 1_000_000L

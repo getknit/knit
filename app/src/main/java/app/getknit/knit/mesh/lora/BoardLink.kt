@@ -4,6 +4,7 @@ import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.TransportHealth
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 
 /**
  * The board link the plane core consumes, board-neutral (ADR 2026-11.gsqu §1, Stage 1b). A board kind adapts its own
@@ -118,8 +119,15 @@ internal sealed interface SendPurpose {
         val to: BoardAddr,
     ) : SendPurpose
 
-    /** The user's post on the board's public channel (the Meshtastic room). */
-    data object PublicPost : SendPurpose
+    /**
+     * The user's post on the board's public channel. [timestampSecs] is the sender timestamp a kind whose packet carries one
+     * fixed when the post was queued (MeshCore's `SEND_CHANNEL_TXT_MSG`, ADR 2026-11.gsqu's Stage 6 amendment): a retry of
+     * the same frame writes the same one, so our own row's id matches what receivers read. Null where the board stamps its
+     * own (the Meshtastic room).
+     */
+    data class PublicPost(
+        val timestampSecs: Long? = null,
+    ) : SendPurpose
 
     /** The fixed answer to a stock user's DM, to board [to], unacknowledged. */
     data class AutoReply(
@@ -210,6 +218,20 @@ internal interface BoardKindHooks {
      * `MeshManager`'s coroutine.
      */
     suspend fun postToPublicChannel(body: String): PublicPostRefusal?
+
+    /**
+     * [postToPublicChannel] with what a queued post is on the air where the kind can say ([PublicPostResult.Queued.key]:
+     * MeshCore's timestamp and prefixed text, what a mirrored row's id is derived from). A kind that cannot say answers its
+     * refusal, or a queued post with no key.
+     */
+    suspend fun postPublic(body: String): PublicPostResult =
+        postToPublicChannel(body)?.let { PublicPostResult.Refused(it) } ?: PublicPostResult.Queued(key = null)
+
+    /**
+     * Queued posts with a [PublicPostResult.Queued.key] that ended without airing ([PublicPostEnded]); none on a kind that
+     * keys no post (Meshtastic).
+     */
+    val publicPostsEnded: Flow<PublicPostEnded> get() = emptyFlow()
 
     /**
      * Writes one of the kind's own queued frames (any [Destination] but Knit's: the public post, the auto-reply) through
@@ -434,8 +456,28 @@ internal interface PlaneCore {
         to: BoardAddr? = null,
     ): Boolean
 
+    /**
+     * Queues the user's post on the board's public channel as one room-class packet at [ceiling], carrying the sender
+     * timestamp [timestampSecs] fixed now (MeshCore, ADR 2026-11.gsqu's Stage 6 amendment): every write of the frame, a
+     * `Busy` retry included, airs that one stamp — and fresh until `LoraFramePolicy.FRESH_MS` past it (`RideGate.freshUntil`,
+     * which the kind asks at the write). True when it is in the queue now. A core that cannot carry the stamp queues nothing.
+     */
+    fun enqueuePublic(
+        text: ByteArray,
+        label: String,
+        ceiling: Ceiling,
+        timestampSecs: Long,
+    ): Boolean = false
+
     /** A persisted limiter moved: the core saves the plane state behind its debounce. */
     fun limitersMoved()
+
+    /**
+     * Something the kind renders into the plane's face ([BoardKindHooks.statusOf]) moved without a link transition (MeshCore:
+     * this phone's consent for the board, which decides whether a Public post may leave): the core republishes its status.
+     * Never called under the pacer's or the ledger's monitor.
+     */
+    fun faceMoved() = Unit
 
     /**
      * [from], a board on the air, was heard announcing its key — our board stores a key it lacks off that — so a

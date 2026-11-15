@@ -4,6 +4,7 @@ import app.getknit.knit.R
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.relay.RelayReach
 import app.getknit.knit.mesh.TransportKind
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.lora.LoraSizeHint
@@ -154,6 +155,34 @@ class LoraReachTest {
         // Every other thread is open whatever the radio is doing — the gate is about the room's own path.
         assertEquals(PublicPostGate.Open, publicPostGateFor(Conversations.NEARBY, LoraFacts()))
         assertEquals(PublicPostGate.Open, publicPostGateFor("ana", LoraFacts(LoraPlane.Down)))
+    }
+
+    /**
+     * Each bridged room is gated on its own kind's facts, never the bound kind's aggregate (ADR 2026-11.gsqu's Stage 6
+     * amendment, lora N5): with a MeshCore board bound the Meshtastic room reads no radio, and the MeshCore room posts only
+     * on its own kind's `canPost`.
+     */
+    @Test
+    fun `each bridged room is gated on its own kind's facts`() {
+        val meshcoreLive = LoraFacts(LoraPlane.Live, canPost = true, board = BoardKind.MESHCORE)
+        val perKind = mapOf(BoardKind.MESHCORE to meshcoreLive, BoardKind.MESHTASTIC to LoraFacts(LoraPlane.Off))
+
+        assertEquals(BoardKind.MESHTASTIC, bridgedBoardOf(Conversations.MESHTASTIC))
+        assertEquals(BoardKind.MESHCORE, bridgedBoardOf(Conversations.MESHCORE_PUBLIC))
+        assertNull(bridgedBoardOf(Conversations.NEARBY))
+        assertEquals(meshcoreLive, roomFactsFor(BoardKind.MESHCORE, perKind))
+        // A kind the build does not construct reads as no board.
+        assertEquals(LoraPlane.Off, roomFactsFor(BoardKind.MESHCORE, emptyMap()).plane)
+        assertEquals(BoardKind.MESHCORE, roomFactsFor(BoardKind.MESHCORE, emptyMap()).board)
+
+        assertEquals(PublicPostGate.Open, publicPostGateFor(Conversations.MESHCORE_PUBLIC, roomFactsFor(BoardKind.MESHCORE, perKind)))
+        assertEquals(PublicPostGate.NoRadio, publicPostGateFor(Conversations.MESHTASTIC, roomFactsFor(BoardKind.MESHTASTIC, perKind)))
+        // Live but not set up for Knit (or slot 0 empty): the MeshCore room's own `canPost` says no.
+        assertEquals(
+            PublicPostGate.ChannelUnusable,
+            publicPostGateFor(Conversations.MESHCORE_PUBLIC, meshcoreLive.copy(canPost = false)),
+        )
+        assertEquals(LoraCarry.None, loraCarryFor(Conversations.MESHCORE_PUBLIC, isGroup = false, facts = live))
     }
 
     @Test

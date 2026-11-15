@@ -214,6 +214,21 @@ class MessageRepository(
         changes.emit(DataChange.Message(id, null))
     }
 
+    /**
+     * Marks our own MeshCore room post [id] as never sent ([neverSent], the plane's `STALE`) or as unconfirmed — given up
+     * at the write, so it may have aired (ADR 2026-11.gsqu's Stage 6 amendment). One statement each, so a row deleted
+     * meanwhile stays deleted, and only our own words in that room are touched. True when a row was marked.
+     */
+    suspend fun markPublicPostEnded(
+        id: String,
+        me: String,
+        neverSent: Boolean,
+    ): Boolean {
+        val marked = dao.markPublicPostEnded(id, Conversations.MESHCORE_PUBLIC, me, neverSent) > 0
+        if (marked) changes.emit(DataChange.Message(id, Conversations.MESHCORE_PUBLIC))
+        return marked
+    }
+
     /** Deletes a single message from this device only. */
     suspend fun delete(id: String) {
         // The thread is read first only for a reader of the change, which can no longer look it up afterwards.
@@ -375,9 +390,6 @@ class MessageRepository(
     fun observeGroupSenders(blocked: Set<String>): Flow<Map<String, Set<String>>> =
         dao.observeGroupSenders(Conversations.GROUP_ID_PREFIX + "*", blocked).map { rows -> rows.senderSets() }
 
-    private fun List<ConversationSender>.senderSets(): Map<String, Set<String>> =
-        groupBy({ it.conversationId }, { it.senderId }).mapValues { (_, senders) -> senders.toSet() }
-
     /** The unread badge for one thread — see [MessageDao.countUnreadIn] for what counts. */
     suspend fun countUnreadIn(
         conversationId: String,
@@ -420,8 +432,9 @@ class MessageRepository(
      * `forward_store`, `messages` is pure local state (no content digest), so this is plain GC — no mutex, no
      * transaction, a partial sweep is harmless. [protected] holds the conversation ids exempt from wholesale
      * eviction (accepted / verified / user-authored — the same set the notify gate treats as "not a request").
-     *  - a public **room** — Nearby, and the bridged Meshtastic channel — is capped by age, then per stranger,
-     *    then by count with strangers evicted first (see below);
+     *  - a public **room** — Nearby, and the two bridged board rooms — is capped by age, then per stranger,
+     *    then by count with strangers evicted first (see below; in a bridged room every heard post counts as a
+     *    stranger's, whatever its sender column says);
      *  - a **protected** thread is never trimmed, by count or by age: it is the user's own history, and the
      *    chat screen reads it through a bounded window (ADR 2026-09.hd5n) while the list screens read
      *    per-thread summaries, so its length costs nothing at open;
@@ -501,7 +514,7 @@ class MessageRepository(
 
     private companion object {
         /** The public rooms, which take the count-and-age cap rather than the per-thread request rules. */
-        val ROOMS = setOf(Conversations.NEARBY, Conversations.MESHTASTIC)
+        val ROOMS = setOf(Conversations.NEARBY, Conversations.MESHTASTIC, Conversations.MESHCORE_PUBLIC)
 
         /** Newest broadcast-room messages retained locally (ambient chatter — the primary unbounded vector). */
         const val DEFAULT_NEARBY_MAX_MESSAGES = 2_000
@@ -525,3 +538,7 @@ class MessageRepository(
         const val DEFAULT_MAX_PENDING_THREADS = 100
     }
 }
+
+/** Each thread's senders as a set, keyed by thread (file-level so the repository stays within detekt's function cap). */
+private fun List<ConversationSender>.senderSets(): Map<String, Set<String>> =
+    groupBy({ it.conversationId }, { it.senderId }).mapValues { (_, senders) -> senders.toSet() }

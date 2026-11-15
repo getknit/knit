@@ -9,6 +9,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.R
+import app.getknit.knit.data.message.ConversationKind
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -240,6 +241,27 @@ class NotificationChannelsTest {
         assertTrue(channels.map { it.id }.containsAll(listOf(NotificationChannels.STATUS, NotificationChannels.ALERTS)))
         for (channel in channels) {
             assertEquals(channel.id, Settings.System.DEFAULT_NOTIFICATION_URI, channel.sound)
+        }
+    }
+
+    /**
+     * The MeshCore room's own channel (ADR 2026-11.gsqu's Stage 6 amendment): silent like the Meshtastic room's, apart from
+     * it, and registered only where the MeshCore plane is built.
+     */
+    @Test
+    fun theMeshcoreRoomHasItsOwnLowChannelWhereThePlaneIsBuilt() {
+        NotificationChannels.ensure(app)
+
+        assertEquals(NotificationChannels.MESHCORE, NotificationChannels.channelFor(ConversationKind.MESHCORE))
+        assertEquals("knit_msg_meshcore_public", NotificationChannels.MESHCORE)
+        val channel = manager.getNotificationChannel(NotificationChannels.MESHCORE)
+        if (BuildConfig.MESHCORE_PLANE) {
+            assertNotNull(channel)
+            assertEquals(NotificationManager.IMPORTANCE_LOW, channel.importance)
+            assertEquals("knit_grp_messages", channel.group)
+            assertEquals(app.getString(R.string.channel_meshcore_name), channel.name.toString())
+        } else {
+            assertNull(channel)
         }
     }
 }

@@ -221,7 +221,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
 - **When touching the Meshtastic room — `onLoraPacket`'s slot-0 branch, `PublicChannelPolicy`, `PublicPostPolicy`
   (`onAirText`, `onAirBudget`), `postToPublicChannel`, `Ceiling.HALF`, `mesh/crypto/XeddsaVerify`,
   `ProfileContent.loraNode` / `loraKey`, `BoardBinding` / `onBoardBound`, `LoraFacts.roomSignedUpTo`,
-  `PeerRepository.findByLoraNode`, `messages.originPeerId` / `originSigned`, or `SettingsStore.loraRoomEnabled`:** READ ADR 2026-09.26q3, ADR 2026-09.9469, ADR 2026-09.ggq4, ADR 2026-09.sre4 and
+  `PeerRepository.findByLoraNode`, `messages.originPeerId` / `originSigned`, or `SettingsStore.loraRoomEnabled`:** READ ADR 2026-09.26q3 (its 2026-11-15 amendment: delivery is ordered, `OrderedRoomSink`), ADR 2026-09.9469, ADR 2026-09.ggq4, ADR 2026-09.sre4 and
   ADR 2026-09.x52a (and ADR 2026-10.ug4a for its half ceiling), then "The Meshtastic room" in `lora-bridge.md`. The room is a local mirror of the bound board's
   slot 0: nothing minted, custodied or fanned out, no gateway gate; a post leaves through this phone's own board as the
   words alone, no author name. A heard author is resolved once at ingest through the node number their profile claims
@@ -396,8 +396,9 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `…debug.LORA --es kind meshcore`:** READ ADR 2026-11.gsqu's Stage 5a-2 amendment (and the maintainer's Stage 5 decisions,
   the 5a-1 amendment), then "The MeshCore plane in the core" in `lora-bridge.md`. Debug builds only (`MESHCORE_PLANE`); a
   release build constructs no MeshCore child. The board is Knit's: `route` reads the slot and data type before decoding and
-  counts and discards everything not Knit's as `DROPPED`, never a hearing (Public until Stage 6, and a `0x04` fragment of
-  more than two parts or none that parses; Stage 5c-1 reads the rest, the next entry but one). Our board's answers are booked in `route` for every live acked contact DM, Knit's or not;
+  counts and discards everything not Knit's as `DROPPED`, never a hearing (Public's channel data, and a `0x04` fragment of
+  more than two parts or none that parses; Stage 5c-1 reads the rest, the next entry but one; a text on Public slot 0 is the
+  kind's since Stage 6, the MeshCore Public entry below). Our board's answers are booked in `route` for every live acked contact DM, Knit's or not;
   a flooded DM of ours books only its surcharge. A hearing on MeshCore is a verified, fresh, live, zero-hop Knit frame alone,
   its radio counted by author; never a sender prefix. The ledger takes the board's radio and band before Ready (or forgets
   the last board's), and the duty law holds the pacer to its release, its rings persisted per board digest and its hold on the face (`lawHeld`). An unbonded board is never dialled in the
@@ -463,11 +464,13 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   part's **least** airtime (`leastRoomAirMs`: unscoped, no `FIXED_MS`), never the booked price.
 
 - **Before touching `MeshLab.meshcoreAir`, `MeshLab.node(meshcore = …)`, `MeshLab.awaitTaught`, `MeshLab.meetOverMeshcore`,
-  `LabNode.meshcoreOn` / `awaitMeshcoreBack` / `meshcoreWrites`, `MeshcoreRoomLabTest`, `MeshcoreDirectLabTest`,
+  `LabNode.meshcoreOn` / `awaitMeshcoreBack` / `meshcoreWrites` / `postPublic` / `meshcorePostsHandled` /
+  `meshcoreOutOfRange`, `StockMeshcoreNode`, `MeshcoreRoomLabTest`, `MeshcoreDirectLabTest`, `MeshcorePublicLabTest`,
   `MeshcoreSession.taughtAndPinned`, `MeshcoreCounters.repinsDone` / `reconcilesDropped`, `MeshMetrics`' `loraBoundPartsTaken` /
   `loraNotOurs`, `LoraMeshTransport.resolvesAuthor`, `MeshLab.awaitAuthor`, `LabNode.meshcoreReadyFor`,
   `LabLimits.meshcoreBackoffMs` or
-  `MeshManager.onDmAcksInlined`:** READ ADR 2026-11.gsqu's Stage 5c-2b amendment, then `testing.md`'s MeshCore lab bullet.
+  `MeshManager.onDmAcksInlined`:** READ ADR 2026-11.gsqu's Stage 5c-2b amendment (and its Stage 6 amendment, part 6c, for
+  the Public room's lab), then `testing.md`'s MeshCore lab bullet.
   A lab MeshCore node is the production child (no injected pace, the claim through `bindingAddress` under the hooks'
   `claimMutex`, the setup and its consent through the real `setup()`), never the boards sweep's Meshtastic air, on three
   clocks (the session monotonic; the plane, hooks and session wall clock `LabClock`; the board's uptime the lab's calendar),
@@ -481,6 +484,39 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   registration: one for a handle neither waiting nor ended is held (5 s, 16) under the policy's monitor and settled by the
   launch that registers it, whichever side takes it processing it. A refusal and an implicit ack are never held; a stale
   record never settles a reused handle.
+
+- **Before touching MeshCore's Public mirror — `MeshcorePublicJudge`, `MeshcorePublicPost`, `MeshcorePublicSlot` /
+  `MeshcoreDetail.publicSlot`, `MeshcoreProto.PUBLIC_GROUP_PSK`, `MeshcoreTraits.PUBLIC_PREFIX_BYTES` / `PUBLIC_TEXT_CAP` /
+  `publicCeiling`, `BoardTraits.publicCeiling`, `MeshcoreHooks.postPublic` / `onKindPacket` / `sendKindFrame` / `publicFace`,
+  `meshcorePlane`'s `onPublicPost`, `MeshcoreSession.sendPublic`, `MeshcoreBoardOps.ready`, `MeshcoreRefusal.NOT_SET_UP` /
+  `NO_PUBLIC_SLOT`, `BoardKindHooks.postPublic`, `LoraMeshTransport.postPublic`, `PublicPostResult` / `PublicPostKey`,
+  `SendPurpose.PublicPost.timestampSecs`, `OutboundFrame.timestampSecs`, `PlaneCore.enqueuePublic` / `faceMoved`,
+  `LoraAirtime.publicPostBytes` / `AirtimeSnapshot.publicPostBytes`, `LoraStatus.publicChannel` / `PublicChannelFace`,
+  `LoraFacts.publicPostBytes`, `PublicPostRefusal.NOT_SET_UP` / `NO_CHANNEL`, `PublicPostEnded` /
+  `LoraMeshTransport.publicPostsEnded` / `BoardKindHooks.publicPostsEnded`, `MeshcorePublicChannel`, `OrderedRoomSink`,
+  `InboundPipeline.heardStamp`, `MESH_POST_ROOM_BACKLOG`, or the `meshcorePublic*` counters
+  (`meshcorePublicBacklogDropped` among them):** READ ADR
+  2026-11.gsqu's Stage 6 amendment (6a; 6b and 6c amend it), then "MeshCore's Public channel" in `lora-bridge.md`. Debug
+  builds only. Heard posts reach either bridged room in the order the board handed them over (`OrderedRoomSink`, one
+  per plane, bounded and counted; stamps strictly increasing under `heardPostLock`), never a launch per post. Slot 0 is whatever it holds, read off the Ready (never a constant `Public`); a heard text there is judged
+  (split at the first `": "` behind 1–31 B, cleaned, keyed on the sender's stamp and the raw bytes) and handed to the room as
+  a stranger's, never a hearing, never a Knit frame, dropped where it lands while `meshcoreRoomEnabled` is off. A post leaves
+  only from a board named `Knit xxxx` with consent on this connection, re-read at the write (`SELF_INFO` and slot 0: a
+  companion serves several clients at once), under `Ceiling.FLOOD` beside Knit's room posts, priced with its 11-B prefix,
+  one per 30 s, its stamp fixed at enqueue and carried by the frame so our own row's id matches what receivers read, fresh for
+  `FRESH_MS` past it (never written later); a refusal at the write republishes the Ready, and every end without airing is
+  reported by key on `publicPostsEnded`; never refused or deduped by name. Nothing about a post in a line: counters only. Regression: `MeshcorePublicJudgeTest`,
+  `MeshcorePublicPostTest`, `MeshcoreHooksTest`'s Stage 6 block, `MeshcoreSessionTest`'s Public write block,
+  `MeshcoreHearingTest.aPublicTextIsNoHearingEvenWhenItsBytesAreAVerifiedKnitPost`, `MeshcoreTraitsTest`, `FakeMeshcoreAirTest`,
+  `LoraStatusRepositoryTest`.
+- **Before touching the MeshCore room's DI seam — `di/LoraWiring`'s `postToMeshcorePublic`, `meshcorePostEnds`,
+  `meshcoreRowId`, `meshcoreHeard` or `meshcoreBoardName`, or `MeshModule`'s `onPublicPost` /
+  `meshcorePublicChannel` / `meshcorePostsEnded` wiring:** READ ADR 2026-11.gsqu's Stage 6 amendment (part 6b), then the bridged-rooms entry in
+  `messages.md`. The plane's types stop at `di/`: a heard post crosses as `MeshcorePost`, a post's answer as
+  `PublicChannelAnswer`, an end as `PublicPostEnd`, each keyed by `meshcoreRowId` (`FrameId.forMeshcorePost` over the
+  `PublicPostKey`) so a heard post and our own meet on one row. A post reaches the MeshCore plane only while a MeshCore board
+  is the bound one (`NO_BOARD` otherwise); the ended flow is read lazily, collected from `MeshManager.start`. Regression:
+  `LoraPlaneWiringTest`.
 
 ## Adding an entry
 

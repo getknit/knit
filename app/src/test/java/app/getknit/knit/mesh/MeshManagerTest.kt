@@ -600,6 +600,11 @@ class MeshManagerTest {
         /** What the board was handed by [MeshManager.sendPublicPost], and what it answers. */
         val publicPosts = mutableListOf<String>()
         var publicChannelRefusal: PublicPostRefusal? = null
+
+        /** What the MeshCore board was handed (ADR 2026-11.gsqu's Stage 6 amendment), what it answers, and its ends. */
+        val meshcorePosts = mutableListOf<String>()
+        var meshcoreAnswer: PublicChannelAnswer = PublicChannelAnswer.Queued("mc-row-1")
+        val meshcoreEnds = MutableSharedFlow<PublicPostEnd>()
         val manager: MeshManager
 
         /** The manager's kept prefixes and per-hash caps: where a photo want's ceiling shows (#234, #282). */
@@ -687,6 +692,11 @@ class MeshManagerTest {
                     publicPosts += body
                     publicChannelRefusal
                 },
+                meshcorePublicChannel = { body ->
+                    meshcorePosts += body
+                    meshcoreAnswer
+                },
+                meshcorePostsEnded = meshcoreEnds,
                 commons = commons,
                 extraCapabilities = extraCapabilities,
                 directContacts = directContacts,
@@ -1020,7 +1030,7 @@ class MeshManagerTest {
                 TextVerdict.ALLOWED
             }
 
-            assertEquals(PublicPostOutcome.Queued, rig.manager.sendPublicPost("hello mesh"))
+            assertEquals(PublicPostOutcome.Queued, rig.manager.sendPublicPost(Conversations.MESHTASTIC, "hello mesh"))
             advanceUntilIdle()
 
             assertEquals(listOf(true), scopes)
@@ -1033,7 +1043,7 @@ class MeshManagerTest {
             coEvery { rig.textModeration.classify(any(), any()) } returns
                 TextVerdict(allowed = false, category = TextVerdict.Category.TOXICITY)
 
-            assertEquals(PublicPostOutcome.Blocked, rig.manager.sendPublicPost("something abusive"))
+            assertEquals(PublicPostOutcome.Blocked, rig.manager.sendPublicPost(Conversations.MESHTASTIC, "something abusive"))
             advanceUntilIdle()
 
             assertTrue("nothing is persisted locally", rig.saved.isEmpty())
@@ -1050,7 +1060,7 @@ class MeshManagerTest {
             val rig = Rig(backgroundScope)
             rig.displayName.value = "Alice"
 
-            assertEquals(PublicPostOutcome.Queued, rig.manager.sendPublicPost("hello mesh"))
+            assertEquals(PublicPostOutcome.Queued, rig.manager.sendPublicPost(Conversations.MESHTASTIC, "hello mesh"))
             advanceUntilIdle()
 
             assertEquals(listOf("hello mesh"), rig.publicPosts)
@@ -1071,12 +1081,127 @@ class MeshManagerTest {
             val rig = Rig(backgroundScope)
             rig.publicChannelRefusal = PublicPostRefusal.TOO_SOON
 
-            assertEquals(PublicPostOutcome.Refused(PublicPostRefusal.TOO_SOON), rig.manager.sendPublicPost("hello mesh"))
+            assertEquals(
+                PublicPostOutcome.Refused(PublicPostRefusal.TOO_SOON),
+                rig.manager.sendPublicPost(Conversations.MESHTASTIC, "hello mesh"),
+            )
             advanceUntilIdle()
 
             assertEquals(listOf("hello mesh"), rig.publicPosts)
             assertTrue(rig.saved.isEmpty())
             assertTrue(rig.transport.sent.isEmpty())
+        }
+
+    @Test
+    fun aMeshcorePostGoesThroughItsOwnBoardAndItsRowTakesTheIdItsReceiversKeyItOn() =
+        runTest(UnconfinedTestDispatcher()) {
+            // Routed by the room (security N13), and the own row is written under the id the board's answer names — the
+            // stamp fixed at enqueue and `Knit xxxx: ` + the text — so a re-air of it lands here (lora N4, security N5).
+            val rig = Rig(backgroundScope)
+            rig.meshcoreAnswer = PublicChannelAnswer.Queued("mc-row-7")
+
+            assertEquals(PublicPostOutcome.Queued, rig.manager.sendPublicPost(Conversations.MESHCORE_PUBLIC, "hello mesh"))
+            advanceUntilIdle()
+
+            assertEquals(listOf("hello mesh"), rig.meshcorePosts)
+            assertTrue("never the Meshtastic board", rig.publicPosts.isEmpty())
+            val row = rig.saved.single()
+            assertEquals("mc-row-7", row.id)
+            assertEquals(Conversations.MESHCORE_PUBLIC, row.conversationId)
+            assertEquals(rig.me.nodeId, row.senderId)
+            assertNull("our own post, so no origin", row.originNode)
+            assertEquals(DeliveryPlane.LoRa.code, row.receivedVia)
+            assertTrue("nothing crosses Knit's mesh", rig.transport.sent.isEmpty())
+            assertTrue("and nothing is custodied", rig.forwardStore.frames().isEmpty())
+        }
+
+    @Test
+    fun aMeshtasticRoomPostNeverReachesTheMeshcoreBoard() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+
+            rig.manager.sendPublicPost(Conversations.MESHTASTIC, "hello mesh")
+            advanceUntilIdle()
+
+            assertEquals(listOf("hello mesh"), rig.publicPosts)
+            assertTrue(rig.meshcorePosts.isEmpty())
+        }
+
+    @Test
+    fun aRefusedMeshcorePostStoresNothingAndKeepsItsReason() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.meshcoreAnswer = PublicChannelAnswer.Refused(PublicPostRefusal.NOT_SET_UP)
+
+            assertEquals(
+                PublicPostOutcome.Refused(PublicPostRefusal.NOT_SET_UP),
+                rig.manager.sendPublicPost(Conversations.MESHCORE_PUBLIC, "hello mesh"),
+            )
+            advanceUntilIdle()
+
+            assertTrue(rig.saved.isEmpty())
+            assertTrue(rig.transport.sent.isEmpty())
+        }
+
+    @Test
+    fun aPublicPostOutsideTheBridgedRoomsReachesNoBoard() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+
+            assertEquals(
+                PublicPostOutcome.Refused(PublicPostRefusal.NO_BOARD),
+                rig.manager.sendPublicPost(Conversations.NEARBY, "hello mesh"),
+            )
+
+            assertTrue(rig.publicPosts.isEmpty())
+            assertTrue(rig.meshcorePosts.isEmpty())
+            assertTrue(rig.saved.isEmpty())
+        }
+
+    @Test
+    fun aMeshcorePostThatEndedWithoutAiringMarksItsOwnRow() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The plane's ends are a hot flow with no replay, collected from the start: never sent (`STALE`) and
+            // given up at the write, which may have aired, are marked apart — and nothing resends either.
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(rig.now))
+            rig.stubHealState()
+            val marked = mutableListOf<Pair<String, Boolean>>()
+            coEvery { rig.messages.markPublicPostEnded(any(), any(), any()) } answers {
+                synchronized(marked) { marked += firstArg<String>() to thirdArg<Boolean>() }
+                true
+            }
+            rig.manager.start()
+            // The session runs on its own dispatcher: an end emitted before its collector subscribes would be lost, as
+            // the plane's are for a collector that is not there yet.
+            rig.await(1) { rig.meshcoreEnds.subscriptionCount.value }
+
+            rig.meshcoreEnds.emit(PublicPostEnd("mc-row-1", neverSent = true))
+            rig.meshcoreEnds.emit(PublicPostEnd("mc-row-2", neverSent = false))
+            rig.await(2) { synchronized(marked) { marked.size } }
+
+            assertEquals(listOf("mc-row-1" to true, "mc-row-2" to false), synchronized(marked) { marked.toList() })
+            coVerify { rig.messages.markPublicPostEnded("mc-row-1", rig.me.nodeId, true) }
+            assertTrue("nothing is resent", rig.meshcorePosts.isEmpty())
+            rig.manager.stop()
+        }
+
+    @Test
+    fun anEndThatOutranItsOwnRowsSaveStillMarksIt() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The pacer can give a post up at the write before `sendPublicPost` has saved its row: the end finds no row, is
+            // held, and the save marks it.
+            val rig = Rig(backgroundScope)
+            coEvery { rig.messages.markPublicPostEnded(any(), any(), any()) } returns false
+            rig.manager.markPublicPostEnded(PublicPostEnd("mc-row-9", neverSent = false))
+            rig.meshcoreAnswer = PublicChannelAnswer.Queued("mc-row-9")
+
+            rig.manager.sendPublicPost(Conversations.MESHCORE_PUBLIC, "hello mesh")
+            rig.meshcoreAnswer = PublicChannelAnswer.Queued("mc-row-10")
+            rig.manager.sendPublicPost(Conversations.MESHCORE_PUBLIC, "hello again")
+
+            coVerify(exactly = 2) { rig.messages.markPublicPostEnded("mc-row-9", rig.me.nodeId, false) }
+            coVerify(exactly = 0) { rig.messages.markPublicPostEnded("mc-row-10", any(), any()) }
         }
 
     // --- the commons (docs/SPOOL_PROTOCOL.md §7.4) ---

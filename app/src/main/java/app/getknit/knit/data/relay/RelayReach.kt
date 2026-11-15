@@ -231,9 +231,9 @@ fun planeFor(facts: RelayFacts): RelayPlane =
  * exclusion — `ScopeFrames.eligibleForDm` requires a recipient and a v2 ratchet header, neither of which
  * a room frame has — and a permanent fact deserves different copy from a temporary one.
  *
- * The Meshtastic room ([Conversations.MESHTASTIC]) is a structural exclusion too, but it earns no copy at
- * all: nothing in that thread ever enters Knit's mesh — it is this phone's mirror of the board's own
- * channel — so a relay could not carry it under any future configuration. [RelayReach.Pending] would have
+ * The bridged board rooms ([Conversations.isBridgedRoom]: Meshtastic's and MeshCore's) are a structural exclusion
+ * too, but they earn no copy at all: nothing in those threads ever enters Knit's mesh — each is this phone's mirror of
+ * its board's own channel — so a relay could not carry it under any future configuration. [RelayReach.Pending] would have
  * promised a coverage that is never coming, and even the room's permanent-by-design wording would be
  * describing a plane that thread was never on.
  *
@@ -249,7 +249,7 @@ fun reachFor(
     peerLacksForwardSecrecy: Boolean = false,
 ): RelayReach =
     when {
-        conversationId == Conversations.MESHTASTIC -> RelayReach.Silent
+        Conversations.isBridgedRoom(conversationId) -> RelayReach.Silent
 
         !facts.enabled || facts.active == 0 || facts.connected == 0 -> RelayReach.Silent
 

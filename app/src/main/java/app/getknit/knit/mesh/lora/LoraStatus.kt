@@ -64,4 +64,27 @@ internal data class LoraStatus(
      * Meshtastic, where the law is the firmware's): the plane is silent until the board's trailing hour falls under its duty.
      */
     val lawHeld: Boolean = false,
+    /**
+     * The board's public channel as a kind that reads it off the board renders it (MeshCore's slot 0, ADR 2026-11.gsqu's
+     * Stage 6 amendment), while the board is Ready; null otherwise and on Meshtastic, whose room reads the channel table on
+     * [state].
+     */
+    val publicChannel: PublicChannelFace? = null,
+)
+
+/**
+ * A board's public channel as the plane's face shows it (MeshCore's slot 0, ADR 2026-11.gsqu's Stage 6 amendment): what the
+ * slot holds, never a constant `Public` — a slot cleared or re-keyed by the user is what it is.
+ */
+internal data class PublicChannelFace(
+    /** The slot's own name, cleaned for one line; null when it has none. */
+    val name: String?,
+    /** Whether its key is the firmware's published Public key, which every radio and every uploader holds. */
+    val keyIsPublic: Boolean,
+    /**
+     * Whether a post may leave through it now: the board is set up for Knit on this phone (its name is `Knit xxxx` and the
+     * connection consents, so no post leads with anybody's real name) and the slot holds a channel (not empty, not Knit's).
+     * Structural: the room switch, the floor and the air are answered per post.
+     */
+    val postable: Boolean,
 )

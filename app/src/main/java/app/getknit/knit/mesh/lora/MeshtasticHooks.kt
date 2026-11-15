@@ -30,11 +30,27 @@ internal class MeshtasticHooks(
     private val clock: () -> Long,
     private val log: (String) -> Unit,
     /** Delivers a post heard on the board's primary channel into the Meshtastic room — `MeshPostSink`. */
-    private val onPublicPost: suspend (MeshPost) -> Unit,
+    onPublicPost: suspend (MeshPost) -> Unit,
     /** The bound board's node number and key, reported each time its session comes up ([BoardBinding]). */
     private val onBoardBound: suspend (BoardBinding) -> Unit,
 ) : BoardKindHooks {
     override val kind: BoardKind get() = BoardKind.MESHTASTIC
+
+    /**
+     * The room's inbound queue (ADR 2026-11.gsqu's Stage 6 amendment, part 6c): posts reach [onPublicPost] one at a time, in
+     * the order the board handed them over — a replay at connect lands in its own order — without the packet collector
+     * ever waiting on the room. Full, a post is counted (`meshPostRefused` under [MESH_POST_ROOM_BACKLOG]) and logged.
+     */
+    private val room =
+        OrderedRoomSink<MeshPost>(
+            scope,
+            onDropped = {
+                metrics.onMeshPostRefused(MESH_POST_ROOM_BACKLOG)
+                log("lora public post dropped: room backlog full")
+            },
+            onFailed = { log("lora public post not delivered: ${it.javaClass.simpleName}") },
+            deliver = onPublicPost,
+        )
 
     // When this phone last put a post on the foreign public channel, for the per-phone floor. Monotonic
     // (`clock`), so it survives a wall-clock jump; NEVER so the first post of a session is never held.
@@ -196,7 +212,7 @@ internal class MeshtasticHooks(
                         "${verdict.post.body.length}ch viaMqtt=${verdict.post.viaMqtt} " +
                         "signed=${verdict.post.signature != null} boardVerified=${verdict.post.boardVerified}",
                 )
-                scope.launch { onPublicPost(verdict.post) }
+                room.offer(verdict.post)
             }
         }
     }
@@ -350,7 +366,7 @@ internal class MeshtasticHooks(
         // The auto-reply is the one direct send without `want_ack`: a stock client's board answers nobody's retries
         // for us, and the window would pay for them (ADR 2026-09.4n5p).
         val replyTo = frame.to ?: BoardAddr(MeshtasticProto.BROADCAST)
-        val purpose = if (reply) SendPurpose.AutoReply(replyTo) else SendPurpose.PublicPost
+        val purpose = if (reply) SendPurpose.AutoReply(replyTo) else SendPurpose.PublicPost()
         val outcome = send(message, purpose)
         // OWED is back on the queue (the board busy, or the session gone under it): not a refusal, and its airing after
         // the reconnect is counted sent then, once (#307). Should it never air, the pacer's shed counts it
@@ -645,6 +661,13 @@ internal const val MESH_POST_ROOM_OFF = "ROOM_OFF"
  * packet has nowhere to go and is dropped at the same point.
  */
 internal const val MESH_POST_DEDICATED = "DEDICATED"
+
+/**
+ * A post the policy took (so `meshPostIngested` counted it) that the room's inbound queue refused: `OrderedRoomSink.CAPACITY`
+ * were waiting — a stalled room or a forged flood, past any board's replay at connect (ADR 2026-11.gsqu's Stage 6
+ * amendment, part 6c). Never silent: counted here and logged.
+ */
+internal const val MESH_POST_ROOM_BACKLOG = "ROOM_BACKLOG"
 
 /**
  * A Meshtastic board's [BoardPlane] (ADR 2026-11.gsqu, Stage 5a-2): [MeshtasticTraits], [link] through

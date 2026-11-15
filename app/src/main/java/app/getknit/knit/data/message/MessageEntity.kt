@@ -86,7 +86,11 @@ import java.util.Base64
  * [pendingKey] marks an outgoing DM that was saved locally but could not yet be sealed/flooded because
  * the recipient's public key wasn't known (distinct from [received], which can't tell "never sent" from
  * "sent, awaiting ack"). It stays true until the recipient's profile arrives and `MeshManager` re-seals
- * and floods it (see `flushPendingFor`). Always false for received messages and broadcast/group sends.
+ * and floods it (see `flushPendingFor`). Always false for received messages and broadcast/group sends — with one
+ * exception, which keeps its words: our own post in the MeshCore room the board never sent (it waited past its
+ * freshness for the radio, ADR 2026-11.gsqu's Stage 6 amendment) is marked so, and having no recipient it is read by no
+ * resend path; the UI reads it as not sent. A MeshCore post the board gave up at the write, which may have aired, has its
+ * [receivedVia] put back to unknown from the LoRa it was queued on instead (`MessageRepository.markPublicPostEnded`).
  *
  * [kind] discriminates an ordinary chat message ([KIND_NORMAL]) from a locally-generated **status
  * notice** — a `KIND_`-prefixed value rendered as a centered, muted line rather than a bubble
@@ -172,6 +176,11 @@ data class MessageEntity(
      * phone whose board heard it — and this attribution beside it is what says the words are somebody else's.
      * The UI must render the difference (a heard author is never tappable, never verified, never a DM target).
      * Its `!hex` id is derived for display, never stored.
+     *
+     * In the MeshCore room (`Conversations.MESHCORE_PUBLIC`, ADR 2026-11.gsqu's Stage 6 amendment) a heard post names no
+     * node, so it carries the fixed `MeshPostOrigin.MESHCORE_NODE` (negative, never a Meshtastic number): non-null, so
+     * every rule above still reads it as somebody else's words, and never turned into a label — readers ask the room
+     * first and draw [originName] or "unnamed".
      */
     val originNode: Long? = null,
     /** `User.long_name` as the board's NodeDB had it when heard; null when it had never heard the speaker's name. */

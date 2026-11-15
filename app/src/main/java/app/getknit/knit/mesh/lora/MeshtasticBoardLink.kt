@@ -54,7 +54,7 @@ internal class MeshtasticBoardLink(
                     } ?: unaddressable()
                 }
 
-                SendPurpose.PublicPost -> {
+                is SendPurpose.PublicPost -> {
                     link.send(payload, PublicChannelPolicy.PRIMARY_INDEX, portnum = MeshtasticProto.PORT_TEXT_MESSAGE, hopLimit = HOP)
                 }
 

@@ -71,6 +71,7 @@ fun LoraRadioScreen(onBack: () -> Unit) {
         onToggle = viewModel::onToggle,
         onToggleDms = viewModel::onToggleDms,
         onToggleRoom = viewModel::onToggleRoom,
+        onToggleMeshcoreRoom = viewModel::onToggleMeshcoreRoom,
         onPickBoard = viewModel::pickBoard,
         onForgetBoard = viewModel::forgetBoard,
         onShowAllBoards = viewModel::setShowAllBoards,
@@ -93,6 +94,8 @@ internal fun LoraRadioScreenContent(
     onToggleDms: (Boolean) -> Unit = {},
     onToggleRoom: (Boolean) -> Unit = {},
     onPickBoard: (BoardOption) -> Unit = {},
+    // The MeshCore room's switch (ADR 2026-11.gsqu's Stage 6 amendment), drawn while a MeshCore board is bound.
+    onToggleMeshcoreRoom: (Boolean) -> Unit = {},
     onForgetBoard: () -> Unit = {},
     onShowAllBoards: (Boolean) -> Unit = {},
     onDismissProvision: () -> Unit = {},
@@ -139,6 +142,9 @@ internal fun LoraRadioScreenContent(
                 dedicated = state.dedicated,
                 onToggle = onToggleRoom,
             )
+            if (state.meshcoreBound) {
+                MeshcoreRoomSwitchRow(enabled = state.meshcoreRoomEnabled, active = state.enabled, onToggle = onToggleMeshcoreRoom)
+            }
 
             Text(
                 text = stringResource(R.string.lora_board_section),
@@ -287,6 +293,38 @@ private fun RoomSwitchRow(
             Text(stringResource(R.string.lora_room_title), style = MaterialTheme.typography.titleMedium)
             Text(
                 text = stringResource(if (dedicated) R.string.lora_room_subtitle_dedicated else R.string.lora_room_subtitle),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(checked = enabled, onCheckedChange = null, enabled = active)
+    }
+}
+
+/**
+ * The MeshCore room's switch (`SettingsStore.meshcoreRoomEnabled`, ADR 2026-11.gsqu's Stage 6 amendment): whether a bound
+ * MeshCore board's Public channel is mirrored as a room. The Meshtastic room's row, for the other kind's room; a MeshCore
+ * board has no dedicated frequency to hide it.
+ */
+@Composable
+private fun MeshcoreRoomSwitchRow(
+    enabled: Boolean,
+    active: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .toggleable(value = enabled, enabled = active, onValueChange = onToggle, role = Role.Switch)
+                .testTag("lora_meshcore_room_switch"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(stringResource(R.string.lora_meshcore_room_title), style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = stringResource(R.string.lora_meshcore_room_subtitle),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

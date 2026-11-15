@@ -45,6 +45,10 @@ class ConversationFaces(
                 NotifConversation(conversationId, null, null, ConversationKind.MESHTASTIC)
             }
 
+            ConversationKind.MESHCORE -> {
+                NotifConversation(conversationId, null, null, ConversationKind.MESHCORE)
+            }
+
             ConversationKind.COMMONS -> {
                 NotifConversation(conversationId, commonsTitle(conversationId), null, ConversationKind.COMMONS)
             }
