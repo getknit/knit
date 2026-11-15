@@ -357,7 +357,9 @@ internal class FakeMeshcoreAir(
     /** `Dispatcher::checkSend`: the next eligible packet, under the budget and listen-before-talk. */
     private fun pump(node: FakeRadio) {
         val t = now()
-        if (!node.powered || node.transmitting(t)) return
+        // An airing whose end has not run yet (`txUntil` is reset there) still holds the radio: on the lab's wall clock a
+        // lagged end timer would otherwise let the next airing start under it (5c-2b's chaos sweep). The end pumps again.
+        if (!node.powered || node.busyTransmitting(t)) return
         val next =
             node.forced.firstOrNull()
                 ?: if (node.held) null else node.queue.filter { it.at <= t }.minByOrNull { it.priority }
@@ -453,6 +455,9 @@ internal class FakeMeshcoreAir(
         dur: Long,
     ): Boolean {
         if (!r.powered) return false
+        // A reception past its end whose end timer has not run (a lagged timer on the wall clock): ended first, so a newcomer
+        // never overwrites it unseen (5c-2b's chaos sweep). Under virtual time it is a packet that ends as this one starts.
+        r.rx?.takeIf { it.endsAt <= t }?.let { endReception(r, it.packet, it.from, it.airing, it.airing.airMs) }
         val cur = r.rx?.takeIf { it.endsAt > t }
         val lost =
             when {
@@ -1688,7 +1693,11 @@ internal class FakeNusChannel(
     /** A further delay for one notify: a slow answer of one kind ([latencyMs] slows every one). */
     var delayFrame: (ByteArray) -> Long = { 0L }
 
+    /** Every frame the board handed this interface, by its first byte, in order (a diagnostic; dropped ones too). */
+    val delivered: MutableList<Int> = java.util.concurrent.CopyOnWriteArrayList()
+
     override fun deliver(frame: ByteArray) {
+        delivered += frame[0].toInt() and 0xFF
         if (dropFrame(frame)) return
         val wait = latencyMs + delayFrame(frame)
         if (wait == 0L) {

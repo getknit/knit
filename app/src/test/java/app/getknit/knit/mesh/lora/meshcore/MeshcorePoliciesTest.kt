@@ -74,7 +74,7 @@ class MeshcorePoliciesTest {
         // A push for a key nobody taught keeps nothing: an advert flood costs no state.
         p.onPush(mallory, deleted = false, now = 0)
         assertNull(p.keyFor(MeshcorePins.addrOf(mallory)!!))
-        p.noteTaught(bob)
+        p.learn(bob)
         assertTrue(p.keyFor(MeshcorePins.addrOf(bob)!!)!!.contentEquals(bob))
         assertNull("a key of the wrong length is refused", p.learn(ByteArray(31)))
     }
@@ -85,7 +85,7 @@ class MeshcorePoliciesTest {
         val sharer = bob.copyOf().also { it[31] = (it[31] + 1).toByte() }
         p.setTaught(listOf(bob))
         assertNull("the board would send to the first contact the prefix matches", p.learn(sharer))
-        assertNull(p.noteTaught(sharer))
+        assertNull("and again: each refusal counted", p.learn(sharer))
         assertFalse(p.prefixFree(sharer))
         assertTrue(p.keyFor(MeshcorePins.addrOf(bob)!!)!!.contentEquals(bob))
         assertEquals(2L, p.refusedPrefixes)
@@ -145,6 +145,63 @@ class MeshcorePoliciesTest {
         val reassert = p.onReady(now = 0)
         assertEquals(listOf(bob.toList(), alice.toList()), reassert.map { it.toList() })
         assertFalse(p.isVerified(MeshcorePins.addrOf(bob)!!))
+    }
+
+    @Test
+    fun aTaughtSetAnswersTheKeysItAddedAndATeachIsQueuedOnceForATaughtKeyOnly() {
+        // ADR 2026-11.gsqu's Stage 5c-2b amendment: a key taught mid-connection is written at once.
+        val p = MeshcorePins()
+        assertEquals(listOf(bob.toList()), p.setTaught(listOf(bob)).map { it.toList() })
+        assertEquals("the same set adds nothing", emptyList<List<Byte>>(), p.setTaught(listOf(bob)).map { it.toList() })
+        assertEquals("only the newcomer", listOf(alice.toList()), p.setTaught(listOf(bob, alice)).map { it.toList() })
+        assertEquals(MeshcorePins.TeachQueue.QUEUED, p.queueTeach(alice, DAY))
+        assertEquals(MeshcorePins.TeachQueue.QUEUED, p.queueTeach(alice, DAY))
+        assertEquals(MeshcorePins.TeachQueue.REFUSED, p.queueTeach(mallory, DAY))
+        val job = p.nextJob()!!
+        assertTrue(job.first.contentEquals(alice))
+        assertEquals(MeshcorePins.Job.TEACH, job.second)
+        assertNull("one job for alice, none for a key not taught", p.nextJob())
+        p.queueTeach(alice, DAY)
+        p.setTaught(listOf(bob))
+        assertNull("a key that left the set drops its job", p.nextJob())
+    }
+
+    @Test
+    fun liveTeachesOfOneKeyAreBoundedADayAndDeferredNeverDropped() {
+        // The 5c-2b review's N2: a board map flapping a key in and out costs a removal and a write each time.
+        val p = MeshcorePins()
+        p.setTaught(listOf(bob, alice))
+        repeat(MeshcorePins.MAX_LIVE_TEACHES_PER_DAY) {
+            assertEquals(MeshcorePins.TeachQueue.QUEUED, p.queueTeach(bob, DAY))
+            p.nextJob()
+            p.onLiveTeachSpent(bob, DAY, written = true)
+        }
+        assertEquals("past the bound: left to the next Ready", MeshcorePins.TeachQueue.DEFERRED, p.queueTeach(bob, DAY))
+        assertNull(p.nextJob())
+        assertTrue("deferred, still taught: the Ready's reconcile writes it", p.teaches(bob))
+        assertEquals("a new UTC day", MeshcorePins.TeachQueue.QUEUED, p.queueTeach(bob, DAY + 1))
+        assertEquals("another key has its own bound", MeshcorePins.TeachQueue.QUEUED, p.queueTeach(alice, DAY))
+    }
+
+    @Test
+    fun aContestedKeyIsNeverQueuedForATeachAndAFailedOneIsRetriedOnce() {
+        // The 5c-2b review's N3 and N4.
+        val p = MeshcorePins()
+        p.setTaught(listOf(bob, alice))
+        p.contest(MeshcorePins.addrOf(bob)!!)
+        assertEquals(MeshcorePins.TeachQueue.REFUSED, p.queueTeach(bob, DAY))
+        assertFalse(p.retryTeachOnce(bob))
+        assertNull(p.nextJob())
+        assertTrue("retried once", p.retryTeachOnce(alice))
+        assertEquals(MeshcorePins.Job.TEACH, p.nextJob()!!.second)
+        assertFalse("never looped", p.retryTeachOnce(alice))
+        p.onLiveTeachSpent(alice, DAY, written = false)
+        assertFalse("a write that failed its read-back spends no retry anew", p.retryTeachOnce(alice))
+        p.onLiveTeachSpent(alice, DAY, written = true)
+        assertTrue("a write spends the retry anew", p.retryTeachOnce(alice))
+        p.nextJob()
+        p.onReady(now = 0)
+        assertTrue("and so does a Ready", p.retryTeachOnce(alice))
     }
 
     // --- MeshcoreHeadroom (binding rule "sends" 5) ---
@@ -231,3 +288,6 @@ class MeshcorePoliciesTest {
         assertTrue(r.onSample(121_000, 3, 3) != null)
     }
 }
+
+/** A UTC day number, as the session's live-teach bound counts them. */
+private const val DAY = 20_400L

@@ -8,6 +8,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -102,6 +104,54 @@ class FakeMeshcoreAirTest {
             // SF ≤ 8, and Q5 measured 633.
             assertEquals("back to back, one airtime apart", p0.atMs + p0.airMs, p1.atMs)
             assertTrue(p0.airMs in 616L..650L)
+        }
+
+    @Test
+    fun aPacketThatStartsAsAnotherEndsNeverOverwritesItsReceptionUnseen() =
+        runTest {
+            // The 5c-2b chaos sweep's find, reachable under virtual time too: bob's packet starts at the very instant
+            // alice's ends, its task scheduled ahead of her end timer. The receiver ends hers first, never drops it unseen.
+            val air = air(MeshcoreChannel(spreadFactor = 7))
+            val a = air.knitBoard("alice")
+            val b = air.knitBoard("bob")
+            val r = air.knitBoard("rx")
+            air.link("alice", "rx")
+            air.link("bob", "rx")
+            val rx = Recorder(r)
+            val airMs = air.channel!!.airtimeMs(2 + 3 + MeshcoreChannel.aes(3 + 40))
+            backgroundScope.launch {
+                delay(airMs)
+                b.post(ByteArray(40) { 2 })
+            }
+            a.post(ByteArray(40) { 1 })
+            settle()
+            val first = air.airings.first { it.from == "alice" }
+            val second = air.airings.first { it.from == "bob" }
+            assertEquals("bob's starts as alice's ends", first.atMs + first.airMs, second.atMs)
+            assertTrue("alice's was heard: heard=${first.heardBy} lost=${first.lostAt}", "rx" in first.heardBy)
+            assertEquals(2, rx.data().size)
+        }
+
+    @Test
+    fun aRadioNeverStartsItsNextAiringBeforeItsLastOnesEndHasRun() =
+        runTest {
+            // The other half of that find: a pump at the instant an airing ends, ahead of its end timer, waits for it, so
+            // the end never resets the radio under the next airing and a third never starts beside the second.
+            val air = air(MeshcoreChannel(spreadFactor = 7))
+            val a = air.knitBoard("alice")
+            air.knitBoard("bob")
+            air.link("alice", "bob")
+            val airMs = air.channel!!.airtimeMs(2 + 3 + MeshcoreChannel.aes(3 + 40))
+            backgroundScope.launch {
+                delay(airMs)
+                a.post(ByteArray(40) { 2 })
+                a.post(ByteArray(40) { 3 })
+            }
+            a.post(ByteArray(40) { 1 })
+            settle()
+            val own = air.airings.filter { it.from == "alice" }
+            assertEquals(3, own.size)
+            own.zipWithNext().forEach { (p, q) -> assertTrue("$q started under $p", q.atMs >= p.atMs + p.airMs) }
         }
 
     @Test

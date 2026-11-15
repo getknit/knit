@@ -42,6 +42,12 @@ internal interface BoardTraits {
     /** The most direct sends waiting on an answer at once. */
     val maxFlights: Int
 
+    /**
+     * The most direct sends ended with no answer whose handles are remembered for a late one (ADR 2026-11.gsqu's Stage 5c-2b
+     * amendment): as many as the link can still answer for after its own give-up.
+     */
+    val maxEnded: Int
+
     /** The firmware's contention windows, as powers of two: the shortest and longest gap between two airings. */
     val cwMin: Int
     val cwMax: Int
@@ -291,6 +297,7 @@ internal object MeshtasticTraits : BoardTraits {
 
     override val airings: Int get() = LoraDirectPolicy.AIRINGS
     override val maxFlights: Int get() = LoraDirectPolicy.MAX_FLIGHTS
+    override val maxEnded: Int get() = LoraDirectPolicy.MAX_FLIGHTS
     override val cwMin: Int get() = LoraDirectPolicy.CW_MIN
     override val cwMax: Int get() = LoraDirectPolicy.CW_MAX
 

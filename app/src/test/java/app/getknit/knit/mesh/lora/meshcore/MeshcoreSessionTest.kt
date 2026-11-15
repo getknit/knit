@@ -8,6 +8,7 @@ import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.BondState
 import app.getknit.knit.mesh.lora.GattResult
 import app.getknit.knit.mesh.lora.KnitChannel
+import app.getknit.knit.mesh.lora.LoraContactPolicy
 import app.getknit.knit.mesh.lora.PacketIdSource
 import app.getknit.knit.mesh.lora.PacketOutcome
 import app.getknit.knit.mesh.lora.RadioParams
@@ -788,6 +789,8 @@ class MeshcoreSessionTest {
             val r = rig()
             up(r)
             val dave = FakeMeshcoreAir.keyOf("dave")
+            assertEquals("only a key the set holds is written (the 5c-2b review's B1)", ContactWrite.NOT_FOUND, r.session.teach(dave))
+            r.teachable(dave)
             assertEquals(ContactWrite.WRITTEN, r.session.teach(dave))
             val c = r.alice.contact(dave)!!
             assertEquals(0, c.outPathLen)
@@ -1063,6 +1066,7 @@ class MeshcoreSessionTest {
                 GattResult.Ok(Unit)
             }
             val dave = FakeMeshcoreAir.keyOf("dave")
+            r.teachable(dave)
             assertEquals(ContactWrite.WRITTEN, r.session.teach(dave))
             assertEquals(2, r.ch.codes.count { it == MeshcoreProto.CMD_GET_CONTACTS })
         }
@@ -1338,6 +1342,12 @@ class MeshcoreSessionTest {
         alice.advertName = MeshcoreNames.forKey(alice.key).encodeToByteArray()
     }
 
+    /**
+     * [keys] join the taught set with nothing written for them: handed over as a withdrawn set, so neither the reconcile
+     * nor a live teach runs and the test's own [MeshcoreSession.teach] is the write. A teach writes only a taught key.
+     */
+    private fun Rig.teachable(vararg keys: ByteArray) = session.setKnitContacts(listOf(bob.key) + keys, withdrawn = true)
+
     private fun Rig.listings(): Int = ch.writes.count { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACTS && MeshcoreProto.u32(it, 1) == 0L }
 
     @Test
@@ -1397,6 +1407,275 @@ class MeshcoreSessionTest {
                 "$codes",
                 codes.takeWhile { it != MeshcoreProto.CMD_SEND_TXT_MSG }.none { it == MeshcoreProto.CMD_GET_CONTACT_BY_KEY },
             )
+        }
+
+    @Test
+    fun aKeyTaughtMidConnectionIsWrittenAtOnceOnAKnitBoardOnly() =
+        runTest {
+            // ADR 2026-11.gsqu's Stage 5c-2b amendment: the lab's first two-node DM found a contact who writes first dropped by
+            // our board (the firmware holds no contact for them) until our next Ready or our own send to them.
+            val r = rig()
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            val carol = r.air.board("carol")
+            val listings = r.listings()
+            r.session.setKnitContacts(listOf(r.bob.key, carol.key))
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertEquals("written zero-hop, Knit's record", 0, r.alice.contact(carol.key)?.outPathLen)
+            assertTrue("taught and pinned", r.session.taughtAndPinned(carol.key))
+            assertEquals("no listing for it", listings, r.listings())
+            val writes = r.ch.codes.count { it == MeshcoreProto.CMD_ADD_UPDATE_CONTACT }
+            r.session.setKnitContacts(listOf(r.bob.key, carol.key))
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertEquals("the same set again writes nothing", writes, r.ch.codes.count { it == MeshcoreProto.CMD_ADD_UPDATE_CONTACT })
+        }
+
+    /**
+     * The 5c-2b review's B1: the hooks drop [dropOn]'s key from the taught set (a block, a removal, a contest) while the live
+     * teach's reads or its write are out. The removal they queue behind it must find the key untaught and leave the board
+     * without the contact; a write that taught it again would leave it there, its DMs decrypted and acked, until the next
+     * Ready.
+     */
+    private fun TestScope.aKeyDroppedDuringItsLiveTeachIsNeverTaughtAgain(dropOn: Int) {
+        val r = rig()
+        up(r)
+        advanceTimeBy(30_000)
+        runCurrent()
+        val carol = r.air.board("carol")
+        var dropped = false
+        r.ch.writeResult = { frame ->
+            if (!dropped && frame[0].toInt() == dropOn && frame.copyOfRange(1, 33).contentEquals(carol.key)) {
+                dropped = true
+                r.session.setKnitContacts(listOf(r.bob.key))
+            }
+            GattResult.Ok(Unit)
+        }
+        r.session.setKnitContacts(listOf(r.bob.key, carol.key))
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertTrue("the drop ran inside the teach", dropped)
+        assertFalse("never taught again", r.session.taughtAndPinned(carol.key))
+        assertEquals(
+            "never counted written",
+            0L,
+            r.session.counters.liveTeachesWritten
+                .get(),
+        )
+        if (dropOn == MeshcoreProto.CMD_GET_CONTACT_BY_KEY) {
+            assertEquals("dropped while it read: never written", 0, r.addsFor(carol.key))
+        }
+        // The removal the hooks queued when the key left the set (`MeshcoreHooks.reteachLocked`).
+        val removal = async { r.session.removeUntaught(carol.key) }
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertTrue("removed, or never written: ${if (removal.isCompleted) removal.getCompleted() else "pending"}", removal.isCompleted)
+        assertNull("the board ends without the contact", r.alice.contact(carol.key))
+    }
+
+    /** The `ADD_UPDATE_CONTACT` writes this session made for [key]. */
+    private fun Rig.addsFor(key: ByteArray): Int =
+        ch.writes.count { it[0].toInt() == MeshcoreProto.CMD_ADD_UPDATE_CONTACT && it.copyOfRange(1, 33).contentEquals(key) }
+
+    /** A rig Ready with its reconcile done, a [failAdds] write result for [key]'s `ADD_UPDATE_CONTACT`s. */
+    private fun TestScope.liveTeachRig(
+        key: ByteArray,
+        failAdds: (Int) -> Boolean,
+    ): Rig {
+        val r = rig()
+        up(r)
+        advanceTimeBy(30_000)
+        runCurrent()
+        var adds = 0
+        r.errOn { frame ->
+            frame[0].toInt() == MeshcoreProto.CMD_ADD_UPDATE_CONTACT && frame.copyOfRange(1, 33).contentEquals(key) && failAdds(adds++)
+        }
+        return r
+    }
+
+    /**
+     * The board answers `ERR` to every write [refuse] picks, writing nothing: a refusal the session reads as FAILED, where a
+     * failed GATT write would end the connection.
+     */
+    private fun Rig.errOn(refuse: (ByteArray) -> Boolean) {
+        fun FakeNusChannel.refusing() {
+            val refused = HashSet<ByteArray>()
+            swallow = { frame -> frame in refused }
+            writeResult = { frame ->
+                if (refuse(frame)) {
+                    refused += frame
+                    inject(byteArrayOf(1, MeshcoreProto.ERR_TABLE_FULL.toByte()))
+                }
+                GattResult.Ok(Unit)
+            }
+        }
+        dialer.channels.forEach { it.refusing() }
+        dialer.onOpen = { it.refusing() }
+    }
+
+    @Test
+    fun aFailedLiveTeachIsRetriedOnceAndLands() =
+        runTest {
+            // The 5c-2b unit-test review's B1: the retry is a wake path of its own.
+            val carol = FakeMeshcoreAir.keyOf("carol")
+            val r = liveTeachRig(carol) { it == 0 }
+            r.session.setKnitContacts(listOf(r.bob.key, carol))
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertEquals("written zero-hop by the retry", 0, r.alice.contact(carol)?.outPathLen)
+            assertEquals(
+                1L,
+                r.session.counters.liveTeachesFailed
+                    .get(),
+            )
+            assertEquals(
+                1L,
+                r.session.counters.liveTeachesWritten
+                    .get(),
+            )
+            assertEquals(2, r.addsFor(carol))
+        }
+
+    @Test
+    fun aLiveTeachThatKeepsFailingIsRetriedOnceNeverLooped() =
+        runTest {
+            val carol = FakeMeshcoreAir.keyOf("carol")
+            val r = liveTeachRig(carol) { true }
+            r.session.setKnitContacts(listOf(r.bob.key, carol))
+            advanceTimeBy(120_000)
+            runCurrent()
+            assertEquals("the attempt and one retry", 2, r.addsFor(carol))
+            assertEquals(
+                2L,
+                r.session.counters.liveTeachesFailed
+                    .get(),
+            )
+            assertNull(r.alice.contact(carol))
+        }
+
+    @Test
+    fun aKeysLiveTeachesAreBoundedAUtcDayAndResumeTheNext() =
+        runTest {
+            // The 5c-2b review's N2 through the session: a board map flapping carol in and out.
+            val carol = FakeMeshcoreAir.keyOf("carol")
+            val r = rig()
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+
+            fun flap() {
+                r.session.setKnitContacts(listOf(r.bob.key, carol))
+                advanceTimeBy(10_000)
+                runCurrent()
+                r.session.setKnitContacts(listOf(r.bob.key))
+                val removal = async { r.session.removeUntaught(carol) }
+                advanceTimeBy(10_000)
+                runCurrent()
+                assertTrue(removal.isCompleted)
+            }
+            repeat(MeshcorePins.MAX_LIVE_TEACHES_PER_DAY + 1) { flap() }
+            val c = r.session.counters
+            assertEquals(MeshcorePins.MAX_LIVE_TEACHES_PER_DAY.toLong(), c.liveTeachesWritten.get())
+            assertEquals("the fifth left to the next Ready", 1L, c.liveTeachesDeferred.get())
+            assertEquals(MeshcorePins.MAX_LIVE_TEACHES_PER_DAY, r.addsFor(carol))
+            advanceTimeBy(LoraContactPolicy.DAY_MS)
+            runCurrent()
+            r.session.setKnitContacts(listOf(r.bob.key, carol))
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertEquals("a new UTC day writes again", MeshcorePins.MAX_LIVE_TEACHES_PER_DAY + 1, r.addsFor(carol))
+        }
+
+    @Test
+    fun aWriteTheBoardTookIsChargedEvenWhenItsReadBackFails() =
+        runTest {
+            // The 5c-2b review's N1: a flash write is a flash write, whatever its read-back found.
+            val carol = FakeMeshcoreAir.keyOf("carol")
+            val r = rig()
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            var dropReadBack = false
+            r.ch.writeResult = { frame ->
+                if (frame[0].toInt() == MeshcoreProto.CMD_ADD_UPDATE_CONTACT && frame.copyOfRange(1, 33).contentEquals(carol)) {
+                    dropReadBack = true
+                }
+                GattResult.Ok(Unit)
+            }
+            // The read-back after each of carol's writes is lost: the write landed, its verification did not.
+            r.ch.dropFrame = { frame ->
+                (dropReadBack && frame[0].toInt() == MeshcoreProto.RESP_CONTACT).also { if (it) dropReadBack = false }
+            }
+
+            fun flap() {
+                r.session.setKnitContacts(listOf(r.bob.key, carol))
+                advanceTimeBy(60_000)
+                runCurrent()
+                r.session.setKnitContacts(listOf(r.bob.key))
+                val removal = async { r.session.removeUntaught(carol) }
+                advanceTimeBy(60_000)
+                runCurrent()
+                assertTrue(removal.isCompleted)
+            }
+            repeat(MeshcorePins.MAX_LIVE_TEACHES_PER_DAY) { flap() }
+            val c = r.session.counters
+            assertEquals("no read-back ever came", 0L, c.liveTeachesWritten.get())
+            assertEquals(MeshcorePins.MAX_LIVE_TEACHES_PER_DAY, r.addsFor(carol))
+            flap()
+            assertEquals("past the bound on writes the board took: deferred", MeshcorePins.MAX_LIVE_TEACHES_PER_DAY, r.addsFor(carol))
+            assertEquals(1L, c.liveTeachesDeferred.get())
+        }
+
+    @Test
+    fun aContestedKeyIsNeverWrittenByAReactiveOrALiveTeach() =
+        runTest {
+            // Security B3 and the 5c-2b review's N2: a listed contact of another key shares carol's prefix, its removal
+            // fails, so carol is contested for the connection — and `prefixFree` alone reads taught keys only.
+            val carol = FakeMeshcoreAir.keyOf("carol")
+            val sharer = carol.copyOf().also { it[31] = (it[31] + 1).toByte() }
+            val r = rig(taught = false)
+            r.alice.contacts += FakeContact(sharer, MeshcoreProto.ADV_TYPE_CHAT, 0, 0, "Someone".encodeToByteArray(), r.alice.clockSecs)
+            r.errOn { frame -> frame[0].toInt() == MeshcoreProto.CMD_REMOVE_CONTACT }
+            r.session.setKnitContacts(listOf(r.bob.key, carol))
+            up(r)
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertTrue(
+                "contested",
+                r.session.counters.prefixContests
+                    .get() >= 1,
+            )
+            assertEquals(ContactWrite.NOT_FOUND, r.session.teach(carol))
+            r.session.setKnitContacts(listOf(r.bob.key))
+            r.session.setKnitContacts(listOf(r.bob.key, carol))
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertEquals("never written", 0, r.addsFor(carol))
+        }
+
+    @Test
+    fun aKeyDroppedWhileItsLiveTeachReadsIsNeverWritten() =
+        runTest { aKeyDroppedDuringItsLiveTeachIsNeverTaughtAgain(MeshcoreProto.CMD_GET_CONTACT_BY_KEY) }
+
+    @Test
+    fun aKeyDroppedWhileItsLiveTeachWritesIsRemovedAfter() =
+        runTest { aKeyDroppedDuringItsLiveTeachIsNeverTaughtAgain(MeshcoreProto.CMD_ADD_UPDATE_CONTACT) }
+
+    @Test
+    fun aKeyTaughtMidConnectionIsNeverWrittenOnABoardNotSetUpForKnit() =
+        runTest {
+            val r = rig(knitBoard = false)
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            val carol = r.air.board("carol")
+            r.session.setKnitContacts(listOf(r.bob.key, carol.key))
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertNull(r.alice.contact(carol.key))
+            assertEquals(0, r.ch.codes.count { it == MeshcoreProto.CMD_ADD_UPDATE_CONTACT })
         }
 
     @Test

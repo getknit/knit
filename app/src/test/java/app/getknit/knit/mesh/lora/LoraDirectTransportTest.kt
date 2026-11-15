@@ -1431,6 +1431,30 @@ class LoraDirectTransportTest {
             assertEquals("late: its time is not when their board took it", listOf("f1" to true), a.reached)
         }
 
+    /**
+     * A pacing refusal our board reports for a send after its own give-up still paces as a late NAK (lora-reviewer's round 4
+     * on ADR 2026-11.gsqu's Stage 5c-2b): the give-up is remembered now, so the refusal finds its send, and a class with no
+     * send-attached meaning keeps the late NAK's handling rather than falling through unread.
+     */
+    @Test
+    fun aPacingRefusalAfterAGiveUpStillPacesAsALateNak() =
+        runTest {
+            val air = FakeMeshtasticAir().apply { silent = { _, _ -> true } }
+            val logs = mutableListOf<String>()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)), log = { logs += it })
+            up(a)
+            a.dm("bob", "f1")
+            settle(1_000)
+            val handle = a.link.sentIds.single()
+            a.link.emitOutcome(PacketOutcome.Unreachable(handle, flown = 1))
+            settle(1_000)
+            val naks = a.lora.loraNak
+            a.link.emitOutcome(PacketOutcome.Refused(handle, RoutingError.DUTY_CYCLE_LIMIT, byDestination = false))
+            settle(1_000)
+            assertEquals("counted as a NAK", naks + 1, a.lora.loraNak)
+            assertTrue("paced as a late one: $logs", logs.any { it == "lora nak id=$handle reason=DUTY_CYCLE_LIMIT (late)" })
+        }
+
     @Test
     fun aReprobesAckReportsTheSameDm() =
         runTest {

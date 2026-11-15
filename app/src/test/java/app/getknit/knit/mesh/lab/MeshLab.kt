@@ -51,6 +51,7 @@ import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.group.toGroupInfo
+import app.getknit.knit.data.meshcore.MeshcoreSetupStore
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
@@ -66,10 +67,15 @@ import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.CallTombStore
 import app.getknit.knit.data.settings.ContributionTotals
 import app.getknit.knit.data.settings.HomeStore
+import app.getknit.knit.data.settings.LoraPlaneStateStore
 import app.getknit.knit.data.settings.MeshcoreClaimStore
 import app.getknit.knit.data.settings.SettingsKeys
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.settings.TicketKeyStore
+import app.getknit.knit.di.bindingAddress
+import app.getknit.knit.di.loraAuthorIds
+import app.getknit.knit.di.meshcoreBoardHolders
+import app.getknit.knit.di.pinnedAuthorCheck
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.BlobExchange
@@ -89,6 +95,7 @@ import app.getknit.knit.mesh.RatchetPeerState
 import app.getknit.knit.mesh.ReadSync
 import app.getknit.knit.mesh.SPOOL_COVER_MS
 import app.getknit.knit.mesh.StoreDigest
+import app.getknit.knit.mesh.bluetooth.BackoffConfig
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.ContactCard
 import app.getknit.knit.mesh.crypto.LinkProver
@@ -97,6 +104,7 @@ import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
+import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto
@@ -115,14 +123,29 @@ import app.getknit.knit.mesh.inet.MeshLinkScope
 import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.link.FrameKey
 import app.getknit.knit.mesh.link.LinkSocket
+import app.getknit.knit.mesh.lora.BoardKind
+import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.DirectDm
 import app.getknit.knit.mesh.lora.DirectKind
 import app.getknit.knit.mesh.lora.FakeMeshtasticAir
 import app.getknit.knit.mesh.lora.FakeMeshtasticLink
 import app.getknit.knit.mesh.lora.LoraConfig
+import app.getknit.knit.mesh.lora.LoraDirectRouter
 import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPacePolicy
+import app.getknit.knit.mesh.lora.ProvisionMode
+import app.getknit.knit.mesh.lora.ProvisionResult
+import app.getknit.knit.mesh.lora.meshcore.FakeMeshcoreAir
+import app.getknit.knit.mesh.lora.meshcore.FakeMeshcoreBoard
+import app.getknit.knit.mesh.lora.meshcore.FakeMeshcoreDialer
+import app.getknit.knit.mesh.lora.meshcore.FakeNusChannel
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreDialer
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHooks
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreSession
+import app.getknit.knit.mesh.lora.meshcore.NusChannel
+import app.getknit.knit.mesh.lora.meshcore.NusDialResult
+import app.getknit.knit.mesh.lora.meshcore.meshcorePlane
 import app.getknit.knit.mesh.lora.node
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.DeclaredLangs
@@ -175,6 +198,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
@@ -254,6 +278,14 @@ class MeshLab {
     private val boardsAir: FakeMeshtasticAir? =
         if (System.getenv(BOARDS_ENV) == "1") quickAir().also { println("meshlab every node a board ($BOARDS_ENV)") } else null
 
+    // Every MeshCore air's scope and serial context (ADR 2026-11.gsqu's Stage 5c-2b amendment): the lab's, never a node's,
+    // so one node's restart cannot cancel another board's pending repeats and notifies; through the chaos dispatcher, so the
+    // air's timers and deliveries take the run's noise; one at a time, so the boards' state is never torn (5c-2a).
+    private val meshcoreDispatcher: CoroutineDispatcher = chaos?.dispatcher(Dispatchers.Default) ?: Dispatchers.Default
+    internal val meshcoreScope = CoroutineScope(SupervisorJob() + meshcoreDispatcher)
+    internal val meshcoreSerial: CoroutineDispatcher = meshcoreDispatcher.limitedParallelism(1)
+    internal val meshcoreAirs = CopyOnWriteArrayList<FakeMeshcoreAir>()
+
     /**
      * Creates and starts a node — its own identity, database and settings file — and returns once its router
      * is listening, so a link made next cannot lose the profile push (see [LabTransport.collecting]).
@@ -291,6 +323,12 @@ class MeshLab {
         // A contact's direct Internet link plane beside the radio (ADR 2026-10.a5yj): the real `DirectLinkTransport`, whose
         // links [directLink] makes over in-memory streams — no punch, no relay. False builds the node as before.
         directLinks: Boolean = false,
+        // A MeshCore board on this air ([meshcoreAir], ADR 2026-11.gsqu's Stage 5c-2b amendment): the node gets the real
+        // MeshCore plane — its session, hooks and transport as `di/MeshModule` builds them — and never the boards sweep's
+        // Meshtastic one. Null builds none.
+        meshcore: FakeMeshcoreAir? = null,
+        // With [meshcore]: the plane's fragment-id source (production's is SecureRandom); every id it draws is logged.
+        fragIds: (() -> Int)? = null,
         // A place on the lab's Internet ([LabInternet]) behind a NAT of this kind: the node also runs the real
         // `DirectLinks` — offers and answers sent as sigs through [spool], the punch over the fake NATs, the lane, the stream
         // handed to its link plane — and a `LinkDemand` a scenario drives by [LabNode.demand]. Null builds none.
@@ -300,7 +338,9 @@ class MeshLab {
         lan: LabInternet.Lan? = null,
     ): LabNode {
         val started = System.nanoTime()
-        val boardAir = air ?: boardsAir?.takeIf { board }
+        require(air == null || meshcore == null) { "$name: one board kind a node" }
+        // A MeshCore node never takes the sweep's Meshtastic air: two LoRa planes would race each other's counters.
+        val boardAir = air ?: boardsAir?.takeIf { board && meshcore == null }
         // A boards-everywhere run holds a DM's tick a second, not the field's 45 s: the scenarios' own waits are the lab's.
         // Only on a node it gives a board (`boardAir` is the shared air here): one built `board = false` is a plain node.
         val held =
@@ -330,6 +370,8 @@ class MeshLab {
                 home = home,
                 directLinks = directLinks,
                 internet = internet?.let { labInternet().phone(it, lan) },
+                meshcoreAir = meshcore,
+                meshcoreFragIds = fragIds,
             )
         nodes += node
         node.boot()
@@ -514,6 +556,8 @@ class MeshLab {
             )
         }
         val failures = nodes.mapNotNull { runCatching { it.shutdown() }.exceptionOrNull() }
+        // The boards' air after every node: a node's shutdown closes its NUS channel on it.
+        meshcoreScope.cancel()
         dir.deleteRecursively()
         failures.firstOrNull()?.let { first -> throw first.apply { failures.drop(1).forEach(::addSuppressed) } }
     }
@@ -573,6 +617,7 @@ class MeshLab {
         chaos?.let { "$it\n" }.orEmpty() +
             nodes.joinToString("\n") { it.metricsLine() } + "\n" +
             nodes.joinToString("\n") { n -> "  ${n.name} sent: ${n.transport.sent}" } + "\n" +
+            meshcoreReport(meshcoreAirs, nodes) +
             "  warnings:\n" +
             ShadowLog
                 .getLogs()
@@ -1063,9 +1108,17 @@ class MeshLab {
             "the link-up among ${nodes.map { it.name }} never went quiet: " +
                 nodes.joinToString { "${it.name} frames=${it.transport.framesReceived} digests=${it.transport.digestsReceived}" }
         }
+        awaitMeshcorePairsTaught(nodes.toList())
     }
 
     companion object {
+        /**
+         * The preset every lab MeshCore board reports and a channel air airs at: SF7 / 250 kHz / CR 4/5, a 181-B packet in
+         * about 160 ms, wholly inside the 869.4–869.65 MHz 10 % sub-band the fake boards sit on (869.525 MHz).
+         */
+        const val LAB_SF = 7
+        const val LAB_BW_HZ = 250_000
+
         /** The environment switch for a boards-everywhere run ([boardsAir]). */
         const val BOARDS_ENV = "KNIT_LAB_BOARDS"
 
@@ -1301,6 +1354,11 @@ data class LabLimits(
      */
     val loraLingerSweepMs: Long = LoraMeshTransport.LINGER_SWEEP_MS,
     /**
+     * A MeshCore session's reconnect backoff base, or null for the field's 5 s (`MeshcoreSession`'s default): a scenario that
+     * powers a board off and on waits it out on the wall clock, so it may shorten it.
+     */
+    val meshcoreBackoffMs: Long? = null,
+    /**
      * The Internet plane's timed round and attachment re-look ([ScopeSync.TICK_INTERVAL_MS],
      * [ScopeSync.ATTACHMENT_RETRY_MS]). The field values by default, so every spool scenario still converges on
      * the events and a lost wake shows as a slow scenario (`scripts/lab-chaos.sh` names those). Only a scenario
@@ -1445,6 +1503,9 @@ class LabNode internal constructor(
     private val directLinks: Boolean = false,
     // This node's place on the lab's Internet ([MeshLab.node]'s `internet`); kept across restarts, as a phone's NAT is.
     private val internet: LabInternet.Phone? = null,
+    // The MeshCore air this node's board is on ([MeshLab.node]'s `meshcore`), and its plane's fragment-id source; null: none.
+    private val meshcoreAir: FakeMeshcoreAir? = null,
+    private val meshcoreFragIds: (() -> Int)? = null,
 ) {
     /** [delegate], or its chaos-lagged form when the lab runs under [chaos]. */
     private fun dispatcher(delegate: CoroutineDispatcher): CoroutineDispatcher = chaos?.dispatcher(delegate) ?: delegate
@@ -1624,6 +1685,32 @@ class LabNode internal constructor(
     internal var link: DirectLinkTransport? = null
         private set
 
+    /**
+     * This node's MeshCore board on [meshcoreAir] — hardware: made at the first boot, kept across restarts with its contacts,
+     * slots and name — or null for a node without one.
+     */
+    internal var meshcoreBoard: FakeMeshcoreBoard? = null
+        private set
+
+    /** This boot's MeshCore session, plane and dialer, beside [meshcoreBoard]; null without one. */
+    internal var meshcoreSession: MeshcoreSession? = null
+        private set
+    internal var meshcore: LoraMeshTransport? = null
+        private set
+    private var meshcoreDialer: FakeMeshcoreDialer? = null
+
+    /** Every boot's dialer, kept across restarts: [meshcoreWritesEver] reads them all. */
+    private val meshcoreDialers = CopyOnWriteArrayList<FakeMeshcoreDialer>()
+
+    /** The MeshCore plane's hooks, as `meshcorePlane` built them: their counters are the dump's `meshcore*` block. */
+    internal val meshcoreHooks: MeshcoreHooks get() = checkNotNull(meshcore) { "$name has no MeshCore board" }.kindHooks as MeshcoreHooks
+
+    /** The address this node's MeshCore board is bound under, as the picker would write it. */
+    internal val meshcoreAddress: String get() = "MC:$name"
+
+    /** Every fragment id this node's MeshCore plane drew, across restarts, in order: [MeshLab.report] names them. */
+    val fragIdsDrawn = CopyOnWriteArrayList<Int>()
+
     /** The real direct links over the lab's Internet, for a node built with `internet`; else null. Rebuilt by a boot. */
     internal var links: DirectLinks? = null
         private set
@@ -1752,12 +1839,13 @@ class LabNode internal constructor(
 
     /** This session's composite children over [lora] and [link], their collectors counted; null with no such plane. */
     private var boardPlane: LabBoardPlane? = null
+    private var mcPlane: LabBoardPlane? = null // the MeshCore child's, beside [boardPlane]
     private var linkPlane: LabLinkPlane? = null
 
     // Whether the manager collects every plane's flows yet: the radio's, and each plane beside it, which the composite
     // subscribes on a coroutine of its own ([LabCollectors]).
     private val collecting: Boolean
-        get() = transport.collecting && boardPlane?.collecting != false && linkPlane?.collecting != false
+        get() = transport.collecting && boardPlane?.collecting != false && mcPlane?.collecting != false && linkPlane?.collecting != false
 
     // The direct-link plane, wired as `di/DirectLinkWiring` wires it: the real lookups over this node's stores, its use and
     // link-ups back to the manager, built late.
@@ -1888,13 +1976,14 @@ class LabNode internal constructor(
     // plane goes in with its collectors counted, which the boot waits on ([LabCollectors]); the link plane recorded too
     // ([LabLinkPlane]): its files and frames sent, the digests it took, and its hand-off to the manager through [linkFileGate].
     private fun compositeOver(scope: CoroutineScope): CompositeMeshTransport? =
-        if (lora == null && link == null) {
+        if (lora == null && meshcore == null && link == null) {
             null
         } else {
             boardPlane = lora?.let(::LabBoardPlane)
+            mcPlane = meshcore?.let(::LabBoardPlane)
             val record = LabLinkRecord(linkFrames, linkDigestsFrom, linkUps::get, linkAsksOut, linkAsksIn)
             linkPlane = link?.let { LabLinkPlane(it, linkFiles, linkFileGate, record) }
-            CompositeMeshTransport(listOfNotNull(transport, boardPlane, linkPlane), scope, log = { routeLog += it })
+            CompositeMeshTransport(listOfNotNull(transport, boardPlane, mcPlane, linkPlane), scope, log = { routeLog += it })
         }
 
     /**
@@ -2109,6 +2198,7 @@ class LabNode internal constructor(
         // provisioned, Knit on slot 1 as ADR 045 leaves it (a compact DM never goes from slot 0), with the plane switched on
         // so the profile names it, and reports itself bound so the profile carries its node number.
         lora = air?.let { boardOn(it, scope) }
+        meshcore = meshcoreOn(scope)
         link = directLinkPlane(scope)
         composite = compositeOver(scope)
         val meshTransport: MeshTransport = composite ?: transport
@@ -2238,6 +2328,7 @@ class LabNode internal constructor(
                 while (custodyIds().none { it.startsWith("profile-$nodeId-") }) delay(1)
             }
         }
+        awaitMeshcoreReady()
     }
 
     /**
@@ -2285,11 +2376,250 @@ class LabNode internal constructor(
     }
 
     /**
+     * This node's MeshCore plane over [air], built as `di/MeshModule` and `di/LoraWiring` build the MeshCore child (ADR
+     * 2026-11.gsqu's Stage 5c-2b amendment): the session dialling this node's board, `meshcorePlane`'s hooks, and the
+     * transport at **its own pace** (MeshCore's `LoraAirtime`, gap 0 — never the Meshtastic lab's injected one); the
+     * board's key reaching the claim store through `bindingAddress` and `MeshcoreClaimStore.setBoardKey` under the hooks'
+     * `claimMutex`, the setup records under SQLCipher, the pinned author check, the author ids and the plane state as
+     * production wires them. The board is bound as the picker binds one ([meshcoreAddress]).
+     *
+     * **Three clocks.** The session's `now` is monotonic (`System.nanoTime`, as production's `elapsedRealtime`), so a
+     * `lab.clock.advance` never ends its `ElapsedWait`s — a jump would otherwise time out every wait in flight, barrier and
+     * reconnect. The plane, the hooks and the session's `wallClock` are this node's [LabClock], so a scenario can jump past
+     * the re-probe gap, the fragment window or a hold. The board's uptime is the lab's calendar ([MeshLab.meshcoreAir]), so
+     * `wallClock − uptime`, the duty law's boot date, stays put across a jump.
+     */
+    @Suppress("LongMethod", "CyclomaticComplexMethod") // one plane's DI wiring, mirrored in one place on purpose
+    private suspend fun meshcoreOn(scope: CoroutineScope): LoraMeshTransport? {
+        val air = meshcoreAir ?: return null
+        settings.setLoraEnabled(true)
+        if (settings.meshcoreDeviceAddress.first() != meshcoreAddress) settings.bindBoard(BoardKind.MESHCORE, meshcoreAddress, name)
+        readsMeshcoreDms = true
+        val board =
+            meshcoreBoard ?: air
+                .snapshot {
+                    air.confined {
+                        air.board(name).also {
+                            // A channel air sets its own preset; the quick air has no airtime, so its boards report the lab's.
+                            if (air.channel == null) {
+                                it.sf = MeshLab.LAB_SF
+                                it.bwHz = MeshLab.LAB_BW_HZ.toLong()
+                                it.cr = LAB_CR
+                            }
+                        }
+                    }
+                }.also { meshcoreBoard = it }
+        val dialer =
+            FakeMeshcoreDialer(board).also {
+                meshcoreDialer = it
+                meshcoreDialers += it
+            }
+        val session =
+            MeshcoreSession(
+                dialer = SerialDialer(dialer, air),
+                scope = scope,
+                backoff =
+                    limits.meshcoreBackoffMs?.let { BackoffConfig(baseMs = it, maxMs = MESHCORE_BACKOFF_MAX_MS) } ?: BackoffConfig(
+                        baseMs = MESHCORE_FIELD_BACKOFF_MS,
+                        maxMs = MESHCORE_BACKOFF_MAX_MS,
+                    ),
+                now = { System.nanoTime() / NANOS_PER_MS },
+                wallClock = now,
+                log = { loraLog += "session: $it" },
+                records = MeshcoreSetupStore(db.meshcoreSetupDao()),
+            ).also { meshcoreSession = it }
+        val seal = LoraDirectSeal(ownDhPrivate = keyStore::dhIdentityPrivate, clock = now).also { meshcoreSeal = it }
+        lateinit var plane: LoraMeshTransport
+        plane =
+            LoraMeshTransport(
+                selfId = { nodeId },
+                plane =
+                    meshcorePlane(
+                        session = session,
+                        scope = scope,
+                        clock = now,
+                        log = { loraLog += it },
+                        wallClock = now,
+                        onBoardKey = { key, dialled ->
+                            bindingAddress(dialled, plane.configuredAddress)?.let {
+                                meshcoreClaims.setBoardKey(key?.let(::b64), dialled = it)
+                            }
+                        },
+                    ),
+                config =
+                    combine(
+                        settings.loraEnabled,
+                        settings.meshcoreDeviceAddress,
+                        settings.loraDmEnabled,
+                        settings.meshcoreRoomEnabled,
+                    ) { on, addr, dms, room ->
+                        if (on && addr != null) LoraConfig(addr, MeshcoreHooks.NO_CONFIGURED_SLOT, dms, room) else null
+                    },
+                crypto = seal,
+                inbox = { manager.deliverLoraDirect(it) },
+                source =
+                    object : LoraDirectSource {
+                        override suspend fun unackedTo(
+                            peerId: String,
+                            limit: Int,
+                            untakenOnly: Boolean,
+                            maxBytes: Int,
+                        ): List<DirectDm> = manager.loraDirectSource().unackedTo(peerId, limit, untakenOnly, maxBytes)
+
+                        override suspend fun isUnacked(frameId: String): Boolean = manager.loraDirectSource().isUnacked(frameId)
+                    },
+                boardMap = meshcoreBoardHolders(flow { emitAll(manager.meshcoreBoardMap()) }),
+                onRadioReached = { frameId, late -> manager.onLoraRadioReached(frameId, late) },
+                scope = scope,
+                metrics = metrics,
+                state = LoraPlaneStateStore(settings, BoardKind.MESHCORE),
+                clock = now,
+                wallClock = now,
+                log = { loraLog += it },
+                lingerSweepMs = limits.loraLingerSweepMs,
+                authorCheck = pinnedAuthorCheck { peers },
+                authorIds = flow { emitAll(loraAuthorIds(peers.observePeers(), directContacts.observe())) },
+                fragIds = { (meshcoreFragIds ?: ::secureFragId)().also { fragIdsDrawn += it } },
+            )
+        return plane
+    }
+
+    /** This boot's pair seal beside [meshcore]; null without a MeshCore board. */
+    private var meshcoreSeal: LoraDirectSeal? = null
+
+    /**
+     * A MeshCore boot is done when the board is the user's (ADR 2026-11.gsqu's Stage 5c-2b amendment): its session Ready,
+     * its setup record consenting — on the first boot through the real setup, as the user's tap runs it
+     * (`provisionKnitChannel(Setup)` → the session's own transaction, its record and its signed consent) — the claim store
+     * holding the board's key under its address, and the sealed claim minted for it. The claim is sealed-only, so the
+     * cleartext profile [boot] waited for does not move for it; a restart mints nothing.
+     */
+    private suspend fun awaitMeshcoreReady() {
+        val session = meshcoreSession ?: return
+        val plane = checkNotNull(meshcore)
+        val key = b64(checkNotNull(meshcoreBoard).key)
+        var stage = "Ready"
+        val done =
+            withContext(Dispatchers.Default) {
+                withTimeoutOrNull(MeshLab.AWAIT_MS) {
+                    while (session.state.value !is BoardState.Ready) delay(MeshLab.POLL_MS)
+                    // The consent is resolved inside the handshake, before the Ready is published.
+                    if (session.consent.value?.granted != true) {
+                        stage = "setup"
+                        val result = plane.provisionKnitChannel(ProvisionMode.Setup, null)
+                        check(result is ProvisionResult.Provisioned) { "$name's MeshCore setup failed: $result" }
+                    }
+                    stage = "consent"
+                    while (session.consent.value?.granted != true) delay(MeshLab.POLL_MS)
+                    stage = "claim"
+                    while (meshcoreClaims.boardKey.first() != key) delay(MeshLab.POLL_MS)
+                    stage = "mint"
+                    while (meshcoreClaims.sealedVersion.first() == 0L) delay(MeshLab.POLL_MS)
+                }
+            } != null
+        check(done) { "$name's MeshCore board never got to $stage: ${session.state.value}\n  ${loraLog.takeLast(MeshLab.WINDOW_LORA)}" }
+    }
+
+    /**
+     * Back from a board that went away (powered off, its link lost): its session Ready again on the record's consent, and
+     * every contact taught and pinned once more — the Ready re-assert. What a scenario waits on before this node's board
+     * can carry anything.
+     */
+    internal suspend fun awaitMeshcoreBack() {
+        awaitMeshcoreReady()
+        awaitMeshcoreTaught()
+    }
+
+    /** Every command this node's session wrote its board this boot, on the air's serial context: the session's oracle. */
+    internal suspend fun meshcoreWrites(): List<ByteArray> {
+        val dialer = meshcoreDialer ?: return emptyList()
+        return checkNotNull(meshcoreAir).snapshot { dialer.channels.flatMap { ch -> ch.writes.map { it.copyOf() } } }
+    }
+
+    /** Every command this node's sessions wrote its board over all its boots: a "never written" oracle across a restart. */
+    internal suspend fun meshcoreWritesEver(): List<ByteArray> {
+        val dialers = meshcoreDialers.toList()
+        return checkNotNull(meshcoreAir).snapshot { dialers.flatMap { d -> d.channels.flatMap { ch -> ch.writes.map { it.copyOf() } } } }
+    }
+
+    /** Every frame code this boot's board handed its session, in order (a diagnostic). */
+    internal suspend fun meshcoreDelivered(): List<Int> {
+        val dialer = meshcoreDialer ?: return emptyList()
+        return checkNotNull(meshcoreAir).snapshot { dialer.channels.flatMap { it.delivered } }
+    }
+
+    /** The command codes this node's board answered over its life, whoever wrote them: the board's oracle. */
+    internal suspend fun meshcoreCommands(): List<Int> {
+        val board = meshcoreBoard ?: return emptyList()
+        return checkNotNull(meshcoreAir).snapshot { board.commands.toList() }
+    }
+
+    /** Where [peer]'s key stands on its way to this node's board, for a failed [MeshLab.awaitTaught]: counts, never a key. */
+    internal suspend fun meshcoreTeachState(peer: LabNode): String {
+        val key = peer.meshcoreBoard?.key ?: return "no board"
+        val c = meshcoreHooks.counters
+        return "row keyed=${peers.find(peer.nodeId)?.meshcoreKey != null}, in board map=${manager.meshcoreBoardMap().first().containsKey(
+            peer.nodeId,
+        )}, contact=${checkNotNull(meshcoreAir).snapshot { meshcoreBoard?.contact(key) != null }}, " +
+            "pinned=${meshcoreSession?.taughtAndPinned(key)}, consent=${meshcoreSession?.consent?.value}, " +
+            "wanted=${c.keysWanted} skipped=${c.keysSkipped} written=${c.teachWritten} refused=${c.teachRefused}, " +
+            "lora: ${loraLog.takeLast(MeshLab.WINDOW_LORA)}"
+    }
+
+    /**
+     * Whether this boot's MeshCore plane would take a compact DM to [peerId] now and read their room posts: its board map
+     * holds them direct, its author ids resolve them, and the pair seal's index holds them — each kept by a collector of its
+     * own, which a restart rebuilds after the session is Ready (the 5c-2b sweep's finds: a DM sent in that window went
+     * unsealed, `lora direct unsealed`; a post, `lora elided unverified: candidates=0`).
+     */
+    internal fun meshcoreReadyFor(peerId: String): Boolean =
+        meshcore?.let { it.boardHolderOf(peerId)?.direct == true && it.resolvesAuthor(peerId) } == true &&
+            meshcoreSeal?.knows(peerId) == true
+
+    /** Whether [peer] is in this node's direct contacts as the stores hold them now (`DirectContacts`). */
+    internal suspend fun isDirectContact(peer: LabNode): Boolean = peer.nodeId in directContacts.read()
+
+    /**
+     * Whether [key] is a contact on this node's MeshCore board, read on the air's serial context, and its session holds it
+     * taught and pinned ([MeshcoreSession.taughtAndPinned]).
+     */
+    internal suspend fun meshcoreTaught(key: ByteArray): Boolean {
+        val board = meshcoreBoard ?: return false
+        val session = meshcoreSession ?: return false
+        return checkNotNull(meshcoreAir).snapshot { board.contact(key) != null } && session.taughtAndPinned(key)
+    }
+
+    /** Every MeshCore key this node's board map holds, taught and pinned: a restart's [awaitTaught][MeshLab.awaitTaught] for each. */
+    private suspend fun awaitMeshcoreTaught() {
+        if (meshcoreSession == null) return
+        val holders = manager.meshcoreBoardMap().first().mapValues { b64d(it.value.key) }
+        val ok =
+            withContext(Dispatchers.Default) {
+                withTimeoutOrNull(MeshLab.AWAIT_MS) {
+                    while (!holders.all { (peer, key) -> meshcoreTaught(key) && meshcoreReadyFor(peer) }) delay(MeshLab.POLL_MS)
+                }
+            } != null
+        check(ok) { "$name's board never held its ${holders.size} contacts taught, pinned and sealable after the restart" }
+    }
+
+    /**
+     * Closes this boot's NUS channels on the air's serial context, after refusing any redial: a dying session can then pop
+     * nothing off the board (the firmware answers every interface, and a `SYNC_NEXT_MESSAGE` pops what it answers).
+     */
+    private fun closeMeshcoreLink() {
+        val dialer = meshcoreDialer ?: return
+        dialer.dialResult = { NusDialResult.Failed(GATT_ERROR, "connect") }
+        runBlocking { checkNotNull(meshcoreAir).snapshot { dialer.channels.forEach { it.close() } } }
+    }
+
+    /**
      * This node drives a MeshCore board whose public key is [key] (ADR 2026-11.gsqu, Stage 4), or none when null: the key
      * as the board's session reports it, the plane and its DM switch on, and — from this boot on — a build that reads a
-     * MeshCore DM. No board is modelled on the air: what this changes is what the node's sealed profile claims.
+     * MeshCore DM. No board is modelled on the air: what this changes is what the node's sealed profile claims. Never on a
+     * node with a MeshCore board ([meshcoreOn]): its key comes through the plane's own claim path.
      */
     suspend fun driveMeshcoreBoard(key: String?) {
+        check(meshcoreAir == null) { "$name has a MeshCore board: its claim is the plane's" }
         settings.setLoraEnabled(true)
         meshcoreClaims.setBoardKey(key)
         if (!readsMeshcoreDms) {
@@ -2307,6 +2637,12 @@ class LabNode internal constructor(
      */
     private fun bindBoard() {
         if (readsMeshcoreDms) manager.bindMeshcoreDirect()
+        meshcore?.let { plane ->
+            // `LoraDirectRouter` as `di/MeshModule` binds it: the bound kind's sink, here MeshCore's.
+            val router = LoraDirectRouter(mapOf(BoardKind.MESHCORE to { plane }), boundKind = { settings.boundBoardKind.first() })
+            manager.bindLoraDirect(sinkFor = router::sinkFor, seal = checkNotNull(meshcoreSeal))
+            return
+        }
         val board = lora ?: return
         manager.bindLoraDirect(sink = { board }, seal = checkNotNull(boardSeal))
     }
@@ -2345,6 +2681,7 @@ class LabNode internal constructor(
         awaitPeersSettled(peers)
         whileDown()
         timedBoot()
+        awaitMeshcoreTaught()
     }
 
     /**
@@ -2450,6 +2787,7 @@ class LabNode internal constructor(
     private fun shutdownLive(): List<LabTransport> {
         val linked = transport.disconnectAll()
         transport.detach()
+        closeMeshcoreLink()
         loraLog.clear()
         // stop() banks the ledger and the name-clash fade's lastSeenAt stamps on the app scope, which the next line
         // cancels; in the lab the "app" scope is this session's, so bank them here first — the process-death the
@@ -3187,7 +3525,11 @@ class LabNode internal constructor(
      * (`RoomTickPlanesLabTest`'s LoRa-only tick under chaos seed 7424, 2026-09-28 — the loss itself is #96).
      */
     internal suspend fun awaitBoardSawLinks() {
-        val board = lora ?: return
+        lora?.let { awaitBoardSawLinks(it) }
+        meshcore?.let { awaitBoardSawLinks(it) }
+    }
+
+    private suspend fun awaitBoardSawLinks(board: LoraMeshTransport) {
         val stack = checkNotNull(composite) { "$name has a board and no composite" }
         val radio = { transport.neighbors.value.mapTo(HashSet()) { it.nodeId } }
         val merged = { stack.neighbors.value.mapTo(HashSet()) { it.nodeId } }
@@ -3441,7 +3783,7 @@ class LabNode internal constructor(
 
     /** The LoRa plane's counters and the radio's own recent log lines — empty for a node without a board. */
     fun loraLine(): String {
-        if (lora == null) return ""
+        if (lora == null && meshcore == null) return ""
         val s = metrics.lora()
         val lines =
             loraLog
@@ -3452,7 +3794,14 @@ class LabNode internal constructor(
             "roomTooLong=${s.loraRoomTooLong} retiredCtl=${s.loraRetiredCtl} nak=${s.loraNak} dropped=${s.loraDroppedQueue} " +
             "stale=${s.loraStaleAtSendByReason} direct=${s.loraDirectSent}/${s.loraDirectAcked}/${s.loraDirectUnreachable} " +
             "reprobed=${s.loraReprobed} tickDeferred=${s.loraTickDeferred} reassembled=${s.loraReassembled} " +
-            "frag=${s.loraFragSent}\n    rx/tx: $lines"
+            "frag=${s.loraFragSent}${meshcoreLine()}\n    rx/tx: $lines"
+    }
+
+    /** The MeshCore plane's own counts, beside [loraLine]'s: the bound parts taken, the reassembler's drops, the hooks'. */
+    private fun meshcoreLine(): String {
+        if (meshcore == null) return ""
+        val drops = metrics.fast().fastDropsByReason.filterKeys { it.name.startsWith("FRAG") || it.name.startsWith("ELIDED") }
+        return " boundParts=${metrics.lora().loraBoundPartsTaken} drops=$drops\n    meshcore: ${meshcoreHooks.counters}"
     }
 
     /** The DM thread id between this node and [peer], as this node names it. */
@@ -4073,3 +4422,53 @@ private suspend fun presentsAsItIs(
     val refused = flagged || overCeiling
     return if (refused) held.avatarHash != avatar && held.copy(avatarHash = null) == own.copy(avatarHash = null) else held == own
 }
+
+/** The coding rate every lab MeshCore board reports: 4/5 (the denominator). */
+private const val LAB_CR = 5
+
+private const val NANOS_PER_MS = 1_000_000L
+
+/** The MeshCore session's own backoff (`MeshcoreSession.BASE_BACKOFF_MS`, `MAX_BACKOFF_MS`), unless [LabLimits] shortens it. */
+private const val MESHCORE_FIELD_BACKOFF_MS = 5_000L
+private const val MESHCORE_BACKOFF_MAX_MS = 180_000L
+
+/** `GATT_ERROR`: the status a refused redial reports while a node goes down. */
+private const val GATT_ERROR = 133
+
+private val FRAG_ID_SOURCE = java.security.SecureRandom()
+
+/** Production's fragment-id draw (`LoraMeshTransport.fragIds`): SecureRandom over the 16-bit id. */
+private fun secureFragId(): Int = FRAG_ID_SOURCE.nextInt(LoraMeshTransport.FRAG_ID_MASK + 1)
+
+/**
+ * [inner]'s dials on [air]'s serial context: a new [FakeNusChannel] joins its board's interfaces there, never beside a
+ * delivery iterating them, and leaves them there too ([SerialChannel]). The power poll inside a dial suspends, so it holds
+ * nothing. `FakeNusChannel.write` hops on its own.
+ */
+private class SerialDialer(
+    private val inner: FakeMeshcoreDialer,
+    private val air: FakeMeshcoreAir,
+) : MeshcoreDialer by inner {
+    override suspend fun dial(
+        address: String,
+        mode: app.getknit.knit.mesh.lora.DialMode,
+        timeoutMs: Long,
+    ): NusDialResult =
+        when (val r = withContext(checkNotNull(air.serial)) { inner.dial(address, mode, timeoutMs) }) {
+            is NusDialResult.Opened -> r.copy(channel = SerialChannel(r.channel as FakeNusChannel, air))
+            else -> r
+        }
+}
+
+/** [inner], closed on [air]'s serial context: the session closes its channel from its own thread. */
+private class SerialChannel(
+    private val inner: FakeNusChannel,
+    private val air: FakeMeshcoreAir,
+) : NusChannel by inner {
+    override fun close() {
+        air.scope.launch(checkNotNull(air.serial)) { air.confined { inner.close() } }
+    }
+}
+
+/** Runs [block] on [this] air's serial context, as one of its own bodies: how a scenario edits a MeshCore topology. */
+internal suspend fun <T> FakeMeshcoreAir.meshcoreEdit(block: FakeMeshcoreAir.() -> T): T = snapshot { confined { block() } }

@@ -43,8 +43,10 @@ internal class LoraDirectPolicy(
     private val lingerMs: Long = LoraMeshTransport.REACHABLE_LINGER_MS,
     /** How long a refusal holds a peer whose profile never changes: the re-probe's longest gap, then one more try. */
     private val refusedLapseMs: Long = LoraReprobe.CAP_MS,
-    /** The most sends waiting at once, and the most ended ones remembered: the board kind's ([BoardTraits.maxFlights]). */
+    /** The most sends waiting at once: the board kind's ([BoardTraits.maxFlights]). */
     private val maxFlights: Int = MAX_FLIGHTS,
+    /** The most ended sends remembered for a late answer: the board kind's ([BoardTraits.maxEnded]). */
+    private val maxEnded: Int = maxFlights,
 ) {
     enum class Reach { UNKNOWN, REACHABLE, UNREACHABLE, REFUSED, NO_KEY }
 
@@ -87,7 +89,7 @@ internal class LoraDirectPolicy(
     /**
      * Flights that ended with no answer — past their deadline, with the board gone, or pushed out of a full table — by
      * handle, so a destination's ack arriving after all (the board's to-phone queue replayed after a BLE drop) still marks
-     * the board reachable. Bounded at [MAX_FLIGHTS], oldest dropped.
+     * the board reachable. Bounded at [maxEnded] (the board kind's [BoardTraits.maxEnded]), oldest dropped.
      */
     private val ended = LinkedHashMap<UInt, DirectSend>()
 
@@ -295,15 +297,95 @@ internal class LoraDirectPolicy(
      */
     @Synchronized
     fun launch(flight: Flight): Flight? {
+        // A reused handle is this send's now: an older ended send under it is no longer what an answer speaks for.
+        ended.remove(flight.handle)
         flights[flight.handle] = flight
         if (flights.size <= maxFlights) return null
         val oldest = flights.keys.first()
         return flights.remove(oldest)?.also(::remember)
     }
 
-    /** The flight [handle] names, ended: the caller settles it. Null for a handle this table is not waiting on. */
+    /** What became of an outcome [arrive] was asked about. */
+    enum class Arrival {
+        /** A flight waits on its handle: the caller settles it as ever. */
+        WAITING,
+
+        /** No flight yet, and the outcome may be its send's, outrunning its registration: held for [launchClaiming]. */
+        HELD,
+
+        /** Neither: a late answer, a broadcast's NAK, an implicit ack — the caller's unawaited handling, unchanged. */
+        UNAWAITED,
+    }
+
+    /** Outcomes held for a send not yet registered ([arrive]), by handle, with when each arrived; oldest first. */
+    private val early = LinkedHashMap<UInt, Pair<Long, PacketOutcome>>()
+
+    /**
+     * An [outcome] arrived at [now] (ADR 2026-11.gsqu's Stage 5c-2b amendment, the lab's B). A session answers a send the
+     * moment its board does — a MeshCore board's ack can come before the pacer has resumed from `board.send` and registered
+     * the flight — so an outcome [holdable] for a handle neither waited on nor remembered as ended is held, at most
+     * [EARLY_OUTCOME_TTL_MS] and [MAX_EARLY_OUTCOMES], for [launchClaiming] to settle. One monitor decides, so whichever
+     * side takes the record is the one that processes it: never lost, never twice.
+     */
     @Synchronized
-    fun resolve(handle: UInt): Flight? = flights.remove(handle)
+    fun arrive(
+        outcome: PacketOutcome,
+        now: Long,
+        holdable: Boolean,
+    ): Arrival {
+        if (outcome.id in flights) return Arrival.WAITING
+        if (!holdable || outcome.id in ended) return Arrival.UNAWAITED
+        purgeEarly(now)
+        early.remove(outcome.id)
+        early[outcome.id] = now to outcome
+        while (early.size > MAX_EARLY_OUTCOMES) early.remove(early.keys.first())
+        return Arrival.HELD
+    }
+
+    /**
+     * [launch], and the outcome [arrive] held for its handle, taken if it is still fresh at [now]: the caller settles it
+     * through the waiting flight. A record past its time is dropped unread, so a reused handle never settles a new send on
+     * an old answer.
+     */
+    @Synchronized
+    fun launchClaiming(
+        flight: Flight,
+        now: Long,
+    ): Pair<Flight?, PacketOutcome?> {
+        val evicted = launch(flight)
+        purgeEarly(now)
+        return evicted to early.remove(flight.handle)?.second
+    }
+
+    /** Held outcomes not yet claimed (the JVM tests). */
+    @Synchronized
+    internal fun earlyHeld(now: Long): Int {
+        purgeEarly(now)
+        return early.size
+    }
+
+    private fun purgeEarly(now: Long) {
+        early.values.removeAll { (at, _) -> now - at > EARLY_OUTCOME_TTL_MS || now < at }
+    }
+
+    /**
+     * The flight [handle] names, ended by [outcome]: the caller settles it. Null for a handle this table is not waiting on.
+     * One ended with no answer ([PacketOutcome.Unreachable], [PacketOutcome.NoOutcome]) is remembered, as a deadline's
+     * expiry is, so an answer the link reports for it later is read as a late one (ADR 2026-11.gsqu's Stage 5c-2b
+     * amendment): a MeshCore session's confirmation after its own give-up is a late ack. On Meshtastic, a refusal for a
+     * flight that ended on the transport's deadline ([PacketOutcome.NoOutcome]) while the session still waited on it is
+     * attributed to its send (a `35` books the key reply, a destination's refusal holds the peer) where it was a pacing
+     * late NAK; after the firmware's own give-up (`MAX_RETRANSMIT`) the session has dropped the destination, so an ack ends
+     * there and a refusal reaches the core as our board's, an unclassified late NAK as before.
+     */
+    @Synchronized
+    fun resolve(
+        handle: UInt,
+        outcome: PacketOutcome,
+    ): Flight? =
+        flights.remove(handle)?.also {
+            if (outcome is PacketOutcome.Unreachable || outcome is PacketOutcome.NoOutcome) remember(it)
+        }
 
     /** Whether [handle] is a direct send still waiting, without ending it (an implicit ack does not end the wait). */
     @Synchronized
@@ -339,7 +421,7 @@ internal class LoraDirectPolicy(
 
     private fun remember(flight: Flight) {
         ended[flight.handle] = flight.send
-        while (ended.size > maxFlights) ended.remove(ended.keys.first())
+        while (ended.size > maxEnded) ended.remove(ended.keys.first())
     }
 
     /** The soonest deadline or re-offer, or null with nothing waiting: what the deadline loop sleeps until. */
@@ -421,6 +503,16 @@ internal class LoraDirectPolicy(
 
         /** Every airing one direct send may cost: the send and each retry. What it is admitted and booked against. */
         const val AIRINGS = 1 + RETRANSMITS
+
+        /**
+         * How long an outcome outrunning its send's registration is held ([arrive]): the race is the pacer's resumption
+         * from `board.send`, milliseconds; well under any direct deadline (the first airing's time and a retry gap at the
+         * least), so a handle reused later never meets a record left from before.
+         */
+        const val EARLY_OUTCOME_TTL_MS = 5_000L
+
+        /** The most outcomes held at once ([arrive]): the oldest goes past it. */
+        const val MAX_EARLY_OUTCOMES = 16
 
         /** The firmware's contention windows, as powers of two (`RadioInterface.h`: `CWmin = 3`, `CWmax = 8`). */
         const val CW_MIN = 3
@@ -524,7 +616,10 @@ internal class LoraDirectPolicy(
 
         private const val LAST_BYTE_MASK = 0xFFu
 
-        /** The most sends waiting on an answer at once, and the most ended ones remembered for a late answer. */
+        /**
+         * The most sends waiting on an answer at once on a Meshtastic board ([BoardTraits.maxFlights]), and the most ended ones
+         * it remembers for a late answer ([BoardTraits.maxEnded]); a MeshCore board sets its own of both.
+         */
         const val MAX_FLIGHTS = 32
 
         /** The most offers parked behind one peer's send; the DMs among the rest stay with the source. */

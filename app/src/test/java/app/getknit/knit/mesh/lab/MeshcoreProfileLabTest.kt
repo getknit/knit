@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -231,8 +232,10 @@ class MeshcoreProfileLabTest {
             val carol = lab.node("carol").apply { setDisplayName("Carol") }
             val dave = lab.node("dave").apply { setDisplayName("Dave") }
             val frank = lab.node("frank").apply { setDisplayName("Frank") }
-            val copies = CopyOnWriteArrayList<MeshManager.SealedProfileSend>()
-            alice.manager.onSealedProfile = { copies += it }
+            val (copies, copiesAt) = recordCopies(alice)
+            // Every intro mark from the start, so a copy that spends one made before the watch is still named.
+            val marks = CopyOnWriteArrayList<IntroMark>()
+            alice.manager.onIntroMarked = { peerId, token -> marks += IntroMark(peerId, token, System.nanoTime()) }
             lab.linkAll(
                 alice to bob,
                 alice to carol,
@@ -259,10 +262,8 @@ class MeshcoreProfileLabTest {
             for (peer in listOf(bob, carol, dave)) assertTrue(lab.tryAwait(1) { if (holdsLatest(peer, alice)) 1 else 0 })
             assertNull(dave.peer(alice)?.meshcoreKey)
 
-            val marks = CopyOnWriteArrayList<String>()
-            alice.manager.onIntroMarked = { marks += it }
             val keylessAtDave = checkNotNull(dave.peer(alice)).updatedAt
-            val beforeAccept = IntroWatch.of(alice, dave, marks)
+            val beforeAccept = IntroWatch.of(alice, dave, marks, copiesAt)
             alice.accept(alice.dmWith(dave))
             awaitKey(dave, alice, KEY)
             val keyedAtDave = checkNotNull(dave.peer(alice)).updatedAt
@@ -270,7 +271,7 @@ class MeshcoreProfileLabTest {
             alice.heal()
             assertSealedOnlyTo(copies, alice.meshcoreClaims.sealedVersion.first(), dave, carrier = frank, since = beforeAccept)
 
-            val beforeBlock = IntroWatch.of(alice, dave, marks)
+            val beforeBlock = IntroWatch.of(alice, dave, marks, copiesAt)
             alice.block(dave)
             awaitKey(dave, alice, null)
             assertTrue("the block came under a newer version", checkNotNull(dave.peer(alice)).updatedAt > keyedAtDave)
@@ -428,8 +429,10 @@ class MeshcoreProfileLabTest {
      * The copies of [version] went to [changed] alone, and [carrier], who shares no session, holds one in custody: an
      * audience-only mint seals nobody whose answer did not change. The one re-seal allowed is the fan-out's designed one:
      * a session a contact-card intro marked owed is sealed at the next fan-out whatever it was last sent (ADR
-     * 2026-11.gsqu, 5b-1), so [changed] may be sealed [version] once more per intro mark [since] counts — never for no
-     * mark, and never anyone else.
+     * 2026-11.gsqu, 5b-1). Counted exactly, through the token (`MeshManager.onIntroMarked`): every copy past the first
+     * names the intro mark it superseded ([MeshManager.SealedProfileSend.mark]), a mark made for [changed], and no mark is
+     * spent twice — so a mark spent at another version inside the window, or one straddling the capture, cannot be counted
+     * toward this one. Never for no mark, and never anyone else.
      */
     private suspend fun assertSealedOnlyTo(
         copies: List<MeshManager.SealedProfileSend>,
@@ -446,40 +449,82 @@ class MeshcoreProfileLabTest {
         assertTrue("${carrier.name} never held the copy", lab.tryAwait(1) { if (id in carrier.custodyIds()) 1 else 0 })
         val trigger = since.describe()
         assertEquals("sealed beyond the changed peer; $trigger", setOf(changed.nodeId), atVersion.map { it.peerId }.toSet())
-        val allowed = 1 + since.marksOf(changed)
+        val spent = atVersion.mapNotNull { it.mark }
         assertTrue(
-            "${changed.name} sealed v$version ${atVersion.size} times, allowed $allowed (1 + its intro marks); $trigger",
-            atVersion.size <= allowed,
+            "${changed.name} sealed v$version ${atVersion.size} times, ${atVersion.size - spent.size} for no intro mark; $trigger",
+            atVersion.count { it.mark == null } <= 1 && atVersion.size <= 1 + spent.size,
         )
+        assertEquals("an intro mark spent twice at v$version: $spent; $trigger", spent.distinct(), spent)
+        val markedFor = since.tokensOf(changed)
+        assertTrue("a copy of v$version spent a mark not made for ${changed.name}: $spent; $trigger", markedFor.containsAll(spent))
     }
 
     /**
+     * Records every sealed profile copy [owner]'s fan-out sends, and each again stamped on a monotonic clock for an
+     * [IntroWatch]'s description: the lab's calendar does not move unless a scenario jumps it, so it would stamp every copy
+     * alike.
+     */
+    private fun recordCopies(
+        owner: LabNode,
+    ): Pair<CopyOnWriteArrayList<MeshManager.SealedProfileSend>, CopyOnWriteArrayList<Pair<Long, MeshManager.SealedProfileSend>>> {
+        val copies = CopyOnWriteArrayList<MeshManager.SealedProfileSend>()
+        val stamped = CopyOnWriteArrayList<Pair<Long, MeshManager.SealedProfileSend>>()
+        owner.manager.onSealedProfile = {
+            copies += it
+            stamped += System.nanoTime() to it
+        }
+        return copies to stamped
+    }
+
+    /** One intro mark (`MeshManager.onIntroMarked`): the peer, its token, and when it was seen on a monotonic clock. */
+    private class IntroMark(
+        val peerId: String,
+        val token: Long,
+        val atNanos: Long,
+    )
+
+    /**
      * What may make [owner]'s fan-out seal [peer] again at one version, read at [of] and described against now: the intro
-     * marks since (`MeshManager.onIntroMarked`), the intros answered and sent (`MeshMetrics`), and the session's root and
-     * era on both sides — a moved root is a reset, an unmoved one an intro answered twice or re-sent. Named in a failure.
+     * marks since (`MeshManager.onIntroMarked`) with their tokens, and the copies sealed since, each stamped on a monotonic
+     * clock so the order shows; the intros answered and sent on both sides (`MeshMetrics`, [owner]'s from the moment the
+     * keyless copy was read at [peer], [peer]'s own key-exchange deltas beside them); and the session's root and era on both
+     * sides — a moved root is a reset, an unmoved one an intro answered twice or re-sent. Named in a failure.
      */
     private class IntroWatch(
         private val owner: LabNode,
         private val peer: LabNode,
-        private val marks: List<String>,
+        private val marks: List<IntroMark>,
         private val marksAt: Int,
+        private val copies: List<Pair<Long, MeshManager.SealedProfileSend>>,
+        private val copiesAt: Int,
         private val answered: Long,
         private val sent: Long,
+        private val peerKeys: MeshMetrics.Snapshot.Keys,
         private val root: String?,
         private val peerEra: Long?,
+        private val startedNanos: Long,
     ) {
-        fun marksOf(node: LabNode): Int = marks.drop(marksAt).count { it == node.nodeId }
+        /** Every token a mark for [node] ever carried: a copy may spend one made before the watch began. */
+        fun tokensOf(node: LabNode): Set<Long> = marks.filter { it.peerId == node.nodeId }.mapTo(HashSet()) { it.token }
 
         suspend fun describe(): String {
             val keys = owner.metrics.keys()
+            val theirKeys = peer.metrics.keys()
             val names = mapOf(peer.nodeId to peer.name)
             val ours = owner.session(peer)
             val theirs = peer.session(owner)
+            val ms = { nanos: Long -> (nanos - startedNanos) / NANOS_PER_MS }
+            val marked = marks.drop(marksAt).map { "${names[it.peerId] ?: it.peerId.take(6)}#${it.token}@+${ms(it.atNanos)}ms" }
+            val sealed =
+                copies.drop(copiesAt).map { (at, c) ->
+                    "${names[c.peerId] ?: c.peerId.take(6)} v${c.version} mark=${c.mark}@+${ms(at)}ms"
+                }
             // An intro answered with the root unmoved is a second answer to an init, not a reset inside the window; how
             // old the peer's era is says whether that init was a fresh one (a race's loser re-initiating) or the first.
-            return "intro marks since: ${marks.drop(marksAt).map { names[it] ?: it.take(6) }}, introsAnswered +" +
-                "${keys.introsAnswered - answered}, introsSent +${keys.introsSent - sent}, ${owner.name}↔${peer.name} root " +
-                "$root→${ours?.rootHash}, ${peer.name}'s era $peerEra→${theirs?.establishedAt} " +
+            return "intro marks since: $marked, copies since: $sealed, ${owner.name} introsAnswered +" +
+                "${keys.introsAnswered - answered}, introsSent +${keys.introsSent - sent}; ${peer.name} introsAnswered +" +
+                "${theirKeys.introsAnswered - peerKeys.introsAnswered}, introsSent +${theirKeys.introsSent - peerKeys.introsSent}; " +
+                "${owner.name}↔${peer.name} root $root→${ours?.rootHash}, ${peer.name}'s era $peerEra→${theirs?.establishedAt} " +
                 "(${owner.now() - (theirs?.establishedAt ?: 0L)} ms old), initiator ${owner.name}=${ours?.weAreInitiator} " +
                 "${peer.name}=${theirs?.weAreInitiator}, ${peer.name}'s last reset sent at ${theirs?.lastResetSentAt}"
         }
@@ -488,7 +533,8 @@ class MeshcoreProfileLabTest {
             suspend fun of(
                 owner: LabNode,
                 peer: LabNode,
-                marks: List<String>,
+                marks: List<IntroMark>,
+                copies: List<Pair<Long, MeshManager.SealedProfileSend>>,
             ): IntroWatch {
                 val keys = owner.metrics.keys()
                 return IntroWatch(
@@ -496,10 +542,14 @@ class MeshcoreProfileLabTest {
                     peer,
                     marks,
                     marks.size,
+                    copies,
+                    copies.size,
                     keys.introsAnswered,
                     keys.introsSent,
+                    peer.metrics.keys(),
                     owner.session(peer)?.rootHash,
                     peer.session(owner)?.establishedAt,
+                    System.nanoTime(),
                 )
             }
         }
@@ -630,6 +680,8 @@ class MeshcoreProfileLabTest {
     private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
     private companion object {
+        const val NANOS_PER_MS = 1_000_000L
+
         /** RFC 8032 TEST 2's public key: a full-order Ed25519 point, as a MeshCore board's is. */
         const val KEY = "PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw="
         const val KEY_HEX = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"

@@ -18,6 +18,7 @@ import app.getknit.knit.mesh.lora.DialMode
 import app.getknit.knit.mesh.lora.GattResult
 import app.getknit.knit.mesh.lora.KnitChannel
 import app.getknit.knit.mesh.lora.LinkState
+import app.getknit.knit.mesh.lora.LoraContactPolicy
 import app.getknit.knit.mesh.lora.PacketIdSource
 import app.getknit.knit.mesh.lora.PacketOutcome
 import app.getknit.knit.mesh.lora.ProvisionMode
@@ -330,6 +331,14 @@ internal class MeshcoreSession(
     override suspend fun teach(key: ByteArray): ContactWrite =
         call({ ContactWrite.NOT_READY }, { ContactWrite.FAILED }) { c -> runTeach(c, key) }
 
+    /**
+     * Whether [key] is a key Knit taught this board and its zero-hop pin read back on this connection: what a DM to it waits
+     * for. Read off the pins' own lock, never the actor's, for the mesh lab's readiness wait (ADR 2026-11.gsqu's Stage 5c-2b
+     * amendment); nothing in the app reads it.
+     */
+    internal fun taughtAndPinned(key: ByteArray): Boolean =
+        MeshcorePins.addrOf(key)?.let { pins.teaches(key) && pins.isVerified(it) } == true
+
     /** Removes [key]'s contact and reads it gone. */
     suspend fun removeContact(key: ByteArray): ContactWrite =
         call({ ContactWrite.NOT_READY }, { ContactWrite.FAILED }) { c -> runRemove(c, key) }
@@ -383,12 +392,25 @@ internal class MeshcoreSession(
         ranked: List<ByteArray>,
         withdrawn: Boolean,
     ) {
-        pins.setTaught(ranked)
+        val added = pins.setTaught(ranked)
         // An empty set handed over for want of consent is no taught set (lora L1): the reconcile that a later consent owes
         // waits for the real one, never lists against nothing and removes every Knit contact.
         taughtKnown = !withdrawn
-        // Only a reconcile waiting on the set is woken: any other change waits for the next tick.
-        if (reconcilePending) poke.trySend(Unit)
+        // Only a reconcile waiting on the set is woken: it writes what the set holds. Past it, a key taught mid-connection is
+        // written now (ADR 2026-11.gsqu's Stage 5c-2b amendment, the lab's first two-node DM): the firmware drops a DM from a
+        // sender it holds no contact for, so a contact who writes first would reach us only after our next Ready or our own
+        // send to them. A read of the key, a count read when the Ready took no listing, and at most one flash write a key,
+        // on a board set up for Knit only (the job is dropped anywhere else); no air. At most
+        // [MeshcorePins.MAX_LIVE_TEACHES_PER_DAY] a key a UTC day: past it the next Ready's reconcile writes it.
+        if (reconcilePending) {
+            poke.trySend(Unit)
+        } else if (!withdrawn && added.isNotEmpty() && _state.value is BoardState.Ready) {
+            val day = utcDay()
+            added.forEach { key ->
+                if (pins.queueTeach(key, day) == MeshcorePins.TeachQueue.DEFERRED) counters.liveTeachesDeferred.incrementAndGet()
+            }
+            poke.trySend(Unit)
+        }
     }
 
     /** The latest read of the bound slot, or null: `checkSlot` refuses without a recent one (binding rule "contacts" 2). */
@@ -1782,8 +1804,8 @@ internal class MeshcoreSession(
         } else {
             val (key, job) = pins.nextJob() ?: return
             when (job) {
-                MeshcorePins.Job.PIN -> pinKey(c, key)
-                MeshcorePins.Job.TEACH -> runTeach(c, key)
+                MeshcorePins.Job.PIN -> if (pinKey(c, key)) counters.repinsDone.incrementAndGet()
+                MeshcorePins.Job.TEACH -> runLiveTeach(c, key)
             }
         }
         if (c.steps.isNotEmpty() || c.reassert.isNotEmpty() || pins.hasJobs()) poke.trySend(Unit)
@@ -1813,6 +1835,10 @@ internal class MeshcoreSession(
             reconcilePending = false
             if (knit) {
                 reconcile(c)
+            } else {
+                // Owed and dropped: a Ready on a board this connection does not consent for (5c-2b's mesh-lab review).
+                counters.reconcilesDropped.incrementAndGet()
+                log("meshcore reconcile dropped: board not set up for Knit")
             }
             poke.trySend(Unit)
             return true
@@ -2213,6 +2239,39 @@ internal class MeshcoreSession(
         return if (overwrite) writeKnitRecord(c, key, fresh = false) else ContactWrite.ALREADY_PRESENT
     }
 
+    /**
+     * A queued teach (a key the taught set gained while Ready, or a contact the board deleted), counted: written toward the
+     * key's daily bound, failed re-queued once (never looped: the next Ready's reconcile writes it otherwise). Contested on
+     * this connection, nothing is written (security B3: `prefixFree` checks taught keys only).
+     */
+    private suspend fun runLiveTeach(
+        c: Conn,
+        key: ByteArray,
+    ) {
+        val addr = MeshcorePins.addrOf(key) ?: return
+        if (pins.keyFor(addr) == null) return // no longer taught, or contested since it was queued
+        c.teachWriteLanded = false
+        val result = runTeach(c, key)
+        // Every write the board answered OK is a flash write, whatever its read-back found (the 5c-2b review's N1).
+        if (result == ContactWrite.WRITTEN || c.teachWriteLanded) pins.onLiveTeachSpent(key, utcDay(), result == ContactWrite.WRITTEN)
+        when (result) {
+            ContactWrite.WRITTEN -> {
+                counters.liveTeachesWritten.incrementAndGet()
+            }
+
+            ContactWrite.FAILED -> {
+                counters.liveTeachesFailed.incrementAndGet()
+                pins.retryTeachOnce(key)
+            }
+
+            // Already Knit's, no free slot (the reconcile's count decides at the next Ready), or left the set meanwhile.
+            else -> {}
+        }
+    }
+
+    /** The UTC day of the wall clock, the live teach bound's ([MeshcorePins.queueTeach]). */
+    private fun utcDay(): Long = wallClock() / LoraContactPolicy.DAY_MS
+
     /** A teach of a key the board does not hold: only into a free slot, by the local count (one count read when none). */
     private suspend fun teachFresh(
         c: Conn,
@@ -2230,23 +2289,49 @@ internal class MeshcoreSession(
 
     /**
      * Writes [key]'s Knit record (a CHAT favourite named `Knit xxxx`, zero-hop) and reads it back as exactly that; a [fresh]
-     * one takes a slot in the local count. The key becomes taught and its pin verified.
+     * one takes a slot in the local count. Its pin verified. Only for a key the taught set holds, asked right before the
+     * write and again after the read-back (the 5c-2b review's B1): the hooks may drop it (a block, a removal, a contest)
+     * while the reads before the write are out, and a key written for nobody would stand on the board until the next Ready,
+     * its DMs decrypted and acked. One dropped meanwhile is [ContactWrite.NOT_FOUND] and never taught again here, so the
+     * removal the hooks queued behind this write ([removeUntaught]) finds it untaught and removes it.
      */
     private suspend fun writeKnitRecord(
         c: Conn,
         key: ByteArray,
         fresh: Boolean,
     ): ContactWrite {
-        // A prefix another taught key holds is never written: the board would send both keys' DMs to the first (security B3).
-        if (!pins.prefixFree(key)) return ContactWrite.FAILED
+        val addr = MeshcorePins.addrOf(key)
+        return when {
+            // Taught and not contested on this connection (security B3: `prefixFree` reads taught keys only, so a contested
+            // prefix would get a second contact; the 5c-2b review's N2). The reconcile's own writes are never contested
+            // before they run: `MeshcoreContacts.plan` leaves contested keys out of its writes, and a blocked write contests
+            // itself only when its sharer's removal failed, before it gets here.
+            addr == null || pins.keyFor(addr) == null -> ContactWrite.NOT_FOUND
+
+            // A prefix another taught key holds is never written: the board would send both keys' DMs to the first (B3).
+            !pins.prefixFree(key) -> ContactWrite.FAILED
+
+            !writtenAndReadBack(c, key, fresh) -> ContactWrite.FAILED
+
+            // Dropped while the write was out: never taught back, so the queued removal removes it.
+            !pins.teaches(key) -> ContactWrite.NOT_FOUND
+
+            else -> ContactWrite.WRITTEN.also { pins.onPinned(addr) }
+        }
+    }
+
+    /** [key]'s Knit record written and read back as exactly that; a [fresh] one takes a slot in the local count. */
+    private suspend fun writtenAndReadBack(
+        c: Conn,
+        key: ByteArray,
+        fresh: Boolean,
+    ): Boolean {
         val write = MeshcoreProto.addUpdateContact(ContactRecord.knit(key, MeshcoreNames.forKey(key)), withPosition = false)
-        if (writeAnswered(c, write, FLASH_TIMEOUT_MS) != Answer.OK) return ContactWrite.FAILED
+        if (writeAnswered(c, write, FLASH_TIMEOUT_MS) != Answer.OK) return false
+        c.teachWriteLanded = true
         if (fresh) c.contacts = c.contacts?.plus(1)
-        val back = readContactOn(c, key)?.record ?: return ContactWrite.FAILED
-        if (!MeshcoreContacts.isKnitRecord(back)) return ContactWrite.FAILED
-        val addr = pins.noteTaught(key) ?: return ContactWrite.FAILED
-        pins.onPinned(addr)
-        return ContactWrite.WRITTEN
+        val back = readContactOn(c, key)?.record ?: return false
+        return MeshcoreContacts.isKnitRecord(back)
     }
 
     /** A removal outside setup's erase and Restore's own: only on a board set up for Knit (the 5b-2 review's B1). */
@@ -2989,6 +3074,9 @@ internal class MeshcoreSession(
 
         /** The Ready reconcile is owed (one listing a Ready). */
         var reconcileWanted = false
+
+        /** Whether the last Knit-record write the board answered OK: what a live teach charges its key's daily bound for. */
+        var teachWriteLanded = false
 
         /**
          * A setup's write-ahead landed, or is being written under a kept consent, and the setup has not closed: on exit, an

@@ -1219,7 +1219,16 @@ holders: prefix-addressed, keyed, ranked, `direct` false when contested) and giv
 (`setKnitContacts`): only those keys are ever sent to or pinned (`MeshcorePins.keyFor`, security B1), and a prefix another
 key holds is refused (`learn`) or, listed on the board under another key, contested for the connection (`contest`, B3). A
 key that leaves the set is removed from the board; a refused DM teaches only a key in the set, once per (board, key) until a
-DM to it is acked.
+DM to it is acked. A key the set gains while a connection is Ready and no reconcile is pending is written at once (a live
+`TEACH` job, Stage 5c-2b: a read of the key, a count read when the Ready took no listing, at most one write): the firmware
+drops a DM from a sender it holds no contact for, so a new contact who writes first must not wait for our next Ready or our
+own send. It is outside the re-pin's once-a-minute gap (nothing pushed), bounded instead at
+`MeshcorePins.MAX_LIVE_TEACHES_PER_DAY` (4) writes a key a UTC day — past it the next Ready's reconcile writes the key, never
+dropped — and never for a contested prefix; a failed one is re-queued once. Every write the board took is charged, whatever
+its read-back found. Every write of a Knit record (the live teach, the reactive teach, the reconcile's) needs the key taught
+and uncontested (`MeshcorePins.keyFor`) before the write and taught after the read-back, and never teaches a key back: one
+the hooks dropped meanwhile ends `NOT_FOUND`, so the removal they queued behind it removes it. Oracles:
+`meshcoreLiveTeachesWritten` / `…Failed` / `…Deferred`, `meshcoreReconcilesDropped`.
 
 ```
 Ready ──(taught set known, board set up for Knit: Knit slot + `Knit abcd`)──► GET_CONTACTS since 0  (one a Ready)

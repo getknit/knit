@@ -81,20 +81,83 @@ internal class MeshcorePins(
     /**
      * The keys Knit taught this board, ranked most-wanted first (`MeshcoreContacts` decides): the only keys a DM is sent to
      * or a pin written for, the targets of a targeted re-pin and the order of the Ready re-assert. It replaces the set: a
-     * key dropped from the list is forgotten, so a DM to it is refused unwritten.
+     * key dropped from the list is forgotten, so a DM to it is refused unwritten. Answers the keys taught now that were not
+     * before, ranked: what a connection already Ready writes at once ([queueTeach]).
      */
     @Synchronized
-    fun setTaught(ranked: List<ByteArray>) {
+    fun setTaught(ranked: List<ByteArray>): List<ByteArray> {
+        val before = HashSet(taught)
         taught.clear()
         keys.clear()
         ranked.forEach(::learn)
         verified.retainAll(taught)
         queued.keys.retainAll(taught)
+        return taught.filter { it !in before }.mapNotNull { keys[it]?.copyOf() }
     }
 
-    /** Marks [key] taught by Knit (a teach this session wrote), at the end of the ranking: its address, or null as [learn]. */
+    /** What [queueTeach] did with a key. */
+    enum class TeachQueue {
+        /** Queued (or one was queued already). */
+        QUEUED,
+
+        /** Past the key's live writes for [day]: left to the next Ready's reconcile, which writes every taught key. */
+        DEFERRED,
+
+        /** Not a key the set holds, or contested on this connection (security B3): nothing to write. */
+        REFUSED,
+    }
+
+    /** Live teach writes a key has had today: the UTC day they were counted on, and how many. */
+    private val liveTeaches = HashMap<BoardAddr.MeshCore, Pair<Long, Int>>()
+
+    /** Keys a failed live teach was re-queued for once since the last Ready or their last write. */
+    private val teachRetried = HashSet<BoardAddr.MeshCore>()
+
+    /**
+     * Queues a write of [key], taught since the last Ready, unless a job for it is queued already (ADR 2026-11.gsqu's
+     * Stage 5c-2b amendment): outside the push rate limit, since nothing pushed. A key no longer taught, or contested on
+     * this connection, queues nothing ([TeachQueue.REFUSED]); one past [MAX_LIVE_TEACHES_PER_DAY] live writes on UTC [day]
+     * is left to the next Ready's reconcile ([TeachQueue.DEFERRED]) — a board map that flaps a key in and out costs its
+     * flash a removal and a write each time, and the removal of a key that left the set is never bounded.
+     */
     @Synchronized
-    fun noteTaught(key: ByteArray): BoardAddr.MeshCore? = learn(key)
+    fun queueTeach(
+        key: ByteArray,
+        day: Long,
+    ): TeachQueue {
+        val addr = addrOf(key) ?: return TeachQueue.REFUSED
+        if (addr !in taught || addr in contested) return TeachQueue.REFUSED
+        val (counted, n) = liveTeaches[addr] ?: (day to 0)
+        if (counted == day && n >= MAX_LIVE_TEACHES_PER_DAY) return TeachQueue.DEFERRED
+        queued.putIfAbsent(addr, Job.TEACH)
+        return TeachQueue.QUEUED
+    }
+
+    /**
+     * A live teach of [key] cost the board a flash write on UTC [day] — written and read back ([written]), or answered OK and
+     * then failed its read-back or found the key dropped (the 5c-2b review's N1) — counted toward [queueTeach]'s bound. Only
+     * a whole write spends the key's retry anew, so a write that keeps failing its read-back is retried once, never looped.
+     */
+    @Synchronized
+    fun onLiveTeachSpent(
+        key: ByteArray,
+        day: Long,
+        written: Boolean,
+    ) {
+        val addr = addrOf(key) ?: return
+        val (counted, n) = liveTeaches[addr] ?: (day to 0)
+        liveTeaches[addr] = day to (if (counted == day) n + 1 else 1)
+        if (written) teachRetried -= addr
+    }
+
+    /** A live teach of [key] failed: re-queued once, never looped (the next Ready's reconcile writes it otherwise). */
+    @Synchronized
+    fun retryTeachOnce(key: ByteArray): Boolean {
+        val addr = addrOf(key) ?: return false
+        if (addr !in taught || addr in contested || !teachRetried.add(addr)) return false
+        queued.putIfAbsent(addr, Job.TEACH)
+        return true
+    }
 
     /** Whether [key] could be learned: 32 bytes, and its prefix held by no other key. */
     @Synchronized
@@ -162,6 +225,7 @@ internal class MeshcorePins(
         if (board != contestBoard) contested.clear()
         contestBoard = board
         queued.clear()
+        teachRetried.clear()
         return taught.mapNotNull { addr -> keys[addr]?.copyOf().also { lastJobAt[addr] = now } }
     }
 
@@ -209,6 +273,12 @@ internal class MeshcorePins(
     companion object {
         /** At most one targeted re-pin per key a minute (binding rule "sends" 2). */
         const val REPIN_GAP_MS = 60_000L
+
+        /**
+         * Live teach writes a key may have a UTC day ([queueTeach], ADR 2026-11.gsqu's Stage 5c-2b amendment): what a flapping
+         * board map can cost the board's flash per contact; past it the next Ready's reconcile writes the key.
+         */
+        const val MAX_LIVE_TEACHES_PER_DAY = 4
 
         /** A key's address: its first six bytes, or null for a key that is not 32. */
         fun addrOf(key: ByteArray): BoardAddr.MeshCore? =

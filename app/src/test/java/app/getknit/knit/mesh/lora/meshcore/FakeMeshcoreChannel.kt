@@ -307,6 +307,9 @@ internal class FakeRadio(
 
     fun transmitting(now: Long): Boolean = txUntil > now
 
+    /** [transmitting], or an airing whose end has not run yet ([txUntil] is reset there): what holds the radio's own queue. */
+    fun busyTransmitting(now: Long): Boolean = transmitting(now) || txUntil >= 0
+
     fun receiving(now: Long): Boolean = rx?.let { it.endsAt > now } == true || busyUntil > now
 
     /** Whether this radio's hash is the first of [path] (`isHashMatch`). */

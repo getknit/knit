@@ -98,9 +98,9 @@ class LoraDirectPolicyTest {
         p.launch(flight(7u))
         assertTrue(p.isWaiting(7u))
         assertTrue(p.hasFrame("f7"))
-        assertEquals(7u, p.resolve(7u)?.handle)
+        assertEquals(7u, p.resolve(7u, PacketOutcome.Acked(7u, byDestination = true))?.handle)
         assertFalse(p.isWaiting(7u))
-        assertNull("resolved once", p.resolve(7u))
+        assertNull("resolved once", p.resolve(7u, PacketOutcome.Acked(7u, byDestination = true)))
     }
 
     @Test
@@ -326,5 +326,87 @@ class LoraDirectPolicyTest {
         p.clearPeers()
         assertTrue("the board went: both holds with it", p.dueRetries(Long.MAX_VALUE).isEmpty())
         assertNull(p.releaseContact("carol"))
+    }
+
+    // --- an answer that outruns its send (ADR 2026-11.gsqu's Stage 5c-2b amendment) ---
+
+    private fun ack(id: UInt) = PacketOutcome.Acked(id, byDestination = true, proof = AckProof.VALID, flown = 1)
+
+    @Test
+    fun anAnswerForAHandleNotYetLaunchedIsHeldAndTakenOnceByItsLaunch() {
+        val p = policy()
+        assertEquals(LoraDirectPolicy.Arrival.HELD, p.arrive(ack(1u), now = 0, holdable = true))
+        val (evicted, early) = p.launchClaiming(flight(1u), now = 10)
+        assertNull(evicted)
+        assertEquals(ack(1u), early)
+        assertEquals("taken once", 0, p.earlyHeld(now = 10))
+        assertEquals("then the flight waits as ever", LoraDirectPolicy.Arrival.WAITING, p.arrive(ack(1u), now = 11, holdable = true))
+    }
+
+    @Test
+    fun onlyAHoldableAnswerForAHandleNeitherWaitingNorEndedIsHeld() {
+        val p = policy()
+        assertEquals(
+            "a refusal (a broadcast's late NAK) is not",
+            LoraDirectPolicy.Arrival.UNAWAITED,
+            p.arrive(ack(5u), 0, holdable = false),
+        )
+        p.launch(flight(2u, deadline = 10))
+        p.expired(now = 20)
+        assertEquals("a late answer to an ended send is not", LoraDirectPolicy.Arrival.UNAWAITED, p.arrive(ack(2u), 21, holdable = true))
+        assertEquals(0, p.earlyHeld(now = 21))
+    }
+
+    @Test
+    fun aFlightEndedWithNoAnswerIsRememberedSoItsLateAckIsNoEarlyOne() {
+        val p = policy()
+        p.launch(flight(3u))
+        assertEquals(3u, p.resolve(3u, PacketOutcome.Unreachable(3u))?.handle)
+        assertEquals("ended, not held", LoraDirectPolicy.Arrival.UNAWAITED, p.arrive(ack(3u), now = 1, holdable = true))
+        assertEquals(0, p.earlyHeld(now = 1))
+        assertEquals("taken once by the late-ack path", 3u, p.ended(3u)?.let { 3u })
+        p.launch(flight(4u))
+        p.resolve(4u, ack(4u))
+        assertNull("an answered flight is not remembered", p.ended(4u))
+    }
+
+    @Test
+    fun onMeshcoreAGiveUpThreeEndingsBackIsStillALateAckNotAnEarlyOne() {
+        // lora-reviewer's round 4: MeshCore's `maxFlights` is 8 / 3 = 2, and `ended` was bounded by it, while the board
+        // keeps the last eight codes and the session confirms any of them.
+        val p =
+            LoraDirectPolicy(
+                lingerMs = linger,
+                maxFlights = app.getknit.knit.mesh.lora.meshcore.MeshcoreTraits.maxFlights,
+                maxEnded = app.getknit.knit.mesh.lora.meshcore.MeshcoreTraits.maxEnded,
+            )
+        for (h in 1u..3u) {
+            p.launch(flight(h, peer = "p$h"))
+            p.resolve(h, PacketOutcome.Unreachable(h))
+        }
+        assertEquals("a late ack, not held", LoraDirectPolicy.Arrival.UNAWAITED, p.arrive(ack(1u), now = 1, holdable = true))
+        assertTrue(p.ended(1u) != null)
+    }
+
+    @Test
+    fun aLaunchUnderAReusedHandleForgetsTheOlderSendThatEndedUnderIt() {
+        val p = policy()
+        p.launch(flight(9u))
+        p.resolve(9u, PacketOutcome.Unreachable(9u))
+        p.launch(flight(9u, peer = "carol"))
+        assertNull("the newer send is what an answer speaks for", p.ended(9u))
+        assertEquals(LoraDirectPolicy.Arrival.WAITING, p.arrive(ack(9u), now = 1, holdable = true))
+    }
+
+    @Test
+    fun aHeldAnswerExpiresUnclaimedAndTheRecordIsBounded() {
+        val p = policy()
+        p.arrive(ack(1u), now = 0, holdable = true)
+        assertEquals(1, p.earlyHeld(now = LoraDirectPolicy.EARLY_OUTCOME_TTL_MS))
+        assertEquals("past its time", 0, p.earlyHeld(now = LoraDirectPolicy.EARLY_OUTCOME_TTL_MS + 1))
+        assertNull("a launch after it finds nothing", p.launchClaiming(flight(1u), now = LoraDirectPolicy.EARLY_OUTCOME_TTL_MS + 2).second)
+        repeat(LoraDirectPolicy.MAX_EARLY_OUTCOMES + 4) { p.arrive(ack((100 + it).toUInt()), now = 100_000, holdable = true) }
+        assertEquals(LoraDirectPolicy.MAX_EARLY_OUTCOMES, p.earlyHeld(now = 100_000))
+        assertNull("the oldest went", p.launchClaiming(flight(100u), now = 100_000).second)
     }
 }

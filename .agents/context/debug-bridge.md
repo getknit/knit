@@ -238,7 +238,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   locked lab device. `--es address <MAC>` (+ `--es name <n>`) binds a bonded board, `--ei channel <idx>`
   sets the channel index, `--ez on <true|false>` flips the switch; no extras dumps
   `state/boardNodeNum/snr/rssi/queueFree/heard/counters`. The counters (`loraSent`/`loraReceived`/
-  `loraReassembled`/`loraNak`/`loraTooBig`) are the two-board range oracle; `loraNakByReason` (the board's
+  `loraReassembled`/`loraNak`/`loraTooBig`) are the two-board range oracle (Stage 5c-2b adds `loraBoundPartsTaken`, bound
+  parts the reassembler absorbed, and `loraNotOurs`, somebody else's frame a board refused, `lora not ours …`); `loraNakByReason` (the board's
   `Routing.error_reason` names) says *why* a NAK happened — `TOO_LARGE` means the payload cap is wrong,
   `DUTY_CYCLE_LIMIT`/`RATE_LIMIT_EXCEEDED` mean airtime pressure — and every NAK is also logged as
   `lora nak id=… reason=…` under `LoraMeshTransport`. Since ADR 2026-10.rp3s the dump carries no `bridge` switch and no
@@ -287,7 +288,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   left). The `counters` block also carries the contacts' and the reconcile's counts (`meshcoreTeachWritten`,
   `meshcoreKeysWanted`, `meshcoreKeysSkipped`, `meshcoreRemovedUntaught`, `meshcoreAcksBookedDirect`, `meshcoreContactListings`,
   `meshcoreListingsShort`, `meshcoreReconciles`, `meshcoreReconcilesSkipped`, `meshcoreReconcileRemoved`, `…Overwritten`,
-  `…Taught`, `…Failed`, `…Deferred`, `meshcorePrefixContests`, `meshcoreSetupErasedContacts`, `meshcoreSetupClearedSlots`) and the consent's refusals (`meshcoreKeyUnproven`,
+  `…Taught`, `…Failed`, `…Deferred`, `meshcoreReconcilesDropped`, `meshcorePrefixContests`, `meshcoreSetupErasedContacts`,
+  `meshcoreSetupClearedSlots`, and since Stage 5c-2b `meshcoreRepinsDone`, `meshcoreLiveTeachesWritten`, `…Failed`,
+  `…Deferred`) and the consent's refusals (`meshcoreKeyUnproven`,
   `meshcoreProofUnanswered`, `meshcoreUnbondedInert`, `meshcoreConsentMismatches`, `meshcoreConsentReadFailures`,
   `meshcoreRecordReadFailures`, `meshcoreRecordWriteFailures`, `meshcoreRestoreMismatches`, `meshcoreConsentApplyFailures`).
   `--es prov unbind` may also answer `FAILED`: the record could not be marked pending, so the binding is to stay. Keys: `built`, `enabled`, `dms`, `bound`, `state`, `version`

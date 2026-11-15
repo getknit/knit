@@ -723,6 +723,8 @@ class MeshMetrics {
     private val loraPadded = AtomicLong()
     private val loraReceived = AtomicLong()
     private val loraReassembled = AtomicLong()
+    private val loraBoundPartsTaken = AtomicLong()
+    private val loraNotOurs = AtomicLong()
     private val loraTooBig = AtomicLong()
     private val loraDroppedQueue = AtomicLong()
     private val loraAirtimeHeld = AtomicLong()
@@ -1765,6 +1767,19 @@ class MeshMetrics {
         loraReassembled.incrementAndGet()
     }
 
+    /**
+     * A bound part (`0x07`) the reassembler absorbed, paired or left waiting (ADR 2026-11.gsqu's Stage 5c-2b amendment): the
+     * event a scenario waits on before it releases the honest part behind a forger's, never the air's record.
+     */
+    fun onLoraBoundPartTaken() {
+        loraBoundPartsTaken.incrementAndGet()
+    }
+
+    /** A frame somebody else wrote, handed to a board's fan-out (a relay's re-fan) and refused: a board is no relay (rp3s). */
+    fun onLoraNotOurs() {
+        loraNotOurs.incrementAndGet()
+    }
+
     /** A frame no LoRa encoding could carry (> ~687 B compact); it rides the radios/custody instead. */
     fun onLoraTooBig() {
         loraTooBig.incrementAndGet()
@@ -2328,6 +2343,8 @@ class MeshMetrics {
             loraPadded = loraPadded.get(),
             loraReceived = loraReceived.get(),
             loraReassembled = loraReassembled.get(),
+            loraBoundPartsTaken = loraBoundPartsTaken.get(),
+            loraNotOurs = loraNotOurs.get(),
             loraTooBig = loraTooBig.get(),
             loraDroppedQueue = loraDroppedQueue.get(),
             loraAirtimeHeld = loraAirtimeHeld.get(),
@@ -2686,6 +2703,8 @@ class MeshMetrics {
             val loraPadded: Long = 0,
             val loraReceived: Long = 0,
             val loraReassembled: Long = 0,
+            val loraBoundPartsTaken: Long = 0,
+            val loraNotOurs: Long = 0,
             val loraTooBig: Long = 0,
             val loraDroppedQueue: Long = 0,
             val loraAirtimeHeld: Long = 0,

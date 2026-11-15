@@ -1447,3 +1447,158 @@ PATH about 3 s after the flooded ack); the drift to one hop and its re-pin; a st
 `tx_delay_factor` 0.5 and 2.0; a real forger board airing junk (its gaps and collisions at R; a shorter-preamble forger);
 the offline queue's real size and its loss on reboot; a 157-B DM through the ESP32 notify; `CMD_SIGN` on hardware (Q16);
 `tx_air` against Knit's ledger over an hour.
+
+## Amendment 2026-11-14 — Stage 5c-2b: a MeshCore node in the mesh lab, and what two nodes exchange (draft)
+
+Built under the Stage 5c-2 design pass (mesh-lab-reviewer's findings, and lora-reviewer's two seam findings: no injected
+pace, the production claim path). Test code, and one production finding fixed (below). Debug builds only.
+
+- **The node.** `MeshLab.node(meshcore = air)`, a parameter beside `air`: a node given one never takes the boards sweep's
+  Meshtastic air, so the `mesh-lab-boards` job runs `Meshcore*LabTest` with one LoRa plane a node. Its plane is the
+  production child, as `di/MeshModule` and `di/LoraWiring` build it: the `MeshcoreSession` over the node's fake board, the
+  hooks `meshcorePlane` builds, the transport at **its own pace** (MeshCore's `LoraAirtime`, gap 0 — the Meshtastic lab's
+  injected `LoraPacePolicy` would have priced a cap production never computes), the board key reaching `MeshcoreClaimStore`
+  through `bindingAddress` under the hooks' `claimMutex`, the setup records under SQLCipher (`MeshcoreSetupStore`), the
+  pinned author check, the author ids, the plane state and `LoraDirectRouter` as production binds them,
+  `bindMeshcoreDirect` before `start`. The first boot sets the board up through the real path (`provisionKnitChannel(Setup)`:
+  the session's transaction, its record, its signed consent); `driveMeshcoreBoard` refuses a node with a board. Every board
+  reports the preset the air uses (SF7 / 250 kHz, inside the 869.4–869.65 MHz 10 % sub-band).
+- **Three clocks.** The session's `now` is monotonic (`System.nanoTime`, as production's `elapsedRealtime`), so a
+  `lab.clock.advance` never ends its `ElapsedWait`s; the plane, the hooks and the session's `wallClock` are the node's
+  `LabClock`, so a scenario can jump past the re-probe gap or the fragment window; the board's uptime is the lab's calendar,
+  so the duty law's boot date (`wallClock − uptime`) stays put across a jump. The air runs on a lab-owned scope, one at a
+  time on the chaos dispatcher; the fake's dials, writes and channel closes all hop onto it.
+- **Readiness.** Boot returns once the session is Ready, its record consents, the claim store holds the key and the claim
+  is minted (sealed-only: the cleartext profile does not move for it). `MeshLab.awaitTaught(a, b)` returns once b's key is a
+  contact on a's board and a's session holds it taught and pinned (`MeshcoreSession.taughtAndPinned`); `awaitAcquainted`
+  calls it for every MeshCore pair that is each other's direct contact (the board map's rule: a link makes no contact), and
+  `MeshLab.meetOverMeshcore` makes a pair contacts over a link, heals, and parts them. A restart refuses a redial, closes the
+  old NUS channel and joins the old session before the next dials, then waits for Ready and every contact taught again.
+- **The production finding, fixed: a key taught mid-connection reached the board only at the next Ready.** The taught set
+  was written by the Ready reconcile and, after it, only reactively, by our own send's `OWN_NO_KEY`. The firmware drops a
+  DM from a sender it holds no contact for (`BaseChatMesh`'s contact lookup), so a new contact who wrote first was dropped,
+  unanswered, until our next Ready or our own DM to them: the lab's first two-node DM went unreachable. Now
+  `MeshcoreSession.setKnitContacts` queues a `TEACH` job for every key the set gained (`MeshcorePins.setTaught` answers them,
+  `queueTeach`) while a connection is Ready and no reconcile is pending: a read of the key, a count read when the Ready took
+  no listing, and at most one flash write a key, on a board set up for Knit only (the job is dropped elsewhere), no air. A
+  Ready reconcile still writes whatever the set held when it runs. **Round 1 (lora-reviewer), applied:**
+  - **B1, a write for a key the set no longer holds.** The hooks may drop a key (a block, a removal, a contest) while a
+    teach's reads are out; the write then taught it back, so the removal they queued behind it skipped it and a blocked
+    contact stood on the board, its DMs decrypted and acked, until the next Ready (ADR 2026-09.adgd). Every Knit-record write
+    — the live teach, the reactive teach, the reconcile's — now asks the taught set right before the write and again after
+    the read-back, never teaches a key back, and answers `NOT_FOUND` for one dropped meanwhile, which the queued removal
+    then removes. A teach writes only a key the set holds.
+  - **The live teach is outside §3's once-a-minute re-pin gap** (nothing pushed), so its flash wear is bounded on its own:
+    at most `MeshcorePins.MAX_LIVE_TEACHES_PER_DAY` = 4 live writes a key a UTC day (the wall clock's day); past it the key
+    is left to the next Ready's reconcile (`meshcoreLiveTeachesDeferred`), never dropped. A flapping board map costs a
+    contact at most four writes and four removals a day; the removal of a key that left the set is never bounded.
+  - **Never for a contested prefix** (security B3): `prefixFree` reads taught keys only, so a contested address is refused
+    at the queue and again when the job runs.
+  - **Counted, retried once:** `meshcoreLiveTeachesWritten` / `…Failed` / `…Deferred`; a failed live teach is re-queued
+    once (`retryTeachOnce`), never looped.
+
+  **Round 2 (lora-, mesh-lab- and unit-test-reviewer), applied:**
+  - **Every write the board took is charged** to the key's daily bound — written, or answered OK and then failing its
+    read-back or finding the key dropped — and only a whole write spends the retry anew. The bound is in memory on the one
+    session (a process restart resets it): accepted, the next Ready's reconcile being the backstop either way.
+  - **A Knit-record write needs `MeshcorePins.keyFor`** (taught and not contested), which closes security B3 on the reactive
+    teach too: a send refused `NO_RECORD` for a contested prefix reached `teach`, whose old guard asked `teaches` and
+    `prefixFree` (taught keys only) and wrote a second contact on the prefix. The reconcile's own writes are never
+    contested before they run (`MeshcoreContacts.plan` leaves contested keys out; a blocked write contests itself only once
+    its sharer's removal failed). `MeshcorePins.noteTaught` is gone: nothing teaches a key but the taught set.
+  - **A Ready reconcile dropped on a board this connection does not consent for is counted** (`meshcoreReconcilesDropped`,
+    `meshcore reconcile dropped: …`).
+  - **A board refusing somebody else's frame is counted and named** (`loraNotOurs`, `lora not ours <label>:<id>`): the
+    event a pocket-mate scenario waits on before its fence.
+  - **The mesh-lab review's "a restart's reconcile never runs" was the DM after it.** Replayed over 200 seeds (50861270…,
+    the reviewer's three among them) with the wait named, the reconcile ran every time; every failure was the next DM, sent
+    before the restarted plane's own collectors had caught up — its board map still without Bob direct, or its pair seal's
+    index not yet rebuilt (`lora direct unsealed`). `awaitTaught` and the restart now wait for both
+    (`LabNode.meshcoreReadyFor`), as the Meshtastic lab's `boardReadyFor` does. The production cost is the existing one: a
+    compact DM offered in the moment after a start, before the seal's index is built, goes unsealed and waits for the
+    re-probe or a hearing; the signed copy is unaffected.
+  - **B, closed: a board's ack that outran the plane's own registration of its send was dropped.** Replayed (seed
+    50861270, 200 runs; and 5 failures of the next 200-run sweep, across three scenarios): Alice's session wrote the DM,
+    read `SENT` and then the board's `SEND_CONFIRMED`, and emitted `Acked`; Alice's plane logged `lora tx` only after Bob's
+    reply had landed and kept the flight (`inFlight=1, parked=1`), with no `lora direct acked`. The outcomes collector and
+    the pacer are two coroutines on a multi-threaded dispatcher — `Dispatchers.Default` under the app scope
+    (`di/MeshModule`), the node's chaos-lagged `Dispatchers.Default` in the lab — so an outcome can reach `onOutcome` before
+    the pacer resumes from `board.send` into `onTaken` → `launchFlight`; `direct.isWaiting` was false, `onUnawaited` found
+    no ended send, and the ack was lost: the session never retries a confirmed send, so the flight and everything parked
+    behind it waited out its deadline. **The fix, the same for both kinds, no `BoardLink` change:**
+    `LoraDirectPolicy.arrive` decides, under the policy's own monitor, whether a flight waits on the handle; if none does,
+    nor an ended one, a destination's ack, an `Unreachable` or a `NoOutcome` is held, at most `EARLY_OUTCOME_TTL_MS` (5 s,
+    under any direct deadline) and `MAX_EARLY_OUTCOMES` (16); `launchClaiming` registers the flight and takes a fresh record
+    under the same monitor, and the pacer settles it through the waiting flight. Whichever side takes the record processes
+    it, so nothing is lost or settled twice; a record past its time is dropped unread, so a reused handle (Meshtastic's
+    packet ids, MeshCore's session handles) never settles a new send on an old answer. Unchanged: a refusal is never held
+    (a broadcast's late NAK, `onLateNak`, and the `OWN_NO_KEY` already handled go as before; a direct send's early
+    refusal, which neither kind has been seen to emit before `send` returns, is still read as a late NAK), an implicit ack
+    is never held, and a late answer to an ended send still takes `direct.ended`. `onRadioReached` now runs on the outcome
+    collector, or on the pacer for an answer held for its send — the first time it runs off the collector. Oracle: `lora direct early
+    <outcome> id=…: held for its send` / `…: settled at its send`. Tests: `MeshcoreFlushSwitchTest` (an ack emitted inside
+    `board.send` settles its send; a held ack past its time never settles a send reusing its handle; an implicit ack ahead
+    of the destination's never replaces it), `LoraDirectPolicyTest` (held and taken once; only a holdable answer for a
+    handle neither waiting nor ended; expiry and the bound).
+  - **A late ack after the session's own give-up is a late ack** (lora-reviewer's round-3 follow-up). `MeshcoreSession`
+    emits `Acked` under the same handle when a confirmation comes after it ended the flight `Unreachable`, but the core
+    settled a waiting outcome through `LoraDirectPolicy.resolve`, which never remembered the flight, so the ack found
+    neither a flight nor an ended send and was dropped (since B, held 5 s under a misleading line, then dropped): the peer
+    stayed unreachable and "reached their radio" never showed. Now `resolve(handle, outcome)` remembers a flight it ends on
+    `Unreachable` or `NoOutcome`, as a deadline's expiry always did, and the ack takes the existing late-ack path
+    (`lora direct late ack`, the marks moved, `onRadioReached(late = true)`). **On Meshtastic** no ack changes: the session
+    turns `MAX_RETRANSMIT` / `NO_RESPONSE` into `Unreachable` and forgets the destination, so a later Routing `NONE` ends
+    there and never reaches the core (and it emits no `NoOutcome`), and a refusal after that give-up reaches the core as our
+    board's (`byDestination` false, the destination forgotten), classifies as no send-attached class and stays a late NAK
+    (`lora nak … (late)`). What changes is a **refusal for a flight that ended on the transport's own deadline**
+    (`NoOutcome`) while the session still waited on it: it now finds the ended send, so a `35` books the key reply and a
+    destination's refusal holds the peer, where both were a pacing late NAK; any other class (pacing, a missing key not
+    handled) keeps the late NAK's handling (`onUnawaitedRefusal`'s `else`). `ended` is bounded on its own
+    (`BoardTraits.maxEnded`): Meshtastic's stays `MAX_FLIGHTS`; MeshCore's is `EXPECTED_ACK_TABLE_SIZE` (8), since the board
+    keeps the last eight codes and a flight that ended after one attempt holds one, where `maxFlights` (8 / 3 = 2) left a
+    give-up three endings back unanswerable. A launch clears `ended` for its handle, so a reused handle's older send is never
+    what an answer speaks for. A late answer is never held (it is ended, `UNAWAITED`), so the 5-s record never takes its
+    handle. Tests: `MeshcoreFlushSwitchTest.aConfirmationAfterTheSessionsGiveUpIsALateAck`, `LoraDirectPolicyTest`
+    (three endings then the first's ack; a reused handle), `LoraDirectTransportTest` (a pacing refusal after a give-up still
+    paces). Device trial: on Meshtastic, no `lora direct late ack` or `lora direct early` after `MAX_RETRANSMIT`, and a
+    refusal after that give-up logs `lora nak … (late)`.
+  - **A post sent the moment a pair met was dropped unverified** (the final gate's 20-run sweep; 3 of 8 room scenarios
+    over 200 seeds). The plane resolves an elided sender against its author ids, which it collects off the peer table on a
+    coroutine of its own; `awaitAcquainted` had waited for the peer row, not for that snapshot, so the post arrived while it
+    still held none of the author's: `lora elided unverified: candidates=0` (a new line, counts only) and
+    `ELIDED_UNVERIFIED` / `FRAG_UNVERIFIED` 1, though thirty seconds later the plane resolved the author and the row was
+    pinned. A lab readiness gap, not a production change: a pairing that fails leaves the entry by design (round 2 of 5c-1).
+    `LoraMeshTransport.resolvesAuthor` reads the snapshot; `awaitAcquainted` waits for every MeshCore pair to resolve each
+    other, and a restart's readiness (`LabNode.meshcoreReadyFor`) does too.
+  - **The board-off scenario's remaining 6 s** is the session's own field timing, not the reconnect backoff (the
+    500-ms knob reaches Bob: back to Ready in about half a second): three attempts, each awaited for the `est_timeout` floor
+    (500 ms) and the 1-s slack, read on the 1-s busy tick, before the give-up. Not shortened: those are the session's
+    constants, and a knob for them would be a production seam for a lab's sake.
+  - **The lab**: a restart waits for the plane and the seal; the reconcile scenario names its wait and restarts once; `meshcoreWritesEver`
+    reads every boot's writes; `LabLimits.meshcoreBackoffMs` shortens the session's reconnect backoff for the board-off
+    scenario; the drift's Q13 gap is checked against 3.0–4.3 s (two chaos tail stalls); the report reads each air on its
+    serial context. The fake gains `FakeNusChannel.delivered` (every frame a board handed a session, a diagnostic) and
+    regression tests for both lagged-timer fixes.
+- **Counters and seams added** (the waits read an event, never a state): `meshcoreRepinsDone` (`MeshcoreCounters.repinsDone`:
+  a re-pin a push queued, run and read back zero-hop), `loraBoundPartsTaken` (`MeshMetrics`, the lora group: a bound part the
+  reassembler absorbed — what a forger case waits on at the receiver, never `air.airings`), both in the debug dumps;
+  `MeshManager.onDmAcksInlined` (the ✓✓ ids a DM carried inline) and `onIntroMarked`'s token, which each fan-out copy names
+  (`SealedProfileSend.mark`), test seams only.
+- **The scenarios.** `MeshcoreRoomLabTest`: a two-part post through a repeater to a node out of range; "once" on a diamond
+  with the receiver's ring evicted, against its router's dedupe; a one-part post whole as `0x06`; a pocket-mate's post never
+  asked of the board (no `SEND_CHANNEL_DATA` for it, fenced by an own post that aired); the junk-part-1 race (the author
+  held, part 0 released, three junk part-1s naming it, then part 1; the junk counted `FRAG_TIMEOUT` after a jump past the
+  window and one fresh fragment); the overtake behind a held repeater (a copied-hash head and five short heads absorbed
+  first); the deep line through two repeaters; junk pre-filled under a sequential id. `MeshcoreDirectLabTest`: a DM, its ✓✓
+  and a reaction over LoRa; a far board off (deaf and mute) and back, the held DM re-aired by the hearing's resend or the
+  re-probe; path drift end to end (the DM direct, the flooded ack and its repeat, the Q13 PATH about 3 s later, the
+  receiver's re-pin, then both directions direct); a ✓✓ in the field's 45-s hold riding the reply sent inside it; security
+  (b), a contact Knit did not teach removed at the next Ready and never pinned; security (d)/(f), a non-Knit DM from the
+  peer's own board counted, discarded, lifting no mark. `MeshcoreProfileLabTest`'s intro marks are counted through the token,
+  and its watch names the peer's key-exchange deltas and stamps marks and copies on a monotonic clock.
+- **The fake on the wall clock** (the chaos sweep's find, test code): a lagged end timer let a radio start its next airing,
+  or a receiver lock on a newcomer, before the last airing's end had run, losing it unmarked. `FakeMeshcoreAir` now holds
+  the radio until its end runs and ends an overdue reception before locking on another; under virtual time neither moves.
+- **Where the lab is not the field**: the air's figures on the quick air are the Stage 3b ones ÷ 10; the channel air's
+  preset is a fast one, so a scenario is no measure of a rate; the cap's whole window, the rates and the Q13 timing are
+  `MeshcoreAirPhysicsTest`'s and owed to boards (the 5c-2a amendment's list).

@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.lora
 
+import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.FastPathDrop
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshMetrics
@@ -120,8 +121,10 @@ internal class LoraMeshTransport(
      * reaction's never does either.
      *
      * Called on the one `board.outcomes` collector, between moving the marks and releasing what was parked behind the
-     * send: it must return at once, take no lock that waits, launch nothing and never call back into this plane — a
-     * stall there drops the answers queued behind it, and a re-entry would reorder the parked offers.
+     * send — or, for an answer that outran its send's registration and was held for it, on the pacer as it registers the
+     * send (ADR 2026-11.gsqu's Stage 5c-2b amendment): it must return at once, take no lock that waits, launch nothing and
+     * never call back into this plane — a stall there drops the answers queued behind it, and a re-entry would reorder the
+     * parked offers.
      */
     private val onRadioReached: (frameId: String, late: Boolean) -> Unit = { _, _ -> },
     private val scope: CoroutineScope,
@@ -334,7 +337,7 @@ internal class LoraMeshTransport(
      * What each peer's board said to a compact DM, and the unicasts still waiting on an answer (ADR 2026-10.x9fa). In
      * memory only: after a restart every board is unknown and the first DM's ack decides. Cleared by [quiesce].
      */
-    private val direct = LoraDirectPolicy(maxFlights = traits.maxFlights)
+    private val direct = LoraDirectPolicy(maxFlights = traits.maxFlights, maxEnded = traits.maxEnded)
 
     /** The re-probe's schedules, soonest first: for the JVM tests, which read what a round decided. */
     internal fun reprobeSchedule(): List<LoraReprobe.Entry> = reprobe.stamps()
@@ -370,6 +373,17 @@ internal class LoraMeshTransport(
     /** The last [authorIds] snapshot; [LoraAuthorIds.NONE] until the source first reports. Kept across a board change (N3). */
     @Volatile
     private var authors: LoraAuthorIds = LoraAuthorIds.NONE
+
+    /**
+     * Whether the last [authorIds] snapshot resolves [nodeId]'s elided prefix to [nodeId], in either tier: an elided post of
+     * theirs can be verified now. Collected on a coroutine of its own, so a peer pinned a moment ago may not be here yet; the
+     * mesh lab's readiness reads it (ADR 2026-11.gsqu's Stage 5c-2b amendment). Names nobody.
+     */
+    internal fun resolvesAuthor(nodeId: String): Boolean {
+        val id = NodeId.toBytesOrNull(nodeId) ?: return false
+        val prefix = id.copyOf(app.getknit.knit.mesh.link.IdElision.PREFIX_BYTES)
+        return LoraAuthorIds.Tier.entries.any { tier -> authors.resolve(prefix, tier).any { it.contentEquals(id) } }
+    }
 
     // LoRa-heard senders (a long linger — there are no periodic cues on LoRa).
     // NOTE these are frame **authors**, not radios: an older build's gateway can still air a frame its pocket-mate
@@ -869,7 +883,12 @@ internal class LoraMeshTransport(
         if (!mayTransmit()) return // no board of our own
         val env = WireCodec.decodeEnvelope(wire.signed) ?: return
         val self = selfIdCached
-        if (self != null && !LoraFramePolicy.airs(env.senderId, self)) return // somebody else's: this board is not a relay
+        if (self != null && !LoraFramePolicy.airs(env.senderId, self)) {
+            // Somebody else's: this board is not a relay. Counted and named, the event a pocket-mate scenario waits on.
+            metrics.onLoraNotOurs()
+            log("lora not ours $label:${env.id}")
+            return
+        }
         if (!LoraFramePolicy.eligible(env)) return
         if (!LoraFramePolicy.isFresh(env, wallClock())) {
             metrics.onLoraSuppressed() // a custody re-serve of an old frame — custody's business, not a live plane's
@@ -1397,10 +1416,16 @@ internal class LoraMeshTransport(
                 gate = frame.gate,
                 userSeqAtSend = userSeq,
             )
-        direct.launch(flight)?.let { evicted -> settle(evicted, PacketOutcome.NoOutcome(evicted.handle)) }
+        val (evicted, early) = direct.launchClaiming(flight, clock())
+        evicted?.let { settle(it, PacketOutcome.NoOutcome(it.handle)) }
         flightWake.trySend(Unit)
         metrics.onLoraDirectSent()
         if (send.resend) metrics.onLoraDirectResent()
+        // Its answer came first and was held ([LoraDirectPolicy.arrive]): settled now, through the flight, by this side alone.
+        early?.let {
+            log("lora direct early ${it::class.simpleName} id=${it.id}: settled at its send")
+            onOutcome(it)
+        }
     }
 
     /**
@@ -1429,15 +1454,28 @@ internal class LoraMeshTransport(
      * hearing it repeated says nothing about its destination (ADR 2026-10.x9fa).
      */
     private fun onOutcome(outcome: PacketOutcome) {
-        if (!direct.isWaiting(outcome.id)) {
-            onUnawaited(outcome)
-            return
+        // An answer that outran its send's registration is held for it (ADR 2026-11.gsqu's Stage 5c-2b amendment); a
+        // refusal is not — it may be a broadcast's late NAK, handled now as ever — nor an implicit ack, which ends nothing.
+        val holdable = outcome !is PacketOutcome.Refused && (outcome !is PacketOutcome.Acked || outcome.byDestination)
+        when (direct.arrive(outcome, clock(), holdable)) {
+            LoraDirectPolicy.Arrival.HELD -> {
+                log("lora direct early ${outcome::class.simpleName} id=${outcome.id}: held for its send")
+                return
+            }
+
+            LoraDirectPolicy.Arrival.UNAWAITED -> {
+                onUnawaited(outcome)
+                return
+            }
+
+            // A flight waits on it: settled below, as ever.
+            LoraDirectPolicy.Arrival.WAITING -> {}
         }
         if (outcome is PacketOutcome.Acked && !outcome.byDestination) {
             metrics.onLoraDirectImplicitAck()
             return
         }
-        direct.resolve(outcome.id)?.let { settle(it, outcome) }
+        direct.resolve(outcome.id, outcome)?.let { settle(it, outcome) }
     }
 
     /**
@@ -1504,6 +1542,11 @@ internal class LoraMeshTransport(
             refusal == RefusalClass.DEST_REFUSED -> {
                 direct.onRefused(send.peerId, now)
                 publishStatus()
+            }
+
+            // Any other class (pacing, a missing key not handled above) keeps the late NAK's handling, attributed or not.
+            else -> {
+                onLateNak(outcome)
             }
         }
     }
@@ -2472,6 +2515,7 @@ internal class LoraMeshTransport(
             FastFrameCodec.TAG_BOUND_FRAG -> {
                 val frag = FastFrameCodec.parseBoundFragment(payload) ?: return null
                 val tried = candidates.accept(frag, candidateCapacity(), candidatesPerPart())
+                metrics.onLoraBoundPartTaken()
                 tried.firstNotNullOfOrNull { verifiedWhole(it.frame) }?.let { return it }
                 if (tried.isNotEmpty()) metrics.onFastDropped(FastPathDrop.FRAG_UNVERIFIED)
                 null
@@ -2506,12 +2550,16 @@ internal class LoraMeshTransport(
      */
     private suspend fun verifiedElided(frame: ByteArray): FrameRead? {
         val ids = authors
+        var candidates = 0
         for (tier in LoraAuthorIds.Tier.entries) {
             for (wire in FastFrameCodec.decodeElided(frame) { prefix -> ids.resolve(prefix, tier) }) {
+                candidates++
                 val env = WireCodec.decodeEnvelope(wire.signed) ?: continue
                 if (verified(wire, env)) return FrameRead(wire, env, verified = true)
             }
         }
+        // Counts only: whether the prefix resolved to anyone ([authors] as last collected) or a candidate failed its check.
+        log("lora elided unverified: candidates=$candidates")
         return null
     }
 

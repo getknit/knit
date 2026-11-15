@@ -1449,8 +1449,9 @@ class MeshManager(
 
     /**
      * The LoRa plane's word that our DM [frameId] reached its recipient's radio (`LoraMeshTransport.onRadioReached`,
-     * wired in `di/MeshModule`); [late] when the ack came after the send ended. Runs on the plane's one outcome
-     * collector, so it does exactly one lock-free thing: no database read, no launch, nothing that calls the plane back.
+     * wired in `di/MeshModule`); [late] when the ack came after the send ended. Runs on the outcome collector, or on the
+     * pacer for an answer held for its send (ADR 2026-11.gsqu's Stage 5c-2b amendment), so it does exactly one lock-free
+     * thing: no database read, no launch, nothing that calls the plane back.
      * Stamped on [clock], the wall clock a row's `sentAt` uses; the first ack wins.
      */
     internal fun onLoraRadioReached(
@@ -2515,6 +2516,7 @@ class MeshManager(
             val carried = envelope != null && EncEnvelope.isDmRatchetVersion(envelope.v)
             if (carried) {
                 metrics.onReceiptCoalesced(inlineAcks.dm.size)
+                onDmAcksInlined?.invoke(recipientId, inlineAcks.dm)
                 metrics.onReceiptRidden(inlineAcks.room.size)
                 ackSync.rode(inlineAcks.room)
             } else {
@@ -5642,7 +5644,14 @@ class MeshManager(
                 ) { v3 ->
                     profileCopy(session.peerId, payload, audience, v3).also {
                         if (onSealedProfile != null) {
-                            sealed = SealedProfileSend(session.peerId, version, it, it.sealBytes(v3).plaintext.size)
+                            sealed =
+                                SealedProfileSend(
+                                    session.peerId,
+                                    version,
+                                    it,
+                                    it.sealBytes(v3).plaintext.size,
+                                    mark = marks[session.peerId],
+                                )
                         }
                     }
                 }
@@ -5716,8 +5725,10 @@ class MeshManager(
         val plaintextBytes: Int,
         /** The `CHAT` frame's id, which a carrier's custody holds it under. */
         val frameId: String? = null,
+        /** The intro mark ([onIntroMarked]'s token) this seal was owed for and supersedes, or null for none. */
+        val mark: Long? = null,
     ) {
-        fun withFrameId(id: String): SealedProfileSend = SealedProfileSend(peerId, version, content, plaintextBytes, id)
+        fun withFrameId(id: String): SealedProfileSend = SealedProfileSend(peerId, version, content, plaintextBytes, id, mark)
 
         override fun toString(): String = "SealedProfileSend($peerId, v=$version)"
     }
@@ -5730,11 +5741,19 @@ class MeshManager(
     internal var beforeSealedProfileFanOut: (suspend () -> Unit)? = null
 
     /**
-     * Test seam: told of each peer [sendIntroTo] marks owed a fan-out seal ([sealedOutsideFanOut]), before its own seal.
-     * `mesh/lab` counts the fan-out's designed re-seal of a marked session by it. Null in production.
+     * Test seam: told of each peer [sendIntroTo] marks owed a fan-out seal ([sealedOutsideFanOut]), with the mark's token,
+     * before its own seal. `mesh/lab` counts the fan-out's designed re-seal of a marked session by it, exactly: the fan-out's
+     * copy names the token it supersedes ([SealedProfileSend.mark]). Null in production.
      */
     @Volatile
-    internal var onIntroMarked: ((String) -> Unit)? = null
+    internal var onIntroMarked: ((peerId: String, token: Long) -> Unit)? = null
+
+    /**
+     * Test seam: told of the LoRa-held DM receipts ([dmAcks]) an outbound DM to a peer carried inline (ADR 054), by id, once
+     * its seal took them — the ride itself, which `mesh/lab` waits on before it reads the hold. Null in production.
+     */
+    @Volatile
+    internal var onDmAcksInlined: ((recipientId: String, ackIds: List<String>) -> Unit)? = null
 
     /** Test seam: told of each sealed profile copy the fan-out sent, with the content it sealed. Null in production. */
     @Volatile
@@ -5945,8 +5964,9 @@ class MeshManager(
         // Marked before the seal: once it may have gone, what the peer holds is no longer what the fan-out's record says,
         // and a fan-out deciding meanwhile must not spare it. Kept even when nothing went (it may have overwritten an
         // earlier intro's mark): the cost is one seal the fan-out need not have made.
-        sealedOutsideFanOut[peerId] = outsideFanOutTokens.incrementAndGet()
-        onIntroMarked?.invoke(peerId)
+        val token = outsideFanOutTokens.incrementAndGet()
+        sealedOutsideFanOut[peerId] = token
+        onIntroMarked?.invoke(peerId, token)
         return sendCtlDm(peerId, payload, avatarHash, identity.nodeId(), CtlDmPurpose.INTRO) { v3 ->
             profileCopy(peerId, payload, audience, v3)
         }

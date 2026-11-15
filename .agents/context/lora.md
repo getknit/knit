@@ -401,7 +401,10 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `MeshcoreSession.setKnitContacts` / `teach` / `removeContact`, `MeshcoreProto.listContacts`, the setup's erase or Restore's
   contact clearing, `BoardKindHooks.onBoardMap`, `LoraBoardHolder.rank`, or `MeshcoreSetupResult.Done.erasedContacts`:** READ
   ADR 2026-11.gsqu's Stage 5b-2 amendment (and the maintainer's Stage 5 decisions), then "MeshCore's contacts" in
-  `lora-bridge.md`. The board is Knit's: its table is the taught set. The session sends to and pins only taught keys
+  `lora-bridge.md`. **And for `MeshcorePins.setTaught` / `queueTeach` / `retryTeachOnce` / `MAX_LIVE_TEACHES_PER_DAY`, the
+  live teach (`runLiveTeach`) or `writeKnitRecord`'s taught checks:** the 5c-2b amendment too — a key the set gains while
+  Ready is written at once, at most 4 times a key a UTC day (past it the next Ready's reconcile), never when contested, and
+  a write is made and kept only for a key the set still holds before the write and after the read-back. The board is Knit's: its table is the taught set. The session sends to and pins only taught keys
   (security B1), and nothing at all — no DM, pin, teach or removal — off a board set up for Knit, which needs this phone's
   `meshcore_setup` record for the dialled address and the board's key digest, not pending (the single source of consent,
   read and written by the session's actor alone — in its handshake before Ready, and in its own setup, Restore and unbind —
@@ -447,6 +450,26 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   oracle the plane's figures are checked against. Draws come from `Random(mix(runSeed, repeater, origin, n))`, never a
   shared source; order a race with `hold` / `release`, never a draw. The plane sizes `LoraFragCandidates` off the shortest
   part's **least** airtime (`leastRoomAirMs`: unscoped, no `FIXED_MS`), never the booked price.
+
+- **Before touching `MeshLab.meshcoreAir`, `MeshLab.node(meshcore = …)`, `MeshLab.awaitTaught`, `MeshLab.meetOverMeshcore`,
+  `LabNode.meshcoreOn` / `awaitMeshcoreBack` / `meshcoreWrites`, `MeshcoreRoomLabTest`, `MeshcoreDirectLabTest`,
+  `MeshcoreSession.taughtAndPinned`, `MeshcoreCounters.repinsDone` / `reconcilesDropped`, `MeshMetrics`' `loraBoundPartsTaken` /
+  `loraNotOurs`, `LoraMeshTransport.resolvesAuthor`, `MeshLab.awaitAuthor`, `LabNode.meshcoreReadyFor`,
+  `LabLimits.meshcoreBackoffMs` or
+  `MeshManager.onDmAcksInlined`:** READ ADR 2026-11.gsqu's Stage 5c-2b amendment, then `testing.md`'s MeshCore lab bullet.
+  A lab MeshCore node is the production child (no injected pace, the claim through `bindingAddress` under the hooks'
+  `claimMutex`, the setup and its consent through the real `setup()`), never the boards sweep's Meshtastic air, on three
+  clocks (the session monotonic; the plane, hooks and session wall clock `LabClock`; the board's uptime the lab's calendar),
+  its air on a lab-owned serial scope. Boot returns at Ready with consent and the claim minted; a pair that are each
+  other's direct contacts is taught both ways before `awaitAcquainted` returns. Every wait reads the receiving side's event
+  (a plane counter, the board read back, the session's re-pin), never the air's record.
+
+- **Before touching `LoraMeshTransport.onOutcome` / `launchFlight`, `LoraDirectPolicy.arrive` / `launchClaiming` /
+  `EARLY_OUTCOME_TTL_MS` / `MAX_EARLY_OUTCOMES`, or the `onRadioReached` contract:** READ ADR 2026-11.gsqu's Stage 5c-2b
+  amendment (round 2, B). The outcomes collector and the pacer run concurrently, so an answer can outrun its send's
+  registration: one for a handle neither waiting nor ended is held (5 s, 16) under the policy's monitor and settled by the
+  launch that registers it, whichever side takes it processing it. A refusal and an implicit ack are never held; a stale
+  record never settles a reused handle.
 
 ## Adding an entry
 

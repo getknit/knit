@@ -58,6 +58,13 @@ internal object MeshcoreTraits : BoardTraits {
      */
     override val maxFlights: Int get() = MeshcoreAckTable.EXPECTED_ACK_TABLE_SIZE / airings
 
+    /**
+     * `EXPECTED_ACK_TABLE_SIZE`: the board keeps the last eight codes and the session confirms any still in it, so a give-up
+     * up to eight attempts back can still be answered — a flight that ended after one attempt (a failed re-pin, a held
+     * retry) uses one slot, not three (lora-reviewer's round 4 on Stage 5c-2b).
+     */
+    override val maxEnded: Int get() = MeshcoreAckTable.EXPECTED_ACK_TABLE_SIZE
+
     /** MeshCore has no contention window of Meshtastic's kind: its retry gap is the session's ([retransmitMs]). */
     override val cwMin: Int get() = 0
     override val cwMax: Int get() = 0

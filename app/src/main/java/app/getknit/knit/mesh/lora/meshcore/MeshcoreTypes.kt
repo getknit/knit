@@ -487,6 +487,9 @@ internal class MeshcoreCounters {
     /** A Ready reconcile skipped: the listing failed or came short (the per-key re-assert ran instead). */
     val reconcilesSkipped = AtomicLong()
 
+    /** A Ready reconcile owed on a board this connection does not consent for, dropped (`meshcoreReconcilesDropped`). */
+    val reconcilesDropped = AtomicLong()
+
     /** Contacts a reconcile removed (not taught). */
     val reconcileRemoved = AtomicLong()
 
@@ -558,6 +561,21 @@ internal class MeshcoreCounters {
 
     /** A path push inside a key's rate limit: unverified only. */
     val repinsCoalesced = AtomicLong()
+
+    /**
+     * A targeted re-pin a path push queued, run to its end and read back zero-hop (`meshcoreRepinsDone`, ADR 2026-11.gsqu's
+     * Stage 5c-2b amendment): written or found already pinned. What a scenario waits on after a `0x81` before the next send.
+     */
+    val repinsDone = AtomicLong()
+
+    /**
+     * Live teaches (a key the taught set gained while Ready, or a contact the board deleted) written and read back
+     * (`meshcoreLiveTeachesWritten`), failed (`meshcoreLiveTeachesFailed`, re-queued once), and left to the next Ready's
+     * reconcile past a key's daily bound (`meshcoreLiveTeachesDeferred`). ADR 2026-11.gsqu's Stage 5c-2b amendment.
+     */
+    val liveTeachesWritten = AtomicLong()
+    val liveTeachesFailed = AtomicLong()
+    val liveTeachesDeferred = AtomicLong()
 
     /** A frame handler that threw: the frame is dropped, the actor goes on. */
     val handlerFailures = AtomicLong()

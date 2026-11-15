@@ -92,7 +92,10 @@ class MeshcoreFlushSwitchTest {
         /** What each send was handed, with the board it went to (its own address's first byte). */
         val sent = mutableListOf<Triple<Byte, SendPurpose, ByteArray>>()
         var gate: CompletableDeferred<Unit>? = null
-        private var nextId = 1u
+        var nextId = 1u
+
+        /** Runs inside a send, after the board took it and before the send returns: an answer that outruns its send. */
+        var beforeReturn: (suspend (UInt) -> Unit)? = null
 
         override suspend fun send(
             payload: ByteArray,
@@ -104,7 +107,9 @@ class MeshcoreFlushSwitchTest {
                 gate = null
                 it.await()
             }
-            return BoardSend(SendResult.Queued(nextId++, QueueInfo(10, 16, 0)), 0)
+            val id = nextId++
+            beforeReturn?.invoke(id)
+            return BoardSend(SendResult.Queued(id, QueueInfo(10, 16, 0)), 0)
         }
 
         override suspend fun provision(spec: ProvisionSpec): ProvisionResult = ProvisionResult.Failed("not here")
@@ -252,6 +257,120 @@ class MeshcoreFlushSwitchTest {
             assertTrue("within the seal cap", tick.single().third.size <= MeshcoreProto.DIRECT_SEAL_CAP)
             assertEquals("never too long", 0L, metrics.snapshot().lora.loraDirectTooLong)
             assertTrue("nothing evicted at the new Ready", logs.none { it.startsWith("lora ready: evicted") })
+        }
+
+    // --- an answer that outruns its send (ADR 2026-11.gsqu's Stage 5c-2b amendment, the lab's B) ---
+
+    /** A transport Ready on board 1, with bob's board held direct. */
+    private fun TestScope.ready(
+        board: GatedBoard,
+        metrics: MeshMetrics,
+        logs: MutableList<String>,
+    ): LoraMeshTransport {
+        val ops = Ops()
+        val transport = transportOver(board, ops, metrics, logs)
+        requireNotNull(ops.observer).beforeReady(board.readyAs(1))
+        transport.start()
+        runCurrent()
+        return transport
+    }
+
+    private fun acked(id: UInt) = PacketOutcome.Acked(id, byDestination = true, proof = AckProof.VALID, flown = 1)
+
+    @Test
+    fun anAckThatArrivesBeforeItsSendReturnsSettlesTheSend() =
+        runTest {
+            // The lab's B: the session emits the board's ack the moment it comes, and the outcomes collector runs before the
+            // pacer has resumed from `board.send` to register the flight. Before, the ack was dropped as unawaited and the
+            // DM waited out its deadline, everything parked behind it with it.
+            val board = GatedBoard()
+            val metrics = MeshMetrics()
+            val logs = mutableListOf<String>()
+            val transport = ready(board, metrics, logs)
+            board.beforeReturn = { id ->
+                board.outcomes.emit(acked(id))
+                kotlinx.coroutines.delay(1) // the collector runs first
+            }
+            transport.offer(BOB, "dm-1", WALL, byteArrayOf(1, 2, 3), DirectKind.MESSAGE)
+            runCurrent()
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals("the DM was acked: ${logs.filter { it.startsWith("lora") }}", 1L, metrics.snapshot().lora.loraDirectAcked)
+            assertTrue(logs.any { it == "lora direct acked dm-1 -> $BOB" })
+            assertTrue(logs.any { it.startsWith("lora direct early Acked id=1: settled at its send") })
+        }
+
+    @Test
+    fun aHeldAnswerPastItsTimeNeverSettlesASendThatReusesItsHandle() =
+        runTest {
+            val board = GatedBoard()
+            val metrics = MeshMetrics()
+            val logs = mutableListOf<String>()
+            val transport = ready(board, metrics, logs)
+            // An ack for handle 1, which no send holds yet: held, then left past its time.
+            board.outcomes.emit(acked(1u))
+            runCurrent()
+            assertTrue(logs.any { it.startsWith("lora direct early Acked id=1: held") })
+            advanceTimeBy(app.getknit.knit.mesh.lora.LoraDirectPolicy.EARLY_OUTCOME_TTL_MS + 1_000)
+            runCurrent()
+            // The board reuses handle 1 for a new DM: the stale record must not settle it.
+            transport.offer(BOB, "dm-1", WALL, byteArrayOf(1, 2, 3), DirectKind.MESSAGE)
+            runCurrent()
+            advanceTimeBy(100)
+            runCurrent()
+            assertEquals(1, board.sent.size)
+            assertEquals("never settled on the old answer", 0L, metrics.snapshot().lora.loraDirectAcked)
+            assertTrue(logs.none { it.contains("settled at its send") })
+            board.outcomes.emit(acked(1u))
+            runCurrent()
+            assertEquals("its own answer settles it", 1L, metrics.snapshot().lora.loraDirectAcked)
+        }
+
+    @Test
+    fun anImplicitAckBehindTheDestinationsNeverReplacesItsHeldAnswer() =
+        runTest {
+            // The unit-test review's round 2: an implicit ack (a relay or our own board hearing it repeated) is never held,
+            // so it cannot take the place of the destination's ack held for the same handle.
+            val board = GatedBoard()
+            val metrics = MeshMetrics()
+            val logs = mutableListOf<String>()
+            val transport = ready(board, metrics, logs)
+            board.beforeReturn = { id ->
+                board.outcomes.emit(acked(id))
+                board.outcomes.emit(PacketOutcome.Acked(id, byDestination = false, proof = AckProof.ABSENT, flown = 1))
+                kotlinx.coroutines.delay(1) // the collector runs both first
+            }
+            transport.offer(BOB, "dm-1", WALL, byteArrayOf(1, 2, 3), DirectKind.MESSAGE)
+            runCurrent()
+            advanceTimeBy(1_000)
+            runCurrent()
+            val lora = metrics.snapshot().lora
+            assertEquals("the destination's ack settled it: ${logs.filter { it.startsWith("lora") }}", 1L, lora.loraDirectAcked)
+            assertEquals("the implicit one was never counted at launch", 0L, lora.loraDirectImplicitAck)
+        }
+
+    @Test
+    fun aConfirmationAfterTheSessionsGiveUpIsALateAck() =
+        runTest {
+            // lora-reviewer's round-3 follow-up: `MeshcoreSession.onConfirmed` emits `Acked` under the handle of a flight it
+            // already ended `Unreachable`. The core now remembers a flight it ends with no answer, so this is a late ack —
+            // before, it met neither a flight nor an ended send, and was dropped (held 5 s, then dropped).
+            val board = GatedBoard()
+            val metrics = MeshMetrics()
+            val logs = mutableListOf<String>()
+            val transport = ready(board, metrics, logs)
+            transport.offer(BOB, "dm-1", WALL, byteArrayOf(1, 2, 3), DirectKind.MESSAGE)
+            runCurrent()
+            advanceTimeBy(100)
+            runCurrent()
+            board.outcomes.emit(PacketOutcome.Unreachable(1u, flown = 3))
+            runCurrent()
+            assertEquals(1, transport.status.value.direct.unreachable)
+            board.outcomes.emit(acked(1u))
+            runCurrent()
+            assertTrue("a late ack: ${logs.filter { it.startsWith("lora") }}", logs.any { it == "lora direct late ack dm-1 -> $BOB" })
+            assertTrue("never held as an early one", logs.none { it.startsWith("lora direct early") })
+            assertEquals("the mark lifted", 0, transport.status.value.direct.unreachable)
         }
 
     private companion object {
