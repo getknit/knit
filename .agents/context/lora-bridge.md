@@ -505,6 +505,15 @@ The reader never retries a compact ✓✓: the author's resend or re-probe of a 
 (`deliverLoraDirect`'s exists-gate), and the signed tick arrives by any other path. The board's routing ACK is not a
 ✓✓: it says only that their radio took the packet.
 
+**A read rides the coalesced ✓✓, never a packet of its own (ADR 2026-11.z6jw).** `offerLoraTicks` masks each compact
+chunk over its own id list with the ids the person has already read (`MessageContent.rm`, compact label 20): at most
+4 bytes on a 9-id tick with 10 to spare, so the packet count never moves (`CoordinationPlaneSizeBudgetTest`). Toward a
+capable author every compact tick carries `rm` at a width set by its id count alone, so its length on the public band says
+nothing. A compact bit is best effort and never marks a read told; `ReadSync` never offers anything to the compact
+door, and a read that missed the 45 s hold reaches a LoRa-only author through custody or the spool. The inline acks'
+23-byte reservation is untouched: reserving for the mask would cost an ack, and that ack its own packet.
+`readsLoraOffered` counts offers, not packets aired.
+
 **Metadata.** Content stays end-to-end sealed, but `from`/`to` node numbers, timing and size are cleartext at
 kilometre range, and the static per-direction pairTag links one pair's packets. `SettingsStore.loraDmEnabled`
 (default **on**, the "Private messages over LoRa" switch, `…debug.LORA --ez dms`) rides into `LoraConfig.dms`; off,

@@ -580,6 +580,8 @@ val meshModule =
                 directContacts = get(),
                 elapsedRealtime = SystemClock::elapsedRealtime,
                 sendsPresenceKeys = BuildConfig.PRESENCE_KEYS,
+                // The reader's read marks (ADR 2026-11.z6jw): the Koin single the UI's mark path shares.
+                readMarks = get(),
             ).also { manager ->
                 // The compact LoRa DM (ADR 2026-10.x9fa), where the build carries the plane: the transport is reached at
                 // call time, the seam the two constructions need one late edge for. Unbound, the profile never claims it.

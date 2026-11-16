@@ -5,6 +5,7 @@ import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.PresenceKeyFrame
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
+import app.getknit.knit.mesh.crypto.ReadMask
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.crypto.cryptoCbor
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -603,6 +604,29 @@ class GoldenVectorTest {
             "messageContentLang" to MessageContent(body = "hola", lang = 1, reads = 24).encode(),
             "messageContentV2Lang" to compact(MessageContent(body = "hola", lang = 27, reads = 0)),
             "chatContentLang" to WireCodec.encodePayload(ChatContent(body = "hola", lang = 2, reads = 60)),
+            // Read receipts (ADR 2026-11.z6jw): the read mask over a receipt's list as sent, "rm" in the named layout and
+            // label 20 in the compact one — a partial mask (the second id read: 0b10) on a batch with its `ack`, every id read
+            // (-1) on a compact batch, and a plain DM's inline acks with nothing read (0). Every fixture above stays
+            // byte-identical: the field is absent toward an author who reads none.
+            "messageContentReadReceipt" to
+                MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = "m1", acks = listOf("m2", "m3"), rm = 2L).encode(),
+            "messageContentV2ReadReceipt" to
+                compact(MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, acks = listOf(frameId(1), frameId(2)), rm = -1L)),
+            "messageContentV2InlineAcksRead" to
+                compact(MessageContent(body = "hi there", acks = listOf(frameId(1)), rm = 0L)),
+            // A full nine-id compact tick, ids 5–8 read: past four ids the mask carries the first bit past the list
+            // (`ReadMask.encode`), so its width is the list's alone (review round 1, B1) — 0x1e0 | 0x200 = 0x3e0 here.
+            "messageContentV2ReadReceiptNine" to
+                (1..9).map { frameId(it) }.let { nine ->
+                    compact(
+                        MessageContent(
+                            body = "",
+                            ctl = MessageContent.CTL_RECEIPT,
+                            acks = nine,
+                            rm = ReadMask.encode(nine, nine.drop(5).toSet()),
+                        ),
+                    )
+                },
             // Link-preview cards: the container a card attachment's blob holds. Its own type under its own MIME,
             // so no fixture above moves; `v` is required and always emitted (an elided version cannot gate), and
             // the text-only shape pins that an absent picture costs no bytes at all.

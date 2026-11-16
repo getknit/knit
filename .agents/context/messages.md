@@ -16,6 +16,16 @@ lines.
   2026-10.97vs. A cue goes over the radios and, for a DM or group, as a spool sig beside them (spec §7.8); the
   Typing indicators switch (on by default) stops both and hides cues already showing, and a cue from a blocked
   sender or in a message request is never shown, whatever plane carried it.
+- **When touching read receipts on the screens — `ChatViewModel.onRowsSeen` / the screen's `READ_DWELL_MS` visibility
+  collector, `NotificationActionReceiver.handleMarkRead`'s read report, `DeliveryStatus.Read`, `deliveryTint`,
+  `KnitIcons.ReadTick`, `ChatRow.read` / `readCount`, `ChatListViewModel.withReadTicks`,
+  `MessageDetailsUiState.readAt` / `readBy`, `MessageReceiptRepository.observeReadCounts` / `readersOf`, or
+  `SettingsStore.readReceiptsEnabled`:** READ ADR 2026-11.z6jw (and ADR 036 for the delivery split it extends). A row
+  counts as read once half its bubble has stayed on screen in the foreground chat for 600 ms, or Mark read clears it;
+  the UI only reports seen ids (`MeshController.onMessagesRead`), and the mesh decides whom it tells. The switch is
+  reciprocal: off, nothing shows read anywhere, though incoming reads are still recorded. A group shows read only once
+  every current member has; a DM once its peer has. The wire, `ReadSync` and LoRa halves are in
+  `.agents/context/crypto.md` and `.agents/context/lora-bridge.md`.
 - **When touching what a message request fetches — `Conversations.isAccepted` as read by `AcceptanceSnapshot`,
   `InboundPipeline.notifyPendingRequests`, or any attachment want in a conversation nobody accepted:** READ ADR 009
   and ADR 2026-11.qu98. A request's row is stored and acked, but its attachment is not fetched, echoed or pulled off

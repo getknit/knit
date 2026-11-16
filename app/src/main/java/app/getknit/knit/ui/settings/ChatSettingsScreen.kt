@@ -41,6 +41,7 @@ import org.koin.androidx.compose.koinViewModel
 /** UI-local projection of [ChatSettingsViewModel]'s per-setting flows for the stateless content. */
 internal data class ChatSettingsForm(
     val typingIndicatorsEnabled: Boolean = true,
+    val readReceiptsEnabled: Boolean = true,
     val linkPreviewsEnabled: Boolean = false,
     val contentFilteringEnabled: Boolean = true,
     val bluetoothDownloadLimit: BluetoothDownloadLimit = BluetoothDownloadLimit.DEFAULT,
@@ -50,7 +51,7 @@ internal data class ChatSettingsForm(
 )
 
 /**
- * Settings › Chats: what a chat sends (typing, link previews) and what it lets in (content filtering, large Bluetooth
+ * Settings › Chats: what a chat sends (typing, read receipts, link previews) and what it lets in (content filtering, large Bluetooth
  * downloads). Like Settings, everything persists the moment it is touched.
  */
 @Composable
@@ -59,6 +60,7 @@ fun ChatSettingsScreen(
     viewModel: ChatSettingsViewModel = koinViewModel(),
 ) {
     val typingIndicatorsEnabled by viewModel.typingIndicatorsEnabled.collectAsStateWithLifecycle()
+    val readReceiptsEnabled by viewModel.readReceiptsEnabled.collectAsStateWithLifecycle()
     val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
     val contentFilteringEnabled by viewModel.contentFilteringEnabled.collectAsStateWithLifecycle()
     val bluetoothDownloadLimit by viewModel.bluetoothDownloadLimit.collectAsStateWithLifecycle()
@@ -68,6 +70,7 @@ fun ChatSettingsScreen(
         form =
             ChatSettingsForm(
                 typingIndicatorsEnabled = typingIndicatorsEnabled,
+                readReceiptsEnabled = readReceiptsEnabled,
                 linkPreviewsEnabled = linkPreviewsEnabled,
                 contentFilteringEnabled = contentFilteringEnabled,
                 bluetoothDownloadLimit = bluetoothDownloadLimit,
@@ -76,6 +79,7 @@ fun ChatSettingsScreen(
             ),
         onBack = onBack,
         onToggleTypingIndicators = viewModel::setTypingIndicatorsEnabled,
+        onToggleReadReceipts = viewModel::setReadReceiptsEnabled,
         onToggleLinkPreviews = viewModel::setLinkPreviewsEnabled,
         onToggleContentFiltering = viewModel::setContentFilteringEnabled,
         onSelectBluetoothDownloadLimit = viewModel::setBluetoothDownloadLimit,
@@ -90,6 +94,7 @@ internal fun ChatSettingsScreenContent(
     form: ChatSettingsForm,
     onBack: () -> Unit,
     onToggleTypingIndicators: (Boolean) -> Unit = {},
+    onToggleReadReceipts: (Boolean) -> Unit = {},
     onToggleLinkPreviews: (Boolean) -> Unit = {},
     onToggleContentFiltering: (Boolean) -> Unit = {},
     onSelectBluetoothDownloadLimit: (BluetoothDownloadLimit) -> Unit = {},
@@ -133,6 +138,16 @@ internal fun ChatSettingsScreenContent(
                 modifier = Modifier.testTag("settings_typing_indicators"),
             )
 
+            // What a chat tells the author once you have read their message, in a DM or a group (ADR 2026-11.z6jw).
+            // Reciprocal like typing: off, nothing is sent and nobody's read is shown. Every build, every plane.
+            ToggleRow(
+                title = stringResource(R.string.settings_read_receipts_title),
+                subtitle = stringResource(R.string.settings_read_receipts_subtitle),
+                enabled = form.readReceiptsEnabled,
+                onToggle = onToggleReadReceipts,
+                modifier = Modifier.testTag("settings_read_receipts"),
+            )
+
             // The subtitle carries the disclosure that would otherwise need a sheet.
             if (showLinkPreviews) {
                 ToggleRow(
@@ -144,7 +159,7 @@ internal fun ChatSettingsScreenContent(
                 )
             }
 
-            // The two below decide what reaches this phone from others; the two above, what it sends.
+            // The two below decide what reaches this phone from others; the ones above, what it sends.
             ToggleRow(
                 title = stringResource(R.string.settings_content_filtering_title),
                 subtitle = stringResource(R.string.settings_content_filtering_subtitle),

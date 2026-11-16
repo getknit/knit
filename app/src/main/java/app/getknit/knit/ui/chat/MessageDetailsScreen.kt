@@ -257,6 +257,16 @@ private fun MessageSummary(state: MessageDetailsUiState) {
                 modifier = Modifier.testTag("message_details_delivered_at"),
             )
         }
+        // And when they read it (ADR 2026-11.z6jw): our clock when their read reached us. Null while the
+        // read-receipts setting is off, so nothing here says read then.
+        state.readAt?.let { readAt ->
+            Text(
+                text = stringResource(R.string.message_details_read_at, absoluteTime(context, readAt)),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("message_details_read_at"),
+            )
+        }
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -282,7 +292,7 @@ private fun MessageSummary(state: MessageDetailsUiState) {
                     },
                 // Decorative: the label beside it says the same thing in words.
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = if (state.mine) deliveryTint(state.delivery) else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(16.dp),
             )
             // Before the receipt, a DM their LoRa radio acked says when on this one line: the ack's time on our clock,
@@ -300,8 +310,10 @@ private fun MessageSummary(state: MessageDetailsUiState) {
                             state.mine,
                             // The ratio lives here, on the tick line, rather than being repeated in the
                             // section header below — which is why that header is a plain label.
-                            delivered = state.deliveredTo.size,
+                            // Readers are a delivered member too, listed in their own section above "Delivered to".
+                            delivered = state.deliveredTo.size + state.readBy.size,
                             total = state.recipientTotal,
+                            read = state.readBy.size,
                         ).resolve()
                     },
                 style = MaterialTheme.typography.bodyMedium,
@@ -334,19 +346,36 @@ private fun LazyListScope.recipientSections(
     state: MessageDetailsUiState,
     onOpenProfile: (nodeId: String) -> Unit,
 ) {
-    item {
-        SectionHeader(
-            text =
-                if (state.recipientTotal > 0) {
-                    // Plain label: the ratio is already on the delivery line in the summary above.
-                    stringResource(R.string.message_details_delivered_to)
-                } else {
-                    // The room's list is what came back, not who received it — so the header claims exactly
-                    // that and no count, which here would only look like a total it cannot be.
-                    stringResource(R.string.message_details_confirmed_delivered_to)
-                },
-            testTag = "message_details_delivered_header",
-        )
+    // Who has read it first (ADR 2026-11.z6jw), in the order their reads reached us; empty while the setting is
+    // off or nobody has. "Delivered to" below then lists those who have it and have not read it yet.
+    if (state.readBy.isNotEmpty()) {
+        item {
+            SectionHeader(
+                text = stringResource(R.string.message_details_read_by),
+                testTag = "message_details_read_header",
+            )
+        }
+        items(state.readBy, key = { "read_${it.nodeId}" }) { recipient ->
+            RecipientListRow(recipient = recipient, onOpen = onOpenProfile)
+        }
+    }
+    // A group send everyone has read needs no empty "Delivered to" header under its readers; the room always has one.
+    val deliveredHeader = state.readBy.isEmpty() || state.deliveredTo.isNotEmpty() || state.recipientTotal == 0
+    if (deliveredHeader) {
+        item {
+            SectionHeader(
+                text =
+                    if (state.recipientTotal > 0) {
+                        // Plain label: the ratio is already on the delivery line in the summary above.
+                        stringResource(R.string.message_details_delivered_to)
+                    } else {
+                        // The room's list is what came back, not who received it — so the header claims exactly
+                        // that and no count, which here would only look like a total it cannot be.
+                        stringResource(R.string.message_details_confirmed_delivered_to)
+                    },
+                testTag = "message_details_delivered_header",
+            )
+        }
     }
     items(state.deliveredTo, key = { "delivered_${it.nodeId}" }) { recipient ->
         RecipientListRow(recipient = recipient, onOpen = onOpenProfile)
@@ -441,15 +470,17 @@ private fun RecipientListRow(
     onOpen: (nodeId: String) -> Unit,
 ) {
     val context = LocalContext.current
-    val delivered = recipient.deliveredAt?.let { absoluteTime(context, it, showYear = false) }
+    // A reader shows when their read reached us; anyone else who has it, when their delivery did.
+    val read = recipient.readAt?.let { absoluteTime(context, it, showYear = false) }
+    val delivered = read ?: recipient.deliveredAt?.let { absoluteTime(context, it, showYear = false) }
     // The plane this member's receipt crossed, painted as the bubble paints a plane (nothing for a phone radio) and
     // named in the row's description, since the glyph never carries the meaning alone.
     val glyph = if (delivered != null) planeGlyph(recipient.plane) else null
     val status =
-        if (delivered != null) {
-            stringResource(R.string.message_details_recipient_delivered, recipient.displayName, delivered)
-        } else {
-            stringResource(R.string.message_details_recipient_waiting, recipient.displayName)
+        when {
+            read != null -> stringResource(R.string.message_details_recipient_read, recipient.displayName, read)
+            delivered != null -> stringResource(R.string.message_details_recipient_delivered, recipient.displayName, delivered)
+            else -> stringResource(R.string.message_details_recipient_waiting, recipient.displayName)
         }
     val planeWords = if (glyph != null) deliveryLabel(DeliveryStatus.Delivered, recipient.plane, mine = true).resolve() else null
     val description = planeWords?.let { stringResource(R.string.joined_with_dot, status, it) } ?: status
@@ -606,6 +637,60 @@ fun MessageDetailsScreenPreview() =
                             ReactorRow("me00", "You", null, "❤️", PREVIEW_NOW - 6 * 60_000L, true),
                         ),
                     filters = listOf(ReactionFilter("👍", 3), ReactionFilter("❤️", 1)),
+                ),
+        )
+    }
+
+/**
+ * A group send two of three members have read (ADR 2026-11.z6jw): the readers first, in the order their reads
+ * reached us, then the member who has it unread, then the one still waiting.
+ */
+@Preview(name = "Message details — read by")
+@Composable
+fun MessageDetailsScreenReadByPreview() =
+    KnitPreview {
+        MessageDetailsScreenContent(
+            state =
+                MessageDetailsUiState(
+                    messageId = "demo-group-5",
+                    body = "Trailhead at 7. Bring layers.",
+                    mine = true,
+                    senderName = "You",
+                    senderNodeId = "me00",
+                    sentAt = PREVIEW_NOW - 30 * 60_000L,
+                    delivery = DeliveryStatus.Delivered,
+                    plane = DeliveryPlane.Nearby,
+                    showRecipients = true,
+                    readBy =
+                        listOf(
+                            RecipientRow("samr1v00", "Sam Rivera", null, PREVIEW_NOW - 29 * 60_000L, readAt = PREVIEW_NOW - 20 * 60_000L),
+                            RecipientRow("priya001", "Priya Nair", null, PREVIEW_NOW - 28 * 60_000L, readAt = PREVIEW_NOW - 4 * 60_000L),
+                        ),
+                    deliveredTo = listOf(RecipientRow("theod001", "Theo Diaz", null, PREVIEW_NOW - 12 * 60_000L)),
+                    waitingOn = listOf(RecipientRow("maya0001", "Maya Chen", null, null)),
+                    recipientTotal = 4,
+                ),
+        )
+    }
+
+/** A DM its recipient has read: the delivered and read lines, and the read tick (ADR 2026-11.z6jw). */
+@Preview(name = "Message details — DM read")
+@Composable
+fun MessageDetailsScreenDmReadPreview() =
+    KnitPreview {
+        MessageDetailsScreenContent(
+            state =
+                MessageDetailsUiState(
+                    messageId = "demo-dm-read",
+                    body = "At the ridge hut. Meet you at the lake at 3?",
+                    mine = true,
+                    senderName = "You",
+                    senderNodeId = "me00",
+                    sentAt = PREVIEW_NOW - 15 * 60_000L,
+                    deliveredAt = PREVIEW_NOW - 14 * 60_000L,
+                    readAt = PREVIEW_NOW - 6 * 60_000L,
+                    delivery = DeliveryStatus.Read,
+                    plane = DeliveryPlane.Nearby,
                 ),
         )
     }

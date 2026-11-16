@@ -576,12 +576,18 @@ class InboundPipelineTest {
             coEvery { groups.leftAt(any(), any()) } answers { leftAtMap[firstArg<String>() to secondArg<String>()] ?: 0L }
             // The real repository writes the tick and the acker row in one transaction; the fake keeps that
             // pairing so the existing markReceived verifications still describe what the pipeline did.
-            coEvery { receipts.record(any(), any(), any(), any()) } coAnswers {
+            coEvery { receipts.record(any(), any(), any(), any(), any()) } coAnswers {
                 val id = firstArg<String>()
                 val acker = secondArg<String?>()
                 val via = thirdArg<DeliveryPlane>()
+                val at = arg<Long>(3)
+                val read = arg<Boolean>(4)
                 messages.markReceived(id, via)
-                if (acker != null) receiptMap.putIfAbsent(id to acker, MessageReceiptEntity(id, acker, arg(3), via.code))
+                if (acker != null) {
+                    receiptMap.putIfAbsent(id to acker, MessageReceiptEntity(id, acker, at, via.code, readAt = if (read) at else null))
+                    // The real write's fill-null-only read stamp (ADR 2026-11.z6jw).
+                    if (read) receiptMap.computeIfPresent(id to acker) { _, row -> if (row.readAt == null) row.copy(readAt = at) else row }
+                }
             }
             coEvery { groups.find(any()) } answers { groupMap[firstArg()] }
             coEvery { groups.upsert(any()) } answers { groupMap[firstArg<GroupEntity>().groupId] = firstArg() }
@@ -7810,6 +7816,8 @@ class InboundPipelineTest {
             /** The sealed body's declared language and its author's (ADR 2026-10.t2h6's 2026-10-29 amendment). */
             lang: Int? = null,
             reads: Int? = null,
+            /** The read mask (ADR 2026-11.z6jw). */
+            rm: Long? = null,
             /** Declarations put on the cleartext shell — what no honest sender does, and no receiver reads. */
             shellLang: Int? = null,
             shellReads: Int? = null,
@@ -7837,6 +7845,7 @@ class InboundPipelineTest {
                     styles = styles,
                     lang = lang,
                     reads = reads,
+                    rm = rm,
                 ).sealBytes(v3)
             check(!v3 || scheme == EncEnvelope.VERSION_DM_V3) { "fixture asked for v3 but the content has no compact form" }
             val sealed = checkNotNull(engine.seal(session, plaintextOverride ?: plain, aad, rig.selfSpk.pub, now = 5L, v3 = v3))
@@ -14471,6 +14480,166 @@ class InboundPipelineTest {
             assertEquals(1L, rig.metrics.groups().groupSeedsAdopted)
             assertTrue(rig.seedCustodyReplays.isEmpty())
             coVerify(exactly = 0) { rig.groups.upsert(any()) }
+        }
+
+    // --- Read receipts (ADR 2026-11.z6jw): the author's side of the read mask ---
+
+    /** One of our own messages in [conversationId], to [recipientId] for a DM. */
+    private fun Rig.authoredHere(
+        id: String,
+        conversationId: String,
+        recipientId: String? = null,
+        senderId: String = self.nodeId,
+    ) {
+        msgMap[id] =
+            MessageEntity(id = id, senderId = senderId, recipientId = recipientId, conversationId = conversationId, body = "x", sentAt = 1L)
+    }
+
+    @Test
+    fun aSealedReadAppliesAndImpliesTheDelivery() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.authoredHere("dm-1", alice.nodeId, recipientId = alice.nodeId)
+            rig.authoredHere("dm-2", alice.nodeId, recipientId = alice.nodeId)
+
+            // Read before any delivery receipt: both the tick and the read land from this one frame.
+            rig.deliver(
+                alice,
+                V2Author(alice, rig).dm("r1", "", ctl = MessageContent.CTL_RECEIPT, ack = "dm-1", acks = listOf("dm-2"), rm = 0b01L),
+            )
+
+            coVerify { rig.messages.markReceived("dm-1", any()) }
+            coVerify { rig.messages.markReceived("dm-2", any()) }
+            assertNotNull("read", rig.receiptMap["dm-1" to alice.nodeId]?.readAt)
+            assertNull("delivered, not read", rig.receiptMap["dm-2" to alice.nodeId]?.readAt)
+        }
+
+    @Test
+    fun everyBitSetReadsEveryIdAndBitsPastTheListAreIgnored() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.authoredHere("dm-1", alice.nodeId, recipientId = alice.nodeId)
+            rig.authoredHere("dm-2", alice.nodeId, recipientId = alice.nodeId)
+            rig.authoredHere("dm-3", alice.nodeId, recipientId = alice.nodeId)
+
+            val author = V2Author(alice, rig)
+            rig.deliver(alice, author.dm("r1", "", ctl = MessageContent.CTL_RECEIPT, acks = listOf("dm-1", "dm-2"), rm = -1L))
+            // Bit 0 clear and every bit past the one-id list set: the id stays unread.
+            rig.deliver(alice, author.dm("r2", "", ctl = MessageContent.CTL_RECEIPT, ack = "dm-3", rm = -2L))
+
+            assertNotNull(rig.receiptMap["dm-1" to alice.nodeId]?.readAt)
+            assertNotNull(rig.receiptMap["dm-2" to alice.nodeId]?.readAt)
+            assertNull(rig.receiptMap["dm-3" to alice.nodeId]?.readAt)
+        }
+
+    @Test
+    fun aReceiptWithoutAMaskReadsNothing() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.authoredHere("dm-1", alice.nodeId, recipientId = alice.nodeId)
+
+            rig.deliver(alice, V2Author(alice, rig).dm("r1", "", ctl = MessageContent.CTL_RECEIPT, ack = "dm-1"))
+
+            assertEquals(alice.nodeId, rig.receiptMap["dm-1" to alice.nodeId]?.ackerNodeId)
+            assertNull(rig.receiptMap["dm-1" to alice.nodeId]?.readAt)
+        }
+
+    @Test
+    fun aGroupMembersReadIsRecordedAndANonMembersNamesNobody() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val mallory = party()
+            rig.pin(alice)
+            rig.pin(mallory)
+            rig.seedGroup("g-r1", members = listOf(rig.self.nodeId, alice.nodeId), createdBy = rig.self.nodeId)
+            rig.authoredHere("gm-1", "g-r1")
+
+            rig.deliver(mallory, V2Author(mallory, rig).dm("r0", "", ctl = MessageContent.CTL_RECEIPT, ack = "gm-1", rm = -1L))
+            assertTrue("a non-member names nobody", rig.receiptMap.isEmpty())
+
+            rig.deliver(alice, V2Author(alice, rig).dm("r1", "", ctl = MessageContent.CTL_RECEIPT, ack = "gm-1", rm = -1L))
+            assertNotNull(rig.receiptMap["gm-1" to alice.nodeId]?.readAt)
+        }
+
+    @Test
+    fun aReadOfARoomPostACommonsPostOrSomeoneElsesGroupMessageRecordsNoReadAt() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.seedGroup("g-r2", members = listOf(rig.self.nodeId, alice.nodeId, "sam"), createdBy = rig.self.nodeId)
+            rig.authoredHere("room-1", Conversations.NEARBY)
+            rig.authoredHere("commons-1", Conversations.commonsIdFor("ab"))
+            rig.authoredHere("sams-1", "g-r2", senderId = "sam")
+
+            rig.deliver(
+                alice,
+                V2Author(
+                    alice,
+                    rig,
+                ).dm("r1", "", ctl = MessageContent.CTL_RECEIPT, acks = listOf("room-1", "commons-1", "sams-1"), rm = -1L),
+            )
+
+            assertEquals("the room still names any signed acker", alice.nodeId, rig.receiptMap["room-1" to alice.nodeId]?.ackerNodeId)
+            assertTrue("no read anywhere", rig.receiptMap.values.all { it.readAt == null })
+        }
+
+    @Test
+    fun anUnheldIdRecordsNothing() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+
+            rig.deliver(alice, V2Author(alice, rig).dm("r1", "", ctl = MessageContent.CTL_RECEIPT, ack = "nobody-has-it", rm = -1L))
+
+            assertTrue(rig.receiptMap.isEmpty())
+        }
+
+    @Test
+    fun aPlainDmsMaskIndexesItsInlineAcksAlone() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.authoredHere("dm-1", alice.nodeId, recipientId = alice.nodeId)
+            rig.authoredHere("dm-2", alice.nodeId, recipientId = alice.nodeId)
+
+            // Bit 0 is acks[0]: the frame's own id is never in the list.
+            rig.deliver(alice, V2Author(alice, rig).dm(FrameId.new(), "reply", acks = listOf("dm-1", "dm-2"), rm = 0b10L))
+
+            assertNull(rig.receiptMap["dm-1" to alice.nodeId]?.readAt)
+            assertNotNull(rig.receiptMap["dm-2" to alice.nodeId]?.readAt)
+        }
+
+    @Test
+    fun aCompactReceiptsMaskApplies() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinLoraPeer(alice)
+            val (a, b) = FrameId.new() to FrameId.new()
+            rig.authoredHere(a, alice.nodeId, recipientId = alice.nodeId)
+            rig.authoredHere(b, alice.nodeId, recipientId = alice.nodeId)
+
+            rig.pipeline.deliverLoraDirect(
+                openedFrom(
+                    alice,
+                    FrameId.new(),
+                    MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, acks = listOf(a, b), rm = 0b10L),
+                ),
+            )
+
+            assertNull(rig.receiptMap[a to alice.nodeId]?.readAt)
+            assertNotNull(rig.receiptMap[b to alice.nodeId]?.readAt)
+            assertEquals(DeliveryPlane.LoRa.code, rig.receiptMap[b to alice.nodeId]?.via)
         }
 
     private companion object {

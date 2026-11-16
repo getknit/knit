@@ -13,6 +13,7 @@ import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.toGroupInfo
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.MeshController
@@ -24,6 +25,7 @@ import io.mockk.verify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import org.junit.After
 import org.junit.Before
@@ -54,6 +56,9 @@ class NotificationActionReceiverTest {
         mockk<SettingsStore>(relaxed = true) {
             every { displayName } returns flowOf("Me")
             every { ownAvatarHash } returns flowOf(null)
+            // Mark read reads the old watermark and the block list (ADR 2026-11.z6jw); a relaxed mock's flow never emits.
+            every { lastReadAt(any()) } returns flowOf(0L)
+            every { blockedNodeIds } returns flowOf(setOf(BLOCKED))
         }
     private val identity = mockk<Identity> { coEvery { nodeId() } returns ME }
 
@@ -63,6 +68,7 @@ class NotificationActionReceiverTest {
     @Before
     fun setUp() {
         coEvery { groups.find(any()) } returns null
+        coEvery { messages.page(any(), any(), any(), any()) } returns emptyList()
         coEvery { groups.find(GROUP_ID) } returns GROUP
         startKoin {
             androidContext(app)
@@ -186,6 +192,43 @@ class NotificationActionReceiverTest {
         verify { notifier.clearConversation(BOB) }
     }
 
+    /** ADR 2026-11.z6jw: what Mark read clears counts as read — others' unread rows only, never ours or a blocked sender's. */
+    @Test
+    fun markReadReportsOnlyOthersUnreadRowsAsRead() {
+        // A live watermark, so taking `since` after the tap moved it would read 300 and report nothing.
+        val watermark = MutableStateFlow(100L)
+        every { settings.lastReadAt(GROUP_ID) } returns watermark
+        coEvery { settings.setLastReadAt(GROUP_ID, any()) } answers {
+            watermark.value = secondArg()
+            mockk(relaxed = true)
+        }
+        coEvery { messages.newestSentAt(GROUP_ID) } returns 300L
+        coEvery { messages.page(GROUP_ID, null, null, any()) } returns
+            listOf(
+                MessageEntity(id = "new", senderId = BOB, conversationId = GROUP_ID, body = "", sentAt = 300L),
+                MessageEntity(id = "mine", senderId = ME, conversationId = GROUP_ID, body = "", sentAt = 250L),
+                MessageEntity(id = "blocked", senderId = BLOCKED, conversationId = GROUP_ID, body = "", sentAt = 200L),
+                MessageEntity(id = "old", senderId = BOB, conversationId = GROUP_ID, body = "", sentAt = 50L),
+            )
+
+        deliver(Intent(MessageNotifier.ACTION_MARK_READ).putExtra(MessageNotifier.EXTRA_CONV, GROUP_ID))
+
+        coVerify(exactly = 1) { mesh.onMessagesRead(listOf("new")) }
+        coVerify { settings.setLastReadAt(GROUP_ID, 300L) }
+    }
+
+    /** A failing read report never costs the tap its own effect: the watermark moves and the thread clears. */
+    @Test
+    fun markReadStillClearsTheThreadWhenTheReadReportFails() {
+        coEvery { messages.newestSentAt(BOB) } returns 1234L
+        coEvery { messages.page(BOB, null, null, any()) } throws IllegalStateException("db gone")
+
+        deliver(Intent(MessageNotifier.ACTION_MARK_READ).putExtra(MessageNotifier.EXTRA_CONV, BOB))
+
+        coVerify { settings.setLastReadAt(BOB, 1234L) }
+        verify { notifier.clearConversation(BOB) }
+    }
+
     @Test
     fun dismissDropsOnlyThatTag() {
         deliver(Intent(MessageNotifier.ACTION_DISMISS).putExtra(MessageNotifier.EXTRA_TAG, "tag-x"))
@@ -196,6 +239,7 @@ class NotificationActionReceiverTest {
     private companion object {
         const val ME = "aaaaaaaaaaaaaaaaaaaaaaaaaa"
         const val BOB = "bbbbbbbbbbbbbbbbbbbbbbbbbb"
+        const val BLOCKED = "cccccccccccccccccccccccccc"
         val GROUP_ID = Conversations.GROUP_ID_PREFIX + "0123"
         val GROUP = GroupEntity(groupId = GROUP_ID, name = "Hikers", members = "[\"$ME\",\"$BOB\"]", createdBy = ME, createdAt = 1L)
     }

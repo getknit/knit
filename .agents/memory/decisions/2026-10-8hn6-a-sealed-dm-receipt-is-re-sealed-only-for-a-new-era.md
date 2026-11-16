@@ -10,6 +10,10 @@ topics: [receipts, ratchet, custody]
 
 Status: Accepted (2026-10-29; draft until the maintainer accepts it)
 
+**Qualified by ADR 2026-11.z6jw (2026-11-15):** the 2026-11-06 amendment's "every signed DM ✓✓ records" excludes what
+a receipt carries as a read. Read riders in `acks`, and the ids of `ReadSync`'s standalone read `CTL_RECEIPT`, are
+never claimed in or recorded to `DmReAckLedger`.
+
 **What was observed.** GitLab #176, found reading the code while porting sealed receipts to knit-ios. The
 pre-decrypt exists-gate (`InboundPipeline.decryptAndDeliver`) answers every re-delivered DM whose row we hold, and
 for a ratchet-capable author off the LoRa board that answer was a new sealed `CTL_RECEIPT` under a fresh frame id:

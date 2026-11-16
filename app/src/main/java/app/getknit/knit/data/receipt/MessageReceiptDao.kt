@@ -51,6 +51,40 @@ interface MessageReceiptDao {
         roster: List<String>,
     ): Flow<List<MessageDeliveryCount>>
 
+    /**
+     * Stamps [ackerNodeId]'s read of [messageId] at [at], never earlier than the row's own [MessageReceiptEntity.notedAt]
+     * and never over an earlier read: first-evidence-wins, like the delivery the row records. A no-op without a row, so
+     * the caller inserts the delivered row first (`MessageReceiptRepository.record`, one transaction).
+     */
+    @Query(
+        "UPDATE message_receipts SET readAt = MAX(:at, notedAt) " +
+            "WHERE messageId = :messageId AND ackerNodeId = :ackerNodeId AND readAt IS NULL",
+    )
+    suspend fun markRead(
+        messageId: String,
+        ackerNodeId: String,
+        at: Long,
+    )
+
+    /**
+     * How many of [roster] have *read* each of [conversationId]'s messages, one row per message read by at least one —
+     * the bubble's read tick and its "read by N of M", filtered by the roster for [observeDeliveredCounts]' reason.
+     */
+    @Query(
+        "SELECT messageId, COUNT(*) AS delivered FROM message_receipts " +
+            "WHERE readAt IS NOT NULL AND ackerNodeId IN (:roster) " +
+            "AND messageId IN (SELECT id FROM messages WHERE conversationId = :conversationId) " +
+            "GROUP BY messageId",
+    )
+    fun observeReadCounts(
+        conversationId: String,
+        roster: List<String>,
+    ): Flow<List<MessageDeliveryCount>>
+
+    /** Everyone whose read of [messageId] has reached us. */
+    @Query("SELECT ackerNodeId FROM message_receipts WHERE messageId = :messageId AND readAt IS NOT NULL")
+    suspend fun readersOf(messageId: String): List<String>
+
     /** Drops every receipt for a message (there is no FK cascade) when the message is deleted. */
     @Query("DELETE FROM message_receipts WHERE messageId = :messageId")
     suspend fun deleteForMessage(messageId: String)

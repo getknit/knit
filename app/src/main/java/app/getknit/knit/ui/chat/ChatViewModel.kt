@@ -280,6 +280,12 @@ data class ChatRow(
     // recorded ackers, which is what makes the tick fall back to a bare "Delivered" (see [deliveryLabel]).
     val deliveredCount: Int = 0,
     val recipientTotal: Int = 0,
+    // How many of those members have read it (ADR 2026-11.z6jw); 0 outside a group send of ours, and while the
+    // read-receipts setting is off.
+    val readCount: Int = 0,
+    // Read, for the tick: a DM of ours its recipient has read, or a group send of ours every current member has read.
+    // Always false while the read-receipts setting is off (reciprocal: we show none when we send none).
+    val read: Boolean = false,
     // Our DM's compact LoRa copy was acked by their own board and no receipt is back yet (ADR 040's 2026-10-31
     // amendment): the tick's middle state. Always false once [received], and outside a DM of ours.
     val radioReached: Boolean = false,
@@ -1313,6 +1319,9 @@ class ChatViewModel(
         val group: GroupEntity?,
         // messageId -> how many current roster members have acked it. Empty outside a group.
         val deliveredCounts: Map<String, Int>,
+        // messageId -> how many current roster members (a DM: its one peer) have read it. Empty outside a DM or a group,
+        // and while the read-receipts setting is off.
+        val readCounts: Map<String, Int>,
         // messageId -> their LoRa radio acked our DM (MeshController.loraRadioReached). Empty outside a DM thread.
         val radioReached: Map<String, LoraRadioReached>,
     )
@@ -1331,20 +1340,44 @@ class ChatViewModel(
         val retrySources: Map<String, Boolean>,
     )
 
+    // The group row with "how many members have acked / read each message".
+    private data class ThreadReceipts(
+        val group: GroupEntity?,
+        val delivered: Map<String, Int>,
+        val read: Map<String, Int>,
+    )
+
     // The group row paired with "how many members have acked each message", re-subscribed whenever the
     // roster changes (a departure changes the denominator AND which receipts count). Not a group ⇒ no
-    // roster ⇒ no counts, and the tick keeps its plain wording.
+    // roster ⇒ no counts, and the tick keeps its plain wording. Read counts ride beside them (ADR 2026-11.z6jw):
+    // a group's roster, or a DM's one peer, and none at all while the setting is off — reciprocal, so the
+    // reads other people sent stay in the table, unshown, until it is turned back on.
     @OptIn(ExperimentalCoroutinesApi::class)
-    private val groupDelivery: Flow<Pair<GroupEntity?, Map<String, Int>>> =
-        groups
-            .observeGroup(conversationId)
-            .distinctUntilChanged()
-            .flatMapLatest { group ->
+    private val groupDelivery: Flow<ThreadReceipts> =
+        combine(
+            groups.observeGroup(conversationId).distinctUntilChanged(),
+            settings.readReceiptsEnabled.distinctUntilChanged(),
+        ) { group, readsShown -> group to readsShown }
+            .flatMapLatest { (group, readsShown) ->
                 val roster = group?.let { GroupMembersStore.decode(it.members) }.orEmpty()
-                if (roster.isEmpty()) {
-                    flowOf(group to emptyMap())
-                } else {
-                    receipts.observeDeliveredCounts(conversationId, roster).map { group to it }
+                val dm = group == null && Conversations.kindFor(conversationId) == ConversationKind.DM
+                when {
+                    roster.isNotEmpty() -> {
+                        combine(
+                            receipts.observeDeliveredCounts(conversationId, roster),
+                            if (readsShown) receipts.observeReadCounts(conversationId, roster) else flowOf(emptyMap()),
+                        ) { delivered, read -> ThreadReceipts(group, delivered, read) }
+                    }
+
+                    dm && readsShown -> {
+                        receipts
+                            .observeReadCounts(conversationId, listOf(conversationId))
+                            .map { ThreadReceipts(group, emptyMap(), it) }
+                    }
+
+                    else -> {
+                        flowOf(ThreadReceipts(group, emptyMap(), emptyMap()))
+                    }
                 }
             }
 
@@ -1371,7 +1404,7 @@ class ChatViewModel(
             settings.blockedNodeIds,
             blobState,
             groupDelivery,
-        ) { (window, senders, reached), reacts, blocked, blob, (group, delivered) ->
+        ) { (window, senders, reached), reacts, blocked, blob, (group, delivered, read) ->
             MessagesBundle(
                 window.messages.filter { it.senderId !in blocked },
                 senders.filter { it !in blocked },
@@ -1389,6 +1422,7 @@ class ChatViewModel(
                 blob.retrySources,
                 group,
                 delivered,
+                read,
                 reached,
             )
         }
@@ -1539,7 +1573,9 @@ class ChatViewModel(
             val retrySources = bundle.retrySources
             val group = bundle.group
             val deliveredCounts = bundle.deliveredCounts
+            val readCounts = bundle.readCounts
             val isGroup = group != null
+            val isDm = !isGroup && Conversations.kindFor(conversationId) == ConversationKind.DM
             // A thread with one peer behind it — the only shape that can be blocked or verified.
             val isPeerThread = !isRoom && !isBridged && !isCommons && !isGroup
             // A group's pinned roster, or a commons' seen members: both feed the @-mention candidates.
@@ -1627,6 +1663,15 @@ class ChatViewModel(
                         // since we never ack ourselves (the details screen's rule, kept identical here).
                         deliveredCount = if (mine && isGroup) deliveredCounts[m.id] ?: 0 else 0,
                         recipientTotal = if (mine && isGroup) members.count { it != me } else 0,
+                        readCount = if (mine && isGroup) readCounts[m.id] ?: 0 else 0,
+                        // A group reads as read once every current member has (the maintainer's rule); a DM once its peer has.
+                        read =
+                            mine &&
+                                when {
+                                    isGroup -> members.count { it != me }.let { total -> total > 0 && (readCounts[m.id] ?: 0) >= total }
+                                    isDm -> (readCounts[m.id] ?: 0) > 0
+                                    else -> false
+                                },
                         // The shared fold: a receipt wins, and only a DM of ours lifts.
                         radioReached = mine && DeliveryStatus.of(m, bundle.radioReached[m.id]) == DeliveryStatus.RadioReached,
                         moderationFlagged = m.hiddenByFilter(hideSensitive),
@@ -3877,6 +3922,23 @@ class ChatViewModel(
         chatForeground.value = true
         notifier.setVisibleConversation(conversationId)
         resumeLocation()
+    }
+
+    // The rows already handed to the mesh as read this session, so a row that stays on screen is reported once.
+    private val reportedRead = HashSet<String>()
+
+    /**
+     * [ids] — messages other people wrote — sat on screen long enough to count as read (ADR 2026-11.z6jw). Passed
+     * to the mesh only while the chat is in the foreground and only for a DM or a group; the mesh drops what it must not
+     * tell (the setting off, an author whose build cannot read it). Main-thread-confined, like the screen's collector.
+     */
+    fun onRowsSeen(ids: Set<String>) {
+        if (!chatForeground.value) return
+        val kind = Conversations.kindFor(conversationId)
+        if (kind != ConversationKind.DM && kind != ConversationKind.GROUP) return
+        val fresh = ids.filter { reportedRead.add(it) }
+        if (fresh.isEmpty()) return
+        viewModelScope.launch { meshManager.onMessagesRead(fresh) }
     }
 
     /** Chat left the screen: resume notifying for this conversation's incoming messages. */

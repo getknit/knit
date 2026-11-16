@@ -60,6 +60,8 @@ import app.getknit.knit.data.reaction.ReactionDao
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.receipt.MessageReceiptDao
 import app.getknit.knit.data.receipt.MessageReceiptEntity
+import app.getknit.knit.data.receipt.ReadMarkDao
+import app.getknit.knit.data.receipt.ReadMarkEntity
 import app.getknit.knit.data.scopeanchor.DmScopeAnchorDao
 import app.getknit.knit.data.scopeanchor.DmScopeAnchorEntity
 import app.getknit.knit.data.scopeconfig.ScopeConfigDao
@@ -72,7 +74,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 34
+internal const val KNIT_DB_SCHEMA_VERSION = 35
 
 @Database(
     entities = [
@@ -89,7 +91,7 @@ internal const val KNIT_DB_SCHEMA_VERSION = 34
         AttachmentHolderEntity::class, ScopeConfigEntity::class, SpoolDeclaredEntity::class,
         PinEntity::class, LoraDirectSeenEntity::class, PhotoRefusalEntity::class,
         OwnPresenceKeyEntity::class, PeerPresenceKeyEntity::class, LinkOwedResetEntity::class,
-        DmScopeAnchorEntity::class,
+        DmScopeAnchorEntity::class, ReadMarkEntity::class,
     ],
     // v1: frozen launch baseline. The pre-1.0 alpha schema churn (the old destructive v2…v22 bumps that
     //     rode the wire/crypto breaks) is collapsed; docs/WIRE_COMPAT.md keeps the historical break record.
@@ -291,6 +293,10 @@ internal const val KNIT_DB_SCHEMA_VERSION = 34
     //     seal keys, so a restored phone's reset reaches a contact the relay is the only path to. Carried in a
     //     backup; empty on arrival, filled from confirmed sessions by `DmScopeAnchors`. Its own version because lab
     //     phones already held v33. Migrated by KnitMigrations.MIGRATION_33_34.
+    // v35: read receipts (ADR 2026-11.z6jw): `message_receipts.readAt`, our clock when an acker's read of one of
+    //     our messages was applied (null on existing rows: we never observed a read), and one `read_marks` table, the
+    //     reader's durable outbox of reads owed to their authors. `read_marks` is local only and never in a backup.
+    //     Migrated by KnitMigrations.MIGRATION_34_35.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
@@ -344,6 +350,8 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun linkOwedResetDao(): LinkOwedResetDao
 
     abstract fun dmScopeAnchorDao(): DmScopeAnchorDao
+
+    abstract fun readMarkDao(): ReadMarkDao
 
     companion object {
         /** The schema version the annotation above declares, for code that must compare against it. */

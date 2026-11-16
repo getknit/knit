@@ -56,6 +56,8 @@ class ContactRemover(
         withContext(NonCancellable) {
             keep.forEach { settings.accept(it) }
             mesh.cancelIntro(nodeId)
+            // The reads still owed to them go (ADR 2026-11.z6jw): a removed contact is told nothing more.
+            mesh.forgetReadsFor(nodeId)
             notifier.forgetConversation(nodeId)
             messages.deleteByConversation(nodeId)
             // After the thread goes: a keeper pass starting before it would still see a DM target and write the row

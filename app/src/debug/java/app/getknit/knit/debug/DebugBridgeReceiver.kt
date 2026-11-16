@@ -1747,6 +1747,16 @@ class DebugBridgeReceiver :
             .put("receiptsSpooled", snap.receipts.receiptsSpooled)
             .put("ridesUnrouted", snap.receipts.ridesUnrouted)
             .put("receiptsHeld", snap.receipts.receiptsHeld)
+            // Read receipts (ADR 2026-11.z6jw): reads told, ridden, sent on their own (custody or spool), offered compact,
+            // owed again by a root move, held by the daily budget.
+            .put("readsSealed", snap.receipts.readsSealed)
+            .put("readsRidden", snap.receipts.readsRidden)
+            .put("readsCustodied", snap.receipts.readsCustodied)
+            .put("readsSpooled", snap.receipts.readsSpooled)
+            .put("readsLoraOffered", snap.receipts.readsLoraOffered)
+            .put("readsReOwed", snap.receipts.readsReOwed)
+            .put("readsBudgetHeld", snap.receipts.readsBudgetHeld)
+            .put("readsRecorded", snap.receipts.readsRecorded)
             .put("reactionsSealed", snap.seals.reactionsSealed)
             .put("reactionsSealedFallback", snap.seals.reactionsSealedFallback)
             .put("dropsByReason", JSONObject(snap.frames.dropsByReason.mapKeys { it.key.name }))

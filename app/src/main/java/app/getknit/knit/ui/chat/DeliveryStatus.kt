@@ -8,7 +8,9 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import app.getknit.knit.R
@@ -17,6 +19,7 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.mesh.LoraRadioReached
+import app.getknit.knit.ui.icons.KnitIcons
 
 /**
  * How far one of *our* messages has got, folded out of the three independent columns that record it:
@@ -26,6 +29,9 @@ import app.getknit.knit.mesh.LoraRadioReached
  *
  * A received message has no status of its own — delivery isn't ours to report — so [deliveryLabel]
  * takes `mine` and describes *arrival* instead for the other direction.
+ *
+ * [Read] comes from `message_receipts.readAt` (ADR 2026-11.z6jw), never from [of]: the row alone cannot say who
+ * read it, so the screens that know the roster pass it to [ofTick].
  */
 enum class DeliveryStatus {
     /** Written locally but never sent: the recipient's public key hasn't reached us yet. */
@@ -42,6 +48,12 @@ enum class DeliveryStatus {
 
     /** A delivery receipt came back. */
     Delivered,
+
+    /**
+     * A read receipt came back: the DM's recipient has read it, or, on a group send, every member of the current roster
+     * has. Shown only while `SettingsStore.readReceiptsEnabled` is on (reciprocal: off, a read shows as [Delivered]).
+     */
+    Read,
 
     ;
 
@@ -69,14 +81,17 @@ enum class DeliveryStatus {
         }
 
         /**
-         * The bubble's status, which reads booleans off its row rather than a [MessageEntity]: [received] first, then
-         * [radioReached]. The bubble never shows [Pending].
+         * The bubble's status, which reads booleans off its row rather than a [MessageEntity]: [read] first (a read is a
+         * delivery too, whatever the tick column says), then [received], then [radioReached]. The bubble never shows
+         * [Pending]. [read] is already folded with the setting and, on a group, with the whole roster.
          */
         fun ofTick(
             received: Boolean,
             radioReached: Boolean,
+            read: Boolean = false,
         ): DeliveryStatus =
             when {
+                read -> Read
                 received -> Delivered
                 radioReached -> RadioReached
                 else -> Sent
@@ -124,6 +139,9 @@ fun DeliveryText.resolve(): String = stringResource(resId, *args.toTypedArray())
  *   useful of the two, and saying both is a mouthful in a tick description.
  * - **Absent counts change nothing.** Callers with no roster to hand (the chat list, every DM and
  *   broadcast message) omit them and get exactly today's wording.
+ *
+ * [read] is how many of those [total] members have read it (ADR 2026-11.z6jw), already zero while the setting
+ * is off. A group send some but not all have read says both counts; one every member has read is [DeliveryStatus.Read].
  */
 fun deliveryLabel(
     status: DeliveryStatus,
@@ -131,31 +149,53 @@ fun deliveryLabel(
     mine: Boolean,
     delivered: Int? = null,
     total: Int? = null,
+    read: Int? = null,
 ): DeliveryText =
     when {
         !mine -> {
             arrivalText(plane)
         }
 
-        status == DeliveryStatus.Pending -> {
-            DeliveryText(R.string.chat_status_pending_key)
-        }
-
-        status == DeliveryStatus.Delivered && delivered != null && delivered > 0 && total != null && total > 0 -> {
-            DeliveryText(R.string.chat_status_delivered_count, listOf(delivered, total))
-        }
-
         status == DeliveryStatus.Delivered -> {
-            deliveredText(plane)
-        }
-
-        // Their radio, never their phone: what the board's ack proves and all it proves.
-        status == DeliveryStatus.RadioReached -> {
-            DeliveryText(R.string.chat_status_lora_radio_reached)
+            countedText(delivered, total, read) ?: deliveredText(plane)
         }
 
         else -> {
-            DeliveryText(R.string.chat_status_sent)
+            DeliveryText(
+                when (status) {
+                    DeliveryStatus.Pending -> R.string.chat_status_pending_key
+
+                    DeliveryStatus.Read -> R.string.chat_status_read
+
+                    // Their radio, never their phone: what the board's ack proves and all it proves.
+                    DeliveryStatus.RadioReached -> R.string.chat_status_lora_radio_reached
+
+                    else -> R.string.chat_status_sent
+                },
+            )
+        }
+    }
+
+/**
+ * A group send's counts, when there are any worth saying: null for a zero or absent count (the "predates the table"
+ * rule above), the delivered ratio otherwise, and the read count beside it once someone has read it.
+ */
+private fun countedText(
+    delivered: Int?,
+    total: Int?,
+    read: Int?,
+): DeliveryText? =
+    when {
+        delivered == null || delivered <= 0 || total == null || total <= 0 -> {
+            null
+        }
+
+        read != null && read > 0 -> {
+            DeliveryText(R.string.chat_status_delivered_read_count, listOf(delivered, total, read))
+        }
+
+        else -> {
+            DeliveryText(R.string.chat_status_delivered_count, listOf(delivered, total))
         }
     }
 
@@ -206,7 +246,7 @@ fun tickGlyph(
     plane: DeliveryPlane,
 ): ImageVector? =
     when (status) {
-        DeliveryStatus.Delivered -> planeGlyph(plane)
+        DeliveryStatus.Delivered, DeliveryStatus.Read -> planeGlyph(plane)
         DeliveryStatus.RadioReached -> planeGlyph(DeliveryPlane.LoRa)
         else -> null
     }
@@ -220,7 +260,7 @@ fun tickGlyphTag(
     plane: DeliveryPlane,
 ): String? =
     when (status) {
-        DeliveryStatus.Delivered -> planeTag(plane)?.let { "chat_tick_$it" }
+        DeliveryStatus.Delivered, DeliveryStatus.Read -> planeTag(plane)?.let { "chat_tick_$it" }
         DeliveryStatus.RadioReached -> "chat_tick_lora_reached"
         else -> null
     }
@@ -258,13 +298,24 @@ fun planeTag(plane: DeliveryPlane): String? =
 
 /**
  * The tick glyph for one of *our* messages at [status]: a clock while it can't be sent yet, one check once
- * it's flooded — still one while only their radio has it, with [tickGlyph] ahead of it — and two once a receipt
- * is back. The single definition shared by the bubble, the chat-list row and the message-details screen, so they
- * can't drift apart. Pair it with [deliveryLabel] for the words — the glyph alone never carries the meaning.
+ * it's flooded — still one while only their radio has it, with [tickGlyph] ahead of it — two once a receipt
+ * is back, and the two knocked out of a disc ([KnitIcons.ReadTick]) once it has been read. The single definition shared
+ * by the bubble, the chat-list row and the message-details screen, so they can't drift apart. Pair it with
+ * [deliveryLabel] for the words — the glyph alone never carries the meaning — and [deliveryTint] for its colour.
  */
 fun deliveryIcon(status: DeliveryStatus): ImageVector =
     when (status) {
         DeliveryStatus.Pending -> Icons.Filled.Schedule
         DeliveryStatus.Sent, DeliveryStatus.RadioReached -> Icons.Filled.Done
         DeliveryStatus.Delivered -> Icons.Filled.DoneAll
+        DeliveryStatus.Read -> KnitIcons.ReadTick
     }
+
+/**
+ * The tint of [deliveryIcon] at [status]: the theme's primary for [DeliveryStatus.Read], the one coloured tick, and the
+ * muted `onSurfaceVariant` every other tick and plane glyph wears. The shape already differs, so the colour is a second
+ * cue, never the only one.
+ */
+@Composable
+fun deliveryTint(status: DeliveryStatus): Color =
+    if (status == DeliveryStatus.Read) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant

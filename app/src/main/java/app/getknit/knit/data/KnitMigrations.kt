@@ -792,6 +792,24 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v34 → v35: read receipts (ADR 2026-11.z6jw). `message_receipts.readAt`, null on every existing row (no read
+     * was ever observed, and inventing one is the thing ADR 036 forbids), and the reader's `read_marks` outbox, empty on
+     * arrival. The SQL must stay byte-equivalent to what Room generates for `app/schemas/**/35.json`.
+     */
+    val MIGRATION_34_35 =
+        object : Migration(34, 35) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `message_receipts` ADD COLUMN `readAt` INTEGER")
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `read_marks` (`messageId` TEXT NOT NULL, `authorId` TEXT NOT NULL, " +
+                        "`conversationId` TEXT NOT NULL, `readAt` INTEGER NOT NULL, `toldAt` INTEGER, `toldRoot` INTEGER, " +
+                        "PRIMARY KEY(`messageId`))",
+                )
+                connection.execSQL("CREATE INDEX IF NOT EXISTS `index_read_marks_authorId` ON `read_marks` (`authorId`)")
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -828,5 +846,6 @@ object KnitMigrations {
             MIGRATION_31_32,
             MIGRATION_32_33,
             MIGRATION_33_34,
+            MIGRATION_34_35,
         )
 }

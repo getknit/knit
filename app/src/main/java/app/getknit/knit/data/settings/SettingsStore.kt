@@ -159,6 +159,17 @@ class SettingsStore(
         dataStore.data.map { it[KEY_TYPING_INDICATORS] ?: true }
 
     /**
+     * Read receipts: whether this phone tells the author of a DM or a private-group message that it has been read here,
+     * and shows when the people it writes to have read theirs. **On by default.** Off, the mesh records no read for
+     * anyone (`MeshController.onMessagesRead` drops it) and forgets the reads it still owed; the reads other people send
+     * are still recorded, so turning it back on shows them, but nothing shows one while it is off. Never on the wire:
+     * `Protocol.CAP_READ_RECEIPTS` says what the build can do, not what this switch says. A choice the person made, so
+     * it rides a backup.
+     */
+    val readReceiptsEnabled: Flow<Boolean> =
+        dataStore.data.map { it[KEY_READ_RECEIPTS] ?: true }
+
+    /**
      * Whether this phone translates messages and declares, on what it sends, the language a message is in and the one
      * its reader reads (ADR 2026-10.t2h6's 2026-10-29 amendment). **On by default**; off hides every translation surface
      * and sends no language on the wire. Read only where translation is wired.
@@ -788,6 +799,8 @@ class SettingsStore(
 
     suspend fun setTypingIndicatorsEnabled(value: Boolean) = dataStore.edit { it[KEY_TYPING_INDICATORS] = value }
 
+    suspend fun setReadReceiptsEnabled(value: Boolean) = dataStore.edit { it[KEY_READ_RECEIPTS] = value }
+
     suspend fun setTranslationEnabled(value: Boolean) = dataStore.edit { it[KEY_TRANSLATION_ENABLED] = value }
 
     /** [code] for a language, null for Automatic ([translateTarget]). */
@@ -1186,6 +1199,7 @@ class SettingsStore(
         val KEY_CONTENT_FILTERING = booleanPreferencesKey("content_filtering_enabled")
         val KEY_LINK_PREVIEWS = booleanPreferencesKey("link_previews_enabled")
         val KEY_TYPING_INDICATORS = booleanPreferencesKey("typing_indicators_enabled")
+        val KEY_READ_RECEIPTS = booleanPreferencesKey("read_receipts_enabled")
         val KEY_TRANSLATE_TARGET = stringPreferencesKey("translate_target")
         val KEY_TRANSLATION_ENABLED = booleanPreferencesKey("translation_enabled")
         val KEY_CALLS_RELAY_ALL = booleanPreferencesKey("calls_relay_all")

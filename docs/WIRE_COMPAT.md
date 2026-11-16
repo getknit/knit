@@ -973,6 +973,20 @@ way, so "absent" and "present with nothing set" never read differently across th
 `IosPayloadShapesTest.an empty nested map decodes as null for a nullable field` pins
 kotlinx's half.
 
+**Precedent — a field rather than a ctl, because the doors already admit the frame (read receipts, ADR
+2026-11.z6jw).** `MessageContent.rm: Long?` (named `"rm"`, compact label 20) is a read bitmask over a
+`CTL_RECEIPT`'s acked ids as sent (`ack` then `acks`), or over a plain DM's inline `acks`. Rule 1: nullable and absent
+toward any author without `Protocol.CAP_READ_RECEIPTS = 0x200000`, so those frames are byte-identical to before
+(pinned). `messageContentReadReceipt`, `messageContentV2ReadReceipt` and `messageContentV2InlineAcksRead` were added
+and no vector moved. Why not a new `CTL_READ`: every shipped build refuses an unknown ctl at the LoRa compact door
+(`admitsLoraDirect`) and the unsigned live-link door (`unsignedButNotATick`), so a new ctl could never share a packet
+with the ✓✓ it must ride on LoRa. An old receiver skips the label and applies the ids as a plain ✓✓, which is true,
+since a read implies a delivery. The cap bit exists only so nothing read-related is spent on an author who cannot use
+it. Toward a capable author `rm` is always present, at a width set by the list's length alone: a mask spelled at its
+shortest grows a byte for some read patterns, so the first cut leaked which ids were read through the length of a
+compact ✓✓ until review caught it. Bits past the list are ignored, so from 5 to 62 ids the sender sets the first bit
+past the list, and at 64 ids Kotlin's shift wraps (`-1L shl 64 == -1L`); `ReadMaskTest` pins one length per n.
+
 **When you bump a version layer:** add a round-trip test plus an "unknown higher version drops locally
 but is counted" test. New crypto scheme ⇒ bump `EncEnvelope.MAX_SUPPORTED_VERSION` + every branch that
 tests the version (`InboundPipeline.decryptAndDeliver`, `MeshManager`'s inline-ack give-back,

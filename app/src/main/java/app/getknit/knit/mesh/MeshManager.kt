@@ -37,6 +37,7 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.StyleStore
+import app.getknit.knit.data.message.isStatusNotice
 import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.message.withVideo
 import app.getknit.knit.data.peer.MetPeerRepository
@@ -44,6 +45,8 @@ import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.ratchet.LoraDirectSeenRepository
 import app.getknit.knit.data.reaction.ReactionEntity
+import app.getknit.knit.data.receipt.ReadMarkEntity
+import app.getknit.knit.data.receipt.ReadMarkRepository
 import app.getknit.knit.data.scopeconfig.ScopeConfigRepository
 import app.getknit.knit.data.settings.LoraBoard
 import app.getknit.knit.data.settings.SettingsStore
@@ -61,6 +64,7 @@ import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
+import app.getknit.knit.mesh.crypto.ReadMask
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
@@ -208,6 +212,12 @@ internal const val INLINE_ACK_BYTES = 23
 
 /** Most receipts one reply carries inline (ADR 054) — beyond this the standalone coalesced tick is the cheaper form. */
 internal const val MAX_INLINE_ACKS = 4
+
+/**
+ * Most owed reads one outbound DM's signed copy carries as extra inline acks (ADR 2026-11.z6jw): the coalesced DM tick's
+ * figure. The compact copy never carries them, so no LoRa byte budget applies.
+ */
+internal const val MAX_READ_RIDERS = DmAckCoalescer.MAX_LORA_TICK_ACKS
 
 /**
  * The plaintext one compact LoRa DM carries at the MTU-255 floor (ADR 2026-10.x9fa and its PKI amendment): the plane's
@@ -448,6 +458,16 @@ class MeshManager(
     private val presenceLinkUpDelayMs: () -> Long = {
         Random.nextLong(PresenceKeyEngine.LINK_UP_DELAY_MIN_MS, PresenceKeyEngine.LINK_UP_DELAY_MAX_MS + 1)
     },
+    // The reader's durable read marks (ADR 2026-11.z6jw): what [readSync] tells authors. Stateless over [db], so the default is
+    // what every rig wants; production hands in the Koin single.
+    readMarks: ReadMarkRepository = ReadMarkRepository(db.readMarkDao(), db),
+    // How long an owed read waits for a ride toward a linked author, and toward an absent one before it doubles
+    // ([ReadSync.LINKED_DEADLINE_MS], [ReadSync.ABSENT_BASE_MS]). Injectable for `mesh/lab` like [tickDebounceMs].
+    readLinkedDeadlineMs: Long = ReadSync.LINKED_DEADLINE_MS,
+    readAbsentBaseMs: Long = ReadSync.ABSENT_BASE_MS,
+    // Standalone custodied read frames per rolling 24 h ([ReadSync.DAILY_BUDGET]). Injectable for `mesh/lab`, whose cost
+    // scenario sets it under a carrier's tight per-sender slack.
+    readBudget: Int = ReadSync.DAILY_BUDGET,
 ) : MeshController,
     TransferSignals,
     CallSignals,
@@ -696,6 +716,29 @@ class MeshManager(
             holdMs = dmAckHoldMs,
         )
 
+    // Read receipts, the reader's half: which reads ride the frames sealed toward their author anyway, and the one
+    // standalone form for the rest (a custodied answer-only receipt, or the spool push). Its routes read this manager's
+    // fields lazily at call time, like [ackSync]'s; its wakes die with the session. `internal` for the JVM tests.
+    internal val readSync =
+        ReadSync(
+            marks = ReadMarkStore.of(readMarks),
+            enabled = { settings.readReceiptsEnabled.first() },
+            // A live data path that proves the author's id (review round 1, N1): an id is proof-capable here once its pinned
+            // profile carries CAP_LINK_PROOF, as every read-capable build's does, and then LinkClaims' R1/R4 admit no unproven
+            // link claiming it — so a fork claiming the author's id cannot pull reads onto the linked deadline.
+            linked = { authorId -> readLinked(authorId) },
+            spoolPresent = { authorId -> isSpoolPresent(authorId) },
+            originate = { authorId, ids -> originateReads(authorId, ids) },
+            spoolPush = { authorId, ids -> spoolReads(authorId, ids) },
+            now = clock,
+            liveRoot = { authorId -> ratchet.rootTagFor(authorId) },
+            wakeScope = { sessionScope },
+            metrics = metrics,
+            linkedDeadlineMs = readLinkedDeadlineMs,
+            absentBaseMs = readAbsentBaseMs,
+            budget = readBudget,
+        )
+
     // The "someone nearby is open to chat" cue: the join of our own flag, the short-range reachable set, the
     // peer rows carrying the flag, the block list and everyone we've already exchanged messages with,
     // batched and cooled down by OpenToChatPolicy. Started on the session scope in start(); its durable half
@@ -889,6 +932,7 @@ class MeshManager(
             loraSeen = loraSeen,
             presenceKeys = presenceKeyStore,
             onProfileCapabilities = ::onProfileCapabilities,
+            reads = readSync,
         )
 
     // Reconstructed per session so its inbound collector + relay jobs live on the session scope and are
@@ -1343,12 +1387,7 @@ class MeshManager(
         router.start()
         // Ahead of the transport, so the LoRa plane's first compact DM finds its pair index built or building.
         loraSeal?.let { watchLoraPairs(session, it) }
-        // A held reaction's session answered (ADR 2026-10.x9fa): its signed copy goes now.
-        session.launch {
-            ratchet.rootChanges.collect { peer ->
-                runRound({ Log.w(TAG, "held reactions failed: ${it.message}") }) { flushHeldReactions(peer) }
-            }
-        }
+        watchReads(session)
         // The profile half of who must prove a link (ADR 2026-11.264w), read once per start. A plane may admit an unproven
         // claim before it lands; the seed's notifications close that link as a profile gaining the bit would (R4).
         session.launch {
@@ -1394,6 +1433,40 @@ class MeshManager(
         scopeIssuer?.start(session)
         watchRoute(session)
         watchScopeInputs(session)
+    }
+
+    /**
+     * What a root move answers, and read receipts' session (ADR 2026-11.z6jw). A held reaction's session answered (ADR
+     * 2026-10.x9fa): its signed copy goes now. The owed reads are re-batched at start, every root move toward an author
+     * re-owes what it told under another root and retries a declined batch, and the setting turning off drops what is
+     * owed. Each pass is guarded, so a failed one is logged and the next emission runs.
+     */
+    private fun watchReads(session: CoroutineScope) {
+        session.launch {
+            ratchet.rootChanges.collect { peer ->
+                runRound({ Log.w(TAG, "held reactions failed: ${it.message}") }) { flushHeldReactions(peer) }
+            }
+        }
+        session.launch { runRound({ Log.w(TAG, "read restore failed: ${it.message}") }) { readSync.restore() } }
+        session.launch {
+            ratchet.rootChanges.collect { peer ->
+                runRound({ Log.w(TAG, "read re-owe failed: ${it.message}") }) {
+                    readSync.onRootChanged(peer, ratchet.rootTagFor(peer))
+                }
+            }
+        }
+        session.launch {
+            settings.readReceiptsEnabled.distinctUntilChanged().collect { on ->
+                runRound({ Log.w(TAG, "read setting failed: ${it.message}") }) { readSync.onSettingChanged(on) }
+            }
+        }
+        // A blocked author is told nothing more (review round 1, N2): the reads still owed to them are dropped, every
+        // blocked id on each emission (an idempotent delete), so a block made while stopped is acted on at start.
+        session.launch {
+            settings.blockedNodeIds.distinctUntilChanged().collect { blocked ->
+                runRound({ Log.w(TAG, "read block drop failed: ${it.message}") }) { blocked.forEach { readSync.onAuthorGone(it) } }
+            }
+        }
     }
 
     /**
@@ -2024,6 +2097,7 @@ class MeshManager(
                 (heldReactions.peers() + heldTicks.keys).distinct().forEach { flushHeldReactions(it) }
                 ackSync.retryPending() // re-send broadcast/group ticks we still owe absent authors (+ age out old ones)
                 dmAcks.flushDue() // tick the LoRa-held DM receipts whose hold has run out (ADR 054)
+                readSync.flushDue() // reads past their deadline, and batches a decline left (ADR 2026-11.z6jw)
                 if (clock() - lastRetentionSweepAt >= HealFloors.RETENTION_SWEEP_MS) sweepKeyRetention()
                 if (clock() - lastGroupReplayAt >= HealFloors.GROUP_REPLAY_MS) replayUndeliveredGroupCustody()
                 rotatePrekeyIfDue()
@@ -2311,8 +2385,12 @@ class MeshManager(
         val inlineAcks =
             inlineAcksFor(recipientId, group, text, spans, langs, replying = replyTo != null, attached = attachment != null)
         val inlineIds = inlineAcks.ids
-        val seal = sealEnvelopeFor(id, me, sentAt, recipientId, group, row.sealedContent(), inlineIds)
+        // Read receipts (ADR 2026-11.z6jw): owed reads toward this recipient ride the signed copy as more inline acks, the
+        // mask over the whole list; the compact copy keeps only the LoRa-held acks, with a mask of its own.
+        val inline = inlineReadsFor(recipientId, group, inlineIds)
+        val seal = sealEnvelopeFor(id, me, sentAt, recipientId, group, row.sealedContent(), inline.signedAcks, inline.signedMask)
         val envelope = seal?.envelope
+        releaseUncarriedReads(inline, envelope)
         if (inlineIds.isNotEmpty() && recipientId != null) {
             val carried = envelope != null && EncEnvelope.isDmRatchetVersion(envelope.v)
             if (carried) {
@@ -2345,22 +2423,98 @@ class MeshManager(
         // the type, so publishing it only told a carrier whether this was a photo or a voice note. The
         // decryption key is sealed there too, and a fresh per-send key means the ciphertext hash never
         // correlates identical images across sends — so this leaks only "this message carries ~N opaque bytes".
-        originateSigned(
-            chatEnvelope(
-                id,
-                me,
-                sentAt,
-                recipientId,
-                group,
-                ChatContent(
-                    enc = envelope,
-                    attachmentHash = sealedAttachment?.hash,
+        var sent = false
+        try {
+            originateSigned(
+                chatEnvelope(
+                    id,
+                    me,
+                    sentAt,
+                    recipientId,
+                    group,
+                    ChatContent(
+                        enc = envelope,
+                        attachmentHash = sealedAttachment?.hash,
+                    ),
                 ),
-            ),
-        )
-        offerChatLoraDirect(row, group, envelope, inlineIds)
+            )
+            sent = true
+        } finally {
+            tellInlineReads(recipientId, inline, envelope, seal.rootTag, sent)
+        }
+        offerChatLoraDirect(row, group, envelope, inlineIds, inline.compactRead)
         return true
     }
+
+    /**
+     * The reads a DM to [recipientId] carries (ADR 2026-11.z6jw): the signed copy's inline acks — the LoRa-held ones
+     * ([inlineIds]) then owed reads as riders, only toward a peer that reads inline acks and a read mask — and the mask
+     * over them; the compact copy's read set over [inlineIds] alone. Nothing for a group, or an author who reads no mask.
+     */
+    private suspend fun inlineReadsFor(
+        recipientId: String?,
+        group: GroupInfo?,
+        inlineIds: List<String>,
+    ): InlineReads {
+        if (recipientId == null || group != null) return InlineReads(inlineIds)
+        val caps = peers.find(recipientId)?.capabilities
+        if (!ReadRiding.readsMask(caps) || (caps ?: 0L) and Protocol.CAP_INLINE_ACK == 0L) return InlineReads(inlineIds)
+        val riders = readSync.takeRiders(recipientId, caps, MAX_READ_RIDERS, exclude = inlineIds)
+        val signedAcks = inlineIds + riders
+        val read = readSync.readSet(caps, signedAcks).orEmpty()
+        return InlineReads(
+            signedAcks = signedAcks,
+            signedMask = if (signedAcks.isEmpty()) null else ReadMask.encode(signedAcks, read),
+            riders = riders,
+            read = read,
+            compactRead = read.intersect(inlineIds.toSet()),
+        )
+    }
+
+    /** Whether [envelope] carried [inline]'s signed acks: a DM ratchet seal with any acks to carry. */
+    private fun carriesReads(
+        inline: InlineReads,
+        envelope: EncEnvelope?,
+    ): Boolean = envelope != null && EncEnvelope.isDmRatchetVersion(envelope.v) && inline.signedAcks.isNotEmpty()
+
+    /** A seal that fell short of the DM ratchet arm (or none at all) carries no read: its riders go back, still owed. */
+    private fun releaseUncarriedReads(
+        inline: InlineReads,
+        envelope: EncEnvelope?,
+    ) {
+        if (!carriesReads(inline, envelope)) readSync.giveBack(inline.riders)
+    }
+
+    /**
+     * After the DM's hand-off (ADR 2026-11.z6jw): originated `relay = true` and sealed under [rootTag], the reads whose bits
+     * it carries are told now; anything else gives the riders back, still owed.
+     */
+    private suspend fun tellInlineReads(
+        recipientId: String?,
+        inline: InlineReads,
+        envelope: EncEnvelope?,
+        rootTag: Long?,
+        sent: Boolean,
+    ) {
+        if (!carriesReads(inline, envelope)) return // already given back
+        if (!sent || recipientId == null || rootTag == null) {
+            readSync.giveBack(inline.riders)
+            return
+        }
+        val told = inline.read.intersect(inline.signedAcks.take(ReadMask.MAX_IDS).toSet())
+        readSync.giveBack(inline.riders - told)
+        readSync.told(recipientId, told, rootTag, riders = inline.riders.size)
+    }
+
+    /** [inlineReadsFor]'s answer; the defaults are a DM with no reads to carry. */
+    private class InlineReads(
+        val signedAcks: List<String>,
+        val signedMask: Long? = null,
+        val riders: List<String> = emptyList(),
+        val read: Set<String> = emptySet(),
+        // Null: the compact copy carries no mask (an author who reads none).
+        val compactRead: Set<String>? = null,
+    )
 
     /**
      * The compact copy of a DM [sendChat] just sealed, for the LoRa plane (ADR 2026-10.x9fa): beside the signed one and
@@ -2372,11 +2526,14 @@ class MeshManager(
         group: GroupInfo?,
         envelope: EncEnvelope,
         inlineIds: List<String>,
+        // The read marks among [inlineIds] (ADR 2026-11.z6jw), null toward an author who reads no mask.
+        read: Set<String>? = null,
     ) {
         val recipientId = row.recipientId
         if (recipientId == null || group != null) return
         val carried = EncEnvelope.isDmRatchetVersion(envelope.v) && inlineIds.isNotEmpty()
-        val content = row.sealedContent().copy(acks = inlineIds.takeIf { carried })
+        val rm = if (carried) read?.let { ReadMask.encode(inlineIds, it) } else null
+        val content = row.sealedContent().copy(acks = inlineIds.takeIf { carried }, rm = rm)
         offerLoraDirect(recipientId, row.id, row.sentAt, content, DirectKind.MESSAGE)
     }
 
@@ -2407,6 +2564,8 @@ class MeshManager(
     private class ChatSeal(
         val envelope: EncEnvelope,
         val confirmed: Boolean,
+        // The root a DM ratchet seal committed under (what a read it carries is told under); null for every other form.
+        val rootTag: Long? = null,
     )
 
     /**
@@ -2428,11 +2587,14 @@ class MeshManager(
         content: MessageContent,
         // Receipts to carry inline (ADR 054) — v2 DM arm only; every other form seals [content] as given.
         inlineAcks: List<String> = emptyList(),
+        // Their read mask (ADR 2026-11.z6jw), with them and only with them.
+        readMask: Long? = null,
     ): ChatSeal? {
         val thread = group?.id ?: recipientId.orEmpty()
         val aad = MessageCrypto.header(id, me, sentAt, thread)
         if (group == null && recipientId != null && recipientId != me) {
-            sealDmRatchet(recipientId, content.copy(acks = inlineAcks.takeIf { it.isNotEmpty() }), aad)?.let { return it }
+            val acks = inlineAcks.takeIf { it.isNotEmpty() }
+            sealDmRatchet(recipientId, content.copy(acks = acks, rm = readMask.takeIf { acks != null }), aad)?.let { return it }
         }
         if (group != null && recipientId == null) {
             sealGroupRatchet(group, me, content, aad)?.let { return ChatSeal(it, confirmed = false) }
@@ -2461,7 +2623,7 @@ class MeshManager(
         }
         metrics.onDmSealedV2()
         if (scheme == EncEnvelope.VERSION_DM_V3) metrics.onDmSealedV3()
-        return ChatSeal(sealed.envelope, sealed.confirmed)
+        return ChatSeal(sealed.envelope, sealed.confirmed, sealed.rootTag)
     }
 
     /**
@@ -3161,7 +3323,8 @@ class MeshManager(
     private suspend fun sealDeliveryTickEnvelope(
         authorId: String,
         ackIds: List<String>,
-    ): SealedTick? = (sealTick(authorId, ackIds, answer = false) as? TickSeal.Sealed)?.tick
+        readRiderLimit: Int = 0,
+    ): SealedTick? = (sealTick(authorId, ackIds, answer = false, readRiderLimit = readRiderLimit) as? TickSeal.Sealed)?.tick
 
     /**
      * [sealDeliveryTickEnvelope]'s body. With [answer] — a ✓✓ for DMs a compact LoRa copy delivered (ADR 2026-10.x9fa) —
@@ -3172,6 +3335,9 @@ class MeshManager(
         authorId: String,
         ackIds: List<String>,
         answer: Boolean,
+        // How many owed reads may ride this tick (ADR 2026-11.z6jw): only a caller that hands it off `relay = true` (or into
+        // a spool) passes any, and it tells or gives back [SealedTick.riders]. Taken here, after the one pin read.
+        readRiderLimit: Int = 0,
     ): TickSeal {
         val peer = peers.find(authorId) ?: return TickSeal.CannotSeal
         if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return TickSeal.CannotSeal
@@ -3180,40 +3346,90 @@ class MeshManager(
         val id = FrameId.new()
         val now = clock()
         val aad = MessageCrypto.header(id, me, now, authorId)
-        val (plaintext, scheme) =
-            when (ackIds.size) {
-                1 -> MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = ackIds.single())
-                else -> MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, acks = ackIds)
-            }.sealBytes(peer.readsCryptoV3())
-        val sealed =
-            when (
-                val outcome =
-                    ratchet.sealCtl(
-                        answer,
-                        authorId,
-                        bundle.dhPublicKey(),
-                        ratchetPrekeyOf(peer),
-                        plaintext,
-                        aad,
-                        now,
-                        scheme,
-                    )
-            ) {
-                is RatchetSessions.AnswerSeal.Sealed -> {
-                    // Whatever this tick covers is answered now: a held copy of it must not be sealed again (shape 9).
-                    releaseHeldTicks(authorId, ackIds)
-                    outcome
-                }
+        val riders =
+            readSync.takeRiders(authorId, peer.capabilities, minOf(readRiderLimit, ReadMask.MAX_IDS - ackIds.size), exclude = ackIds)
+        val listed = ackIds + riders
+        var kept = false
+        try {
+            // The read bits for this frame's own list (ADR 2026-11.z6jw): absent toward an author who reads no mask, else
+            // always present and as wide for any read pattern as for none (`ReadMask.encode`), so the tick's length never
+            // says whether anything was read, nor what.
+            val read = readSync.readSet(peer.capabilities, listed)
+            val rm = read?.let { ReadMask.encode(listed, it) }
+            val (plaintext, scheme) = receiptContent(listed, rm).sealBytes(peer.readsCryptoV3())
+            val sealed =
+                when (
+                    val outcome =
+                        ratchet.sealCtl(
+                            answer,
+                            authorId,
+                            bundle.dhPublicKey(),
+                            ratchetPrekeyOf(peer),
+                            plaintext,
+                            aad,
+                            now,
+                            scheme,
+                        )
+                ) {
+                    is RatchetSessions.AnswerSeal.Sealed -> {
+                        // Whatever this tick covers is answered now: a held copy of it must not be sealed again (shape 9).
+                        releaseHeldTicks(authorId, ackIds)
+                        outcome
+                    }
 
-                RatchetSessions.AnswerSeal.Declined -> {
-                    return TickSeal.Declined
-                }
+                    RatchetSessions.AnswerSeal.Declined -> {
+                        return TickSeal.Declined
+                    }
 
-                RatchetSessions.AnswerSeal.CannotSeal -> {
-                    metrics.onReceiptSealedFallback()
-                    return TickSeal.CannotSeal
+                    RatchetSessions.AnswerSeal.CannotSeal -> {
+                        metrics.onReceiptSealedFallback()
+                        return TickSeal.CannotSeal
+                    }
                 }
-            }
+            kept = true
+            return sealedTick(
+                sealed,
+                id,
+                me,
+                now,
+                authorId,
+                scheme,
+                riders,
+                read.orEmpty().intersect(listed.take(ReadMask.MAX_IDS).toSet()),
+            )
+        } finally {
+            if (!kept) readSync.giveBack(riders)
+        }
+    }
+
+    /**
+     * Whether [authorId] is on a live data path [ReadSync] may count as linked: a neighbour whose id this phone holds as
+     * proof-capable ([LinkClaims.isProofCapable]), so the link claiming it proved it (R1, R4). Anything else is absent.
+     */
+    private fun readLinked(authorId: String): Boolean =
+        linkClaims.isProofCapable(authorId) && transport.neighbors.value.any { it.nodeId == authorId }
+
+    /** A `CTL_RECEIPT` for [ids] with read mask [rm]: one id rides `ack`, a batch `acks`. */
+    private fun receiptContent(
+        ids: List<String>,
+        rm: Long?,
+    ): MessageContent =
+        when (ids.size) {
+            1 -> MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = ids.single(), rm = rm)
+            else -> MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, acks = ids, rm = rm)
+        }
+
+    /** [sealTick]'s result once sealed: the envelope, its scheme, the era it committed under, and its read riders and bits. */
+    private fun sealedTick(
+        sealed: RatchetSessions.AnswerSeal.Sealed,
+        id: String,
+        me: String,
+        now: Long,
+        authorId: String,
+        scheme: Int,
+        riders: List<String>,
+        read: Set<String>,
+    ): TickSeal {
         metrics.onReceiptSealed()
         val v3 = scheme == EncEnvelope.VERSION_DM_V3
         if (v3) metrics.onDmSealedV3()
@@ -3230,6 +3446,8 @@ class MeshManager(
                     ),
                 v3 = v3,
                 rootTag = sealed.rootTag,
+                read = read,
+                riders = riders,
             ),
         )
     }
@@ -3250,11 +3468,15 @@ class MeshManager(
      * the seal, not the capability read: a content the compact codec refused fell back to v2 and must stay
      * signed. [rootTag] names the root the seal committed under, the era a DM ✓✓ files itself in: read from the seal,
      * since a reset adopted on another plane can commit before anything reads the session again (ADR 2026-10.8hn6).
+     * [read] is the ids whose read bit it carries: what a `relay = true` hand-off of it tells (ADR 2026-11.z6jw).
      */
     private class SealedTick(
         val env: RelayEnvelope,
         val v3: Boolean,
         val rootTag: Long,
+        val read: Set<String> = emptySet(),
+        // Owed reads [sealTick] added past the caller's ids, claimed until told or given back.
+        val riders: List<String> = emptyList(),
     )
 
     /**
@@ -3301,8 +3523,19 @@ class MeshManager(
         // row of their own. [riderCap] caps the signed tick at `DmAckCoalescer.MAX_LORA_TICK_ACKS` ids in all, riders
         // included (ADR 2026-09.y5f3); it no longer airs, and the compact copies below chunk on their own cap.
         val riding = ackSync.takeRiding(authorId, riderCap - ackIds.size)
+        // Owed reads toward this author ride the signed tick (it is originated `relay = true`, ADR 2026-11.z6jw), after the
+        // room riders and inside the same cap; never in [ackIds] (the 8hn6 ledger records those) nor [compactIds] (those
+        // air: the compact copies carry the bits of their own ids alone, read in [offerLoraTicks]).
         val tick =
-            when (val sealed = sealTick(authorId, ackIds + riding, answer = answer)) {
+            when (
+                val sealed =
+                    sealTick(
+                        authorId,
+                        ackIds + riding,
+                        answer = answer,
+                        readRiderLimit = riderCap - ackIds.size - riding.size,
+                    )
+            ) {
                 is TickSeal.Sealed -> {
                     sealed.tick
                 }
@@ -3317,16 +3550,68 @@ class MeshManager(
                     return TickSent.CANNOT_SEAL
                 }
             }
-        originateSigned(tick.env)
+        val readRiders = tick.riders
+        var handed = false
+        try {
+            originateSigned(tick.env)
+            handed = true
+        } finally {
+            if (!handed) readSync.giveBack(readRiders)
+        }
         if (answer) pipeline.recordDmReceipts(authorId, ackIds, tick.rootTag, tick.env.id, tick.env.sentAt)
         metrics.onReceiptCustodied()
         ackSync.rode(riding)
         metrics.onReceiptRidden(riding.size)
+        // Originated, so every id whose bit it carries is told (ADR 2026-11.z6jw) — after the hand-off, never before. Never
+        // filed in the 8hn6 ledger: a read rider is not a ✓✓ this path answers.
+        readSync.giveBack(readRiders - tick.read)
+        readSync.told(authorId, tick.read, tick.rootTag, riders = readRiders.size)
         // Its compact copies for the LoRa plane (ADR 2026-10.x9fa): the same ids, in one-packet ticks — the DM path only.
         // The DM ids alone: the room ticks riding the signed tick never air (ADR 2026-10.rp3s), and one past ten would cost
         // the compact ✓✓ a second packet.
         if (fromBoard) offerLoraTicks(authorId, tick.env.id, tick.env.sentAt, compactIds)
         return TickSent.SENT
+    }
+
+    /**
+     * [ReadSync]'s standalone form (ADR 2026-11.z6jw): owed reads toward [authorId] as one `CTL_RECEIPT` with every bit set,
+     * sealed as an answer (never an X3DH init: a decline leaves them owed for the next root move) and originated
+     * `relay = true` — flooded, custodied, spool-eligible, ADR 033's escalated tick. No room rider, no LoRa copy, never
+     * the 8hn6 ledger, never re-sent: custody retries it.
+     */
+    private suspend fun originateReads(
+        authorId: String,
+        ids: List<String>,
+    ): ReadSync.Sent =
+        when (val sealed = sealTick(authorId, ids, answer = true)) {
+            is TickSeal.Sealed -> {
+                originateSigned(sealed.tick.env)
+                ReadSync.Sent.Told(sealed.tick.rootTag)
+            }
+
+            TickSeal.Declined -> {
+                ReadSync.Sent.Declined
+            }
+
+            TickSeal.CannotSeal -> {
+                ReadSync.Sent.CannotSeal
+            }
+        }
+
+    /**
+     * [ReadSync]'s spool form: the same answer-only receipt, signed `relay = false` and pushed straight into [authorId]'s
+     * scope ([ScopeSync.pushDirect], ADR 2026-09.y5f3), no custody row. A seal no spool took tells nothing.
+     */
+    private suspend fun spoolReads(
+        authorId: String,
+        ids: List<String>,
+    ): ReadSync.Sent {
+        val sealed = sealTick(authorId, ids, answer = true)
+        val tick =
+            (sealed as? TickSeal.Sealed)?.tick
+                ?: return if (sealed == TickSeal.Declined) ReadSync.Sent.Declined else ReadSync.Sent.CannotSeal
+        val pushed = scopeSync?.pushDirect(authorId, tick.env, sign(tick.env, relay = false)) == true
+        return if (pushed) ReadSync.Sent.Told(tick.rootTag) else ReadSync.Sent.NotPushed
     }
 
     /** What [originateDeliveryTick] did with a tick. */
@@ -3343,10 +3628,23 @@ class MeshManager(
         authorId: String,
         ackIds: List<String>,
     ): AckSync.SpoolTick? {
-        val tick = sealDeliveryTickEnvelope(authorId, ackIds) ?: return null
+        // The push is a telling form (ADR 2026-11.z6jw): owed reads ride it, and are told only if a spool took it. A push no
+        // spool took leaves them owed, though AckSync re-sends the bytes as an owed entry (a duplicate read at most).
+        val tick = sealDeliveryTickEnvelope(authorId, ackIds, readRiderLimit = ReadMask.MAX_IDS - ackIds.size) ?: return null
+        val readRiders = tick.riders
         val wire = sign(tick.env, relay = false)
-        val pushed = scopeSync?.pushDirect(authorId, tick.env, wire) == true
-        if (pushed) metrics.onReceiptSpooled()
+        val pushed =
+            try {
+                scopeSync?.pushDirect(authorId, tick.env, wire) == true
+            } finally {
+                readSync.giveBack(readRiders - tick.read)
+            }
+        if (pushed) {
+            metrics.onReceiptSpooled()
+            readSync.told(authorId, tick.read, tick.rootTag, riders = readRiders.size)
+        } else {
+            readSync.giveBack(readRiders)
+        }
         return AckSync.SpoolTick(wire, pushed)
     }
 
@@ -3852,6 +4150,39 @@ class MeshManager(
                 chunk.forEach { pipeline.ackCleartext(it, me) }
             }
         }
+    }
+
+    /**
+     * The person saw [messageIds] (ADR 2026-11.z6jw). Kept: someone else's conversational message, in a DM or a private
+     * group (never the Nearby room, a commons or the Meshtastic room), whose author's pinned profile reads a read mask —
+     * and only while the setting is on. Recorded durably on our clock and handed to [readSync], which tells the author
+     * by ride or by its own deadline. Never for a blocked author or a conversation still a message request (review round
+     * 1, N2): a read is never owed, so withholding one reveals nothing — ADR 010's "withholding reveals the block" is about
+     * the ✓✓ and the seeds, which stay as they are.
+     */
+    override suspend fun forgetReadsFor(nodeId: String) {
+        runCatchingUnlessCancelled { readSync.onAuthorGone(nodeId) }.onFailure { Log.w(TAG, "read marks drop failed: ${it.message}") }
+    }
+
+    override suspend fun onMessagesRead(messageIds: Collection<String>) {
+        runCatchingUnlessCancelled {
+            if (messageIds.isEmpty() || !settings.readReceiptsEnabled.first()) return@runCatchingUnlessCancelled
+            val me = identity.nodeId()
+            val now = clock()
+            val blocked = settings.blockedNodeIds.first()
+            val acceptance = acceptance()
+            val marks =
+                messageIds.distinct().mapNotNull { id ->
+                    val row = messages.find(id) ?: return@mapNotNull null
+                    val kind = Conversations.kindFor(row.conversationId)
+                    val conversational = row.senderId != me && !row.isStatusNotice
+                    if (!conversational || (kind != ConversationKind.DM && kind != ConversationKind.GROUP)) return@mapNotNull null
+                    if (row.senderId in blocked || !acceptance.isAccepted(row.conversationId)) return@mapNotNull null
+                    if (!ReadRiding.readsMask(peers.find(row.senderId)?.capabilities)) return@mapNotNull null
+                    ReadMarkEntity(messageId = id, authorId = row.senderId, conversationId = row.conversationId, readAt = now)
+                }
+            readSync.onRead(marks)
+        }.onFailure { Log.w(TAG, "read marks failed: ${it.message}") }
     }
 
     /**
@@ -4372,6 +4703,7 @@ class MeshManager(
             sweepExpired()
             commons?.sweepOutbox(clock() - ScopeRegistry.COMMONS_DEFAULT_TTL_MS) // the room has long expired them
             sweepLocalStorage()
+            readSync.prune() // owed reads past a day, told ones past the spool's two (ADR 2026-11.z6jw)
         }
     }
 
@@ -4637,6 +4969,7 @@ class MeshManager(
                 forwardSync.onNeighborAdded(it) // re-offer carried DMs addressed to / routable via it
                 keyExchange.onNeighborAdded(it) // re-ask the new neighbor for keys we're still missing
                 ackSync.onNeighborAdded(it) // re-send any broadcast/group delivery tick we owe it, over the link
+                if (readLinked(it.nodeId)) readSync.onLinked(it.nodeId) // owed reads go on the linked deadline (ADR 2026-11.z6jw)
                 flushPendingGroupKeysFor(it.nodeId) // re-send unacked group epoch seeds (partition merge)
             }
             if (newcomers.isNotEmpty()) reconcilePresenceKeysAfterLinkUp()
@@ -6245,7 +6578,8 @@ class MeshManager(
     private fun compactPlaintext(content: MessageContent): ByteArray? {
         val whole = MessageContentV2.encodeOrNull(content) ?: return null
         if (whole.size <= LORA_DIRECT_PLAINTEXT_BYTES || content.ctl != null || content.acks.isNullOrEmpty()) return whole
-        return MessageContentV2.encodeOrNull(content.copy(acks = null))
+        // The read mask indexes the acks, so it goes with them.
+        return MessageContentV2.encodeOrNull(content.copy(acks = null, rm = null))
     }
 
     /**
@@ -6260,17 +6594,23 @@ class MeshManager(
         ids: List<String>,
     ) {
         if (loraDirectSink() == null) return
+        // The read marks among [ids] (ADR 2026-11.z6jw), told or not; null toward an author who reads no mask. Each chunk
+        // carries its own mask over its own list as built, as wide as with none of it read: never a packet of its own, never
+        // a told read, and the same chunks and bytes as a flush with no read.
+        val read = readSync.readSet(peers.find(authorId)?.capabilities, ids)
         ids.distinct().chunked(LORA_DIRECT_TICK_ACKS).forEachIndexed { i, chunk ->
-            val content =
-                when (chunk.size) {
-                    1 -> MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = chunk.single())
-                    else -> MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, acks = chunk)
-                }
+            val rm = read?.let { ReadMask.encode(chunk, it) }
+            val content = receiptContent(chunk, rm)
+            // Counted only for a chunk with a read in it: past four ids a mask is never 0 (its width bit), read or not.
+            if (read != null && chunk.any { it in read }) metrics.onReadsLoraOffered()
             offerLoraDirect(authorId, if (i == 0) firstId else FrameId.new(), sentAt, content, DirectKind.RECEIPT)
         }
     }
 
-    /** `InboundPipeline.sealDmReceipt`'s compact copy, for a DM that came over the board with no coalescer holding it. */
+    /**
+     * `InboundPipeline.sealDmReceipt`'s compact copy, for a DM that came over the board with no coalescer holding it: the
+     * signed tick's own id alone, its read bit read again for its own one-id list (never the signed copy's mask).
+     */
     private suspend fun offerLoraReceipt(
         authorId: String,
         frameId: String,

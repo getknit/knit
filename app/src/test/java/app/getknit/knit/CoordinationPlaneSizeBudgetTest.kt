@@ -12,6 +12,7 @@ import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
+import app.getknit.knit.mesh.crypto.ReadMask
 import app.getknit.knit.mesh.crypto.TinkInit
 import app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto
 import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
@@ -949,8 +950,18 @@ class CoordinationPlaneSizeBudgetTest {
         fun plaintext(
             body: String,
             acks: Int,
+            rm: Long? = null,
         ): Int {
-            val content = MessageContent(body = body, acks = List(acks) { FrameId.new() }.takeIf { it.isNotEmpty() })
+            val content =
+                MessageContent(
+                    body = body,
+                    acks = List(acks) { FrameId.new() }.takeIf { it.isNotEmpty() },
+                    rm =
+                        rm.takeIf {
+                            acks >
+                                0
+                        },
+                )
             return content
                 .sealBytes(v3 = true)
                 .also { assertEquals(EncEnvelope.VERSION_DM_V3, it.scheme) }
@@ -962,6 +973,16 @@ class CoordinationPlaneSizeBudgetTest {
                 val size = plaintext(body, acks)
                 println("lora-direct: $label body=${LoraSizeHint.utf8Length(body)}B acks=$acks plaintext=${size}B cap=${cap}B")
                 assertTrue("a $label DM at the budget with $acks inline acks is one compact packet ($size > $cap)", size <= cap)
+                // Read receipts (ADR 2026-11.z6jw): no byte is reserved for the mask, so the 6 B an ack's 23 leave over its 17
+                // must hold it — every id read (-1) and the widest partial mask (all but the first id read) alike.
+                if (acks > 0) {
+                    // Up to four acks every spelling is one byte: none, all and the widest partial alike.
+                    val partial = (1L shl acks) - 2
+                    for (rm in listOf(-1L, partial, 0L)) {
+                        val withMask = plaintext(body, acks, rm)
+                        assertTrue("a $label DM with $acks acks and rm=$rm is one compact packet ($withMask > $cap)", withMask <= cap)
+                    }
+                }
             }
         }
         assertTrue("the budget is not slack", plaintext(ascii(budget + DM_SLACK_BYTES), acks = 0) > cap)
@@ -997,6 +1018,34 @@ class CoordinationPlaneSizeBudgetTest {
         assertTrue("and the cap is not slack", tick(LORA_DIRECT_TICK_ACKS + 1) > cap)
         assertTrue(tick(1) <= cap)
         assertTrue("the signed tick keeps its own, larger cap", DmAckCoalescer.MAX_LORA_TICK_ACKS > LORA_DIRECT_TICK_ACKS)
+        // Read receipts (ADR 2026-11.z6jw): a capable author's tick always carries a mask whose width depends on the tick's
+        // length alone (review round 1, B1). For every length up to the cap and every read subset, the compact tick is as
+        // long as the same tick with nothing read — the band never learns which were read — and the full tick with its
+        // mask is still one packet.
+        for (n in 1..LORA_DIRECT_TICK_ACKS) {
+            val acks = List(n) { FrameId.new() }
+
+            fun masked(read: Set<String>): Int {
+                val rm = ReadMask.encode(acks, read)
+                val content =
+                    if (n == 1) {
+                        MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = acks.single(), rm = rm)
+                    } else {
+                        MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, acks = acks, rm = rm)
+                    }
+                return checkNotNull(MessageContentV2.encodeOrNull(content)).size
+            }
+            val none = masked(emptySet())
+            for (bits in 0L until (1L shl n)) {
+                val read = acks.filterIndexedTo(HashSet()) { i, _ -> (bits ushr i) and 1L == 1L }
+                assertEquals("n=$n bits=$bits: a read moves no byte", none, masked(read))
+            }
+            assertTrue("$n ids and a mask are one packet ($none > $cap)", none <= cap)
+            if (n == LORA_DIRECT_TICK_ACKS) {
+                println("lora-direct tick with mask: $n ids = ${none}B, cap ${cap}B")
+                assertTrue("the full tick with its mask keeps 6 B of slack ($none)", none <= READ_MASKED_TICK_BYTES)
+            }
+        }
     }
 
     // --- budgets: the BLE side channel (one extended-advertising page = one AUX PDU, <= 3 fragments; #13) ---
@@ -1272,6 +1321,9 @@ class CoordinationPlaneSizeBudgetTest {
     }
 
     private companion object {
+        /** A full compact ✓✓ (nine ids) with its read mask: 158 B of ids and header plus 4 B of mask (ADR 2026-11.z6jw). */
+        const val READ_MASKED_TICK_BYTES = 162
+
         /** 👩🏽‍❤️‍💋‍👨🏼 — the longest RGI emoji sequence Unicode ships: 10 code points, 15 UTF-16 units, 35 B UTF-8. */
         const val LONGEST_RGI = "\uD83D\uDC69\uD83C\uDFFD\u200D\u2764\uFE0F\u200D\uD83D\uDC8B\u200D\uD83D\uDC68\uD83C\uDFFC"
 

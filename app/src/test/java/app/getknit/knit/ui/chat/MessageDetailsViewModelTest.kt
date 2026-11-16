@@ -73,6 +73,7 @@ class MessageDetailsViewModelTest {
     private val groupsFlow = MutableStateFlow(emptyList<GroupEntity>())
     private val filteringFlow = MutableStateFlow(true)
     private val reachedFlow = MutableStateFlow(emptyMap<String, LoraRadioReached>())
+    private val readsShownFlow = MutableStateFlow(true)
 
     @Before
     fun setUp() {
@@ -84,6 +85,7 @@ class MessageDetailsViewModelTest {
         every { receipts.observeForMessage(MSG) } returns receiptsFlow
         every { groups.observeGroups() } returns groupsFlow
         every { settings.contentFilteringEnabled } returns filteringFlow
+        every { settings.readReceiptsEnabled } returns readsShownFlow
     }
 
     @After
@@ -110,7 +112,80 @@ class MessageDetailsViewModelTest {
         acker: String,
         notedAt: Long,
         via: DeliveryPlane = DeliveryPlane.Nearby,
-    ) = MessageReceiptEntity(MSG, acker, notedAt, via.code)
+        readAt: Long? = null,
+    ) = MessageReceiptEntity(MSG, acker, notedAt, via.code, readAt)
+
+    @Test
+    fun `a DM reports when it was read, and reads as read`() =
+        runTest {
+            messageFlow.value = msg(senderId = "me", recipientId = "bob", conversationId = "bob", received = true, id = MSG)
+            receiptsFlow.value = listOf(ack("bob", notedAt = 5L, readAt = 9L))
+
+            val state = collect(viewModel())
+
+            assertEquals(5L, state.deliveredAt)
+            assertEquals(9L, state.readAt)
+            assertEquals(DeliveryStatus.Read, state.delivery)
+        }
+
+    @Test
+    fun `with read receipts off nothing says read, though the read is recorded`() =
+        runTest {
+            // Reciprocal (ADR 2026-11.z6jw): off, we show no one's read, as we send none.
+            readsShownFlow.value = false
+            messageFlow.value = msg(senderId = "me", recipientId = "bob", conversationId = "bob", received = true, id = MSG)
+            receiptsFlow.value = listOf(ack("bob", notedAt = 5L, readAt = 9L))
+
+            val state = collect(viewModel())
+
+            assertEquals(5L, state.deliveredAt)
+            assertNull(state.readAt)
+            assertEquals(DeliveryStatus.Delivered, state.delivery)
+        }
+
+    @Test
+    fun `a group send lists its readers first, then who has it unread, and is read only once everyone has`() =
+        runTest {
+            messageFlow.value = msg(senderId = "me", conversationId = GROUP, received = true, id = MSG)
+            inGroup("me", "sam", "priya", "theo")
+            receiptsFlow.value =
+                listOf(
+                    ack("priya", notedAt = 20L, readAt = 40L),
+                    ack("sam", notedAt = 30L, readAt = 35L),
+                    ack("theo", notedAt = 31L),
+                )
+
+            val partly = collect(viewModel())
+
+            // Readers in the order their reads reached us; Theo has it and has not read it.
+            assertEquals(listOf("sam", "priya"), partly.readBy.map { it.nodeId })
+            assertEquals(listOf(35L, 40L), partly.readBy.map { it.readAt })
+            assertEquals(listOf("theo"), partly.deliveredTo.map { it.nodeId })
+            assertEquals(DeliveryStatus.Delivered, partly.delivery)
+
+            receiptsFlow.value = receiptsFlow.value.map { if (it.ackerNodeId == "theo") it.copy(readAt = 50L) else it }
+            val all = collect(viewModel())
+
+            assertEquals(DeliveryStatus.Read, all.delivery)
+            assertTrue(all.deliveredTo.isEmpty())
+            assertEquals(3, all.readBy.size)
+        }
+
+    @Test
+    fun `a group send with read receipts off keeps every reader in the delivered list`() =
+        runTest {
+            readsShownFlow.value = false
+            messageFlow.value = msg(senderId = "me", conversationId = GROUP, received = true, id = MSG)
+            inGroup("me", "sam", "priya")
+            receiptsFlow.value = listOf(ack("priya", notedAt = 20L, readAt = 40L), ack("sam", notedAt = 30L, readAt = 35L))
+
+            val state = collect(viewModel())
+
+            assertTrue(state.readBy.isEmpty())
+            assertEquals(listOf("priya", "sam"), state.deliveredTo.map { it.nodeId })
+            assertEquals(listOf<Long?>(null, null), state.deliveredTo.map { it.readAt })
+            assertEquals(DeliveryStatus.Delivered, state.delivery)
+        }
 
     @Test
     fun `every reactor keeps its identity, resolved to a display name`() =

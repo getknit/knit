@@ -10,6 +10,11 @@ topics: [groups, data, receipts]
 
 Status: Accepted (2026-08-23)
 
+**Amended by ADR 2026-11.z6jw (2026-11-15):** read receipts now exist. They ride the delivery receipt as a read mask
+(`MessageContent.rm`), and `message_receipts.readAt` records them on the same rows, so "Deliberately NOT done: read
+receipts" below no longer holds. The table's three UI rules stand; Message details adds a "Read by" section above
+"Delivered to", and a DM shows a read line under its delivered one.
+
 ADR 033 closed the last delay-tolerance gap in the group tick, so an author now reliably learns their group
 message landed — but only *that* it landed. `messages.received` is one boolean the first member's ack flips
 for the whole roster, so "Message info" could never answer the question people actually open it for: **who

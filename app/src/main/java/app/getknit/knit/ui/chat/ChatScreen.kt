@@ -310,6 +310,7 @@ import app.getknit.knit.ui.voice.rememberMicGate
 import app.getknit.knit.ui.voice.voiceTranscriptView
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
@@ -320,6 +321,10 @@ import org.koin.core.parameter.parametersOf
 // Grace period before the send button shows a spinner, so a fast send never flashes one; it surfaces
 // only for a genuinely slow send (chiefly the first after a cold start — the one-time model load).
 private const val SEND_SPINNER_DELAY_MS = 300L
+
+// How long a message someone else wrote must stay on screen before it counts as read (ADR 2026-11.z6jw): long
+// enough that flinging past a thread reads nothing, short enough that glancing at a reply does.
+private const val READ_DWELL_MS = 600L
 
 /** What the composer's trailing button currently is — the three states it crossfades between. */
 private enum class SendAction { Sending, Send, Attach }
@@ -801,6 +806,7 @@ fun ChatScreen(
         onLoadVideo = viewModel::videoBytes,
         onSaveVideo = viewModel::saveVideo,
         onLoadOlder = viewModel::loadOlder,
+        onRowsSeen = viewModel::onRowsSeen,
         onRevealMessage = viewModel::revealMessage,
         jumpToMessageId = jumpToMessageId,
         handedJumpId = handedJumpId,
@@ -1111,6 +1117,9 @@ internal fun ChatScreenContent(
     // message; `onRevealMessage` pulls a specific older message in, for a quote whose original the window
     // has not reached. Defaulted so previews and the content-level tests need not name them.
     onLoadOlder: () -> Unit = {},
+    // The messages other people wrote that sat on screen for a moment, at least half shown (ADR 2026-11.z6jw):
+    // what this phone counts as read. The view model passes them on only while the chat is in the foreground.
+    onRowsSeen: (ids: Set<String>) -> Unit = {},
     onRevealMessage: (messageId: String) -> Unit = {},
     // The message to open the thread on — a search hit — rather than its newest. Consumed once per value:
     // the window is widened to reach it (`onRevealMessage`) and the quote-jump machinery below scrolls and
@@ -1194,6 +1203,32 @@ internal fun ChatScreenContent(
             val oldestVisible = info.visibleItemsInfo.lastOrNull()?.index ?: return@snapshotFlow false
             oldestVisible >= info.totalItemsCount - ChatWindow.LOAD_AHEAD
         }.distinctUntilChanged().collect { nearOldest -> if (nearOldest) onLoadOlder() }
+    }
+
+    // Read receipts (ADR 2026-11.z6jw): a message someone else wrote counts as read once at least half of its
+    // bubble (or half the viewport, for one taller than that) has stayed on screen for READ_DWELL_MS. Only ordinary
+    // bubbles count; notices, the typing indicator and our own rows never do. The mesh decides who is told.
+    val unreadEligible =
+        remember(state.rows) {
+            state.rows
+                .filter { !it.mine && it.kind == MessageEntity.KIND_NORMAL }
+                .mapTo(HashSet()) { it.id }
+        }
+    LaunchedEffect(listState, unreadEligible) {
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val start = info.viewportStartOffset
+            val end = info.viewportEndOffset
+            info.visibleItemsInfo
+                .filter { item ->
+                    val shown = minOf(item.offset + item.size, end) - maxOf(item.offset, start)
+                    item.key in unreadEligible && shown * 2 >= minOf(item.size, end - start)
+                }.mapTo(HashSet()) { it.key as String }
+        }.distinctUntilChanged().collectLatest { seen ->
+            if (seen.isEmpty()) return@collectLatest
+            delay(READ_DWELL_MS)
+            onRowsSeen(seen)
+        }
     }
 
     // Where a loaded message sits in the LazyColumn below, or null when it is outside the window. The rows are not the
@@ -3325,7 +3360,8 @@ internal fun MessageBubble(
                             // Our own messages show a delivery tick: one check sent, two checks acked — and, on a
                             // DM their LoRa radio has acked, the LoRa mark ahead of the one check until the receipt.
                             if (row.mine) {
-                                val tickStatus = DeliveryStatus.ofTick(received = row.received, radioReached = row.radioReached)
+                                val tickStatus =
+                                    DeliveryStatus.ofTick(received = row.received, radioReached = row.radioReached, read = row.read)
                                 val tickDescription =
                                     deliveryLabel(
                                         status = tickStatus,
@@ -3335,6 +3371,7 @@ internal fun MessageBubble(
                                         // member has it"; these make the description say which many.
                                         delivered = row.deliveredCount,
                                         total = row.recipientTotal,
+                                        read = row.readCount,
                                     ).resolve()
                                 // A receipt landing is the one moment a mesh messenger actually earns its
                                 // keep, and until now it passed silently. The glyph and the tick cross
@@ -3386,8 +3423,17 @@ internal fun MessageBubble(
                                         Icon(
                                             imageVector = deliveryIcon(status),
                                             contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(14.dp),
+                                            tint = deliveryTint(status),
+                                            modifier =
+                                                Modifier
+                                                    .size(14.dp)
+                                                    .then(
+                                                        if (status == DeliveryStatus.Read) {
+                                                            Modifier.testTag("chat_tick_read")
+                                                        } else {
+                                                            Modifier
+                                                        },
+                                                    ),
                                         )
                                     }
                                 }
@@ -6102,6 +6148,36 @@ fun MessageBubbleMineViaInternetPreview() =
                     sentAt = PREVIEW_NOW - 2 * 60_000L,
                     received = true,
                     deliveredVia = DeliveryPlane.Internet,
+                ),
+            now = PREVIEW_NOW,
+            showSenderName = false,
+            onImageClick = {},
+            onOpenProfile = {},
+            onReact = { _, _ -> },
+            onDelete = {},
+            onBlock = {},
+            onCopy = {},
+        )
+    }
+
+/** The same send once read (ADR 2026-11.z6jw): the ✓✓ knocked out of a disc in the primary colour, behind the globe. */
+@Preview(showBackground = true)
+@Composable
+fun MessageBubbleMineReadPreview() =
+    KnitPreview {
+        MessageBubble(
+            row =
+                ChatRow(
+                    id = "m3r",
+                    body = "Landed. Signal here is terrible, but this got through.",
+                    mine = true,
+                    senderName = "You",
+                    senderNodeId = "node-self",
+                    avatarHash = null,
+                    sentAt = PREVIEW_NOW - 2 * 60_000L,
+                    received = true,
+                    deliveredVia = DeliveryPlane.Internet,
+                    read = true,
                 ),
             now = PREVIEW_NOW,
             showSenderName = false,

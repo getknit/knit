@@ -127,6 +127,17 @@ data class MessageContent(
     val lang: Int? = null,
     @SerialName("r")
     val reads: Int? = null,
+    // The read mask (additive; ADR 2026-11.z6jw): bit i says the sender has also *read* the i-th id of the list this frame
+    // acks, exactly as sent and before any dedupe — `listOfNotNull(ack) + acks` on a [CTL_RECEIPT], [acks] alone on a
+    // plain sealed DM carrying inline acks (ADR 054; a plain DM never sets [ack], and a sender must not). Bits at or past
+    // the list's size are ignored, which is what lets a sender pick a spelling whose width depends on the list's length
+    // alone ([ReadMask.encode]: one byte up to four ids, then a set bit past the list), so neither whether anything was
+    // read nor which ids were changes the frame's length. A frame with any bit set holds at most 64 ids. Machinery: never
+    // mapped by [sealedContent], never set on anything but a receipt or inline acks, and absent toward an author whose
+    // pinned profile lacks `Protocol.CAP_READ_RECEIPTS` (the frame is then byte-identical to one built before the field).
+    // Toward one that has it, every receipt and every inline-ack DM carries it. Label 20 in the compact layout. A build that
+    // predates it ignores the key and applies the ids as a plain ✓✓, which a read implies.
+    val rm: Long? = null,
 ) {
     @OptIn(ExperimentalSerializationApi::class)
     fun encode(): ByteArray = cryptoCbor.encodeToByteArray(this)

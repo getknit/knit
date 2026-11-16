@@ -18,7 +18,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.GraphicsMode
 
-/** Settings › Chats: typing indicators, link previews, content filtering and the large-download limit. */
+/** Settings › Chats: typing indicators, read receipts, link previews, content filtering and the large-download limit. */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ChatSettingsScreenContentTest {
@@ -30,6 +30,8 @@ class ChatSettingsScreenContentTest {
     private fun render(
         typingIndicatorsEnabled: Boolean = ChatSettingsForm().typingIndicatorsEnabled,
         onToggleTypingIndicators: (Boolean) -> Unit = {},
+        readReceiptsEnabled: Boolean = ChatSettingsForm().readReceiptsEnabled,
+        onToggleReadReceipts: (Boolean) -> Unit = {},
         linkPreviewsEnabled: Boolean = ChatSettingsForm().linkPreviewsEnabled,
         onToggleLinkPreviews: (Boolean) -> Unit = {},
         showLinkPreviews: Boolean = true,
@@ -45,12 +47,14 @@ class ChatSettingsScreenContentTest {
                     form =
                         ChatSettingsForm(
                             typingIndicatorsEnabled = typingIndicatorsEnabled,
+                            readReceiptsEnabled = readReceiptsEnabled,
                             linkPreviewsEnabled = linkPreviewsEnabled,
                             contentFilteringEnabled = contentFilteringEnabled,
                             bluetoothDownloadLimit = bluetoothDownloadLimit,
                         ),
                     onBack = {},
                     onToggleTypingIndicators = onToggleTypingIndicators,
+                    onToggleReadReceipts = onToggleReadReceipts,
                     onToggleLinkPreviews = onToggleLinkPreviews,
                     onToggleContentFiltering = onToggleContentFiltering,
                     onSelectBluetoothDownloadLimit = onSelectBluetoothDownloadLimit,
@@ -131,6 +135,25 @@ class ChatSettingsScreenContentTest {
         render(typingIndicatorsEnabled = false, onToggleTypingIndicators = { toggled = it })
         compose.onNodeWithTag("settings_typing_indicators").performScrollTo().assertIsOff()
         compose.onNodeWithTag("settings_typing_indicators").performClick()
+        assertEquals(true, toggled)
+    }
+
+    /** On by default, in every build (ADR 2026-11.z6jw): the radios carry reads with or without the Internet plane. */
+    @Test
+    fun theReadReceiptsRowIsOnByDefaultAndTogglesOff() {
+        var toggled: Boolean? = null
+        render(showLinkPreviews = false, onToggleReadReceipts = { toggled = it })
+        compose.onNodeWithTag("settings_read_receipts").performScrollTo().assertIsOn()
+        compose.onNodeWithTag("settings_read_receipts").performClick()
+        assertEquals(false, toggled)
+    }
+
+    @Test
+    fun theReadReceiptsRowTogglesBackOn() {
+        var toggled: Boolean? = null
+        render(readReceiptsEnabled = false, onToggleReadReceipts = { toggled = it })
+        compose.onNodeWithTag("settings_read_receipts").performScrollTo().assertIsOff()
+        compose.onNodeWithTag("settings_read_receipts").performClick()
         assertEquals(true, toggled)
     }
 

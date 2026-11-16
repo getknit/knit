@@ -22,6 +22,11 @@ import app.getknit.knit.data.message.DeliveryPlane
  * render a delivery *earlier* than the send it acknowledges. [via] is the [DeliveryPlane.code] that
  * receipt arrived on, first-evidence-wins like [app.getknit.knit.data.message.MessageDao.markReceived]'s.
  *
+ * [readAt] is our own clock when a read receipt from [ackerNodeId] for this message was applied (ADR 2026-11.z6jw),
+ * null until one is: a read rides a delivery receipt as `MessageContent.rm`, so a read row is always a
+ * delivered row too, and [readAt] is never earlier than [notedAt]. First-evidence-wins like [notedAt]. Counting rows
+ * still counts deliveries; [readAt] only narrows them.
+ *
  * There is deliberately no foreign key to `messages` (the [app.getknit.knit.data.reaction.ReactionEntity]
  * posture): rows are reclaimed explicitly on a message delete and by the orphan reaper, so the schema
  * keeps its "no FK anywhere" shape over SQLCipher.
@@ -36,4 +41,5 @@ data class MessageReceiptEntity(
     val ackerNodeId: String,
     val notedAt: Long,
     val via: Int = DeliveryPlane.Unknown.code,
+    val readAt: Long? = null,
 )

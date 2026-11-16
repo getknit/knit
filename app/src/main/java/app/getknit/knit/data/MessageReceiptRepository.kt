@@ -35,6 +35,10 @@ class MessageReceiptRepository(
      * "≥1 recipient received it" rule is a wire semantic and stays untouched, while the per-recipient list
      * is local bookkeeping that must not be plantable by a non-member (`InboundPipeline.ackerFor`).
      *
+     * [read] says the receipt also carried [acker]'s read of the message (`MessageContent.rm`): a read implies the
+     * delivery, so it flips the same tick and inserts the same row, then stamps the row's `readAt` if it has none. An
+     * unattributable read reads as a delivery and names nobody, for the same reason.
+     *
      * Both halves are idempotent, so a duplicate or custody-re-served receipt is absorbed.
      */
     suspend fun record(
@@ -42,9 +46,13 @@ class MessageReceiptRepository(
         acker: String?,
         via: DeliveryPlane,
         at: Long,
+        read: Boolean = false,
     ) = db.withWriteTransaction {
         messages.markReceived(messageId, via)
-        if (acker != null) dao.insertIfAbsent(MessageReceiptEntity(messageId, acker, at, via.code))
+        if (acker != null) {
+            dao.insertIfAbsent(MessageReceiptEntity(messageId, acker, at, via.code, readAt = if (read) at else null))
+            if (read) dao.markRead(messageId, acker, at)
+        }
     }
 
     /**
@@ -58,6 +66,21 @@ class MessageReceiptRepository(
         dao
             .observeDeliveredCounts(conversationId, roster)
             .map { rows -> rows.associate { it.messageId to it.delivered } }
+
+    /**
+     * How many of [roster] have read each message in [conversationId], keyed by message id — the group bubble's read
+     * tick (every member) and its "read by N of M". Messages nobody has read are absent (treat as 0).
+     */
+    fun observeReadCounts(
+        conversationId: String,
+        roster: List<String>,
+    ): Flow<Map<String, Int>> =
+        dao
+            .observeReadCounts(conversationId, roster)
+            .map { rows -> rows.associate { it.messageId to it.delivered } }
+
+    /** Everyone whose read of [messageId] has reached us — the chat list's read tick on its newest row. */
+    suspend fun readersOf(messageId: String): Set<String> = dao.readersOf(messageId).toSet()
 
     /** Removes all receipts for a deleted message, since the table has no FK cascade. */
     suspend fun deleteForMessage(messageId: String) = dao.deleteForMessage(messageId)

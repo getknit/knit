@@ -26,6 +26,7 @@ import app.getknit.knit.ui.chat.MessageBubbleFormattingPreview
 import app.getknit.knit.ui.chat.MessageBubbleLinkPreview
 import app.getknit.knit.ui.chat.MessageBubbleMineLoraReachedPreview
 import app.getknit.knit.ui.chat.MessageBubbleMinePreview
+import app.getknit.knit.ui.chat.MessageBubbleMineReadPreview
 import app.getknit.knit.ui.chat.MessageBubbleMineViaInternetPreview
 import app.getknit.knit.ui.chat.MessageBubbleNotRelayedLockedPreview
 import app.getknit.knit.ui.chat.MessageBubblePhotoArrivingPreview
@@ -36,9 +37,11 @@ import app.getknit.knit.ui.chat.MessageBubbleTranslationHiddenPreview
 import app.getknit.knit.ui.chat.MessageBubbleVoiceTapToDownloadPreview
 import app.getknit.knit.ui.chat.MessageBubbleWithMentionPreview
 import app.getknit.knit.ui.chat.MessageDetailsScreenDirectLinkPreview
+import app.getknit.knit.ui.chat.MessageDetailsScreenDmReadPreview
 import app.getknit.knit.ui.chat.MessageDetailsScreenEmptyPreview
 import app.getknit.knit.ui.chat.MessageDetailsScreenLoraReachedPreview
 import app.getknit.knit.ui.chat.MessageDetailsScreenPreview
+import app.getknit.knit.ui.chat.MessageDetailsScreenReadByPreview
 import app.getknit.knit.ui.chat.MessageInputPreview
 import app.getknit.knit.ui.chat.MessageInputStagedLockedPreview
 import app.getknit.knit.ui.chat.ReactionRowPreview
@@ -97,6 +100,11 @@ fun MessageBubbleTheirsViaInternet() = MessageBubbleTheirsViaInternetPreview()
 @ComponentShots
 @Composable
 fun MessageBubbleMineViaInternet() = MessageBubbleMineViaInternetPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun MessageBubbleMineRead() = MessageBubbleMineReadPreview()
 
 @PreviewTest
 @ComponentShots
@@ -265,6 +273,16 @@ fun StagedLocationTileFailed() = StagedLocationTileFailedPreview()
 @ScreenShots
 @Composable
 fun MessageDetailsScreen() = MessageDetailsScreenPreview()
+
+@PreviewTest
+@ScreenShots
+@Composable
+fun MessageDetailsScreenReadBy() = MessageDetailsScreenReadByPreview()
+
+@PreviewTest
+@ScreenShots
+@Composable
+fun MessageDetailsScreenDmRead() = MessageDetailsScreenDmReadPreview()
 
 @PreviewTest
 @ScreenShots

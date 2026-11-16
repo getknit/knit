@@ -675,6 +675,10 @@
     <string name="chat_status_delivered">Delivered</string>
     <!-- Group form: the ✓✓ flips on the FIRST member's ack, so the ratio is what the tick can't say -->
     <string name="chat_status_delivered_count">Delivered to %1$d of %2$d</string>
+    <!-- A read receipt came back (ADR 2026-11.z6jw): a DM's recipient, or every member of a group, has read it -->
+    <string name="chat_status_read">Read</string>
+    <!-- Group form while some but not all members have read it: delivered count, member count, then how many read it -->
+    <string name="chat_status_delivered_read_count">Delivered to %1$d of %2$d, read by %3$d</string>
     <string name="chat_status_delivered_internet">Delivered over the Internet</string>
     <string name="chat_status_arrived_internet">Arrived over the Internet</string>
     <!-- A contact's direct link carried the message or its file (ADR 2026-10.a5yj). Not "the Internet": a link between two phones on one network never leaves it. -->
@@ -989,7 +993,7 @@
     <!-- Settings › Chats: the row on Settings and the title of the screen it opens, which holds what a chat sends, shows
          and lets in. The subtitle names the screen's rows. -->
     <string name="settings_chats_title">Chats</string>
-    <string name="settings_chats_subtitle">Typing indicators, link previews, content filtering and large downloads</string>
+    <string name="settings_chats_subtitle">Typing indicators, read receipts, link previews, content filtering and large downloads</string>
     <string name="settings_content_filtering_title">Content filtering</string>
     <string name="settings_content_filtering_subtitle">Hide explicit images and abusive messages you receive from others</string>
     <string name="settings_theme_title">Theme</string>
@@ -1078,6 +1082,11 @@
          the radios and an Internet relay, and shows theirs. Off, it does neither. -->
     <string name="settings_typing_indicators_title">Typing indicators</string>
     <string name="settings_typing_indicators_subtitle">The people you chat with see when you\'re typing, nearby or through a relay, and you see when they are. Off, Knit neither sends nor shows typing.</string>
+    <!-- Settings switch, on by default (ADR 2026-11.z6jw): whether this phone tells the people it chats with,
+         in direct chats and groups, that it has read their messages, and shows when they have read its own. Off, it does
+         neither. -->
+    <string name="settings_read_receipts_title">Read receipts</string>
+    <string name="settings_read_receipts_subtitle">The people you chat with see when you\'ve read their messages, and you see when they\'ve read yours. Off, Knit neither sends nor shows read receipts.</string>
     <!-- Low-power mode (ADR 2026-10.d44b). The subtitle changes when Battery Saver holds the mode on with the switch off,
          or the charger holds it off with the switch on. -->
     <string name="settings_low_power_title">Low-power mode</string>
@@ -2142,6 +2151,8 @@
          when a DM we sent reached them. Labelled in words because the line above them is a bare timestamp. -->
     <string name="message_details_arrived_at">Arrived %1$s</string>
     <string name="message_details_delivered_at">Delivered %1$s</string>
+    <!-- When their read receipt for a DM we sent reached this phone (our clock), under the delivered line -->
+    <string name="message_details_read_at">Read %1$s</string>
     <!-- The same middle state on the details screen: when their LoRa radio acked it (our clock), then that their phone
          has not confirmed it yet. Shown only until the delivery receipt lands -->
     <string name="message_details_lora_radio_reached_at">Reached their LoRa radio at %1$s</string>
@@ -2151,6 +2162,8 @@
     <string name="message_details_filter_all">All %1$d</string>
     <string name="message_details_filter_emoji">%1$s %2$d</string>
     <!-- Per-recipient delivery, on a group message you sent -->
+    <!-- The members who have read a group message you sent, above those who have it but have not read it yet -->
+    <string name="message_details_read_by">Read by</string>
     <string name="message_details_delivered_to">Delivered to</string>
     <string name="message_details_waiting_on">Waiting on</string>
     <string name="message_details_developer">Developer</string>
@@ -2159,6 +2172,7 @@
     <string name="message_details_room_open_list">The room has no member list. This is who your phone has heard back from, and others in range may have received it too.</string>
     <!-- Row content descriptions: a section header is not announced with the rows under it -->
     <string name="message_details_recipient_delivered">%1$s, delivered %2$s</string>
+    <string name="message_details_recipient_read">%1$s, read %2$s</string>
     <string name="message_details_recipient_waiting">%1$s, not delivered yet</string>
     <!-- The supporter badge (docs/SUPPORTER_BADGE.md §7). No product name, price, link or call to action (contract's copy rules). -->
     <string name="badge_supporter">Supporter</string>

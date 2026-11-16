@@ -58,6 +58,7 @@ import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
+import app.getknit.knit.mesh.crypto.ReadMask
 import app.getknit.knit.mesh.crypto.XeddsaVerify
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.crypto.b64d
@@ -326,6 +327,9 @@ class InboundPipeline(
     private val onProfileCapabilities: (nodeId: String, capabilities: Long?) -> Unit = { _, _ -> },
     // The carrier budget ([CARRIER_BLOB_BUDGET_BYTES]); `mesh/lab` shrinks it to fill it with a few pictures.
     private val carrierBlobBudgetBytes: Long = CARRIER_BLOB_BUDGET_BYTES,
+    // Read receipts (ADR 2026-11.z6jw): the read bits and owed riders the instant DM receipt carries — MeshManager's
+    // `ReadSync`. The rigs' default reads nothing, so their receipts are byte-identical to before.
+    private val reads: ReadRiding = ReadRiding.NONE,
 ) {
     // The title and avatar a notification wears, resolved from the conversation alone — the resolver the
     // conversation shortcuts share, so a refreshed shortcut and the next notification agree (ADR 2026-10.jbsa).
@@ -1334,12 +1338,7 @@ class InboundPipeline(
         val plane = DeliveryPlane.LoRa
         when (plain.ctl) {
             MessageContent.CTL_RECEIPT -> {
-                db.withWriteTransaction {
-                    (listOfNotNull(plain.ack) + plain.acks.orEmpty())
-                        .distinct()
-                        .take(MAX_RECEIPT_ACKS)
-                        .forEach { applySealedReceipt(env, it, plane) }
-                }
+                db.withWriteTransaction { applyReceiptIds(env, plain, plane) }
             }
 
             MessageContent.CTL_REACTION -> {
@@ -1902,11 +1901,31 @@ class InboundPipeline(
         plain: MessageContent,
         plane: DeliveryPlane,
     ) {
-        plain.acks
-            .orEmpty()
+        // The read mask indexes `acks` alone here: a plain DM never sets `ack` (ADR 2026-11.z6jw).
+        val ids = plain.acks.orEmpty()
+        val read = ReadMask.readIn(ids, plain.rm)
+        ids
             .distinct()
             .take(MAX_RECEIPT_ACKS)
-            .forEach { applySealedReceipt(env, it, plane) }
+            .forEach { applySealedReceipt(env, it, plane, read = it in read) }
+    }
+
+    /**
+     * A `CTL_RECEIPT`'s ids (signed or compact): the read set first, off the list exactly as sent and before the dedupe
+     * ([ReadMask.readIn] over `listOfNotNull(ack) + acks`), then each id bounded and applied as ever. A receipt from a
+     * build without read receipts carries no mask and reads nothing.
+     */
+    private suspend fun applyReceiptIds(
+        env: RelayEnvelope,
+        plain: MessageContent,
+        plane: DeliveryPlane,
+    ) {
+        val ids = listOfNotNull(plain.ack) + plain.acks.orEmpty()
+        val read = ReadMask.readIn(ids, plain.rm)
+        ids
+            .distinct()
+            .take(MAX_RECEIPT_ACKS)
+            .forEach { applySealedReceipt(env, it, plane, read = it in read) }
     }
 
     /**
@@ -2049,10 +2068,7 @@ class InboundPipeline(
                 // Single-ack tick and/or the custody-escalated batch (`acks`): the forged-ack guard runs
                 // per id inside applySealedReceipt. Bounded against a hostile frame — 2× the send-side
                 // batch cap (AckSync.MAX_BATCH_ACKS), and dedup'd so a malformed sender can't loop us.
-                (listOfNotNull(plain.ack) + plain.acks.orEmpty())
-                    .distinct()
-                    .take(MAX_RECEIPT_ACKS)
-                    .forEach { applySealedReceipt(env, it, plane) }
+                applyReceiptIds(env, plain, plane)
             }
 
             MessageContent.CTL_REACTION -> {
@@ -2395,12 +2411,28 @@ class InboundPipeline(
         env: RelayEnvelope,
         ackId: String?,
         plane: DeliveryPlane,
+        read: Boolean = false,
     ) {
         ackId ?: return
         val recipientOfAcked = messages.recipientOf(ackId)
         if (recipientOfAcked == null || recipientOfAcked == env.senderId) {
-            receipts.record(ackId, ackerFor(env, ackId, recipientOfAcked), plane, clock())
+            val acker = ackerFor(env, ackId, recipientOfAcked)
+            val recordsRead = read && acker != null && readable(ackId)
+            receipts.record(ackId, acker, plane, clock(), read = recordsRead)
+            if (recordsRead) metrics.onReadsRecorded()
         }
+    }
+
+    /**
+     * Whether a read of [ackId] may be recorded (ADR 2026-11.z6jw): our own message, in a DM or a private group. Never the
+     * Nearby room, a commons or the Meshtastic room — [ackerFor]'s room arm names any signed peer, so a read there would let
+     * anyone write `readAt` — and never someone else's message, whose receipt is no business of ours. Delivery is
+     * unaffected: the tick and the acker row follow their own rules whatever this says.
+     */
+    private suspend fun readable(ackId: String): Boolean {
+        if (messages.senderOf(ackId) != identity.nodeId()) return false
+        val kind = Conversations.kindFor(messages.conversationOf(ackId) ?: return false)
+        return kind == ConversationKind.DM || kind == ConversationKind.GROUP
     }
 
     /**
@@ -4588,19 +4620,52 @@ class InboundPipeline(
         peer: PeerEntity,
         bundle: PublicKeyBundle,
     ): ReceiptSeal {
-        val prekey = pinnedPrekey(peer)
         val now = clock()
         val id = FrameId.new()
-        val aad = MessageCrypto.header(id, me, now, env.senderId)
         // A frame already sealed to this author is a ride for the room ticks waiting on one (ADR 2026-09.y5f3
         // — the field case aa27's two carriers missed: the DM came off the spool, not the board). Capped at the
         // coalescer's signed-tick figure, `ack` included; the riders never air (the compact copy below drops them).
         // Given back — never to the DM coalescer — if the seal falls through, since that hold originates what it
         // still holds and a room tick must never cost a row.
         val riding = ackSync.takeRiding(env.senderId, DmAckCoalescer.MAX_LORA_TICK_ACKS - 1)
-        val content = MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = env.id, acks = riding.takeIf { it.isNotEmpty() })
-        val (plaintext, scheme) = content.sealBytes(peer.readsCryptoV3())
-        val outcome = ratchet.sealCtl(answer, env.senderId, bundle.dhPublicKey(), prekey, plaintext, aad, now, scheme, rideOwnFirstContact)
+        val withReads = receiptReads(env, peer, riding)
+        // Read riders are claimed until here: told ones are released by the tell, every other one goes back still owed.
+        try {
+            return sealAndSendReceipt(env, me, plane, answer, rideOwnFirstContact, peer, bundle, id, now, riding, withReads)
+        } finally {
+            reads.giveBack(withReads.riders)
+        }
+    }
+
+    /** [sealClaimedDmReceipt]'s seal and hand-off, under the read riders [withReads] claimed. */
+    @Suppress("LongParameterList") // the claim's context, passed whole rather than re-read
+    private suspend fun sealAndSendReceipt(
+        env: RelayEnvelope,
+        me: String,
+        plane: DeliveryPlane,
+        answer: Boolean,
+        rideOwnFirstContact: Boolean,
+        peer: PeerEntity,
+        bundle: PublicKeyBundle,
+        id: String,
+        now: Long,
+        riding: List<String>,
+        withReads: ReceiptReads,
+    ): ReceiptSeal {
+        val aad = MessageCrypto.header(id, me, now, env.senderId)
+        val (plaintext, scheme) = withReads.content.sealBytes(peer.readsCryptoV3())
+        val outcome =
+            ratchet.sealCtl(
+                answer,
+                env.senderId,
+                bundle.dhPublicKey(),
+                pinnedPrekey(peer),
+                plaintext,
+                aad,
+                now,
+                scheme,
+                rideOwnFirstContact,
+            )
         val tagged =
             when (outcome) {
                 is RatchetSessions.AnswerSeal.Sealed -> {
@@ -4615,7 +4680,7 @@ class InboundPipeline(
                     holdDeclinedTick(env.senderId, env.id)
                     metrics.onReceiptHeld()
                     ackSync.giveBackRiding(env.senderId, riding)
-                    if (plane == DeliveryPlane.LoRa) offerLoraReceipt(env.senderId, FrameId.new(), now, content.copy(acks = null))
+                    if (plane == DeliveryPlane.LoRa) offerLoraReceipt(env.senderId, FrameId.new(), now, withReads.compact)
                     return ReceiptSeal.DECLINED
                 }
 
@@ -4625,7 +4690,6 @@ class InboundPipeline(
                     return ReceiptSeal.CANNOT_SEAL
                 }
             }
-        val sealed = tagged.env
         if (scheme == EncEnvelope.VERSION_DM_V3) metrics.onDmSealedV3()
         originateTick(
             RelayEnvelope(
@@ -4634,17 +4698,70 @@ class InboundPipeline(
                 senderId = me,
                 sentAt = now,
                 recipientId = env.senderId,
-                payload = WireCodec.encodePayload(ChatContent(enc = sealed)),
+                payload = WireCodec.encodePayload(ChatContent(enc = tagged.env)),
             ),
         )
         // The DM's own id alone over the board: the room riders ride the signed tick and never air (ADR 2026-10.rp3s).
-        if (plane == DeliveryPlane.LoRa) offerLoraReceipt(env.senderId, id, now, content.copy(acks = null))
+        if (plane == DeliveryPlane.LoRa) offerLoraReceipt(env.senderId, id, now, withReads.compact)
         metrics.onReceiptSealed()
+        // The 8hn6 ledger files the DM's own id alone: a read rider is never a ✓✓ this receipt answers.
         dmReAcks.record(env.senderId, env.id, tagged.rootTag, id, now)
         ackSync.rode(riding)
         metrics.onReceiptRidden(riding.size)
+        // Originated `relay = true`: every id whose bit it carries is told now, after the hand-off.
+        reads.told(env.senderId, withReads.told, tagged.rootTag, riders = withReads.riders.size)
         return ReceiptSeal.SENT
     }
+
+    /**
+     * The instant DM receipt's read half (ADR 2026-11.z6jw): owed reads toward this author ride in `acks` after the room
+     * [riding], inside the same cap — never in `ack` — so the read of DM n rides the receipt for DM n+1. The mask is over
+     * the list as sent; absent toward an author who reads none, else always present and as wide for any read pattern as for
+     * none (`ReadMask.encode`). Read before
+     * the seal, outside the ratchet lock. The compact copy is the DM's own id alone; its mask is set where it is offered.
+     */
+    private suspend fun receiptReads(
+        env: RelayEnvelope,
+        peer: PeerEntity,
+        riding: List<String>,
+    ): ReceiptReads {
+        val riders =
+            reads.takeRiders(
+                env.senderId,
+                peer.capabilities,
+                DmAckCoalescer.MAX_LORA_TICK_ACKS - 1 - riding.size,
+                exclude = riding + env.id,
+            )
+        val extra = riding + riders
+        val listed = listOf(env.id) + extra
+        val read = reads.readSet(peer.capabilities, listed)
+        val content =
+            MessageContent(
+                body = "",
+                ctl = MessageContent.CTL_RECEIPT,
+                ack = env.id,
+                acks = extra.takeIf { it.isNotEmpty() },
+                rm = read?.let { ReadMask.encode(listed, it) },
+            )
+        return ReceiptReads(
+            content = content,
+            compact = MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = env.id),
+            riders = riders,
+            told = read.orEmpty().intersect(listed.take(ReadMask.MAX_IDS).toSet()),
+        )
+    }
+
+    /**
+     * [receiptReads]'s answer: the signed content, the compact copy's one-id list (its mask is set where it is offered,
+     * `MeshManager.offerLoraTicks`, never the signed copy's with rider bits), the riders claimed, and the ids a hand-off
+     * tells.
+     */
+    private class ReceiptReads(
+        val content: MessageContent,
+        val compact: MessageContent,
+        val riders: List<String>,
+        val told: Set<String>,
+    )
 
     /** [peer]'s pinned signed prekey as the ratchet takes it, or null when none is pinned or it will not decode. */
     private fun pinnedPrekey(peer: PeerEntity): RatchetEngine.PeerPrekey? {

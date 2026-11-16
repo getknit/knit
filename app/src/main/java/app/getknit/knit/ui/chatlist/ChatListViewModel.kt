@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.data.GroupRepository
+import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerDirectory
 import app.getknit.knit.data.PeerRepository
@@ -13,6 +14,7 @@ import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.draft.DraftEntity
 import app.getknit.knit.data.draft.DraftRepository
 import app.getknit.knit.data.group.GroupEntity
+import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
@@ -83,6 +85,8 @@ data class ConversationRow(
     val unreadCount: Int,
     val lastStatus: DeliveryStatus? = null,
     val lastDeliveredVia: DeliveryPlane = DeliveryPlane.Unknown,
+    // The id of that last message when it is ours: what the view model asks the read receipts about.
+    val lastMineId: String? = null,
     // The ` (Alias)` suffix already inside [title] when another known peer shares this DM peer's name
     // (ADR 058), so the row can draw it muted. Null for the room, groups, and an unambiguous name.
     val discriminator: String? = null,
@@ -180,6 +184,9 @@ class ChatListViewModel(
     // Settings › Chats › Translation, which shows a translation the reader made in its message's place; never on in a
     // build without translation (TRANSLATE_WIRED). A parameter so a test can turn it on in either build.
     translationOn: Flow<Boolean> = if (TRANSLATE_WIRED) settings.translationEnabled else flowOf(false),
+    // Who has read our newest message in each thread (ADR 2026-11.z6jw). Nullable and last for the same reason
+    // as [commons]; null reads as "nobody has read anything", so the tick stays at ✓✓.
+    private val receipts: MessageReceiptRepository? = null,
 ) : ViewModel() {
     private val myNodeId = MutableStateFlow<String?>(null)
 
@@ -383,6 +390,8 @@ class ChatListViewModel(
         val directory: PeerDirectory,
         val lastReadAll: Map<String, Long>,
         val mesh: MeshStatus,
+        // Settings › Chats › Read receipts: off, no row shows a read tick (reciprocal).
+        val readsShown: Boolean = false,
     )
 
     // `mapLatest` because the fold ends in one small query per drawn row (the unread count), and a newer
@@ -395,11 +404,13 @@ class ChatListViewModel(
             table,
             listInputs,
             peers.observeDirectory(),
-            settings.lastReadAll.distinctUntilChanged(),
+            combine(settings.lastReadAll.distinctUntilChanged(), settings.readReceiptsEnabled.distinctUntilChanged()) { read, on ->
+                read to on
+            },
             meshStatus,
-        ) { table, inputs, directory, lastReadAll, mesh ->
-            Snapshot(table, inputs, directory, lastReadAll, mesh)
-        }.mapLatest { snapshot -> ChatListAssembler(context, snapshot).build().withUnread(snapshot) }
+        ) { table, inputs, directory, (lastReadAll, readsShown), mesh ->
+            Snapshot(table, inputs, directory, lastReadAll, mesh, readsShown)
+        }.mapLatest { snapshot -> ChatListAssembler(context, snapshot).build().withUnread(snapshot).withReadTicks(snapshot) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatListUiState(isLoading = true))
 
     /**
@@ -449,6 +460,33 @@ class ChatListViewModel(
                 conversations.map { row ->
                     val since = snapshot.lastReadAll[row.id] ?: 0L
                     row.copy(unreadCount = messages.countUnreadIn(row.id, since, me, snapshot.table.blocked))
+                },
+        )
+    }
+
+    /**
+     * Lifts each row whose newest message is ours and delivered to [DeliveryStatus.Read] once it has been read (ADR
+     * 2026-11 read receipts): by the DM's peer, or by every current member of the group — the chat bubble's own rule, so
+     * the two ticks never disagree. One indexed query per such row, and none while the setting is off. The rows re-fold
+     * on every receipt, since recording one always writes the message's tick column (`MessageReceiptRepository.record`).
+     */
+    private suspend fun ChatListUiState.withReadTicks(snapshot: Snapshot): ChatListUiState {
+        val readers = receipts ?: return this
+        val me = snapshot.table.me ?: return this
+        if (!snapshot.readsShown) return this
+        val rosters =
+            snapshot.inputs.groups.associate { group ->
+                group.groupId to GroupMembersStore.decode(group.members).filterNot { it == me }
+            }
+        return copy(
+            conversations =
+                conversations.map { row ->
+                    val id = row.lastMineId
+                    if (row.lastStatus != DeliveryStatus.Delivered || id == null || row.isRoom) return@map row
+                    val expected = if (row.isGroup) rosters[row.id].orEmpty() else listOf(row.id)
+                    if (expected.isEmpty()) return@map row
+                    val read = readers.readersOf(id)
+                    if (read.containsAll(expected)) row.copy(lastStatus = DeliveryStatus.Read) else row
                 },
         )
     }

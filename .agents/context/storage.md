@@ -75,6 +75,12 @@ lines.
   `.agents/context/crypto.md`'s compact-door entry. It is ratchet state — which DMs a compact LoRa copy delivered and
   whether the signed copy's ratchet step has run — so it is `BackupTables.TRANSIENT`, never carried, and swept 48 h after
   arrival on our own clock. `LocalMessageDelete` must never touch it: a held id is what keeps a deleted DM deleted.
+- **When touching the `read_marks` table or `message_receipts.readAt` (`data/receipt/ReadMarkEntity` /
+  `ReadMarkDao` / `ReadMarkRepository`, `MessageReceiptDao.markRead`, DB v35):** READ ADR 2026-11.z6jw. `read_marks`
+  is the reader's durable outbox of reads owed to their authors (`toldAt` null = owed, `toldRoot` = the root that told
+  it), `BackupTables.TRANSIENT` because a restore re-roots every session; owed marks are pruned 24 h after the read,
+  told ones 48 h. `readAt` is our clock, never earlier than the row's `notedAt`, first-evidence-wins, and null on every
+  row from before v35: no read is ever invented.
 - **When touching `own_presence_keys` / `peer_presence_keys` (`data/presencekey/`, DB v32), `PresenceKeyDao`,
   `PeerDao.deleteOrphanPresenceKeys` or the `presence_key_last_generation` setting:** READ ADR 2026-11.xp6d ("The
   presence key"). Both tables are `BackupTables.TRANSIENT`: a backup must not carry the means to recognise every

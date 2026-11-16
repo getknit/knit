@@ -131,8 +131,16 @@ class ProtocolTest {
         assertEquals(0x40000L, Protocol.CAP_LINK_PROOF)
         assertEquals(Protocol.CAP_INET_LINK shl 1, Protocol.CAP_LINK_PROOF)
         // 0x42FFF until the Bluetooth reader added CAP_BLIND_ADVERT (ADR 2026-11.xp6d, step 5a), 0xC2FFF until sealed
-        // links added CAP_LINK_SEAL (#286).
-        assertEquals(0x1C2FFFL, Protocol.LOCAL_CAPABILITIES)
+        // links added CAP_LINK_SEAL (#286), 0x1C2FFF until read receipts added CAP_READ_RECEIPTS (ADR 2026-11.z6jw).
+        assertEquals(0x3C2FFFL, Protocol.LOCAL_CAPABILITIES)
+    }
+
+    @Test
+    fun theReadReceiptsBitIsTheNextFreeOneAndEveryBuildCarriesIt() {
+        // ADR 2026-11.z6jw: the bit after CAP_LINK_SEAL, profile-only, advertised whatever the person's setting says.
+        assertEquals(0x200000L, Protocol.CAP_READ_RECEIPTS)
+        assertEquals(Protocol.CAP_LINK_SEAL shl 1, Protocol.CAP_READ_RECEIPTS)
+        assertEquals(Protocol.CAP_READ_RECEIPTS, Protocol.LOCAL_CAPABILITIES and Protocol.CAP_READ_RECEIPTS)
     }
 
     @Test

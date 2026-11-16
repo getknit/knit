@@ -294,6 +294,7 @@ class MessageContentV2Test {
                 styles = listOf(StyleSpan(0, 5, BodyStyle.BOLD)),
                 lang = 1,
                 reads = 24,
+                rm = -2L,
             )
         val set = JSON.encodeToJsonElement(MessageContent.serializer(), full).jsonObject.keys
         val fields =

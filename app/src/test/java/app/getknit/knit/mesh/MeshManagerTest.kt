@@ -38,6 +38,7 @@ import app.getknit.knit.data.ratchet.GroupRatchetRepository
 import app.getknit.knit.data.ratchet.GroupRootRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.data.reaction.ReactionEntity
+import app.getknit.knit.data.receipt.ReadMarkEntity
 import app.getknit.knit.data.scopeanchor.DmScopeAnchorEntity
 import app.getknit.knit.data.settings.LoraBoard
 import app.getknit.knit.data.settings.SettingsStore
@@ -50,6 +51,7 @@ import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
+import app.getknit.knit.mesh.crypto.ReadMask
 import app.getknit.knit.mesh.crypto.TinkInit
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
@@ -556,6 +558,9 @@ class MeshManagerTest {
         val loraEnabled = MutableStateFlow(true)
         val loraDmEnabled = MutableStateFlow(true)
 
+        /** The read-receipts setting (ADR 2026-11.z6jw): on, as the app defaults. */
+        val readReceiptsEnabled = MutableStateFlow(true)
+
         /** Every compact copy the manager offered the LoRa plane, once [bindLora] has bound a sink (ADR 2026-10.x9fa). */
         val loraOffers = CopyOnWriteArrayList<LoraOffer>()
 
@@ -599,6 +604,7 @@ class MeshManagerTest {
             coEvery { settings.loraBoard } returns loraBoard
             coEvery { settings.loraEnabled } returns loraEnabled
             coEvery { settings.loraDmEnabled } returns loraDmEnabled
+            coEvery { settings.readReceiptsEnabled } returns readReceiptsEnabled
             coEvery { settings.bluetoothDownloadLimitBytes } returns bluetoothDownloadLimit
             // The local delivery of anything we originate runs the inbound path, whose first act is a
             // blocklist read with `.first()`. A relaxed mock's empty flow throws there rather than hanging.
@@ -3515,6 +3521,150 @@ class MeshManagerTest {
                 rig.manager.dmAcks
                     .pending(rig.bob.nodeId)
                     .isEmpty(),
+            )
+        }
+
+    /**
+     * Read receipts over LoRa (ADR 2026-11.z6jw): the coalesced flush's compact ✓✓ carries the read bit for a held id the
+     * person read — computed in `offerLoraTicks`, after the signed tick was handed off and told it — and costs no compact
+     * offer, and no byte, more than a flush with no read. Toward a capable author the mask is always there.
+     */
+    @Test
+    fun aReadInsideTheLoraHoldRidesTheCompactTickWithNoExtraOffer() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinWithCaps(rig.bob, RatchetCrypto.generateKeyPair().pub, Protocol.LOCAL_CAPABILITIES or Protocol.CAP_LORA_DIRECT)
+            rig.answered(rig.bob)
+
+            val plain = List(2) { FrameId.new() }
+            plain.forEach { rig.manager.dmAcks.hold(rig.bob.nodeId, it) }
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+            val offersWithout = rig.loraOffers.size
+            val withoutBytes =
+                rig.loraOffers
+                    .last()
+                    .plaintext.size
+            val without = checkNotNull(MessageContentV2.decode(rig.loraOffers.last().plaintext))
+            assertEquals("a capable author's tick always carries a mask", 0L, without.rm)
+
+            val read = List(2) { FrameId.new() }
+            read.forEach { rig.manager.dmAcks.hold(rig.bob.nodeId, it) }
+            rig.manager.readSync.onRead(
+                listOf(
+                    ReadMarkEntity(messageId = read[0], authorId = rig.bob.nodeId, conversationId = rig.bob.nodeId, readAt = rig.clockNow),
+                ),
+            )
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+
+            assertEquals("no compact offer of its own", offersWithout, rig.loraOffers.size - offersWithout)
+            assertEquals(
+                "and no byte",
+                withoutBytes,
+                rig.loraOffers
+                    .last()
+                    .plaintext.size,
+            )
+            val compact = checkNotNull(MessageContentV2.decode(rig.loraOffers.last().plaintext))
+            assertEquals(read, compact.acks)
+            assertEquals(setOf(read[0]), ReadMask.readIn(compact.acks!!, compact.rm))
+            assertEquals(1L, rig.metrics.receipts().readsLoraOffered)
+            // The signed tick carried the bit too, and was originated: the read is told, nothing owed rides again.
+            assertEquals(1L, rig.metrics.receipts().readsSealed)
+            assertTrue(
+                rig.manager.readSync
+                    .takeRiders(rig.bob.nodeId, Protocol.LOCAL_CAPABILITIES, 12, emptyList())
+                    .isEmpty(),
+            )
+        }
+
+    /**
+     * A declined flush (no session the author holds yet) still airs its compact ✓✓ with the read bit — the mask is the
+     * offer's own — and tells nothing: no signed frame carried it, so the read stays owed for the signed path.
+     */
+    @Test
+    fun aDeclinedFlushsCompactTickCarriesTheReadBitAndTellsNothing() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            val held = List(2) { FrameId.new() }
+            held.forEach { rig.manager.dmAcks.hold(rig.bob.nodeId, it) }
+            rig.manager.readSync.onRead(
+                listOf(
+                    ReadMarkEntity(messageId = held[1], authorId = rig.bob.nodeId, conversationId = rig.bob.nodeId, readAt = rig.clockNow),
+                ),
+            )
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+
+            assertTrue("declined: no signed tick", rig.sentChatFrames().isEmpty())
+            val compact = checkNotNull(MessageContentV2.decode(rig.loraOffers.single().plaintext))
+            assertEquals(setOf(held[1]), ReadMask.readIn(compact.acks!!, compact.rm))
+            assertEquals("a compact bit never tells", 0L, rig.metrics.receipts().readsSealed)
+            assertEquals(listOf(held[1]), rig.manager.readSync.takeRiders(rig.bob.nodeId, Protocol.LOCAL_CAPABILITIES, 12, emptyList()))
+        }
+
+    /**
+     * `readsLoraOffered` counts a compact ✓✓ with a read in it, never a mask alone: past four ids every mask carries its
+     * width bit, read or not (ADR 2026-11.z6jw).
+     */
+    @Test
+    fun aWideCompactTickCountsAnOfferOnlyWhenSomethingInItWasRead() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinWithCaps(rig.bob, RatchetCrypto.generateKeyPair().pub, Protocol.LOCAL_CAPABILITIES or Protocol.CAP_LORA_DIRECT)
+            rig.answered(rig.bob)
+
+            List(6) { FrameId.new() }.forEach { rig.manager.dmAcks.hold(rig.bob.nodeId, it) }
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+            val unread = checkNotNull(MessageContentV2.decode(rig.loraOffers.last().plaintext))
+            assertTrue("a six-id mask is never 0", unread.rm != 0L)
+            assertEquals("nothing read, nothing counted", 0L, rig.metrics.receipts().readsLoraOffered)
+
+            val read = List(6) { FrameId.new() }
+            read.forEach { rig.manager.dmAcks.hold(rig.bob.nodeId, it) }
+            rig.manager.readSync.onRead(
+                listOf(
+                    ReadMarkEntity(messageId = read[4], authorId = rig.bob.nodeId, conversationId = rig.bob.nodeId, readAt = rig.clockNow),
+                ),
+            )
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+            assertEquals("one read, one counted offer", 1L, rig.metrics.receipts().readsLoraOffered)
+        }
+
+    /** An author whose pinned profile lacks the bit gets a compact ✓✓ byte-identical to one built before read receipts. */
+    @Test
+    fun anIncapableAuthorsCompactTickCarriesNoMask() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            val caps = (Protocol.LOCAL_CAPABILITIES or Protocol.CAP_LORA_DIRECT) and Protocol.CAP_READ_RECEIPTS.inv()
+            rig.pinWithCaps(rig.bob, RatchetCrypto.generateKeyPair().pub, caps)
+            rig.answered(rig.bob)
+            val held = FrameId.new()
+            rig.manager.dmAcks.hold(rig.bob.nodeId, held)
+            rig.manager.readSync.onRead(
+                listOf(ReadMarkEntity(messageId = held, authorId = rig.bob.nodeId, conversationId = rig.bob.nodeId, readAt = rig.clockNow)),
+            )
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+
+            val compact = rig.loraOffers.single().plaintext
+            assertArrayEquals(
+                MessageContentV2.encodeOrNull(MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = held)),
+                compact,
             )
         }
 

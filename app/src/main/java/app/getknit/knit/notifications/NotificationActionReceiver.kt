@@ -11,6 +11,7 @@ import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.group.toGroupInfo
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.isKoinStarted
 import app.getknit.knit.identity.Identity
@@ -125,13 +126,45 @@ class NotificationActionReceiver :
 
     private suspend fun handleMarkRead(intent: Intent) {
         val conv = intent.getStringExtra(MessageNotifier.EXTRA_CONV) ?: return
+        // The old watermark, read before it moves: what was unread under it is what this tap read.
+        val since = settings.lastReadAt(conv).first()
         // Match ChatViewModel's foreground watermark: stamp the newest message's sentAt as last-read.
         val newest = messages.newestSentAt(conv)
         settings.setLastReadAt(conv, newest ?: System.currentTimeMillis())
         notifier.clearConversation(conv)
+        // Last, and on its own: a failure here must never cost the person the tap's own effect above.
+        runCatching { reportRead(conv, since) }.onFailure { Log.w(TAG, "mark read: read report failed", it) }
+    }
+
+    /**
+     * "Mark read" is the person saying they read it, so the messages it clears count as read (ADR 2026-11.z6jw): the
+     * unread ones under the old watermark [since]. The unread badge's own rule (`MessageDao.countUnreadIn`) over the
+     * newest page: an ordinary message newer than the watermark that someone else wrote, from nobody blocked. The mesh
+     * decides whom it tells — a DM or a group only, with the setting on, toward an author whose build can read it.
+     */
+    private suspend fun reportRead(
+        conv: String,
+        since: Long,
+    ) {
+        val kind = Conversations.kindFor(conv)
+        if (kind != ConversationKind.DM && kind != ConversationKind.GROUP) return
+        val me = identity.nodeId()
+        val blocked = settings.blockedNodeIds.first()
+        val unread =
+            messages
+                .page(conv, beforeSentAt = null, beforeId = null, limit = MARK_READ_MAX)
+                .filter { m ->
+                    m.sentAt > since && m.kind == MessageEntity.KIND_NORMAL && !(m.senderId == me && m.originNode == null) &&
+                        m.senderId !in blocked
+                }.map { it.id }
+        if (unread.isNotEmpty()) mesh.onMessagesRead(unread)
     }
 
     private companion object {
         const val TAG = "KnitNotifAction"
+
+        // The most messages one Mark read reports as read: a notification shows a handful, and a thread unread past this
+        // was not read from the shade.
+        const val MARK_READ_MAX = 64
     }
 }

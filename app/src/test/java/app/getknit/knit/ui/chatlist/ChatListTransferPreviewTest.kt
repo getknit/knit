@@ -82,6 +82,8 @@ class ChatListTransferPreviewTest {
         every { groups.observeGroups() } returns MutableStateFlow(emptyList<GroupEntity>())
         every { peers.observeDirectory() } returns peersFlow.map { directoryOf(it) }
         every { settings.lastReadAll } returns MutableStateFlow(emptyMap())
+        // An arm of the snapshot combine beside the watermarks: a relaxed mock's silent flow would stall every row.
+        every { settings.readReceiptsEnabled } returns MutableStateFlow(true)
         every { settings.acceptedConversations } returns MutableStateFlow(emptySet())
         every { settings.contentFilteringEnabled } returns MutableStateFlow(true)
         every { settings.translationEnabled } returns MutableStateFlow(true)

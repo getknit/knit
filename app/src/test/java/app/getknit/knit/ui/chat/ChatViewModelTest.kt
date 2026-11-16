@@ -192,6 +192,8 @@ class ChatViewModelTest {
     private val onlineFlow = MutableStateFlow(true)
     private val linkPreviewsEnabledFlow = MutableStateFlow(false)
     private val typingIndicatorsFlow = MutableStateFlow(true)
+    private val readCountsFlow = MutableStateFlow(emptyMap<String, Int>())
+    private val readReceiptsFlow = MutableStateFlow(true)
     private val publicConsentFlow = MutableStateFlow(false)
     private val locationConsentFlow = MutableStateFlow(false)
     private val transferConsentFlow = MutableStateFlow(false)
@@ -231,6 +233,9 @@ class ChatViewModelTest {
         every { settings.activeSpoolUrls } returns activeSpoolUrlsFlow
         every { settings.relayRoomNoticeDismissed } returns relayRoomNoticeDismissedFlow
         every { receipts.observeDeliveredCounts(any(), any()) } returns deliveredCountsFlow
+        // Read counts and the setting ride the same arm (ADR 2026-11.z6jw): silent flows would stall it too.
+        every { receipts.observeReadCounts(any(), any()) } returns readCountsFlow
+        every { settings.readReceiptsEnabled } returns readReceiptsFlow
         // Same trap: the decoded-card map is an arm of the blob-state combine.
         every { linkCards.cards } returns cardsFlow
         every { linkPreviews.online } returns onlineFlow
@@ -629,6 +634,36 @@ class ChatViewModelTest {
             // The window is anchored at the newest end, so "newest loaded" and "newest in the thread" are the
             // same message. If the window ever drifted, every thread the user read would keep an unread badge.
             coVerify { settings.setLastReadAt(Conversations.NEARBY, 1_000L) }
+        }
+
+    /** ADR 2026-11.z6jw: seen rows reach the mesh only in the foreground, only from a DM or a group, once each. */
+    @Test
+    fun seenRowsReachTheMeshOnceOnlyWhileTheChatIsOnScreen() =
+        runTest {
+            stubDm("bob")
+            val vm = vm("bob")
+
+            vm.onRowsSeen(setOf("d1"))
+            advanceUntilIdle()
+            assertTrue("a chat in the background reads nothing", mesh.messagesRead.isEmpty())
+
+            vm.onChatForeground()
+            vm.onRowsSeen(setOf("d1", "d2"))
+            vm.onRowsSeen(setOf("d2", "d3"))
+            advanceUntilIdle()
+            assertEquals(listOf(setOf("d1", "d2"), setOf("d3")), mesh.messagesRead.map { it.toSet() })
+        }
+
+    @Test
+    fun theRoomNeverReportsARead() =
+        runTest {
+            val vm = vm(Conversations.NEARBY)
+            vm.onChatForeground()
+
+            vm.onRowsSeen(setOf("r1"))
+            advanceUntilIdle()
+
+            assertTrue(mesh.messagesRead.isEmpty())
         }
 
     @Test
@@ -1370,6 +1405,73 @@ class ChatViewModelTest {
                     .first { it.id == "g1" }
             assertEquals(0, theirs.deliveredCount)
             assertEquals(0, theirs.recipientTotal)
+        }
+
+    /** ADR 2026-11.z6jw: a group send reads as read only once every other member has; the count rides meanwhile. */
+    @Test
+    fun groupRowsReadOnlyOnceEveryMemberHasRead() =
+        runTest {
+            val vm = vm(GROUP)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            groupFlow.value = group(GROUP, members = listOf("me", "sam", "priya", "theo"))
+            messagesFlow.value =
+                listOf(msg(senderId = "me", body = "mine", id = "g0", sentAt = 100, conversationId = GROUP, received = true))
+            deliveredCountsFlow.value = mapOf("g0" to 3)
+            readCountsFlow.value = mapOf("g0" to 2)
+            advanceUntilIdle()
+
+            val partly =
+                vm.state.value.rows
+                    .first { it.id == "g0" }
+            assertEquals(2, partly.readCount)
+            assertFalse(partly.read)
+
+            readCountsFlow.value = mapOf("g0" to 3)
+            advanceUntilIdle()
+            assertTrue(
+                vm.state.value.rows
+                    .first { it.id == "g0" }
+                    .read,
+            )
+
+            // Reciprocal: with the setting off, nothing reads as read and no count rides.
+            readReceiptsFlow.value = false
+            advanceUntilIdle()
+            val off =
+                vm.state.value.rows
+                    .first { it.id == "g0" }
+            assertFalse(off.read)
+            assertEquals(0, off.readCount)
+        }
+
+    /** A DM of ours reads as read once its peer has read it; their message never does. */
+    @Test
+    fun aDmRowReadsAsReadOnceItsPeerHas() =
+        runTest {
+            stubDm("bob")
+            val vm = vm("bob")
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "me",
+                        recipientId = "bob",
+                        body = "mine",
+                        id = "d0",
+                        sentAt = 100,
+                        conversationId = "bob",
+                        received = true,
+                    ),
+                    msg(senderId = "bob", recipientId = "me", body = "theirs", id = "d1", sentAt = 200, conversationId = "bob"),
+                )
+            readCountsFlow.value = mapOf("d0" to 1, "d1" to 1)
+            advanceUntilIdle()
+
+            val rows =
+                vm.state.value.rows
+                    .associateBy { it.id }
+            assertTrue(rows.getValue("d0").read)
+            assertFalse(rows.getValue("d1").read)
         }
 
     /** Our DM their LoRa radio acked, until its ✓✓ (ADR 040's 2026-10-31 amendment); theirs and a received one never. */

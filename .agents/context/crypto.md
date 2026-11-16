@@ -203,6 +203,17 @@ LoRa plane (2026-09.ggq4).
   and re-sent verbatim on a backoff — re-sealing per retry burns chain keys and starves the receiver's skipped-key
   budget. The sealed profile carries presentation fields only, ordered by the profile version, never `pubKey` or
   `prekey`, and never inserts a peer row.
+- **When touching read receipts on the wire or the seal paths — `MessageContent.rm` / `MessageContentV2` label 20,
+  `ReadMask`, `Protocol.CAP_READ_RECEIPTS`, `ReadSync` / `ReadRiding` / `ReadMarkStore`, `MeshManager.onMessagesRead` /
+  `originateReads` / `spoolReads` / `inlineReadsFor` / `tellInlineReads`, `SealedTick.read` / `.riders`, or
+  `InboundPipeline.applyReceiptIds` / `receiptReads` / `applySealedReceipt`'s `read`:** READ ADR 2026-11.z6jw, then
+  `docs/ENCRYPTED_RECEIPTS_REACTIONS.md` §9. A read rides a `CTL_RECEIPT` or inline acks as a mask over the ids as
+  sent; never a new ctl (the compact and unsigned doors refuse one). Toward a capable author `rm` is always present
+  at a width set by the list's length alone (`ReadMask`); toward any other, absent and byte-identical. "Told" is only a `relay = true` originate or a
+  `pushed` spool push, never a seal, a live-link send, a compact bit or an owed entry; a refusal is never re-sealed.
+  Reads never claim or record in `DmReAckLedger` (8hn6's qualification), and the standalone frame is an answer-only
+  seal that never mints an init. Regression: `ReadMaskTest`, `ReadSyncTest`, `InboundPipelineTest`'s read cases,
+  `MeshManagerTest`'s compact-mask cases, `GoldenVectorTest`, `ReadReceiptLabTest`.
 - **When touching `MessageContent.styles` / `MessageContentV2` label 17, `MessageEntity.sealedContent`'s styles,
   `InboundPipeline.plaintextContent`'s styles or the normalise in `deliverChat`:** READ ADR 2026-10.p95v and
   `docs/WIRE_COMPAT.md`'s formatting precedent. A sealed message's styles come from its plaintext alone, never the

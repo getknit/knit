@@ -99,6 +99,79 @@ class MessageReceiptRepositoryTest : RoomDbTest() {
         }
 
     @Test
+    fun `a read after the delivery stamps the row it already has, never earlier than the delivery`() =
+        runTest {
+            // ADR 2026-11.z6jw: a read rides a delivery receipt, so it lands on the delivered row. Our clock can
+            // step back between the two; the read is still never shown before the delivery it implies.
+            seed("r1")
+            repo.record("r1", acker = "sam", via = DeliveryPlane.Nearby, at = 10L)
+
+            repo.record("r1", acker = "sam", via = DeliveryPlane.Internet, at = 7L, read = true)
+
+            val row = dao.observeForMessage("r1").first().single()
+            assertEquals(10L, row.notedAt)
+            assertEquals(DeliveryPlane.Nearby.code, row.via)
+            assertEquals(10L, row.readAt)
+        }
+
+    @Test
+    fun `a read that lands first records the delivery too, at the same time`() =
+        runTest {
+            seed("r2")
+
+            repo.record("r2", acker = "sam", via = DeliveryPlane.LoRa, at = 20L, read = true)
+
+            assertTrue(received("r2"))
+            val row = dao.observeForMessage("r2").first().single()
+            assertEquals(20L, row.notedAt)
+            assertEquals(20L, row.readAt)
+            assertEquals(DeliveryPlane.LoRa.code, row.via)
+        }
+
+    @Test
+    fun `a re-served read keeps the first read's time, and a later plain receipt never clears it`() =
+        runTest {
+            seed("r3")
+            repo.record("r3", acker = "sam", via = DeliveryPlane.Nearby, at = 10L, read = true)
+
+            repo.record("r3", acker = "sam", via = DeliveryPlane.Nearby, at = 50L, read = true)
+            repo.record("r3", acker = "sam", via = DeliveryPlane.Nearby, at = 60L)
+
+            assertEquals(
+                10L,
+                dao
+                    .observeForMessage("r3")
+                    .first()
+                    .single()
+                    .readAt,
+            )
+        }
+
+    @Test
+    fun `an unattributable read ticks the delivery and records no read`() =
+        runTest {
+            seed("r4")
+
+            repo.record("r4", acker = null, via = DeliveryPlane.Nearby, at = 10L, read = true)
+
+            assertTrue(received("r4"))
+            assertTrue(dao.observeForMessage("r4").first().isEmpty())
+        }
+
+    @Test
+    fun `read counts and readers count only reads from the roster`() =
+        runTest {
+            db.messageDao().upsert(MessageEntity(id = "g1", senderId = "me", conversationId = "g-x", body = "", sentAt = 1L))
+            repo.record("g1", acker = "sam", via = DeliveryPlane.Nearby, at = 10L, read = true)
+            repo.record("g1", acker = "ann", via = DeliveryPlane.Nearby, at = 11L)
+            repo.record("g1", acker = "gone", via = DeliveryPlane.Nearby, at = 12L, read = true)
+
+            assertEquals(mapOf("g1" to 1), repo.observeReadCounts("g-x", listOf("sam", "ann")).first())
+            assertEquals(mapOf("g1" to 2), repo.observeDeliveredCounts("g-x", listOf("sam", "ann")).first())
+            assertEquals(setOf("sam", "gone"), repo.readersOf("g1"))
+        }
+
+    @Test
     fun `deleteOrphans reclaims rows whose message is gone and spares the rest`() =
         runTest {
             // No FK cascade, so a deleted conversation, a group leave, and either retention trim all leave

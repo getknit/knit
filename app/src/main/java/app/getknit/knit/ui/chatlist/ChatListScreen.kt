@@ -97,6 +97,7 @@ import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.ui.chat.DeliveryStatus
 import app.getknit.knit.ui.chat.deliveryIcon
 import app.getknit.knit.ui.chat.deliveryLabel
+import app.getknit.knit.ui.chat.deliveryTint
 import app.getknit.knit.ui.chat.resolve
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.BadgeVisuals
@@ -756,7 +757,8 @@ internal fun ConversationListItem(
                                 imageVector = icon,
                                 // Decorative here: the row folds the spoken label into its own description.
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                // Read off the glyph each child draws, so an outgoing ✓✓ keeps its own colour mid-pop.
+                                tint = deliveryTint(if (icon == KnitIcons.ReadTick) DeliveryStatus.Read else DeliveryStatus.Delivered),
                                 modifier = Modifier.size(14.dp),
                             )
                         }

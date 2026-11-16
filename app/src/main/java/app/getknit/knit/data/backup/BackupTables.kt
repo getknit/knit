@@ -67,6 +67,9 @@ object BackupTables {
             "own_presence_keys",
             "peer_presence_keys",
             "link_owed_resets",
+            // The reads owed to their authors (ADR 2026-11.z6jw): a restore re-roots every session, so a read
+            // owed or told under the old ones would buy only duplicates.
+            "read_marks",
         )
 
     /**

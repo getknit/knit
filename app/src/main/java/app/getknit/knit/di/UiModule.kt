@@ -11,6 +11,7 @@ import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.LocalMessageDelete
+import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.commons.CommonsRepository
@@ -123,6 +124,7 @@ val uiModule =
                 androidContext(),
                 get<CommonsRepository>(),
                 get<ReactionRepository>(),
+                receipts = get<MessageReceiptRepository>(),
             )
         }
         viewModel { ContactsViewModel(get(), get(), get(), get(), get(), get()) }

@@ -55,6 +55,7 @@ import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
 import app.getknit.knit.data.ratchet.GroupRootRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
+import app.getknit.knit.data.receipt.ReadMarkRepository
 import app.getknit.knit.data.relay.RelayInviteApplier
 import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.CallPreferenceStore
@@ -316,6 +317,7 @@ val appModule =
         single { get<KnitDatabase>().groupRatchetDao() }
         single { get<KnitDatabase>().groupRootDao() }
         single { get<KnitDatabase>().messageReceiptDao() }
+        single { get<KnitDatabase>().readMarkDao() }
         single { get<KnitDatabase>().draftDao() }
         single { get<KnitDatabase>().commonsDao() }
         single { get<KnitDatabase>().metPeerDao() }
@@ -379,6 +381,8 @@ val appModule =
         // Who has acked each message — the message-details screen's per-recipient delivery split. Owns the
         // delivery write (tick + acker row in one transaction), so it wraps MessageRepository.
         single { MessageReceiptRepository(get(), get(), get()) }
+        // The reader's durable outbox of read receipts (ADR 2026-11.z6jw); written by the mesh only.
+        single { ReadMarkRepository(get(), get()) }
         // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, groupDao, forwardDao, db,
         // savedFileDao.
         single { BlobRepository(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), changes = get()) }

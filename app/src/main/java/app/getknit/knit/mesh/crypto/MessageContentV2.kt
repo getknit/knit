@@ -104,6 +104,7 @@ internal object MessageContentV2 {
             st = StyleSpans.pack(content.styles),
             lang = content.lang,
             reads = content.reads,
+            rm = content.rm,
         )
 
     private fun replyRefOf(ref: ReplyRef): ReplyRefV2 =
@@ -167,6 +168,7 @@ internal object MessageContentV2 {
                 styles = StyleSpans.unpack(w.st),
                 lang = w.lang,
                 reads = w.reads,
+                rm = w.rm,
             )
         }.getOrNull()?.normalized()
 
@@ -187,7 +189,9 @@ internal object MessageContentV2 {
      * forever; a new style rides inside the bytes. `18` and `19` are the body's declared language and the language its
      * author reads (ADR 2026-10.t2h6's 2026-10-29 amendment), each a `LanguageRegistry` index, the named layouts' `"l"`
      * and `"r"`: absent while implied (English, or the same as `18`), and a CBOR uint forever, so a text or out-of-range
-     * value fails this decode. Never recycle a label.
+     * value fails this decode. `20` is the read mask (`MessageContent.rm`, ADR 2026-11.z6jw) over the receipt's id list as
+     * sent: a CBOR integer whose bits at or past the list's end mean nothing, spelt so its width depends on the list's
+     * length alone (`ReadMask.encode`) — never confuse it with `19`, the language the author reads. Never recycle a label.
      * The nested layouts are append-only too: `ProfileV2`'s label 5 is the open-to-chat flag (defaulted, so
      * elided while off — a profile without it decodes as before), label 6 the bound LoRa board's node
      * number (nullable, elided while unbound) and label 7 that board's signing key (32 raw bytes here, base64
@@ -233,6 +237,8 @@ internal object MessageContentV2 {
         val lang: Int? = null,
         @CborLabel(19)
         val reads: Int? = null,
+        @CborLabel(20)
+        val rm: Long? = null,
     )
 
     /** [VideoInfo] (label 16, ADR 2026-10.hmfe): its own layout, like every nested type here. */

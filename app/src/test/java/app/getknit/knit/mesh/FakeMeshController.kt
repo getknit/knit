@@ -82,6 +82,20 @@ class FakeMeshController : MeshController {
     /** Hashes passed to [downloadAttachment], in order — the bubble's "Tap to download" (ADR 2026-10.js2p). */
     val downloadedAttachments = mutableListOf<String>()
 
+    /** Peers passed to [forgetReadsFor], in order — a contact removal's read-receipt half. */
+    val forgottenReads = mutableListOf<String>()
+
+    override suspend fun forgetReadsFor(nodeId: String) {
+        forgottenReads += nodeId
+    }
+
+    /** Each [onMessagesRead] call's ids, in call order. */
+    val messagesRead = mutableListOf<List<String>>()
+
+    override suspend fun onMessagesRead(messageIds: Collection<String>) {
+        messagesRead += messageIds.toList()
+    }
+
     override suspend fun downloadAttachment(hash: String) {
         downloadedAttachments += hash
     }

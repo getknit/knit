@@ -82,6 +82,8 @@ class ChatListTranslationPreviewTest {
         every { groups.observeGroups() } returns groupsFlow
         every { peers.observeDirectory() } returns peersFlow.map { directoryOf(it) }
         every { settings.lastReadAll } returns MutableStateFlow(emptyMap())
+        // An arm of the snapshot combine beside the watermarks: a relaxed mock's silent flow would stall every row.
+        every { settings.readReceiptsEnabled } returns MutableStateFlow(true)
         every { settings.acceptedConversations } returns acceptedFlow
         every { settings.contentFilteringEnabled } returns filteringFlow
         // A relaxed mock's Flow never emits, and one silent arm stalls the whole combine.

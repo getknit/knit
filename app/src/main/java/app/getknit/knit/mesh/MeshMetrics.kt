@@ -541,6 +541,14 @@ class MeshMetrics {
     private val ridesUnrouted = AtomicLong()
     private val receiptsHeld = AtomicLong()
     private val receiptsSpooled = AtomicLong()
+    private val readsSealed = AtomicLong()
+    private val readsRidden = AtomicLong()
+    private val readsCustodied = AtomicLong()
+    private val readsSpooled = AtomicLong()
+    private val readsLoraOffered = AtomicLong()
+    private val readsReOwed = AtomicLong()
+    private val readsBudgetHeld = AtomicLong()
+    private val readsRecorded = AtomicLong()
     private val reactionsSealed = AtomicLong()
     private val reactionsSealedFallback = AtomicLong()
     private val groupSealedRatchet = AtomicLong()
@@ -1056,6 +1064,56 @@ class MeshMetrics {
      */
     fun onReceiptSpooled() {
         receiptsSpooled.incrementAndGet()
+    }
+
+    /**
+     * Read receipts told: ids whose read bit went out in a frame handed off `relay = true` or pushed into a spool, the
+     * only moment a read mark stops being owed (`ReadSync`). A re-tell under a newer root counts again.
+     */
+    fun onReadsSealed(count: Int) {
+        readsSealed.addAndGet(count.toLong())
+    }
+
+    /** Owed reads that rode a frame sealed toward their author anyway (a receipt, a DM's inline acks, a group tick batch). */
+    fun onReadsRidden(count: Int) {
+        readsRidden.addAndGet(count.toLong())
+    }
+
+    /** A read batch nothing carried, originated on its own into custody (`ReadSync`'s standalone form). */
+    fun onReadsCustodied() {
+        readsCustodied.incrementAndGet()
+    }
+
+    /** A read batch nothing carried, pushed straight into its author's spool scope: no custody row (ADR 2026-09.y5f3). */
+    fun onReadsSpooled() {
+        readsSpooled.incrementAndGet()
+    }
+
+    /**
+     * A compact LoRa ✓✓ offered to the plane with at least one read bit set. Offers, not packets aired: the plane's own
+     * gates decide what goes on the air, and the bit never tells.
+     */
+    fun onReadsLoraOffered() {
+        readsLoraOffered.incrementAndGet()
+    }
+
+    /** Told reads owed again because their author's session root moved (a reset, a restore): what a root change cost. */
+    fun onReadsReOwed(count: Int) {
+        readsReOwed.addAndGet(count.toLong())
+    }
+
+    /** A standalone read batch the per-reader daily budget held back: its reads wait for a ride or the spool. */
+    fun onReadsBudgetHeld() {
+        readsBudgetHeld.incrementAndGet()
+    }
+
+    /**
+     * The author's side: a read of one of our own messages applied from a receipt (an attributable acker, a DM or private
+     * group). Counts applications, a re-served receipt's included, so it rises on every landing — the lab's proof that a
+     * read crossed again — whatever `readAt`'s fill-null-only write keeps.
+     */
+    fun onReadsRecorded() {
+        readsRecorded.incrementAndGet()
     }
 
     /** A reaction sealed as a v2 ctl frame (DM or group form). */
@@ -1957,6 +2015,14 @@ class MeshMetrics {
             receiptsHeld = receiptsHeld.get(),
             receiptsSpooled = receiptsSpooled.get(),
             ticksUnsigned = ticksUnsigned.get(),
+            readsSealed = readsSealed.get(),
+            readsRidden = readsRidden.get(),
+            readsCustodied = readsCustodied.get(),
+            readsSpooled = readsSpooled.get(),
+            readsLoraOffered = readsLoraOffered.get(),
+            readsReOwed = readsReOwed.get(),
+            readsBudgetHeld = readsBudgetHeld.get(),
+            readsRecorded = readsRecorded.get(),
         )
 
     /** The [Snapshot.Groups] counters alone, read now. */
@@ -2272,6 +2338,16 @@ class MeshMetrics {
             val receiptsHeld: Long = 0,
             val receiptsSpooled: Long = 0,
             val ticksUnsigned: Long = 0,
+            // Read receipts (`ReadSync`): ids told, ids that rode, standalone batches custodied or spooled, compact offers
+            // carrying a bit, ids owed again by a root change, batches the daily budget held.
+            val readsSealed: Long = 0,
+            val readsRidden: Long = 0,
+            val readsCustodied: Long = 0,
+            val readsSpooled: Long = 0,
+            val readsLoraOffered: Long = 0,
+            val readsReOwed: Long = 0,
+            val readsBudgetHeld: Long = 0,
+            val readsRecorded: Long = 0,
         )
 
         /** Group messages, the seeds their keys travel in, key requests, and group roots. */

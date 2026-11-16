@@ -104,6 +104,13 @@ unchanged: the receiver's digest moves with every frame it writes, and that rule
 ADR 2026-10.a5yj's 2026-10-29 amendment). Each push is link use, and the link would never idle out. Custody itself, the
 digest's fold and the carry gate are untouched.
 
+**Read receipts add custodied frames, bounded (ADR 2026-11.z6jw).** A read rides any receipt or reply already going
+to its author. Only when nothing rides does `ReadSync` originate one sealed `CTL_RECEIPT` `relay = true` (custodied
+on the 24 h TTL like any DM-form frame, never purging anything). That happens at most once per 45 s window while the
+author is linked, and at 15 min doubling to 8 h while they are absent. It stays within 50 frames per reader per
+rolling day, a quarter of its own per-sender bucket. No custody rule reads the frame differently, which is what
+keeps digests convergent. Its durable outbox is `read_marks` (`.agents/context/storage.md`).
+
 ## Bounds (`ForwardRepository`)
 
 A per-message **TTL** sweep (startup + a 10-min loop + the heartbeat `heal()`; broadcast gets a shorter

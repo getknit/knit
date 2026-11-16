@@ -1258,12 +1258,51 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 34 to 35 keeps every receipt unread and adds the empty read_marks table`() =
+        runTest {
+            // A read was never observed before this version, so every existing receipt row stays unread: inventing a read
+            // is the thing ADR 036's "predates the table" rule forbids for deliveries, and it holds for reads too.
+            helper.createDatabase(34).use { c ->
+                c.execSQL("INSERT INTO message_receipts (messageId, ackerNodeId, notedAt, via) VALUES ('m1','sam',9,1)")
+            }
+            helper.runMigrationsAndValidate(35, listOf(KnitMigrations.MIGRATION_34_35)).use { c ->
+                c.prepare("SELECT notedAt, via, readAt FROM message_receipts WHERE messageId = 'm1' AND ackerNodeId = 'sam'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(9L, s.getLong(0))
+                    assertEquals(1L, s.getLong(1))
+                    assertTrue(s.isNull(2))
+                    assertFalse(s.step())
+                }
+                c.prepare("SELECT COUNT(*) FROM read_marks").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(0L, s.getLong(0))
+                }
+                // The writers' shapes: a read stamped on the receipt row, and an owed read mark later told under a root.
+                c.execSQL("UPDATE message_receipts SET readAt = 12 WHERE messageId = 'm1' AND ackerNodeId = 'sam'")
+                c.execSQL(
+                    "INSERT INTO read_marks (messageId, authorId, conversationId, readAt, toldAt, toldRoot) " +
+                        "VALUES ('m2', 'ann', 'ann', 5, NULL, NULL)",
+                )
+                c.execSQL("UPDATE read_marks SET toldAt = 6, toldRoot = -3 WHERE messageId = 'm2'")
+                c.prepare("SELECT readAt FROM message_receipts WHERE messageId = 'm1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(12L, s.getLong(0))
+                }
+                c.prepare("SELECT toldAt, toldRoot FROM read_marks WHERE messageId = 'm2'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(6L, s.getLong(0))
+                    assertEquals(-3L, s.getLong(1))
+                }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 34
+        const val CURRENT_VERSION = 35
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

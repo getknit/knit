@@ -111,6 +111,8 @@ class ChatListViewModelTest {
         every { groups.observeGroups() } returns groupsFlow
         every { peers.observeDirectory() } returns peersFlow.map { directoryOf(it) }
         every { settings.lastReadAll } returns lastReadFlow
+        // An arm of the snapshot combine beside the watermarks: a relaxed mock's silent flow would stall every row.
+        every { settings.readReceiptsEnabled } returns MutableStateFlow(true)
         every { settings.acceptedConversations } returns acceptedFlow
         // Not optional: a relaxed mock hands back a Flow that never emits, and one silent arm stalls the
         // whole combine — every assertion in this class would then read the loading seed.

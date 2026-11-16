@@ -243,11 +243,25 @@ object Protocol {
      */
     const val CAP_LINK_SEAL = 0x100000L
 
+    /**
+     * Read receipts (ADR 2026-11.z6jw): this build reads a receipt's read mask (`MessageContent.rm`) and records who read our messages. A
+     * send-time input like [CAP_RATCHET], read off the **pinned** profile only: a reader keeps read marks, sets mask bits,
+     * adds read riders and sends a read on its own only toward an author carrying it. The mask is additive (an older
+     * build applies the ids as a plain ✓✓, which a read implies), so the bit exists to spend nothing read-related — a
+     * custodied frame per read burst for an idempotent re-tick — toward an author who cannot use it (an older Android, every
+     * iOS build today), and so that toward one who can every receipt carries a mask, keeping its length constant.
+     *
+     * In [LOCAL_CAPABILITIES] whatever the person's setting says (`SettingsStore.readReceiptsEnabled`), so the profile never
+     * tells anyone it is off. Profile-only: above the 8 bits a BLE advert carries.
+     */
+    const val CAP_READ_RECEIPTS = 0x200000L
+
     /** This build's advertised capability bitfield. */
     const val LOCAL_CAPABILITIES: Long =
         CAP_E2E or CAP_GROUPS or CAP_REACTIONS or CAP_STORE_FORWARD or CAP_RATCHET or CAP_FAST_COMPACT or
             CAP_INLINE_ACK or CAP_FRAME_TRANSCODE or CAP_CRYPTO_V3 or CAP_FILES or CAP_LINK_PREVIEW or
-            CAP_DIRECT_TRANSFER or CAP_BLOB_HAVE or CAP_LINK_PROOF or CAP_BLIND_ADVERT or CAP_LINK_SEAL
+            CAP_DIRECT_TRANSFER or CAP_BLOB_HAVE or CAP_LINK_PROOF or CAP_BLIND_ADVERT or CAP_LINK_SEAL or
+            CAP_READ_RECEIPTS
 
     /** The bytes of a link HELLO's nonce ([hello]): 16, written as 32 lowercase hex digits after an `n`. */
     const val HELLO_NONCE_BYTES = 16

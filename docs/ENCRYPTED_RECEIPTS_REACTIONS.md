@@ -258,3 +258,57 @@ receipt and reaction are untouched.
 | `Protocol.CAP_CRYPTO_V3` | `0x100` | the receiver opens crypto scheme v3 and accepts the unsigned live-link tick (ADR 059; profile-only, above the BLE advert's 8 bits) |
 | pending / escalated ledgers | ≤500 ids / ≤1000 ids, 24 h | in-memory, evict-oldest; loss = one benign duplicate |
 | ack tombstone (cleartext era) | 24 h | unchanged `ForwardSync` |
+| `MessageContent.rm` / compact label 20 | `Long?` | read bitmask over a receipt's acked ids (§9); absent toward an incapable author |
+| `Protocol.CAP_READ_RECEIPTS` | `0x200000` | the receiver reads `rm`; always advertised, never the setting (§9) |
+| `ReadSync.LINKED_DEADLINE_MS` | 45 s | how long an owed read waits for a ride toward a linked author before its own frame |
+| `ReadSync.ABSENT_BASE_MS` / `ABSENT_CAP_MS` | 15 min / 8 h | an absent author's deadline, doubling per standalone frame, reset by a ride or a link |
+| `ReadSync.DAILY_BUDGET` | 50 per rolling 24 h | standalone custodied read frames per reader (`DEFAULT_MAX_PER_SENDER / 4`) |
+| `read_marks` owed / told TTL | 24 h / 48 h | the reader's durable outbox; told marks kept so a later receipt can carry the bit again |
+
+## 9. Read receipts (ADR 2026-11.z6jw)
+
+A read is a delivery receipt that also says "and read". It rides the same sealed `CTL_RECEIPT` and the same inline
+acks, as one additive field, so it costs no frame where a ✓✓ is going anyway and no LoRa packet ever.
+
+**Wire.** `MessageContent.rm: Long?` (named `"rm"`, compact label 20). Bit i set means the sender has read id i of the
+frame's list as sent: `listOfNotNull(ack) + acks` on a `CTL_RECEIPT`, `acks` alone on a plain DM (which never sets
+`ack`). Bits at or past the list size are ignored, so the sender spells the mask at a width that depends on the list's
+length `n` alone (`ReadMask.encode`): for `n ≤ 4` the shorter of `m` and `m or (-1 shl n)`, every value one CBOR byte;
+for `5 ≤ n ≤ 62` `m or (1 shl n)`, the first bit past the list set, so the value lies in `[2^n, 2^(n+1))` (2 B for
+5–7 ids, 3 B for 8–15, 5 B for 16–31, 9 B for 32–62); for 63 or 64 ids `m` as it is, the one residual. A frame with any read bit holds at most 64 ids. Toward an author whose pinned profile carries
+`Protocol.CAP_READ_RECEIPTS` and `CAP_RATCHET`, every `CTL_RECEIPT` and every plain DM with inline acks carries `rm`,
+at that fixed width, nothing read or the setting off included, so a frame's length never tells. Toward any other author `rm` is
+absent and the bytes are unchanged. Nothing read-related ever rides a cleartext receipt.
+
+**Receiver.** Every arm that applies acked ids (the signed `CTL_RECEIPT`, the LoRa compact arm, inline acks) reads the
+mask before `distinct` and passes `read` per id to `MessageReceiptRepository.record`, which stamps
+`message_receipts.readAt` (our clock, never earlier than the row's `notedAt`, filled only while null). A read lands
+only on our own message in a DM or a private group, and only for an attributable acker (`ackerFor`); delivery is
+applied exactly as before. An old build skips the field and applies the ids as a ✓✓.
+
+**Reader.** The UI reports ids the person saw (`MeshController.onMessagesRead`): rows half on screen for 600 ms in a
+foreground chat, or what Mark read clears. The mesh keeps an id only while the setting is on, for someone else's row
+in a DM or a private group whose author reads `rm`, and writes it to the durable `read_marks` outbox (owed until
+told). `ReadSync` then:
+
+- sets bits for free on every receipt and inline-ack reply sealed toward that author (any held mark, told or not);
+- adds owed ids as riders on the signed, `relay = true` copies and on the y5f3 spool push, never on a compact copy and
+  never on a live-link `relay = false` tick;
+- otherwise, at the author's deadline (45 s while linked, 15 min doubling to 8 h while absent), pushes one frame into
+  the author's spool scope if a spool covers them, else originates one sealed, answer-only `CTL_RECEIPT`
+  `relay = true`, custodied on the 24 h TTL, within a budget of 50 such frames a day per reader;
+- marks a read **told** only after a `relay = true` frame carrying it is originated, or the spool push returns
+  `pushed`. A seal, a live-link send, a compact LoRa bit, an owed entry, a decline and every cleartext fallback leave
+  it owed. A refusal is never re-sealed;
+- owes again, on a root change toward the author, the reads told under another root in the last 24 h;
+- never claims or records a read in `DmReAckLedger`, `AckSync`'s ledgers or `DmAckCoalescer` (§5's ledgers key on the
+  message id alone and would swallow it).
+
+**LoRa.** `ReadSync` never offers anything to the compact door. The coalesced ✓✓ (`offerLoraTicks`, each chunk masked
+over its own list) and a reply's compact copy carry bits for ids already read: at most 4 bytes on a 9-id tick that
+has 10 to spare, so the packet count is unchanged. The inline acks keep their 23-byte reservation, and no byte is
+added to it. A compact bit is best effort and never tells. Groups never reach LoRa.
+
+**Setting.** Settings › Chats › Read receipts, on by default, reciprocal: off drops every owed read, zeroes every
+mask, and hides every read in the UI while incoming reads are still recorded. On sends nothing retroactively.
+

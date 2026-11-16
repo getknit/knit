@@ -127,6 +127,7 @@ internal class ChatListAssembler(
                 // A DM head their LoRa radio acked reads "reached their LoRa radio" until its receipt (the shared fold).
                 lastStatus = mineLast?.let { DeliveryStatus.of(it, s.inputs.radioReached[it.id]) },
                 lastDeliveredVia = mineLast?.receivedPlane ?: DeliveryPlane.Unknown,
+                lastMineId = mineLast?.id,
                 discriminator = thread.discriminator,
                 isBridged = thread.kind == ConversationKind.MESHTASTIC,
             )

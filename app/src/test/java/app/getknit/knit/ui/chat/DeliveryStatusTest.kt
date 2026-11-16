@@ -78,6 +78,27 @@ class DeliveryStatusTest {
     }
 
     @Test
+    fun `a read outranks the delivery, and a group read by some says both counts`() {
+        // ADR 2026-11.z6jw: the read is a delivery too, whatever the tick column says.
+        assertEquals(DeliveryStatus.Read, DeliveryStatus.ofTick(received = false, radioReached = false, read = true))
+        assertEquals(DeliveryStatus.Delivered, DeliveryStatus.ofTick(received = true, radioReached = false, read = false))
+        assertEquals(DeliveryText(R.string.chat_status_read), deliveryLabel(DeliveryStatus.Read, DeliveryPlane.Internet, mine = true))
+        assertEquals(
+            DeliveryText(R.string.chat_status_delivered_read_count, listOf(3, 4, 2)),
+            deliveryLabel(DeliveryStatus.Delivered, DeliveryPlane.Nearby, mine = true, delivered = 3, total = 4, read = 2),
+        )
+        // Nobody has read it yet (or the setting is off, which zeroes the count): the delivery wording, unchanged.
+        assertEquals(
+            DeliveryText(R.string.chat_status_delivered_count, listOf(3, 4)),
+            deliveryLabel(DeliveryStatus.Delivered, DeliveryPlane.Nearby, mine = true, delivered = 3, total = 4, read = 0),
+        )
+        // The read tick keeps the plane glyph ahead of it, as the ✓✓ does, and wears its own shape.
+        assertEquals(tickGlyph(DeliveryStatus.Delivered, DeliveryPlane.LoRa), tickGlyph(DeliveryStatus.Read, DeliveryPlane.LoRa))
+        assertEquals("chat_tick_lora", tickGlyphTag(DeliveryStatus.Read, DeliveryPlane.LoRa))
+        assertEquals(app.getknit.knit.ui.icons.KnitIcons.ReadTick, deliveryIcon(DeliveryStatus.Read))
+    }
+
+    @Test
     fun `callers with no roster to hand get exactly the old wording`() {
         // The chat list, every DM, every broadcast message — omitting the counts must change nothing.
         assertEquals(

@@ -85,6 +85,7 @@ import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.RatchetPeerState
+import app.getknit.knit.mesh.ReadSync
 import app.getknit.knit.mesh.SPOOL_COVER_MS
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
@@ -1269,6 +1270,15 @@ data class LabLimits(
      */
     val dmAckHoldMs: Long = DmAckCoalescer.HOLD_MS,
     /**
+     * Read receipts' deadlines (ADR 2026-11.z6jw): an owed read toward a linked author, and toward an absent one before it
+     * doubles (`ReadSync`). The field values by default; `ReadReceiptLabTest` lengthens both so only its own clock jump
+     * ends them, never a slow run's real-time wake.
+     */
+    val readLinkedDeadlineMs: Long = ReadSync.LINKED_DEADLINE_MS,
+    val readAbsentBaseMs: Long = ReadSync.ABSENT_BASE_MS,
+    /** Read receipts' daily budget of standalone custodied frames (`ReadSync.DAILY_BUDGET` by default). */
+    val readBudget: Int = ReadSync.DAILY_BUDGET,
+    /**
      * How often the board's linger sweep re-reads its heard set (`LoraMeshTransport.LINGER_SWEEP_MS`, a minute in the
      * field). A scenario that moves the calendar past `REACHABLE_LINGER_MS` shortens it, so the boards forget each
      * other inside an await — the jump moves the decision, never the `delay` that asks it.
@@ -2099,6 +2109,9 @@ class LabNode internal constructor(
                 tickDebounceMs = MeshLab.TICK_DEBOUNCE_MS,
                 rideHoldMs = limits.rideHoldMs,
                 dmAckHoldMs = limits.dmAckHoldMs,
+                readLinkedDeadlineMs = limits.readLinkedDeadlineMs,
+                readAbsentBaseMs = limits.readAbsentBaseMs,
+                readBudget = limits.readBudget,
                 spoolTickMs = limits.spoolTickMs,
                 spoolAttachmentRetryMs = limits.spoolAttachmentRetryMs,
                 firstAskGraceMs = limits.firstAskGraceMs,

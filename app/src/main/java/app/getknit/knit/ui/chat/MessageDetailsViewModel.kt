@@ -73,6 +73,9 @@ data class RecipientRow(
     // The plane their receipt crossed ([MessageReceiptEntity.via]): the per-member answer a group's one tick cannot
     // give, so a member a contact's direct link reached shows it (ADR 2026-10.a5yj). Unknown while waiting.
     val plane: DeliveryPlane = DeliveryPlane.Unknown,
+    // Our clock when their read receipt reached us ([MessageReceiptEntity.readAt], ADR 2026-11.z6jw); null while
+    // unread, and always null while the read-receipts setting is off.
+    val readAt: Long? = null,
 )
 
 /** One selectable emoji on the details screen's filter row — the chip's emoji and how many left it. */
@@ -114,6 +117,9 @@ data class MessageDetailsUiState(
     // Our clock when a DM we sent was acked (`message_receipts.notedAt`) — null until their receipt lands,
     // and never set for a group or room post, whose "who has it" question the roster below answers instead.
     val deliveredAt: Long? = null,
+    // Our clock when a DM we sent was read (`message_receipts.readAt`, ADR 2026-11.z6jw) — null until their read
+    // lands, while the read-receipts setting is off, and for a group or room post (the roster below answers those).
+    val readAt: Long? = null,
     val delivery: DeliveryStatus = DeliveryStatus.Sent,
     // Our clock when their LoRa radio acked a DM we sent, while [delivery] is [DeliveryStatus.RadioReached] — null for
     // an ack that came late (replayed from our board's queue, its time unknown) and in every other state.
@@ -123,6 +129,9 @@ data class MessageDetailsUiState(
     val filters: List<ReactionFilter> = emptyList(),
     // Whether to render the per-recipient delivery split at all — see [MessageDetailsViewModel].
     val showRecipients: Boolean = false,
+    // The members who have read a group send of ours, in the order their reads reached us — above [deliveredTo], which
+    // then lists those who have it and have not read it. Empty while the read-receipts setting is off.
+    val readBy: List<RecipientRow> = emptyList(),
     val deliveredTo: List<RecipientRow> = emptyList(),
     val waitingOn: List<RecipientRow> = emptyList(),
     // The group roster excluding ourselves, i.e. the "of N" denominator. 0 in the broadcast room, which
@@ -155,7 +164,11 @@ data class MessageDetailsUiState(
  * - **Broadcast room** — an open "received by" list with no denominator: the room has no roster, so
  *   there is nobody to be waiting on. Hidden until at least one ack lands.
  * - **DM** — never: the single ✓✓ already names the only recipient there is. The screen still reads that
- *   recipient's receipt for its `notedAt`, so a DM says *when* it was delivered without listing *who* to.
+ *   recipient's receipt for its `notedAt`, so a DM says *when* it was delivered without listing *who* to — and for its
+ *   `readAt`, so it says when it was read.
+ *
+ * Reads (ADR 2026-11.z6jw) follow the setting, reciprocally: while it is off nothing here says read. A group
+ * send every current member has read is [DeliveryStatus.Read]; its readers head the split, in the order they read.
  *   Before that receipt, a DM whose compact LoRa copy their board acked says so ([radioReached], ADR 040's 2026-10-31
  *   amendment): their radio has it, with the time when the ack came on time, and their phone has not confirmed.
  */
@@ -276,9 +289,10 @@ class MessageDetailsViewModel(
             // device holds a handful of groups, so the whole table is cheaper than re-subscribing per row.
             groups.observeGroups(),
             radioReached,
-        ) { base, acks, groupList, reached ->
+            settings.readReceiptsEnabled,
+        ) { base, acks, groupList, reached, readsShown ->
             val message = base.row ?: return@combine base.state
-            withRecipients(base, message, acks, groupList.firstOrNull { it.groupId == message.conversationId })
+            withRecipients(base, message, acks, groupList.firstOrNull { it.groupId == message.conversationId }, readsShown)
                 .withRadioReached(message, reached[messageId])
         }.stateIn(
             viewModelScope,
@@ -295,8 +309,11 @@ class MessageDetailsViewModel(
         message: MessageEntity,
         acks: List<MessageReceiptEntity>,
         group: GroupEntity?,
+        readsShown: Boolean,
     ): MessageDetailsUiState {
         val ackedAt = acks.associate { it.ackerNodeId to it.notedAt }
+        // What this screen may say was read: nothing at all while the setting is off.
+        val reads = if (readsShown) acks.filter { it.readAt != null } else emptyList()
         return when {
             !base.state.mine -> {
                 base.state
@@ -310,10 +327,16 @@ class MessageDetailsViewModel(
                 if (acks.isEmpty() && message.received) {
                     base.state
                 } else {
+                    val readers = reads.filter { it.ackerNodeId in roster }.sortedBy { it.readAt }
+                    val readIds = readers.mapTo(HashSet()) { it.ackerNodeId }
+                    val allRead = roster.isNotEmpty() && roster.all { it in readIds }
                     base.state.copy(
                         showRecipients = true,
+                        delivery = if (allRead) DeliveryStatus.Read else base.state.delivery,
+                        readBy = readers.map { ackRow(base, it, readsShown) },
                         // Ordered by the DAO's `notedAt ASC`, so the list grows downward as receipts land.
-                        deliveredTo = acks.filter { it.ackerNodeId in roster }.map { ackRow(base, it) },
+                        deliveredTo =
+                            acks.filter { it.ackerNodeId in roster && it.ackerNodeId !in readIds }.map { ackRow(base, it, readsShown) },
                         waitingOn = roster.filterNot { it in ackedAt }.map { row(base, it, null) },
                         recipientTotal = roster.size,
                     )
@@ -325,7 +348,7 @@ class MessageDetailsViewModel(
             message.conversationId == Conversations.NEARBY && acks.isNotEmpty() -> {
                 base.state.copy(
                     showRecipients = true,
-                    deliveredTo = acks.map { ackRow(base, it) },
+                    deliveredTo = acks.map { ackRow(base, it, readsShown = false) },
                 )
             }
 
@@ -333,7 +356,13 @@ class MessageDetailsViewModel(
             // receipt that flipped that tick recorded *when* it reached us, and that is worth a line —
             // matched on the addressed recipient so an orphan row can never supply the stamp.
             Conversations.kindFor(message.conversationId) == ConversationKind.DM -> {
-                base.state.copy(deliveredAt = acks.firstOrNull { it.ackerNodeId == message.recipientId }?.notedAt)
+                val theirs = acks.firstOrNull { it.ackerNodeId == message.recipientId }
+                val readAt = theirs?.readAt?.takeIf { readsShown }
+                base.state.copy(
+                    deliveredAt = theirs?.notedAt,
+                    readAt = readAt,
+                    delivery = if (readAt != null) DeliveryStatus.Read else base.state.delivery,
+                )
             }
 
             else -> {
@@ -353,11 +382,13 @@ class MessageDetailsViewModel(
         return copy(delivery = status, radioReachedAt = reach?.takeUnless { it.late }?.atMs)
     }
 
-    /** A member whose receipt is in: when it reached us, and the plane it crossed. */
+    /** A member whose receipt is in: when it reached us, the plane it crossed, and when their read did, if shown. */
     private fun ackRow(
         base: Base,
         ack: MessageReceiptEntity,
-    ): RecipientRow = row(base, ack.ackerNodeId, ack.notedAt, DeliveryPlane.fromCode(ack.via))
+        readsShown: Boolean,
+    ): RecipientRow =
+        row(base, ack.ackerNodeId, ack.notedAt, DeliveryPlane.fromCode(ack.via)).copy(readAt = ack.readAt?.takeIf { readsShown })
 
     private fun row(
         base: Base,

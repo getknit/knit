@@ -71,6 +71,7 @@ class ContactRemoverTest {
             coVerifyOrder {
                 settings.accept("g-ridge")
                 mesh.cancelIntro(RIVER)
+                mesh.forgetReadsFor(RIVER)
                 notifier.forgetConversation(RIVER)
                 messages.deleteByConversation(RIVER)
                 mesh.dropScopeAnchor(RIVER)
@@ -104,6 +105,8 @@ class ContactRemoverTest {
             coVerify { peers.setVerified(RIVER, false) }
             confirmVerified(peers)
             coVerify { mesh.cancelIntro(RIVER) }
+            // The reads still owed to them are dropped (ADR 2026-11.z6jw): local, nothing is sent.
+            coVerify { mesh.forgetReadsFor(RIVER) }
             coVerify { mesh.dropScopeAnchor(RIVER) }
             confirmVerified(mesh)
             // The group rows are read, never written; the block list is read, never written.

@@ -297,6 +297,21 @@ interface MeshController {
     suspend fun sendTyping(conversationId: String)
 
     /**
+     * The person saw [messageIds] (rows on screen in a foreground chat, or the notification's Mark read): the mesh keeps
+     * each one that is someone else's conversational message in a DM or a private group, while the read-receipts setting
+     * is on and the author's pinned profile reads them, and tells its author (ADR 2026-11.z6jw, `ReadSync`). Anything else is
+     * dropped here, so a caller may pass every id it saw. Never throws; durable once it returns.
+     */
+    suspend fun onMessagesRead(messageIds: Collection<String>)
+
+    /**
+     * The contact [nodeId] was removed: every read still owed to them is forgotten, so nothing tells a removed contact
+     * which of their messages were read (ADR 2026-11.z6jw; reads already told stay told). Local only — no frame, no
+     * session, custody or key pin moves. Idempotent; never throws.
+     */
+    suspend fun forgetReadsFor(nodeId: String) {}
+
+    /**
      * The user's "Tap to download" on attachment [hash] (ADR 2026-10.js2p): approves a fetch the Bluetooth download
      * limit held to Wi-Fi Aware, and fetches it now over any plane. Kept on the message rows, so it outlives a restart.
      */
