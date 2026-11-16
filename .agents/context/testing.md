@@ -437,14 +437,24 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   the user-level send returned. A lost frame records no crossing, so that copy goes through once the loss is cleared:
   `ReofferLoopLabTest` cleared `lossy` right after `sendDm` and failed 4 of 4 boards shards (2026-11-01). On a phone the
   two copies are one write on a live link and a harmless retry otherwise. Keep a loss or a hold on until past the
-  assertion it protects; never clear it straight after the send.
+  assertion it protects; never clear it straight after the send. A *relayed* frame has one too: the composite re-fans
+  what it delivers (`InboundPipeline.onDeliver` → `fastFanout`) as a launched flood over every pipe, the author's
+  included. The receiver's crossing memo skips the copy toward the author, unless a calendar jump past the seen window
+  lands first: then it crosses back and re-stamps the author's memo, and the author's own serve is skipped as a repeat
+  (#316, `TimeLabTest`).
 - **A boards sweep's one air joins every island.** `KNIT_LAB_BOARDS=1` puts every board on one shared air, so a
   scenario whose subject is two islands no radio reaches (`DirectLinkLabTest`, `InternetLinkLabTest`,
   `LinkDownloadLimitLabTest`) builds those nodes `board = false`: otherwise a DM rides the air beside the link the
   scenario is about, and a stranger's room post heard over it parks for a key no island can bring (ADR 2026-10.rp3s).
   So does a scenario that parks a carrier's pipe as a node's only way in (`MaliciousForkLabTest`'s `line`, 2026-11-14):
   the author's compact DM rides the air around the hold, so the fork's copy under its id never lands first (3 of 3
-  boards runs), and the carrier's own posts fan out over it in real time, after a jump past the seen window.
+  boards runs), and the carrier's own posts fan out over it in real time, after a jump past the seen window. So does
+  a scenario whose subject is one link's crossing memo across a jump
+  (`TimeLabTest.aFrameThatCrossedALiveLinkCrossesItAgainPastTheSeenWindow`): the relayed re-fan above crosses the
+  lapsed memo, and the post's board copy, queued behind the receiver's own delivery, can arrive past the jump and
+  satisfy the oracle with no link crossing at all. And so does one that re-links across a jump with a frame it must
+  not see again (`TimeLabTest.aDmReceivedWhileBlockedStaysUnseenAfterTheUnblock`): the composite's launched `fastSend`
+  copy of the DM, stalled past the re-link that forgets both memos, crosses the fresh pipe into the lapsed window.
 - **Behind a composite, a drain is counted at the router** (2026-11-01). A node with a board or a direct link plane
   runs its manager on `CompositeMeshTransport`, whose `merge` takes each plane's frames on a channel, so the plane's
   `emit` returns when the frame is queued, not when it is handled. `awaitInboundDrained` then counted a frame
@@ -574,7 +584,8 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   (fire-and-forget: await the effect), `sweepLocalStorage()`, `manager.refreshRelays()`, a re-link or
   `reoffer()` for the digest exchange, or a fresh send. A frame that crossed a live link goes back over it
   past a jump (`TimeLabTest.aFrameThatCrossedALiveLinkCrossesItAgainPastTheSeenWindow`), as long as no node's
-  `LabClock.skew` changed with its links up. Where no poke reaches the timer, the node boots with it shortened
+  `LabClock.skew` changed with its links up and no launched copy of it is still in flight (a composite node's re-fan,
+  #316: build the pair `board = false`). Where no poke reaches the timer, the node boots with it shortened
   instead of the scenario sitting it out in real time: `LabLimits.calendarRounds()` cuts the Internet plane's timed round (60 s) and
   attachment re-look (15 s) to a second, `dmAckHoldMs` the LoRa DM ✓✓ hold (45 s, ADR 054). Both stay at the
   field values by default, so the other spool scenarios still converge on the events, and a lost wake shows as
