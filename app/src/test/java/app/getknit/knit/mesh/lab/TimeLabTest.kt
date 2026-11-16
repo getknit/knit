@@ -74,12 +74,18 @@ class TimeLabTest {
      * evicted it, say) while the link stays up. Inside the window her digest exchange has Bob serve it and his pipe
      * skips the write: her router would drop it as seen. Past the window the same exchange brings it back over the
      * same pipe. While the memo read the wall clock, which a jump does not move, the post never went back.
+     *
+     * Both nodes stay board-less in a boards sweep: the subject is one link. A board puts each node on the composite,
+     * whose re-fan of the delivered post to a radio with no fast plane is a launched flood over every pipe, Bob's too.
+     * Stalled past the jump, that copy crossed the lapsed memo back to Bob and re-stamped his memo, so his serve was
+     * skipped and the post never returned (#316). And the post's board copy, queued behind Alice's delivery until past
+     * the jump, brought it back without the link crossing at all.
      */
     @Test
     fun aFrameThatCrossedALiveLinkCrossesItAgainPastTheSeenWindow() =
         runBlocking {
-            val alice = lab.node("alice").apply { setDisplayName("Alice") }
-            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
             assertTrue(bob.sendRoom("hello"))
@@ -111,13 +117,17 @@ class TimeLabTest {
      * there is nothing for the sender's re-serve to bring — the stores already agree — and the message stays
      * unseen past the seen window too. Before bts9 it trickled in here by accident, off the peer's re-serve.
      *
+     * Board-less in a boards sweep, for the reason the scenario above gives: on the composite, Alice's send also
+     * launches a `fastSend` copy to Bob's pipe. Stalled past the jump and the re-link, which forgets both crossing
+     * memos, it crossed the fresh pipe into a lapsed window and surfaced the DM with the block lifted (#316's sweep).
+     *
      * lab-lint: allow missing-oracle — the DM must stay unseen on Bob, so the messages diverge by design.
      */
     @Test
     fun aDmReceivedWhileBlockedStaysUnseenAfterTheUnblock() =
         runBlocking {
-            val alice = lab.node("alice").apply { setDisplayName("Alice") }
-            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
 
