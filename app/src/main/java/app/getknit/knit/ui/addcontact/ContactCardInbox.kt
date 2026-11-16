@@ -34,7 +34,9 @@ class ContactCardInbox {
 /**
  * The contact link an incoming intent carries, or null. A `VIEW` of one of the card link forms carries it
  * as its data; a `SEND` of plain text carries it when the shared text is (or contains) a card — that is the
- * Android-idiomatic route on 12+, where an unverified https link opens in the browser rather than the app.
+ * Android-idiomatic route on 12+, where an unverified https link opens in the browser rather than the app. A
+ * bare run shared as text must decode as a card ([ContactCard.isSharedCard]), or a long key or digest would
+ * open Add contact instead of the chat picker.
  */
 fun contactLinkFrom(
     action: String?,
@@ -43,6 +45,6 @@ fun contactLinkFrom(
 ): String? =
     when (action) {
         "android.intent.action.VIEW" -> dataString?.takeIf { ContactCard.looksLikeCard(it) }
-        "android.intent.action.SEND" -> sharedText?.takeIf { ContactCard.looksLikeCard(it) }
+        "android.intent.action.SEND" -> sharedText?.takeIf { ContactCard.isSharedCard(it) }
         else -> null
     }
