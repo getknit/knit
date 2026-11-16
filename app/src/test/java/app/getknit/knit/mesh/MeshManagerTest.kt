@@ -1963,6 +1963,36 @@ class MeshManagerTest {
         }
 
     /**
+     * Measurement only: each signed DM ✓✓ a flush seals counts under its path, the coalescer's or the hold's, and an id
+     * the ledger already held counts the branch that let it through; a first one counts none.
+     */
+    @Test
+    fun aFlushCountsItsSignedTickByPathAndAReSealByCause() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val id = FrameId.new()
+            rig.coalesce(id)
+            advanceUntilIdle()
+            assertEquals(mapOf(DmReceiptPath.COALESCER_FLUSH to 1L), rig.metrics.receipts().receiptsDmSealedBy)
+            assertEquals(emptyMap<DmReSealCause, Long>(), rig.metrics.receipts().receiptsReSealedBy)
+
+            rig.clockNow += DmReAckLedger.FLOOR_MS
+            rig.manager.holdDeclinedTicks(rig.bob.nodeId, listOf(id))
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+
+            assertEquals(2, rig.sentChatFrames().size)
+            assertEquals(
+                mapOf(DmReceiptPath.COALESCER_FLUSH to 1L, DmReceiptPath.HELD_FLUSH to 1L),
+                rig.metrics.receipts().receiptsDmSealedBy,
+            )
+            assertEquals(mapOf(DmReSealCause.FLOOR_ELAPSED to 1L), rig.metrics.receipts().receiptsReSealedBy)
+        }
+
+    /**
      * The hold's own read (#300): an id answered while the set was detached from [MeshManager.releaseHeldTicks]' reach is
      * dropped, not sealed. Here it is held after its answer, which is the state that race leaves.
      */
@@ -6648,6 +6678,41 @@ class MeshManagerTest {
             rig.status.emit("out walking")
             rig.await(1) { rig.floodedProfiles().size }
             assertEquals("out walking", WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().single().payload)?.status)
+        }
+
+    /**
+     * Why the profile watcher republished, counted (measurement only, the custody-pressure sweep): a settings write that
+     * changes nothing republishes once our own custody no longer holds the profile frame for the current stamp, as its
+     * quota evicts it under load, and an edit counts as a change of presentation.
+     */
+    @Test
+    fun aSettingsWriteWithOurProfileGoneFromCustodyRepublishesAndCountsWhy() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val publishedAt = MutableStateFlow(0L)
+            rig.stubProfileState(publishedAt)
+
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size } // the startup custody seed
+            rig.awaitProfileWatcher()
+            // The whole seeding pass, not just its first row: one still running would write the row back after the remove.
+            rig.await(1) { if (rig.manager.profileSeedDone) 1 else 0 }
+            assertEquals(emptyMap<ProfileRepublishCause, Long>(), rig.metrics.seals().profileRepublishedBy)
+
+            // As custody's quota would evict it: the frame for the current stamp is gone from our own store.
+            rig.custodiedProfiles().forEach { rig.forwardStore.remove(it.id) }
+            rig.clockNow = rig.now + 26_000
+            rig.status.emit("")
+            rig.await(1) { rig.floodedProfiles().size }
+            assertEquals(mapOf(ProfileRepublishCause.NO_CUSTODY_ROW to 1L), rig.metrics.seals().profileRepublishedBy)
+
+            rig.clockNow = rig.now + 52_000
+            rig.status.emit("out walking")
+            rig.await(2) { rig.floodedProfiles().size }
+            assertEquals(
+                mapOf(ProfileRepublishCause.NO_CUSTODY_ROW to 1L, ProfileRepublishCause.PRESENTATION_CHANGED to 1L),
+                rig.metrics.seals().profileRepublishedBy,
+            )
         }
 
     /**

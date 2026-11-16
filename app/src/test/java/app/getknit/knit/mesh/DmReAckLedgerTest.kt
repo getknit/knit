@@ -200,6 +200,33 @@ class DmReAckLedgerTest {
         assertEquals("rd", ledger.heldReceipt(A, "d", 7L, T + 5))
     }
 
+    /**
+     * [DmReAckLedger.read] names the branch [DmReAckLedger.heldReceipt] takes, and only names it: held exactly when a
+     * receipt comes back, and each re-seal under the cause the metrics count (the custody-pressure sweep's question).
+     */
+    @Test
+    fun aReadNamesEachBranchTheHeldReceiptRuleTakes() {
+        fun reseal(cause: DmReSealCause) = DmReAckLedger.Read.Reseal(cause)
+        val ledger = DmReAckLedger(cap = 2, ttlMs = HOUR)
+        ledger.record(A, "dm", 7L, "r1", T)
+
+        assertEquals(DmReAckLedger.Read.Held("r1"), ledger.read(A, "dm", 7L, T + 1))
+        assertEquals(reseal(DmReSealCause.NO_SESSION), ledger.read(A, "dm", null, T + 1))
+        assertEquals(reseal(DmReSealCause.ROOT_CHANGED), ledger.read(A, "dm", 8L, T + 1))
+        assertEquals(reseal(DmReSealCause.FLOOR_ELAPSED), ledger.read(A, "dm", 7L, T + DmReAckLedger.FLOOR_MS))
+        assertEquals(reseal(DmReSealCause.NO_ENTRY), ledger.read(A, "other", 7L, T + 1))
+        assertEquals("a read moves no entry", 0, ledger.entry(A, "dm")?.step)
+
+        ledger.record(A, "x", 7L, "rx", T + 1)
+        ledger.record(A, "y", 7L, "ry", T + 2)
+        assertEquals("evicted at the cap reads as never acked", reseal(DmReSealCause.NO_ENTRY), ledger.read(A, "dm", 7L, T + 3))
+
+        assertEquals(reseal(DmReSealCause.CLOCK_BACK), ledger.read(A, "x", 7L, T))
+        assertNull("and drops the entry, as heldReceipt does", ledger.entry(A, "x"))
+        assertEquals(reseal(DmReSealCause.AGED_OUT), ledger.read(A, "y", 7L, T + 2 + HOUR))
+        assertNull(ledger.entry(A, "y"))
+    }
+
     private companion object {
         const val T = 1_000_000_000L
         const val MIN = 60_000L

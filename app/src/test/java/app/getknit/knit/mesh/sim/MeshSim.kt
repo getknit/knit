@@ -11,11 +11,14 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.robolectric.shadows.ShadowLog
 import java.lang.management.ManagementFactory
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -43,6 +46,11 @@ data class SimScenario(
     val inboundSlots: Int? = null,
     /** How long after the gather to keep reading custody across the field for parity ([MeshSim.settleLine]); 0 skips it. */
     val settleMs: Long = 0,
+    /**
+     * Whether everyone gathers after the walk, with the settle and the oracle after it. Without it the outing ends at the
+     * walk: a measurement of the walk alone, which checks nothing ([SimReport.checked]).
+     */
+    val gather: Boolean = true,
 )
 
 /**
@@ -56,6 +64,8 @@ class SimReport(
     val unsent: Int,
     val neverArrived: List<String>,
     val converged: Boolean,
+    /** Whether the outing gathered and asked the oracle: a walk-only outing measures and is never red. */
+    val checked: Boolean = true,
 )
 
 /**
@@ -109,33 +119,115 @@ class MeshSim(
 
     // Set as the gather begins, before its links come up: the sampler's line between the walk and the gather.
     @Volatile private var walkOver = false
+
+    // Set once the walk's last step is applied: a sample after it, with no gather, is labelled after the walk.
+    @Volatile private var walkEnded = false
     private val probes = CopyOnWriteArrayList<Probe>()
+
+    // Each workload DM's frame id, read off its sender's row as it is sent: what a custody row is matched against.
+    private val dmIds = ConcurrentHashMap<SimEvent.Dm, String>()
+    private val custodyPressure = CustodyPressure(ForwardRepository.DEFAULT_MAX_ROWS)
+    private val custodyLock = Mutex()
+    private val slowestSampleMs = AtomicLong()
+    private var outingStart = 0L
+
+    @Volatile private var settling = false
+
+    // Every router counter as the walk began: what booting the nodes did, taken off what the report says moved.
+    private var countersAtWalk: Map<String, Long> = emptyMap()
 
     /** Boots, walks, gathers and reports. */
     suspend fun play(): SimReport {
         val lines = mutableListOf("mesh sim: park walk, $scenario")
         lines += boot().also(progress)
-        // Launched once the nodes exist, so it never reads them before boot, and samples nothing of the boot.
+        outingStart = lab.clock.now()
+        // Launched once the nodes exist, so they never read them before boot, and sample nothing of the boot.
         return coroutineScope {
-            val sampler = launch(Dispatchers.Default) { sampleHeld() }
+            val samplers = listOf(launch(Dispatchers.Default) { sampleHeld() }, launch(Dispatchers.Default) { sampleCustody() })
             try {
                 walkAndReport(lines)
             } finally {
-                sampler.cancel()
+                samplers.forEach { it.cancel() }
             }
         }
     }
 
+    private suspend fun sampleCustody() {
+        while (true) {
+            delay(CUSTODY_POLL_MS)
+            readCustody()
+        }
+    }
+
+    private suspend fun readCustody() = custodyLock.withLock { takeCustodySample() }
+
+    // One reading of every store, each row classed by what it carries; only under [custodyLock]. The stores are read
+    // before what has arrived, so a DM delivered while they were read counts as delivered, never as a copy custody lost.
+    private suspend fun takeCustodySample() {
+        val started = System.nanoTime()
+        val now = lab.clock.now()
+        val frames = nodes.map { it.custodyFrames() }
+        val delivered = outcomes(Long.MAX_VALUE, ticks = false).filter { it.latencyMs != null }.mapTo(HashSet()) { it.event }
+        val ids = dmIds.toMap()
+        val pending = ids.entries.associate { (event, id) -> id to (event !in delivered) }
+        val undelivered = ids.filterKeys { it !in delivered }.entries.associate { (event, id) -> id to event.from }
+        val stores = frames.map { rows -> rows.map { heldRow(it, pending) } }
+        val phase =
+            when {
+                settling -> "settle"
+                walkOver -> "gather"
+                walkEnded -> "after the walk"
+                else -> "walk"
+            }
+        // Into the progress file as it is taken: a run cut short keeps what it measured.
+        progress(custodyPressure.line(custodyPressure.sample((now - outingStart) / MS_PER_S, phase, now, stores, undelivered)))
+        slowestSampleMs.accumulateAndGet((System.nanoTime() - started) / NANOS_PER_MS, ::maxOf)
+    }
+
+    // The walk alone, measured and not judged: what had arrived when it ended, and custody under it.
+    private suspend fun walkOnlyReport(
+        lines: MutableList<String>,
+        endedAt: Long,
+    ): SimReport {
+        // Every link the walk left up goes down first, so nothing crosses while the report reads: "by the end" is then
+        // the walk's end, give or take what was already in flight.
+        radio.links.map(::ends).forEach { (a, b) -> a.transport.disconnect(b.transport) }
+        val outcomes = outcomes(endedAt)
+        lines += "DMs between friends, by how the two stood when it was sent (no gather: the end is the walk's end):"
+        lines += deliveryLines(outcomes)
+        lines += roomLine(endedAt)
+        lines += "frames refused since boot: ${drops().ifEmpty { "none" }}"
+        lines += movedCounters(counterTotals(nodes), since = countersAtWalk)
+        lines += custodyLines()
+        lines += "oracle: not asked, the outing had no gather"
+        return SimReport(lines.joinToString("\n"), outcomes.size, unsent.get(), emptyList(), converged = false, checked = false)
+    }
+
+    // The last sample and the report read from it, both under the lock the sampler takes: no sample lands while the
+    // report reads them.
+    private suspend fun custodyLines(): List<String> =
+        custodyLock.withLock {
+            takeCustodySample()
+            val missing = outcomes(Long.MAX_VALUE, ticks = false).filter { it.latencyMs == null }
+            custodyPressure.lines(
+                neverArrived = missing.mapNotNullTo(HashSet()) { dmIds[it.event] },
+                untallied = dms.size - dmIds.size,
+                slowestSampleMs = slowestSampleMs.get(),
+            )
+        }
+
     private suspend fun walkAndReport(lines: MutableList<String>): SimReport {
-        val before = Counters.of(nodes)
+        val before = RouterCounters.of(nodes)
+        countersAtWalk = counterTotals(nodes)
         val inboundBefore = nodes.map { it.transport.inboundWaited to it.transport.inboundRefused }
         val cpuBefore = cpuNanos()
         val startedAt = lab.clock.now()
         walkAndTalk()
         val endedAt = lab.clock.now()
+        walkEnded = true
         val cores = (cpuNanos() - cpuBefore).toDouble() / ((endedAt - startedAt) * NANOS_PER_MS)
         lines += contacts.summary()
-        lines += "frames in the run: ${Counters.of(nodes) - before}; room posts moderation refused ${refused.get()}"
+        lines += "frames in the run: ${RouterCounters.of(nodes) - before}; room posts moderation refused ${refused.get()}"
         lines += inboundLine("in the run", since = inboundBefore, peak = heldPeakWalk.get())
         val custody = nodes.map { it.custodyIds().size }
         lines += "custody at the end of the run: mean ${custody.average().toInt()} rows, max ${custody.max()}"
@@ -144,6 +236,7 @@ class MeshSim(
             "${Thread.activeCount()} threads; the world ran at most ${worldLateMs.get()} ms late, a send at most " +
             "${sendLateMs.get()} ms late, ${unsent.get()} sends fell past the end of the run"
         progress("the walk is over: ${dms.size} DMs and ${rooms.size} room posts sent, ${unsent.get()} never sent")
+        if (!scenario.gather) return walkOnlyReport(lines, endedAt)
         val gathering = gatherLine(endedAt)
         val outcomes = outcomes(endedAt)
         lines += "DMs between friends, by how the two stood when it was sent:"
@@ -161,7 +254,9 @@ class MeshSim(
             lines += "settle: ${stranded.size - still} of the ${stranded.size} DMs missing after the gather arrived during it"
         }
         lines += "frames refused over the whole outing: ${drops().ifEmpty { "none" }}"
+        lines += movedCounters(counterTotals(nodes), since = countersAtWalk)
         lines += inboundLine("over the whole outing", peak = heldPeak.get(), where = heldPeakWhere)
+        lines += custodyLines()
         // With a DM missing the oracle's verdict is known, and each of its waits would run to its end to say so; so it
         // is with custody the settle watched not converge for at least as long as the oracle would wait. A shorter settle
         // would call a late field stuck, so then the oracle decides.
@@ -272,7 +367,12 @@ class MeshSim(
         when (event) {
             is SimEvent.Dm -> {
                 val reach = Reach.of(hops(radio.links, event.from, event.to))
-                if (from.sendDm(nodes[event.to], event.body)) dms += event to reach else refused.incrementAndGet()
+                if (from.sendDm(nodes[event.to], event.body)) {
+                    dms += event to reach
+                    rows(from, from.dmWith(nodes[event.to]), parked = true)[event.body]?.id?.let { dmIds[event] = it }
+                } else {
+                    refused.incrementAndGet()
+                }
             }
 
             is SimEvent.Room -> {
@@ -522,6 +622,7 @@ class MeshSim(
      */
     private suspend fun settleLine(): Settled? {
         if (scenario.settleMs <= 0) return null
+        settling = true
         val startedAt = lab.clock.now()
         var gap = CustodyGap(nodes.map { it.custodyIds() })
         // Seconds after the gather → rows missing: the first reading, the first of each minute after, and the last.
@@ -692,40 +793,6 @@ class MeshSim(
         return null
     }
 
-    /** The router's counters summed over the field, and the frames that crossed a link. */
-    private data class Counters(
-        val originated: Long,
-        val relayed: Long,
-        val deduped: Long,
-        val suppressed: Long,
-        val crossedLinks: Long,
-    ) {
-        operator fun minus(other: Counters) =
-            Counters(
-                originated - other.originated,
-                relayed - other.relayed,
-                deduped - other.deduped,
-                suppressed - other.suppressed,
-                crossedLinks - other.crossedLinks,
-            )
-
-        override fun toString(): String =
-            "originated $originated, relayed $relayed, deduped $deduped, suppressed $suppressed, crossed a link $crossedLinks"
-
-        companion object {
-            fun of(nodes: List<LabNode>): Counters {
-                val frames = nodes.map { it.metrics.frames() }
-                return Counters(
-                    originated = frames.sumOf { it.framesOriginated },
-                    relayed = frames.sumOf { it.framesRelayed },
-                    deduped = frames.sumOf { it.framesDeduped },
-                    suppressed = frames.sumOf { it.framesSuppressed },
-                    crossedLinks = nodes.sumOf { it.transport.framesReceived },
-                )
-            }
-        }
-    }
-
     private suspend fun usedHeapMb(): Long {
         repeat(2) {
             System.gc()
@@ -751,6 +818,9 @@ class MeshSim(
         /** Fresh DMs sent across the gather's new links, to time the wait behind their backlogs. */
         const val PROBES = 8
         const val HELD_POLL_MS = 250L
+
+        /** Every store read once a minute: a 33-minute outing reports in about 33 lines. */
+        const val CUSTODY_POLL_MS = 60_000L
 
         /** Custody parity across a gathered field several hops wide is settled by the 60 s re-offer, not the link-up. */
         const val ORACLE_MS = 120_000L

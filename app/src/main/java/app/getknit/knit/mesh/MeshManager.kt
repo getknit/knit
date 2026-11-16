@@ -3579,7 +3579,10 @@ class MeshManager(
         } finally {
             if (!handed) readSync.giveBack(readRiders)
         }
-        if (answer) pipeline.recordDmReceipts(authorId, ackIds, tick.rootTag, tick.env.id, tick.env.sentAt)
+        if (answer) {
+            metrics.onDmReceiptSealed(if (fromBoard) DmReceiptPath.COALESCER_FLUSH else DmReceiptPath.HELD_FLUSH)
+            pipeline.recordDmReceipts(authorId, ackIds, tick.rootTag, tick.env.id, tick.env.sentAt)
+        }
         metrics.onReceiptCustodied()
         ackSync.rode(riding)
         metrics.onReceiptRidden(riding.size)
@@ -5214,7 +5217,8 @@ class MeshManager(
                     // queued one value per write, and `broadcastProfile` signs the settings of its own moment, so
                     // each queued value minted the newest frame again: a board bound at start, then a rename, cost
                     // three versions of one profile, each a flood and a sealed update to every contact.
-                    if (!custodyPresentsOtherThan(currentPresentation())) return@collect
+                    val cause = custodyPresentsOtherThan(currentPresentation()) ?: return@collect
+                    metrics.onProfileRepublished(cause)
                     broadcastProfile()
                     broadcastSealedProfile()
                 }
@@ -5232,30 +5236,33 @@ class MeshManager(
         )
 
     /**
-     * Whether the profile frame custody holds for the current stamp presents anything other than [live] — the
+     * Why the profile frame custody holds for the current stamp presents something other than [live] — the
      * fields the frame carries, compared as the frame carries them (the avatar by its hash, the name and status
-     * normalized and capped). No row is "other": the read never signs one, because a frame signed here from the
-     * edited settings would carry the current stamp's id, which peers already hold for the frame before the edit,
-     * and they would drop the edit as a duplicate.
+     * normalized and capped) — or null when it presents the same. No row is "other": the read never signs one, because
+     * a frame signed here from the edited settings would carry the current stamp's id, which peers already hold for the
+     * frame before the edit, and they would drop the edit as a duplicate. The cause is for the metrics alone: either
+     * one publishes.
      */
-    private suspend fun custodyPresentsOtherThan(live: OwnPresentation): Boolean {
+    private suspend fun custodyPresentsOtherThan(live: OwnPresentation): ProfileRepublishCause? {
         // Under the lock, so the stamp and its row are read as one publish left them, never between its two writes.
         val row =
             profileLock.withLock {
                 val stamp = settings.profilePublishedAt.first()
                 forwardStore.frame(FrameId.profileId(identity.nodeId(), stamp), clock())
-            } ?: return true
-        val held = WireCodec.decodePayload<ProfileContent>(row.envelope.payload) ?: return true
-        return held.name != normalizeSingleLine(live.name).clampToUtf16(TextLimits.DISPLAY_NAME) ||
-            held.status != normalizeSingleLine(live.status).clampToUtf16(TextLimits.STATUS) ||
-            held.avatarHash != settings.ownAvatarHash.first() ||
-            held.openToChat != live.openToChat ||
-            held.loraNode != live.lora.board?.node ||
-            held.loraKey != live.lora.board?.key ||
-            // A build that gained or lost a capability bit (CAP_CALL) reuses the held frame for the current stamp,
-            // so peers would not see the change until an edit or the 12 h republish. So does a switch that moved
-            // CAP_LORA_DIRECT while the mesh was stopped.
-            held.capabilities != capabilitiesWith(live.lora.direct)
+            } ?: return ProfileRepublishCause.NO_CUSTODY_ROW
+        val held = WireCodec.decodePayload<ProfileContent>(row.envelope.payload) ?: return ProfileRepublishCause.NO_CUSTODY_ROW
+        val differs =
+            held.name != normalizeSingleLine(live.name).clampToUtf16(TextLimits.DISPLAY_NAME) ||
+                held.status != normalizeSingleLine(live.status).clampToUtf16(TextLimits.STATUS) ||
+                held.avatarHash != settings.ownAvatarHash.first() ||
+                held.openToChat != live.openToChat ||
+                held.loraNode != live.lora.board?.node ||
+                held.loraKey != live.lora.board?.key ||
+                // A build that gained or lost a capability bit (CAP_CALL) reuses the held frame for the current stamp,
+                // so peers would not see the change until an edit or the 12 h republish. So does a switch that moved
+                // CAP_LORA_DIRECT while the mesh was stopped.
+                held.capabilities != capabilitiesWith(live.lora.direct)
+        return if (differs) ProfileRepublishCause.PRESENTATION_CHANGED else null
     }
 
     /**
@@ -5450,7 +5457,10 @@ class MeshManager(
         val avatarHash = settings.ownAvatarHash.first()
         val payload = currentProfilePayload(version, avatarHash)
         owed.forEach { session ->
-            if (sendCtlDm(session.peerId, payload, avatarHash, me)) sentProfileVersions[session.peerId] = version
+            if (sendCtlDm(session.peerId, payload, avatarHash, me, CtlDmPurpose.PROFILE_FANOUT)) {
+                sentProfileVersions[session.peerId] =
+                    version
+            }
         }
     }
 
@@ -5551,7 +5561,7 @@ class MeshManager(
         val avatarHash = settings.ownAvatarHash.first()
         publishBadgesIfChanged()
         val payload = currentProfilePayload(profileVersion(), avatarHash)
-        return sendCtlDm(peerId, payload, avatarHash, identity.nodeId())
+        return sendCtlDm(peerId, payload, avatarHash, identity.nodeId(), CtlDmPurpose.INTRO)
     }
 
     /**
@@ -5561,7 +5571,14 @@ class MeshManager(
     override suspend fun sendTransferSignal(
         peerId: String,
         payload: TransferPayload,
-    ): Boolean = sendCtlDm(peerId, MessageContent(body = "", ctl = MessageContent.CTL_TRANSFER, xf = payload), null, identity.nodeId())
+    ): Boolean =
+        sendCtlDm(
+            peerId,
+            MessageContent(body = "", ctl = MessageContent.CTL_TRANSFER, xf = payload),
+            null,
+            identity.nodeId(),
+            CtlDmPurpose.TRANSFER,
+        )
 
     /**
      * [CallSignals]: one sealed `CTL_CALL` DM to [peerId] — the offer, answer, late candidates or hang-up of a voice
@@ -5571,7 +5588,14 @@ class MeshManager(
     override suspend fun sendCallSignal(
         peerId: String,
         payload: CallPayload,
-    ): Boolean = sendCtlDm(peerId, MessageContent(body = "", ctl = MessageContent.CTL_CALL, cl = payload), null, identity.nodeId())
+    ): Boolean =
+        sendCtlDm(
+            peerId,
+            MessageContent(body = "", ctl = MessageContent.CTL_CALL, cl = payload),
+            null,
+            identity.nodeId(),
+            CtlDmPurpose.CALL,
+        )
 
     /**
      * Issues [payload] as this phone's scope config for [conversationId] (`CTL_SCOPE_CONFIG`, docs/SPOOL_PROTOCOL.md
@@ -6078,6 +6102,7 @@ class MeshManager(
         payload: MessageContent,
         avatarHash: String?,
         me: String,
+        purpose: CtlDmPurpose,
     ): Boolean {
         val peer = peers.find(peerId) ?: return false
         if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return false
@@ -6088,6 +6113,7 @@ class MeshManager(
         val (plaintext, scheme) = payload.sealBytes(peer.readsCryptoV3())
         val sealed = ratchet.sealDm(peerId, bundle.dhPublicKey(), ratchetPrekeyOf(peer), plaintext, aad, now, scheme) ?: return false
         if (scheme == EncEnvelope.VERSION_DM_V3) metrics.onDmSealedV3()
+        metrics.onCtlDmSealed(purpose)
         originateSigned(
             RelayEnvelope(
                 type = FrameType.CHAT,

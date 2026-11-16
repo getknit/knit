@@ -54,8 +54,9 @@ class ParkWalkSimTest {
                     fieldM = FIELD_M * sqrt(walkers.toDouble() / DEFAULT_WALKERS),
                     inboundSlots = System.getProperty(INBOUND)?.let { if (it == "phone") MeshLab.PHONE_INBOUND_SLOTS else it.toInt() },
                     settleMs = (System.getProperty(SETTLE)?.toLong() ?: 0L) * MS_PER_MINUTE,
+                    gather = System.getProperty(GATHER) != "false",
                 )
-            val bound = scenario.inboundSlots?.let { "-q$it" }.orEmpty()
+            val bound = scenario.inboundSlots?.let { "-q$it" }.orEmpty() + if (scenario.gather) "" else "-walk"
             val out = File("build/mesh-sim").apply { mkdirs() }.resolve("park-walk-s$seed-w$walkers-m$minutes$bound.txt")
             // The report's file holds the outing's progress while it runs, and the report once it is over.
             out.writeText("")
@@ -65,6 +66,7 @@ class ParkWalkSimTest {
 
             assertTrue("the workload sent no DM:\n${report.text}", report.dmsSent > 0)
             assertEquals("sends that fell past the end of the run, on a machine that could not keep up:\n${report.text}", 0, report.unsent)
+            if (!report.checked) return@runBlocking
             assertEquals("DMs that never arrived, though everyone gathered:\n${report.text}", emptyList<String>(), report.neverArrived)
             assertTrue("the lab's oracle did not converge after the gather:\n${report.text}", report.converged)
         }
@@ -79,6 +81,9 @@ class ParkWalkSimTest {
 
         /** Minutes to watch custody parity after the gather ([SimScenario.settleMs]). */
         const val SETTLE = "knit.meshSimSettleMinutes"
+
+        /** `false` ends the outing at the walk: a measurement with no gather, settle or oracle. */
+        const val GATHER = "knit.meshSimGather"
         const val DEFAULT_WALKERS = 12
         const val DEFAULT_MINUTES = 4
         const val MS_PER_MINUTE = 60_000L

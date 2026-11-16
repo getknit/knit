@@ -4419,7 +4419,7 @@ class InboundPipeline(
                 return
             }
             val bounded = plane != DeliveryPlane.LoRa
-            if (sealDmReceipt(env, me, plane, answer, rideOwnFirstContact, bounded) != ReceiptSeal.CANNOT_SEAL) return
+            if (sealDmReceipt(env, me, plane, answer, rideOwnFirstContact, bounded, reDelivery) != ReceiptSeal.CANNOT_SEAL) return
             ackCleartext(env.id, me)
         } else {
             // Broadcast/group: a unicast, point-to-point (relay = false) tick straight to the author when
@@ -4476,12 +4476,25 @@ class InboundPipeline(
     private suspend fun answeredInEra(
         authorId: String,
         dmId: String,
+        // Told the branch that let an unanswered copy through, for the metrics only (the custody-pressure sweep's
+        // question). The reads and their order are the rule's own, so naming the branch never moves the decision.
+        onReSeal: (DmReSealCause) -> Unit = {},
     ): Boolean {
-        if (dmReAcks.entry(authorId, dmId) == null || !canSealDmReceipt(authorId)) return false
+        if (dmReAcks.entry(authorId, dmId) == null) return false.also { onReSeal(DmReSealCause.NO_ENTRY) }
+        if (!canSealDmReceipt(authorId)) return false.also { onReSeal(DmReSealCause.AUTHOR_CANNOT_SEAL) }
         val now = clock()
-        val receiptId = dmReAcks.heldReceipt(authorId, dmId, ratchet.rootTagFor(authorId), now) ?: return false
-        return holdsLive(receiptId, identity.nodeId(), now)
+        val receiptId =
+            when (val read = dmReAcks.read(authorId, dmId, ratchet.rootTagFor(authorId), now)) {
+                is DmReAckLedger.Read.Reseal -> return false.also { onReSeal(read.cause) }
+                is DmReAckLedger.Read.Held -> read.receiptId
+            }
+        return holdsLive(receiptId, identity.nodeId(), now).also { if (!it) onReSeal(DmReSealCause.NOT_LIVE) }
     }
+
+    // A claimed id's re-seal cause, from [claimUnansweredDmAcks]'s read to [recordDmReceipts]' count (measurement only).
+    // Only ids the ledger already held: a flush cannot tell a re-delivery from a first one. Written and taken under the
+    // DM's claim, and dropped by [releaseDmAcks], so it holds only DMs in flight.
+    private val claimedReSealCauses = ConcurrentHashMap<Pair<String, String>, DmReSealCause>()
 
     /**
      * A DM ✓✓ another path is sealing right now. It goes to the hold rather than away: that path may be sealing under
@@ -4519,10 +4532,13 @@ class InboundPipeline(
                     continue
                 }
                 claimed += id
-                if (answeredInEra(authorId, id)) {
+                var cause: DmReSealCause? = null
+                if (answeredInEra(authorId, id) { cause = it }) {
                     claimed -= id
                     releaseDmAcks(authorId, listOf(id))
                     metrics.onReAckSkipped()
+                } else {
+                    cause?.takeIf { it != DmReSealCause.NO_ENTRY }?.let { claimedReSealCauses[authorId to id] = it }
                 }
             }
             done = true
@@ -4538,6 +4554,7 @@ class InboundPipeline(
         authorId: String,
         ackIds: List<String>,
     ) {
+        ackIds.forEach { claimedReSealCauses.remove(authorId to it) }
         if (dmReAcks.release(authorId, ackIds)) flushContestedTicks(authorId)
     }
 
@@ -4551,7 +4568,10 @@ class InboundPipeline(
         rootTag: Long,
         receiptId: String,
         now: Long,
-    ) = ackIds.forEach { dmReAcks.record(authorId, it, rootTag, receiptId, now) }
+    ) = ackIds.forEach {
+        claimedReSealCauses.remove(authorId to it)?.let(metrics::onDmReSealed)
+        dmReAcks.record(authorId, it, rootTag, receiptId, now)
+    }
 
     /** Whether [authorId] could read a sealed receipt: a pinned bundle carrying `CAP_RATCHET` (the seal itself may still fail). */
     private suspend fun canSealDmReceipt(authorId: String): Boolean {
@@ -4591,6 +4611,7 @@ class InboundPipeline(
         answer: Boolean,
         rideOwnFirstContact: Boolean,
         bounded: Boolean,
+        reDelivery: Boolean,
     ): ReceiptSeal {
         val peer = peers.find(env.senderId) ?: return ReceiptSeal.CANNOT_SEAL
         if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return ReceiptSeal.CANNOT_SEAL
@@ -4600,11 +4621,17 @@ class InboundPipeline(
             return ReceiptSeal.ANSWERED
         }
         try {
-            if (bounded && answeredInEra(env.senderId, env.id)) {
+            // What let this copy through, named by the rule's own read (measurement only).
+            var cause: DmReSealCause? = null
+            if (bounded && answeredInEra(env.senderId, env.id) { cause = it }) {
                 metrics.onReAckSkipped()
                 return ReceiptSeal.ANSWERED
             }
-            return sealClaimedDmReceipt(env, me, plane, answer, rideOwnFirstContact, peer, bundle)
+            if (!bounded && (reDelivery || dmReAcks.entry(env.senderId, env.id) != null)) cause = DmReSealCause.UNBOUNDED
+            // A re-seal is a re-delivery's seal, or one for a DM the ledger already held (a copy that lost the commit race).
+            val reSeal = cause?.takeIf { reDelivery || it != DmReSealCause.NO_ENTRY }
+            val path = if (reDelivery) DmReceiptPath.RE_DELIVERY else DmReceiptPath.FIRST_DELIVERY
+            return sealClaimedDmReceipt(env, me, plane, answer, rideOwnFirstContact, peer, bundle, path, reSeal)
         } finally {
             releaseDmAcks(env.senderId, listOf(env.id))
         }
@@ -4619,6 +4646,8 @@ class InboundPipeline(
         rideOwnFirstContact: Boolean,
         peer: PeerEntity,
         bundle: PublicKeyBundle,
+        path: DmReceiptPath,
+        reSeal: DmReSealCause?,
     ): ReceiptSeal {
         val now = clock()
         val id = FrameId.new()
@@ -4631,7 +4660,7 @@ class InboundPipeline(
         val withReads = receiptReads(env, peer, riding)
         // Read riders are claimed until here: told ones are released by the tell, every other one goes back still owed.
         try {
-            return sealAndSendReceipt(env, me, plane, answer, rideOwnFirstContact, peer, bundle, id, now, riding, withReads)
+            return sealAndSendReceipt(env, me, plane, answer, rideOwnFirstContact, peer, bundle, id, now, riding, withReads, path, reSeal)
         } finally {
             reads.giveBack(withReads.riders)
         }
@@ -4651,6 +4680,8 @@ class InboundPipeline(
         now: Long,
         riding: List<String>,
         withReads: ReceiptReads,
+        path: DmReceiptPath,
+        reSeal: DmReSealCause?,
     ): ReceiptSeal {
         val aad = MessageCrypto.header(id, me, now, env.senderId)
         val (plaintext, scheme) = withReads.content.sealBytes(peer.readsCryptoV3())
@@ -4704,6 +4735,8 @@ class InboundPipeline(
         // The DM's own id alone over the board: the room riders ride the signed tick and never air (ADR 2026-10.rp3s).
         if (plane == DeliveryPlane.LoRa) offerLoraReceipt(env.senderId, id, now, withReads.compact)
         metrics.onReceiptSealed()
+        metrics.onDmReceiptSealed(path)
+        reSeal?.let(metrics::onDmReSealed)
         // The 8hn6 ledger files the DM's own id alone: a read rider is never a ✓✓ this receipt answers.
         dmReAcks.record(env.senderId, env.id, tagged.rootTag, id, now)
         ackSync.rode(riding)

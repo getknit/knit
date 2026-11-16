@@ -145,19 +145,50 @@ class DmReAckLedger(
         ackedId: String,
         currentRootTag: Long?,
         now: Long,
-    ): String? =
+    ): String? = (read(authorId, ackedId, currentRootTag, now) as? Read.Held)?.receiptId
+
+    /**
+     * [heldReceipt]'s rule with the branch named: [Read.Held] exactly when [heldReceipt] returns a receipt, else the
+     * [DmReSealCause] that let the re-delivery through. The one body both share, so the cause the metrics count can never
+     * drift from the decision (measurement only: the custody-pressure sweep on the simulator branch asks which branch
+     * re-seals). Ages an entry out exactly as [heldReceipt] does.
+     */
+    fun read(
+        authorId: String,
+        ackedId: String,
+        currentRootTag: Long?,
+        now: Long,
+    ): Read =
         synchronized(this) {
             val key = Key(authorId, ackedId)
-            val entry = entries[key] ?: return@synchronized null
+            val entry = entries[key] ?: return@synchronized Read.Reseal(DmReSealCause.NO_ENTRY)
             // A negative age is our wall clock stepped back (NITZ, a network fix after weeks offline, ADR 026): read
             // as past the floor, or the jump would hold back the held-but-unapplied re-arm by its own size.
             val age = now - entry.sealedAt
             if (age < 0 || age >= ttlMs) {
                 entries.remove(key)
-                return@synchronized null
+                return@synchronized Read.Reseal(if (age < 0) DmReSealCause.CLOCK_BACK else DmReSealCause.AGED_OUT)
             }
-            entry.receiptId.takeIf { currentRootTag != null && entry.rootTag == currentRootTag && age < floorMs(entry.step) }
+            when {
+                currentRootTag == null -> Read.Reseal(DmReSealCause.NO_SESSION)
+                entry.rootTag != currentRootTag -> Read.Reseal(DmReSealCause.ROOT_CHANGED)
+                age >= floorMs(entry.step) -> Read.Reseal(DmReSealCause.FLOOR_ELAPSED)
+                else -> Read.Held(entry.receiptId)
+            }
         }
+
+    /** What [read] found: the receipt that answers the copy so far, or why it does not. */
+    sealed interface Read {
+        /** [receiptId] answers, if it is still live in the caller's custody. */
+        data class Held(
+            val receiptId: String,
+        ) : Read
+
+        /** Nothing answers: the copy re-seals, for [cause]. */
+        data class Reseal(
+            val cause: DmReSealCause,
+        ) : Read
+    }
 
     /** The entry for [authorId]'s [ackedId]: the cheap look before the rule's locked reads, and for tests. */
     fun entry(
@@ -194,3 +225,38 @@ suspend fun ForwardStore.holdsLiveReceipt(
     me: String,
     now: Long,
 ): Boolean = frame(receiptId, now)?.envelope?.senderId == me
+
+/**
+ * Why a DM ✓✓ was sealed again for a DM we had already acked, or could have (measurement only; #176's bound read by
+ * branch). Each value is one branch the re-ack rule actually takes, in the order it takes them: the ledger's own
+ * ([DmReAckLedger.read]: [NO_ENTRY] to [FLOOR_ELAPSED]), then the pipeline's ([NOT_LIVE], [AUTHOR_CANNOT_SEAL],
+ * [UNBOUNDED]). Counted in `MeshMetrics.Snapshot.Receipts.receiptsReSealedBy`.
+ */
+enum class DmReSealCause {
+    /** No ledger entry: never acked here since the last start, or evicted oldest-first at the ledger's cap. */
+    NO_ENTRY,
+
+    /** The entry was older than the ledger's TTL and aged out on this read. */
+    AGED_OUT,
+
+    /** The entry's seal stamp is ahead of our clock (a wall clock stepped back), read as past the floor. */
+    CLOCK_BACK,
+
+    /** No session with the author is held now, so no root to compare the entry's against. */
+    NO_SESSION,
+
+    /** The entry was sealed under another session root than the one held now (a reset or re-init since). */
+    ROOT_CHANGED,
+
+    /** Same era, but the entry's re-arm floor (15 min doubling to 4 h) had elapsed. */
+    FLOOR_ELAPSED,
+
+    /** Same era and inside the floor, but the receipt is no longer live in our own custody (evicted or expired). */
+    NOT_LIVE,
+
+    /** The ledger held an entry but the author no longer reads a sealed receipt (unpinned, or the ratchet bit gone). */
+    AUTHOR_CANNOT_SEAL,
+
+    /** A copy over LoRa with no coalescer, never asked (`bounded = false`): that plane heals by re-acking. */
+    UNBOUNDED,
+}

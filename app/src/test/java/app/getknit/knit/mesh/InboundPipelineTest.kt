@@ -308,6 +308,8 @@ class InboundPipelineTest {
         withDmAcks: Boolean = true,
         // Whether the build takes direct links (ADR 2026-10.a5yj); only the `link` frames read it.
         linksWired: Boolean = true,
+        // The re-ack ledger's bound, so a test can evict an entry at the cap.
+        reAckCap: Int = ForwardRepository.DEFAULT_MAX_ROWS,
     ) {
         /**
          * The facade's one-minute reset floor, read on every use. The open path stamps the floor on the wall clock, so a
@@ -449,7 +451,7 @@ class InboundPipelineTest {
         val dmAcks = DmAckCoalescer(now = { nowMs }, flush = { a, ids -> dmFlushes += a to ids })
 
         /** The sealed DM receipts the pipeline filed, so a test can read an entry's era and floor (ADR 2026-10.8hn6). */
-        val dmReAcks = DmReAckLedger()
+        val dmReAcks = DmReAckLedger(cap = reAckCap)
 
         /** `(authorId, frameId, content)` of every compact ✓✓ the pipeline offered the board (ADR 2026-10.x9fa). */
         val loraReceipts = mutableListOf<Triple<String, String, MessageContent>>()
@@ -12061,6 +12063,167 @@ class InboundPipelineTest {
             rig.deliver(alice, dm)
             assertEquals("and only one", 2L, rig.metrics.receipts().receiptsSealed)
             assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /** The signed DM ✓✓ frames sealed, by path, and the re-seals by cause (measurement only). */
+    private fun Rig.sealedBy() = metrics.receipts().receiptsDmSealedBy
+
+    private fun Rig.reSealedBy() = metrics.receipts().receiptsReSealedBy
+
+    /**
+     * The custody-pressure hypothesis's shape: our receipt left our own custody (evicted at the cap), so the re-delivery
+     * seals again and counts as a re-delivery let through by "not live", and nothing else moves.
+     */
+    @Test
+    fun aReDeliveryWhoseReceiptLeftOurCustodyCountsAsNotLive() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-count-gone", "evicted receipt")
+
+            rig.deliver(alice, dm)
+            assertEquals(mapOf(DmReceiptPath.FIRST_DELIVERY to 1L), rig.sealedBy())
+            assertEquals("a first delivery is no re-seal", emptyMap<DmReSealCause, Long>(), rig.reSealedBy())
+
+            rig.forwardStore.remove(rig.lastReceiptTo(alice).id)
+            rig.deliver(alice, dm)
+
+            assertEquals(mapOf(DmReceiptPath.FIRST_DELIVERY to 1L, DmReceiptPath.RE_DELIVERY to 1L), rig.sealedBy())
+            assertEquals(mapOf(DmReSealCause.NOT_LIVE to 1L), rig.reSealedBy())
+        }
+
+    /** A re-delivery the ledger answers moves the skip alone: no path, no cause. */
+    @Test
+    fun aSkippedReDeliveryCountsNoSealAndNoCause() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-count-skip", "again")
+
+            rig.deliver(alice, dm)
+            rig.deliver(alice, dm)
+
+            assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+            assertEquals(mapOf(DmReceiptPath.FIRST_DELIVERY to 1L), rig.sealedBy())
+            assertEquals(emptyMap<DmReSealCause, Long>(), rig.reSealedBy())
+        }
+
+    /** Past the floor, with our receipt still live: the floor let it through. */
+    @Test
+    fun aReDeliveryPastItsFloorCountsAsFloorElapsed() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-count-floor", "heal me")
+
+            rig.deliver(alice, dm)
+            rig.nowMs += DmReAckLedger.FLOOR_MS
+            rig.deliver(alice, dm)
+
+            assertEquals(mapOf(DmReceiptPath.FIRST_DELIVERY to 1L, DmReceiptPath.RE_DELIVERY to 1L), rig.sealedBy())
+            assertEquals(mapOf(DmReSealCause.FLOOR_ELAPSED to 1L), rig.reSealedBy())
+        }
+
+    /** Our clock stepped back past the receipt's stamp: counted apart from the floor. */
+    @Test
+    fun aReDeliveryAfterOurClockSteppedBackCountsAsClockBack() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-count-back", "stepped back")
+
+            rig.deliver(alice, dm)
+            rig.nowMs -= 1
+            rig.deliver(alice, dm)
+
+            assertEquals(mapOf(DmReSealCause.CLOCK_BACK to 1L), rig.reSealedBy())
+        }
+
+    /** The author's reset moved the root: the era let it through. */
+    @Test
+    fun aReDeliveryAfterAResetCountsAsRootChanged() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig, at = 5L).dm("v2-count-reset", "before the reset")
+
+            rig.deliver(alice, dm)
+            rig.deliver(alice, V2Author(alice, rig, at = 60_000L).dm("v2-count-reset-ctl", "", ctl = MessageContent.CTL_SESSION_RESET))
+            rig.deliver(alice, dm)
+
+            assertEquals(1L, rig.sealedBy()[DmReceiptPath.RE_DELIVERY])
+            assertEquals(mapOf(DmReSealCause.ROOT_CHANGED to 1L), rig.reSealedBy())
+        }
+
+    /** Evicted from the ledger at its cap: the re-delivery has no entry, and still counts as a re-seal, for that. */
+    @Test
+    fun aReDeliveryEvictedFromTheLedgerCountsAsNoEntry() =
+        runTest {
+            val rig = Rig(backgroundScope, reAckCap = 1)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val author = V2Author(alice, rig)
+            val dm = author.dm("v2-count-evicted", "first")
+
+            rig.deliver(alice, dm)
+            rig.deliver(alice, author.dm("v2-count-next", "second"))
+            assertNull(rig.dmReAcks.entry(alice.nodeId, "v2-count-evicted"))
+            rig.deliver(alice, dm)
+
+            assertEquals(mapOf(DmReceiptPath.FIRST_DELIVERY to 2L, DmReceiptPath.RE_DELIVERY to 1L), rig.sealedBy())
+            assertEquals(mapOf(DmReSealCause.NO_ENTRY to 1L), rig.reSealedBy())
+        }
+
+    /** Over the board with no coalescer the ledger is never asked: an unbounded re-seal, counted as such. */
+    @Test
+    fun aLoraReDeliveryWithNoCoalescerCountsAsUnbounded() =
+        runTest {
+            val rig = Rig(backgroundScope, withDmAcks = false)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-count-lora", "over the board")
+
+            rig.deliver(alice, dm, kind = TransportKind.Bluetooth)
+            rig.deliver(alice, dm, kind = TransportKind.LoRa)
+
+            assertEquals(mapOf(DmReceiptPath.FIRST_DELIVERY to 1L, DmReceiptPath.RE_DELIVERY to 1L), rig.sealedBy())
+            assertEquals(mapOf(DmReSealCause.UNBOUNDED to 1L), rig.reSealedBy())
+            assertEquals(0L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /**
+     * A flush's ids: one the ledger held, whose receipt left custody, counts its cause when the tick is recorded; one it
+     * never heard of is a first delivery and counts none; and a cause never outlives its claim.
+     */
+    @Test
+    fun aFlushCountsTheCauseOfAnIdTheLedgerHeldWhenItsTickIsRecorded() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-count-flush", "held")
+            rig.deliver(alice, dm, kind = TransportKind.Bluetooth)
+            rig.forwardStore.remove(rig.lastReceiptTo(alice).id)
+            val tag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
+            val ids = listOf("v2-count-flush", "v2-count-fresh")
+
+            assertEquals(ids, rig.pipeline.claimUnansweredDmAcks(alice.nodeId, ids))
+            assertEquals("counted at the record, not the read", emptyMap<DmReSealCause, Long>(), rig.reSealedBy())
+            rig.pipeline.recordDmReceipts(alice.nodeId, ids, tag, "tick-count", rig.nowMs)
+            rig.pipeline.releaseDmAcks(alice.nodeId, ids)
+            assertEquals(mapOf(DmReSealCause.NOT_LIVE to 1L), rig.reSealedBy())
+
+            // A claim given up without a record counts nothing, and leaves nothing for a later record to count.
+            rig.forwardStore.remove("tick-count")
+            assertEquals(listOf("v2-count-flush"), rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-count-flush")))
+            rig.pipeline.releaseDmAcks(alice.nodeId, listOf("v2-count-flush"))
+            rig.pipeline.recordDmReceipts(alice.nodeId, listOf("v2-count-flush"), tag, "tick-late", rig.nowMs)
+            assertEquals(mapOf(DmReSealCause.NOT_LIVE to 1L), rig.reSealedBy())
         }
 
     /**

@@ -72,6 +72,36 @@ class MeshMetricsTest {
     }
 
     @Test
+    fun `signed DM receipts count by path and re-seals by cause, leaving out an empty bucket`() {
+        val metrics = MeshMetrics()
+        assertEquals(emptyMap<DmReceiptPath, Long>(), metrics.receipts().receiptsDmSealedBy)
+        assertEquals(emptyMap<DmReSealCause, Long>(), metrics.receipts().receiptsReSealedBy)
+        repeat(2) { metrics.onDmReceiptSealed(DmReceiptPath.RE_DELIVERY) }
+        metrics.onDmReceiptSealed(DmReceiptPath.HELD_FLUSH)
+        repeat(3) { metrics.onDmReSealed(DmReSealCause.NOT_LIVE) }
+
+        assertEquals(mapOf(DmReceiptPath.RE_DELIVERY to 2L, DmReceiptPath.HELD_FLUSH to 1L), metrics.receipts().receiptsDmSealedBy)
+        assertEquals(mapOf(DmReSealCause.NOT_LIVE to 3L), metrics.receipts().receiptsReSealedBy)
+        assertEquals("the sealed-receipt total is its own counter", 0L, metrics.receipts().receiptsSealed)
+        assertEquals(metrics.receipts(), metrics.snapshot().receipts)
+    }
+
+    @Test
+    fun `sealed ctl DMs count by purpose and profile republishes by cause, leaving out an empty bucket`() {
+        val metrics = MeshMetrics()
+        assertEquals(emptyMap<CtlDmPurpose, Long>(), metrics.seals().ctlDmSealedBy)
+        assertEquals(emptyMap<ProfileRepublishCause, Long>(), metrics.seals().profileRepublishedBy)
+        repeat(3) { metrics.onCtlDmSealed(CtlDmPurpose.PROFILE_FANOUT) }
+        metrics.onCtlDmSealed(CtlDmPurpose.INTRO)
+        repeat(2) { metrics.onProfileRepublished(ProfileRepublishCause.NO_CUSTODY_ROW) }
+
+        assertEquals(mapOf(CtlDmPurpose.PROFILE_FANOUT to 3L, CtlDmPurpose.INTRO to 1L), metrics.seals().ctlDmSealedBy)
+        assertEquals(mapOf(ProfileRepublishCause.NO_CUSTODY_ROW to 2L), metrics.seals().profileRepublishedBy)
+        assertEquals("the v3 seal tally is its own counter", 0L, metrics.seals().dmSealedV3)
+        assertEquals(metrics.seals(), metrics.snapshot().seals)
+    }
+
+    @Test
     fun `counters surface in the snapshot`() {
         val metrics = MeshMetrics()
         repeat(3) { metrics.onOriginated() }

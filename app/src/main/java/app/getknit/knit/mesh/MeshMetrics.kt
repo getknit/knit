@@ -4,6 +4,51 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
+ * Which path sealed a signed DM ✓✓ (a `CTL_RECEIPT` ctl DM answering a DM to us), one count per sealed frame. Measurement
+ * only: the custody-pressure sweep asks how often a DM's ✓✓ is sealed again, and through which door (#176, #300).
+ */
+enum class DmReceiptPath {
+    /** `InboundPipeline.sealDmReceipt` for a copy that was not a re-delivery (the DM's first open here). */
+    FIRST_DELIVERY,
+
+    /** `InboundPipeline.sealDmReceipt` for a re-delivery: the exists-gate's, or a marked LoRa copy's. */
+    RE_DELIVERY,
+
+    /** `MeshManager.originateDeliveryTick` for the LoRa coalescer's flush (`flushDmAcks`). */
+    COALESCER_FLUSH,
+
+    /** `MeshManager.originateDeliveryTick` for a held ✓✓'s flush (`flushHeldTicks`). */
+    HELD_FLUSH,
+}
+
+/**
+ * What a sealed ctl DM (`MeshManager.sendCtlDm`) carried, one count per frame sealed. Measurement only: the
+ * custody-pressure sweep asks which kind of sealed control frame fills custody.
+ */
+enum class CtlDmPurpose {
+    /** The sealed profile fan-out to confirmed sessions (`broadcastSealedProfile`). */
+    PROFILE_FANOUT,
+
+    /** A contact-card intro (`sendIntroTo`, driven by `IntroSync`). */
+    INTRO,
+    TRANSFER,
+    CALL,
+}
+
+/**
+ * Why the profile watcher (`MeshManager.watchProfileChanges`) published the profile again, one count per publish.
+ * Measurement only, for the same sweep: each publish mints a version, floods a frame and seals one to every confirmed
+ * session.
+ */
+enum class ProfileRepublishCause {
+    /** Our own custody held no profile frame for the current stamp: evicted by a quota, swept, or never written. */
+    NO_CUSTODY_ROW,
+
+    /** The held frame presents a field other than the settings now: an edit, or a capability bit that moved. */
+    PRESENTATION_CHANGED,
+}
+
+/**
  * Why an inbound frame we wanted was dropped — distinct from policy drops (blocked sender / moderation),
  * which are NOT counted here so a staged rollout's drop dashboard stays a pure "couldn't use it" signal.
  * Surfaced in [MeshMetrics.Snapshot.Frames.dropsByReason] for the Diagnostics screen + the periodic metrics log.
@@ -542,6 +587,11 @@ class MeshMetrics {
     private val receiptsSealed = AtomicLong()
     private val receiptsSealedFallback = AtomicLong()
     private val receiptsReAckSkipped = AtomicLong()
+    private val dmReceiptsByPath: Map<DmReceiptPath, AtomicLong> = DmReceiptPath.entries.associateWith { AtomicLong() }
+    private val reSealsByCause: Map<DmReSealCause, AtomicLong> = DmReSealCause.entries.associateWith { AtomicLong() }
+    private val ctlDmsByPurpose: Map<CtlDmPurpose, AtomicLong> = CtlDmPurpose.entries.associateWith { AtomicLong() }
+    private val profileRepublishesByCause: Map<ProfileRepublishCause, AtomicLong> =
+        ProfileRepublishCause.entries.associateWith { AtomicLong() }
     private val receiptsCustodied = AtomicLong()
     private val receiptsCoalesced = AtomicLong()
     private val receiptsRidden = AtomicLong()
@@ -1021,6 +1071,29 @@ class MeshMetrics {
      */
     fun onReAckSkipped() {
         receiptsReAckSkipped.incrementAndGet()
+    }
+
+    /** A sealed ctl DM carrying [purpose], sealed: one per frame, whatever scheme sealed it. */
+    fun onCtlDmSealed(purpose: CtlDmPurpose) {
+        ctlDmsByPurpose.getValue(purpose).incrementAndGet()
+    }
+
+    /** The profile watcher published the profile again, for [cause]. */
+    fun onProfileRepublished(cause: ProfileRepublishCause) {
+        profileRepublishesByCause.getValue(cause).incrementAndGet()
+    }
+
+    /** A signed DM ✓✓ frame sealed and sent by [path]: one per frame, however many DM ids it acks. */
+    fun onDmReceiptSealed(path: DmReceiptPath) {
+        dmReceiptsByPath.getValue(path).incrementAndGet()
+    }
+
+    /**
+     * A DM id a sealed ✓✓ answered again, re-sealed for [cause]: per DM id, counted when the seal went out for a copy that
+     * was a re-delivery or whose DM the ledger already held. A first delivery with no entry is not counted here.
+     */
+    fun onDmReSealed(cause: DmReSealCause) {
+        reSealsByCause.getValue(cause).incrementAndGet()
     }
 
     /** A seal-eligible receipt whose sealDm failed (no session + no usable prekey) — sent cleartext instead. */
@@ -2027,6 +2100,8 @@ class MeshMetrics {
             dmSealedV1Fallback = dmSealedV1Fallback.get(),
             reactionsSealed = reactionsSealed.get(),
             reactionsSealedFallback = reactionsSealedFallback.get(),
+            ctlDmSealedBy = ctlDmsByPurpose.mapValues { it.value.get() }.filterValues { it > 0 },
+            profileRepublishedBy = profileRepublishesByCause.mapValues { it.value.get() }.filterValues { it > 0 },
         )
 
     /** The [Snapshot.Receipts] counters alone, read now. */
@@ -2036,6 +2111,8 @@ class MeshMetrics {
             receiptsSealed = receiptsSealed.get(),
             receiptsSealedFallback = receiptsSealedFallback.get(),
             receiptsReAckSkipped = receiptsReAckSkipped.get(),
+            receiptsDmSealedBy = dmReceiptsByPath.mapValues { it.value.get() }.filterValues { it > 0 },
+            receiptsReSealedBy = reSealsByCause.mapValues { it.value.get() }.filterValues { it > 0 },
             receiptsCustodied = receiptsCustodied.get(),
             receiptsCoalesced = receiptsCoalesced.get(),
             receiptsRidden = receiptsRidden.get(),
@@ -2351,6 +2428,10 @@ class MeshMetrics {
             val dmSealedV1Fallback: Long = 0,
             val reactionsSealed: Long = 0,
             val reactionsSealedFallback: Long = 0,
+            // Sealed ctl DMs by what they carried, and the profile watcher's republishes by why (measurement only, the
+            // custody-pressure sweep's question: what fills custody with sealed control frames).
+            val ctlDmSealedBy: Map<CtlDmPurpose, Long> = emptyMap(),
+            val profileRepublishedBy: Map<ProfileRepublishCause, Long> = emptyMap(),
         )
 
         /**
@@ -2362,6 +2443,10 @@ class MeshMetrics {
             val receiptsSealed: Long = 0,
             val receiptsSealedFallback: Long = 0,
             val receiptsReAckSkipped: Long = 0,
+            // Signed DM ✓✓ frames sealed, by path, and DM ids re-sealed, by the re-ack rule's branch that let them through
+            // (measurement only, the custody-pressure sweep's question).
+            val receiptsDmSealedBy: Map<DmReceiptPath, Long> = emptyMap(),
+            val receiptsReSealedBy: Map<DmReSealCause, Long> = emptyMap(),
             val receiptsCustodied: Long = 0,
             val receiptsCoalesced: Long = 0,
             val receiptsRidden: Long = 0,
