@@ -174,6 +174,13 @@ doc). **Don't start a deferred item without explicit direction.**
   - The story convention is that the ring greys or disappears once seen. Decide that with the feature, and keep
     supporter status off the avatar so the two never share it.
 
+- **A relay phone that carries more: the custody annex** (designed 2026-11-15 in ADR 2026-11.tesy, Proposed). A
+  phone in relay mode keeps the frames custody's quotas evict in a second table the digest never folds, inside the
+  same 24 h. Two relays reconcile it at the lower of their size tiers and a recipient pulls from it, both over a
+  link already up. Custody, the digest and the cue plane are unchanged, so it is additive. Sizes, the group pull
+  and attachments are undecided, and nothing is built. Larger limits for every phone stay with
+  `docs/NEXT_WIRE_BREAK.md` item 12.
+
 - **Shared pinned messages** (GitHub #42, ADR 2026-10.2r7e, 2026-10-28). v1 pins are local to the phone that made
   them: a `pins` row (`PinEntity`, keyed by message id, deleted on unpin), at most `PinRepository.MAX_PER_CHAT` per
   thread, a bar under the chat's title, nothing framed. Left out on purpose, and each still an open "Still to decide"
