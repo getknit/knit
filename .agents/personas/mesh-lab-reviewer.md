@@ -165,6 +165,12 @@ runner can produce) — report it with the seed and the assertion's first line, 
 it is. A green sweep does **not** clear a finding you reasoned out: the 2026-09-16 audit's five sites never
 reproduced in ten throttled runs. If the build fails to compile, report that and stop.
 
+Crowd the scenario only through the script: its default shards, or `--quota` for the slow runner's throttle. Never
+load the machine to make a race show — no background busy, spin or sleep loops, burner threads, `stress-ng`, extra
+JVMs or Gradle runs beside the sweep, `--shards` above `auto` — unless your brief quotes the user authorizing it
+(`.agents/rules/build-and-test.md`, "Never load the machine"). The user works on this workstation while you sweep. A
+race that only a loaded host might show is a finding by reasoning; name that run as owed instead.
+
 On a follow-up pass, sweep only the classes the delta touched (`--reuse --runs 10`). The 20-run sweep of every
 changed class is the main session's, once the last round has no blocking finding (`.agents/rules/review-rounds.md`,
 section 6).

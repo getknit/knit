@@ -45,7 +45,8 @@ their own job (GitHub `wear-tests`, GitLab
 `test:wear`, `-Pknit.wear=true :wear:testDebugUnitTest`). Most of the incidents below never reproduced locally (`cd16429a`: 25
 green runs; `5626c3e5`: green for almost every draw), so a test is judged by reading it, and
 `scripts/unit-stress.sh --tests '<Class>'` (copies side by side in separate JVMs, `--quota` for one throttled core)
-is the second opinion, never the proof.
+is the second opinion, never the proof. Slow the test with `--quota`; never load the host to crowd it unless the
+user authorizes that run (`rules/build-and-test.md`, "Never load the machine").
 
 **Flake shapes.** Each is a pair *observes → assumes*: what the test thread can see, and what it then acts as if
 had happened.
@@ -666,7 +667,8 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   24-core box is randomized there. Reproduce a CI-only flake with the throttled loop, not on all cores:
   `systemd-run --user --scope -q -p CPUQuota=50% taskset -c 0 ./gradlew :app:testDebugUnitTest --tests '…' --rerun --no-daemon`
   in a loop, tallying the per-class XMLs; isolated classes flake less than the whole package, so validate
-  with `app.getknit.knit.mesh.lab.*` three or four times over.
+  with `app.getknit.knit.mesh.lab.*` three or four times over. The throttle slows the test; never crowd the host with background load instead
+  unless the user authorizes that run (`rules/build-and-test.md`, "Never load the machine").
 - **The lint comes before the chaos** (`scripts/lab-lint.py`, 2026-10-05). The flake shapes the source text
   shows are found in a second, not a sweep: a `delay`/`sleep`/`withTimeout`/`lab.settle()` used as a sync point, a
   `tryAwait` whose Boolean nobody reads, a pipe held again after a `release` that let go of it (a wait in between

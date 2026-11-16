@@ -30,6 +30,22 @@ take turns at Gradle. Still chain your own runs in one command, never one in the
 The script also runs the command in a systemd scope of CPU weight 20, so the daemon it starts and that daemon's test
 JVMs yield the CPU to the IDE and the terminals.
 
+## Never load the machine to make a race show
+
+The workstation is the user's, and they work on it while agents run. No agent (owner, reviewer or the main session)
+loads the CPU to reproduce a bug or confirm a fix unless the user has explicitly authorized it for that run, in their
+own words; a brief may pass that on only by quoting them. That rules out background busy, spin or sleep loops
+(`while :; do :; done`, `while true; do sleep 0; done`, `yes > /dev/null`, `stress-ng`, `dd if=/dev/zero`, a hashing
+loop), burner threads added to a test or a scratch harness, extra Gradle runs or JVMs started beside a test to crowd
+it, and `--shards` above the stress scripts' `auto`.
+
+The sanctioned crowding is the scripts as written: `unit-stress.sh` and `lab-chaos.sh` at their default shards (a
+quarter of the cores, inside `gradle-turn.sh`'s weight-20 scope) and `unit-prefix.sh`'s one-core pin. To get the slow
+runner's schedule, slow the test, not the host: `--quota <pct>` on either stress script, or `systemd-run --user --scope
+-q -p CPUQuota=50% taskset -c 0` around one Gradle run (`context/testing.md`). A race that does not show under those
+is reported by reasoning (a green run clears nothing you reasoned out), with the loaded-host run it would take named
+as owed, for the user to authorize. Never run that run unasked.
+
 ## Code checks run before any review
 
 The code checks are the static ones whose fix moves code: `ktlintCheck`, `detekt`, Android `lint` and lintorama, not

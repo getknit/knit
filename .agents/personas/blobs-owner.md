@@ -141,7 +141,9 @@ in scope, or you report it as owed.
 
 ## Step 4: test
 
-Run what covers the change, JDK 21, with a timeout, one Gradle invocation at a time:
+Never load the machine to make a race show (no background busy, spin or sleep loops, burner threads or extra JVMs
+beside a test) unless your brief quotes the user authorizing it: `.agents/rules/build-and-test.md`, "Never load the
+machine". Run what covers the change, JDK 21, with a timeout, one Gradle invocation at a time:
 
 ```bash
 scripts/gradle-turn.sh timeout 900 ./gradlew :app:testDebugUnitTest -q --tests '<each test class that names a touched class>'

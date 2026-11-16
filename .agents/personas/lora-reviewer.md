@@ -164,6 +164,10 @@ Then two checks that are not shapes:
 
 ## Step 3: run the checks
 
+Run them as they are. Never load the machine to make a race show (no background busy, spin or sleep loops, burner
+threads or extra JVMs beside a test) unless your brief quotes the user authorizing it:
+`.agents/rules/build-and-test.md`, "Never load the machine".
+
 ```bash
 scripts/gradle-turn.sh timeout 900 ./gradlew :app:testDebugUnitTest -q --tests 'app.getknit.knit.mesh.lora.*' \
   --tests '<each test class outside mesh/lora that names a touched class>'

@@ -179,6 +179,13 @@ finding you reasoned out; most of the catalogue's incidents never reproduced on 
 to compile, report that and stop. `wear/src/test` is outside the script: run it once with
 `scripts/gradle-turn.sh ./gradlew -Pknit.wear=true :wear:testDebugUnitTest -q --tests '<Class>'`.
 
+Crowd a test only through the scripts: `unit-stress.sh` at its default shards or `--quota`, and `unit-prefix.sh`'s
+one-core pin. Never load the machine to make a race show, here or in Step 2 — no background busy, spin or sleep
+loops, burner threads in a test or a scratch harness, `stress-ng`, extra JVMs or Gradle runs beside the stress,
+`--shards` above `auto` — unless your brief quotes the user authorizing it (`.agents/rules/build-and-test.md`,
+"Never load the machine"). The user works on this workstation while you review. A race that only a loaded host
+might show is a finding by reasoning; name that run as owed instead.
+
 An instrumented test has no stress script, and you never run one yourself: a managed device boots for minutes, and
 the lab phones are off limits. Name the run the change owes, one class per Gradle call (under the orchestrator a
 comma-separated list runs only the first), with `-PseedDemo=true` for a seeded package:

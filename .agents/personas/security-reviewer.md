@@ -344,6 +344,10 @@ Then three checks that are not shapes:
 
 ## Step 3: run the checks
 
+Run them as they are. Never load the machine to make a race show (no background busy, spin or sleep loops, burner
+threads or extra JVMs beside a test) unless your brief quotes the user authorizing it:
+`.agents/rules/build-and-test.md`, "Never load the machine".
+
 ```bash
 scripts/gradle-turn.sh timeout 900 ./gradlew :app:testDebugUnitTest -q --tests '<each test class that names a touched class>'
 ```
