@@ -87,6 +87,7 @@ import app.getknit.knit.mesh.spool.SpoolTicketJournal
 import app.getknit.knit.mesh.spool.SpoolUploads
 import app.getknit.knit.mesh.spool.TicketKeyJournal
 import app.getknit.knit.moderation.ImageScreeningService
+import app.getknit.knit.moderation.ShippedWordList
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.transfer.OfferOutcome
 import app.getknit.knit.transfer.TransferManager
@@ -112,6 +113,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -1198,6 +1200,116 @@ class ChatViewModelTest {
                     .single()
             assertTrue(row.moderationFlagged)
             assertEquals(context.getString(R.string.chat_meshcore_unnamed), row.senderName)
+        }
+
+    /**
+     * The directory as `PeerRepository` emits it with the name screen wired (ADR 2026-11.y4pc): drawn through the shipped
+     * screen while [filteringFlow] is on, as stored once it is off — the one toggle the words' filter also reads.
+     */
+    private fun screenNamesWhileFiltering() {
+        val names = ShippedWordList.shownNames()
+        every { peers.observeDirectory() } returns
+            combine(peersFlow, filteringFlow) { p, on -> directoryOf(p, screen = names.takeIf { on }) }
+    }
+
+    /**
+     * ADR 2026-11.y4pc on the Stage 6 room: a MeshCore author's name the name screen hides reads as "Unnamed" in the bubble,
+     * and the post itself stays shown (the words' filter passed it). A known person holds the same name, so a name that
+     * got past the screen would also carry the clash marker; with filtering off it shows as written, marker and all.
+     */
+    @Test
+    fun aMeshcoreNameTheNameScreenHidesIsUnnamedInTheBubbleUntilFilteringIsOff() =
+        runTest {
+            screenNamesWhileFiltering()
+            peersFlow.value = listOf(peer("namesake", name = ShippedWordList.FLAGGED_NAME))
+            val vm = vm(Conversations.MESHCORE_PUBLIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value = listOf(meshcoreHeard("flagged", ShippedWordList.FLAGGED_NAME))
+            advanceUntilIdle()
+
+            val unnamed = context.getString(R.string.chat_meshcore_unnamed)
+            val hidden =
+                vm.state.value.rows
+                    .single()
+            assertFalse("only the name is hidden, never the post", hidden.moderationFlagged)
+            assertEquals("anyone around?", hidden.body)
+            val origin = checkNotNull(hidden.origin)
+            assertTrue(origin.meshcore)
+            assertNull("the screened name, not the claimed one: $origin", origin.name)
+            assertEquals(unnamed, origin.nodeLabel)
+            assertEquals(unnamed, hidden.senderName)
+            assertFalse("no name, so nothing to clash: $origin", origin.nameClash)
+
+            filteringFlow.value = false
+            advanceUntilIdle()
+            val shown =
+                vm.state.value.rows
+                    .single()
+            assertEquals(ShippedWordList.FLAGGED_NAME, shown.origin?.name)
+            assertEquals(ShippedWordList.FLAGGED_NAME, shown.origin?.nodeLabel)
+            assertEquals(ShippedWordList.FLAGGED_NAME, shown.senderName)
+            assertEquals("the namesake's marker", true, shown.origin?.nameClash)
+        }
+
+    /** The pinned bar's one line reads the bubble's origin ([aMeshcoreNameTheNameScreenHidesIsUnnamedInTheBubbleUntilFilteringIsOff]). */
+    @Test
+    fun thePinnedBarNamesAMeshcoreAuthorTheNameScreenHidesUnnamedUntilFilteringIsOff() =
+        runTest {
+            screenNamesWhileFiltering()
+            val pins = mockk<PinRepository>(relaxed = true)
+            every { pins.observePinnedIn(Conversations.MESHCORE_PUBLIC) } returns
+                flowOf(listOf(PinnedMessage(meshcoreHeard("p", ShippedWordList.FLAGGED_NAME), 50L)))
+            val vm = vm(Conversations.MESHCORE_PUBLIC, pins = pins)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.pinned.collect {} }
+            advanceUntilIdle()
+
+            assertEquals(listOf(context.getString(R.string.chat_meshcore_unnamed)), vm.pinned.value.map { it.author })
+
+            filteringFlow.value = false
+            advanceUntilIdle()
+            assertEquals(
+                listOf(context.getString(R.string.chat_meshcore_name_claimed, ShippedWordList.FLAGGED_NAME)),
+                vm.pinned.value.map { it.author },
+            )
+        }
+
+    /**
+     * Main's half of ADR 2026-11.y4pc: a heard Meshtastic post's board name the name screen hides is never drawn, and the
+     * bubble falls back to the `!hex` id every Meshtastic client shows for the node.
+     */
+    @Test
+    fun aMeshtasticBoardNameTheNameScreenHidesFallsBackToTheNodeIdUntilFilteringIsOff() =
+        runTest {
+            screenNamesWhileFiltering()
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "me",
+                        body = "anyone around?",
+                        id = "mp-flagged",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0x1234abcd,
+                        originName = ShippedWordList.FLAGGED_NAME,
+                    ),
+                )
+            advanceUntilIdle()
+
+            val hidden =
+                vm.state.value.rows
+                    .single()
+            assertNull("the screened board name: ${hidden.origin}", hidden.origin?.name)
+            assertEquals("!1234abcd", hidden.senderName)
+
+            filteringFlow.value = false
+            advanceUntilIdle()
+            val shown =
+                vm.state.value.rows
+                    .single()
+            assertEquals(ShippedWordList.FLAGGED_NAME, shown.origin?.name)
+            assertEquals(ShippedWordList.FLAGGED_NAME, shown.senderName)
         }
 
     @Test

@@ -14,6 +14,16 @@ object ShippedWordList {
     const val NAME_EXCLUSIONS = "name_exclusions_en.txt"
     const val NAME_ALLOWED = "name_allowed_en.txt"
 
+    /**
+     * A handle the shipped [nameScreen] flags for strangers — the one `NameScreenTest`, `PeerLabelsTest` and
+     * `PeerRepositoryTest` hide, pinned flagged by `NameScreenVectorTest`. A test that needs a name the screen hides
+     * names it through here, so no new term is spelled out in a new place.
+     */
+    const val FLAGGED_NAME = "Fuck69"
+
+    /** What the app draws other people's names with while Content filtering is on (ADR 2026-11.y4pc), over the shipped lists. */
+    fun shownNames(): ShownNames = ShownNames(nameScreen())
+
     /** The [NameScreen] the app builds, from the shipped lists. */
     fun nameScreen(): NameScreen =
         NameScreen(

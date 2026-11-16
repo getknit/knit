@@ -8,7 +8,9 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.reaction.ReactionEntity
+import app.getknit.knit.identity.NamePresenter
 import app.getknit.knit.identity.PeerLabels
+import app.getknit.knit.moderation.ShownNames
 
 /**
  * Minimal entity builders for ViewModel/UI tests: default the noise so a test states only the fields it
@@ -117,10 +119,22 @@ fun reaction(
 
 /**
  * A [PeerDirectory] over [peers] as `PeerRepository.observeDirectory()` would emit it, with [me] / [myName]
- * standing in for this device (pass `me = null` to leave self out of the collision universe).
+ * standing in for this device (pass `me = null` to leave self out of the collision universe). [screen] is the name
+ * screen as the repository applies it while Content filtering is on (ADR 2026-11.y4pc): people's names and group names
+ * drawn through it. Null, the default, is filtering off, or a build that wires no screen: every name as stored.
  */
 fun directoryOf(
     peers: List<PeerEntity>,
     me: String? = "me",
     myName: String = "",
-): PeerDirectory = PeerDirectory(peers, PeerLabels.index(peers.map { it.nodeId to it.name }, me?.let { it to myName }))
+    screen: ShownNames? = null,
+): PeerDirectory =
+    PeerDirectory(
+        peers,
+        PeerLabels.index(
+            peers.map { it.nodeId to it.name },
+            me?.let { it to myName },
+            presenter = screen?.person ?: NamePresenter.AS_STORED,
+            groupPresenter = screen?.group ?: NamePresenter.AS_STORED,
+        ),
+    )

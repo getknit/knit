@@ -46,6 +46,7 @@ import app.getknit.knit.data.scopeconfig.ScopeConfigRepository
 import app.getknit.knit.data.settings.InboundSettings
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.IdentitySource
+import app.getknit.knit.identity.NamePresenter
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.identity.PeerLabels
 import app.getknit.knit.mesh.crypto.AesGcm
@@ -118,6 +119,7 @@ import app.getknit.knit.mesh.protocol.fromHex
 import app.getknit.knit.mesh.protocol.toHex
 import app.getknit.knit.mesh.spool.ScopeSync
 import app.getknit.knit.moderation.ImageScreeningService
+import app.getknit.knit.moderation.ShippedWordList
 import app.getknit.knit.notifications.NotifConversation
 import app.getknit.knit.notifications.NotifMessage
 import app.getknit.knit.notifications.Notifier
@@ -6355,6 +6357,48 @@ class InboundPipelineTest {
 
             val claimedName = NotificationLabels.ENGLISH.claimedName
             assertEquals(claimed.map { claimedName.format(it) } + NotificationLabels.ENGLISH.unnamed, names)
+        }
+
+    /**
+     * ADR 2026-11.y4pc on the Stage 6 room: the shade's person is the author's name as this phone shows names, so one the
+     * name screen hides is "Unnamed" while Content filtering is on, never the quoted name, and the post's words still
+     * notify (the words' filter passed them). The label index is built as `PeerRepository` builds it, screened exactly
+     * while the toggle is on; the row keeps the name as it came either way.
+     */
+    @Test
+    fun aMeshcoreAuthorTheNameScreenHidesNotifiesAsUnnamedUntilFilteringIsOff() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val names = ShippedWordList.shownNames()
+            coEvery { rig.peers.labelIndex() } answers {
+                val presenter = if (rig.settings.contentFilteringEnabled.value) names.person else NamePresenter.AS_STORED
+                PeerLabels.index(rig.peerMap.values.map { peer -> peer.nodeId to peer.name }, presenter = presenter)
+            }
+            val posted = mutableListOf<NotifMessage>()
+            coEvery { rig.notifier.notify(any(), any(), any(), any(), any()) } answers { posted += firstArg<NotifMessage>() }
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("hello", name = ShippedWordList.FLAGGED_NAME))
+            advanceUntilIdle()
+            rig.settings.contentFilteringEnabled.value = false
+            rig.pipeline.deliverMeshcorePost(meshcorePost("again", name = ShippedWordList.FLAGGED_NAME))
+            advanceUntilIdle()
+
+            val texts = NotificationLabels.ENGLISH
+            assertEquals(
+                listOf("hello" to texts.unnamed, "again" to texts.claimedName.format(ShippedWordList.FLAGGED_NAME)),
+                posted.map { it.body to it.senderName },
+            )
+            // The Person key is the shown name's (security review of the rebase merge): a hidden author shares the
+            // unnamed key, so no hash of the hidden name reaches the notification store.
+            assertEquals(
+                listOf(meshcoreSpeakerKey(null), meshcoreSpeakerKey(ShippedWordList.FLAGGED_NAME)),
+                posted.map { it.senderId },
+            )
+            assertEquals(
+                "never rewritten on the row",
+                listOf(ShippedWordList.FLAGGED_NAME, ShippedWordList.FLAGGED_NAME),
+                rig.msgMap.values.map { it.originName },
+            )
         }
 
     /**

@@ -31,6 +31,7 @@ import app.getknit.knit.mesh.TransportStatus
 import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
+import app.getknit.knit.moderation.ShippedWordList
 import app.getknit.knit.ui.InMemoryMessages
 import app.getknit.knit.ui.chat.DeliveryStatus
 import app.getknit.knit.ui.directoryOf
@@ -44,6 +45,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -275,6 +277,43 @@ class ChatListViewModelTest {
                 assertEquals(claimed, context.getString(R.string.chat_meshcore_name_claimed, claimed) + ": hello", preview)
                 assertNotEquals("$you: hello", preview)
             }
+        }
+
+    /**
+     * ADR 2026-11.y4pc on the Stage 6 room: the preview's author (`speakerLabel`) is the name as names are shown, so one the
+     * name screen hides reads "Unnamed" while Content filtering is on, never the quoted name, and the post's words stay.
+     * The directory is built as `PeerRepository` builds it, screened exactly while the toggle the words' filter reads is on.
+     */
+    @Test
+    fun aMeshcorePreviewNamesAnAuthorTheNameScreenHidesUnnamedUntilFilteringIsOff() =
+        runTest {
+            val names = ShippedWordList.shownNames()
+            every { peers.observeDirectory() } returns
+                combine(peersFlow, filteringFlow) { p, on -> directoryOf(p, screen = names.takeIf { on }) }
+            val vm = vmByKind()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to LoraFacts(plane = LoraPlane.Live, board = BoardKind.MESHCORE))
+            store.set(
+                msg(
+                    senderId = "me",
+                    body = "hello",
+                    sentAt = 100,
+                    conversationId = Conversations.MESHCORE_PUBLIC,
+                    originNode = MeshPostOrigin.MESHCORE_NODE,
+                    originName = ShippedWordList.FLAGGED_NAME,
+                ),
+            )
+            advanceUntilIdle()
+
+            fun preview() =
+                vm.state.value.conversations
+                    .single { it.id == Conversations.MESHCORE_PUBLIC }
+                    .lastPreview
+            assertEquals(context.getString(R.string.chat_meshcore_unnamed) + ": hello", preview())
+
+            filteringFlow.value = false
+            advanceUntilIdle()
+            assertEquals(context.getString(R.string.chat_meshcore_name_claimed, ShippedWordList.FLAGGED_NAME) + ": hello", preview())
         }
 
     @Test
