@@ -52,8 +52,11 @@ class ParkWalkSimTest {
                     walkers = walkers,
                     durationMs = minutes * MS_PER_MINUTE,
                     fieldM = FIELD_M * sqrt(walkers.toDouble() / DEFAULT_WALKERS),
+                    inboundSlots = System.getProperty(INBOUND)?.let { if (it == "phone") MeshLab.PHONE_INBOUND_SLOTS else it.toInt() },
+                    settleMs = (System.getProperty(SETTLE)?.toLong() ?: 0L) * MS_PER_MINUTE,
                 )
-            val out = File("build/mesh-sim").apply { mkdirs() }.resolve("park-walk-s$seed-w$walkers-m$minutes.txt")
+            val bound = scenario.inboundSlots?.let { "-q$it" }.orEmpty()
+            val out = File("build/mesh-sim").apply { mkdirs() }.resolve("park-walk-s$seed-w$walkers-m$minutes$bound.txt")
             // The report's file holds the outing's progress while it runs, and the report once it is over.
             out.writeText("")
             val report = MeshSim(lab, scenario) { out.appendText("$it\n") }.play()
@@ -70,6 +73,12 @@ class ParkWalkSimTest {
         const val SEED = "knit.meshSim"
         const val WALKERS = "knit.meshSimWalkers"
         const val MINUTES = "knit.meshSimMinutes"
+
+        /** `phone` ([MeshLab.PHONE_INBOUND_SLOTS]) or a number: each router's inbound queue drops what finds it full. */
+        const val INBOUND = "knit.meshSimInbound"
+
+        /** Minutes to watch custody parity after the gather ([SimScenario.settleMs]). */
+        const val SETTLE = "knit.meshSimSettleMinutes"
         const val DEFAULT_WALKERS = 12
         const val DEFAULT_MINUTES = 4
         const val MS_PER_MINUTE = 60_000L

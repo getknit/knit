@@ -773,13 +773,15 @@ android {
                 // each takes the minutes of wall clock it simulates and reports what the mesh did, so it is a
                 // measurement and no check, and every other run leaves it out. `knit.meshSimWalkers` and
                 // `knit.meshSimMinutes` size the outing; `knit.meshSimHeap` (say `4g`) lifts the fork's heap for a
-                // crowd the 1 GiB above cannot hold.
+                // crowd the 1 GiB above cannot hold. `knit.meshSimInbound` (`phone` or a count) bounds each router's
+                // inbound queue as a phone's is; `knit.meshSimSettleMinutes` watches custody parity after the gather.
                 val meshSim = providers.gradleProperty("knit.meshSim").orNull
                 if (meshSim == null) {
                     test.filter.excludeTestsMatching("app.getknit.knit.mesh.sim.*SimTest")
                 } else {
                     test.systemProperty("knit.meshSim", meshSim)
-                    listOf("knit.meshSimWalkers", "knit.meshSimMinutes").forEach { key ->
+                    val sizes = listOf("knit.meshSimWalkers", "knit.meshSimMinutes")
+                    (sizes + listOf("knit.meshSimInbound", "knit.meshSimSettleMinutes")).forEach { key ->
                         providers.gradleProperty(key).orNull?.let { test.systemProperty(key, it) }
                     }
                     providers.gradleProperty("knit.meshSimHeap").orNull?.let { test.maxHeapSize = it }

@@ -642,7 +642,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   chaos lag ahead of the lot (`LabTransport.sendBurst`), for a scenario about how many wait there and not how they
   interleave. The lab drops nothing there either. `BluetoothMeshTransport` and
   `WifiAwareTransport` hand the router frames with `tryEmit` into a buffer of 256, so a frame that finds it full
-  is lost; no scenario models that.
+  is lost. `LabLimits.inboundSlots` plays that for a node (`MeshLab.PHONE_INBOUND_SLOTS`: the plane's 256, the frame
+  the composite's `merge` holds, its channel of 64 and the frame in hand), counted in `LabTransport.inboundRefused` and pinned by
+  `InboundBurstLabTest`. The lab has no airtime, so a burst reaches the queue faster than a radio could bring it:
+  what a bounded node drops is an upper bound on what a phone would.
 - **Restart is real.** `node.restart()` tears the live stack down and rebuilds it over the same identity, DB
   and settings — every in-memory structure (`PendingInbound`, `PendingGroupKeys`, ratchet caches, seen set)
   starts empty.
@@ -835,7 +838,15 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
 - **Run it with `-Pknit.meshSim=<seed>`**, which every other run leaves out:
   `scripts/gradle-turn.sh ./gradlew :app:testDebugUnitTest --tests 'app.getknit.knit.mesh.sim.ParkWalkSimTest'
   -Pknit.meshSim=1`. Always name `--tests`: the property alone runs the whole suite with the outing in it.
-  `-Pknit.meshSimWalkers`, `-Pknit.meshSimMinutes` and `-Pknit.meshSimHeap` size it. The
+  `-Pknit.meshSimWalkers`, `-Pknit.meshSimMinutes` and `-Pknit.meshSimHeap` size it.
+  `-Pknit.meshSimInbound=phone` (or a count) bounds every router's inbound queue as a phone's is
+  (`LabLimits.inboundSlots`), and `-Pknit.meshSimSettleMinutes=<n>` reads custody across the field every 15 s
+  after the gather until the stores match, then names what is still odd: late or stuck. With a bound, the
+  `inbound queues` lines count how often a link's reader waited for a slot, the most frames one node's links held
+  back at once (sampled every 250 ms) and the pages dropped; a `probes:` line times eight fresh DMs sent over
+  links the gather raised, the wait behind the backlog (#331). A DM still missing at the
+  end gets a `lost:` line: how many stores held it over time, how often it crossed to its recipient and how many
+  page copies a full queue dropped, and how many writes toward it were skipped as already crossed. The
   report lands in `app/build/mesh-sim/`: contacts made and how long they lasted, DM delivery and latency by
   how the two ends stood at the send (linked, a path apart, partitioned), room reach, frames per plane of the
   router, custody rows, and what the run cost the machine.
@@ -853,6 +864,28 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   the cap, the machine spent fifteen cores in `ForwardDao.evictFairest`, and the run was stopped. Read the
   custody line before the delivery lines, and pin a big run to half the machine: `taskset -c 0-11
   scripts/gradle-turn.sh ./gradlew --no-daemon …`.
+- **Forty-eight walkers fill custody, and the gathered field converges late, not stuck** (seeds 1 to 3,
+  2026-11-15, unbounded queues). Every DM arrived, and every store came to hold the same 1,000 ids, custody's
+  cap, about 93% of them chat frames, 60 to 106 s after the gather. The last gap was each store short one id at
+  the cap's edge, which a re-offer round or two closed. The oracle's 120 s has little to spare.
+- **A phone's inbound queue freezes the gather** (seeds 1 and 2, 2026-11-15, `-Pknit.meshSimInbound=phone`).
+  The walk lost a few hundred frames on a few nodes and delivered as before; the gather lost 48,000 to 76,000,
+  and custody across the field stood still for about ten minutes before it converged (541 and 1,142 s after the
+  gather). A frame the far end's queue dropped has crossed the link at both ends, so `LinkCrossings` skips its
+  re-serve over that link for `SeenSet.DEFAULT_TTL_MS`: the invariant its KDoc states (the far end handed every
+  suppressed frame to its router) does not hold on a plane that drops (#331). Each run left one DM undelivered
+  after the gather. A traced rerun of seed 2 showed how one is lost for good: all seven copies that reached its
+  recipient were dropped at the full queue, every re-serve after them was skipped as already crossed, and within
+  72 s of the gather custody's cap had evicted it from every store, the sender's own included. When the window
+  lapsed nobody held it. Wi-Fi Aware drops the same way but does not skip by crossings (#333).
+- **With #331's waiting readers the gather converges as if unbounded** (seeds 1 to 3, 2026-11-16, on the fix
+  `2d1d6b236`, `-Pknit.meshSimInbound=phone`). Nothing was dropped; readers waited 61,000 to 176,000 times over the
+  outing, and one node's links held at most 4,300 to 5,800 frames back (6,100 in a rerun of seed 1), 3 to 6 s after the gather's links came
+  up. Every DM arrived, the stores matched 64 to 66 s into the settle, which starts once every DM has arrived
+  (unbounded: 60 to 106 s), and the oracle passed. A rerun of seed 1 timed up to eight fresh DMs sent over links
+  the gather raised: seven were in by 2 to 4 s, one by 23 s, read on the settle's 15 s poll. The lab holds that backlog in the
+  receiver's pipe inboxes; on a phone it sits in the senders' queues and the stack, if Android's credits push
+  back, which only a device trial can tell.
 - **What it leaves out.** One plane, no path loss, no link budget, none of the transports' own dial policies:
   `LabTransport` stands in for the whole radio, so the topology is the geometry's, not what Bluetooth or
   Wi-Fi Aware would have formed.
