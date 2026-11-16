@@ -128,12 +128,12 @@ handshake below, but it rewrites the framing of every link; the proof is additiv
   the NDI and, when it was the last inbound with an initiate owed, recycles it while the refused NDP is still alive. A
   proven Wi-Fi Aware link registers the reply's caps (inside the transcript), an unproven one the SSI's as before.
 
-The mesh lab has no radio layer (`LabTransport` registers links without a HELLO), so no lab scenario covers the
-handshake: `LinkHandshakeTest` (both roles over a pipe, every failure shape, the vectors' rejects), `LinkClaimsTest`,
-`LinkProofTest`, `BleAdmissionPolicyTest`'s rows, `DirectLinkTransportTest` (a lane link counts as proven and is never
-refused; a bit-less lane peer feeds no claim), the pipeline's profile and blob-control tests, and the device trial
-do. `vectors/keyed-v1.json` → `link` pins the HELLOs, both transcripts, both PROOF records and the rejects;
-`ios-emitted-v1.json` pins iOS's proofs once it exports them.
+The mesh lab's `MeshLab.doorLink` (#313) runs the handshake, proofs included, between lab nodes, but not `LinkClaims`,
+so no lab scenario covers the claim rules: `LinkHandshakeTest` (both roles over a pipe, every failure shape, the
+vectors' rejects), `LinkClaimsTest`, `LinkProofTest`, `BleAdmissionPolicyTest`'s rows, `DirectLinkTransportTest` (a lane
+link counts as proven and is never refused; a bit-less lane peer feeds no claim), the pipeline's profile and
+blob-control tests, and the device trial do. `vectors/keyed-v1.json` → `link` pins the HELLOs, both transcripts, both
+PROOF records and the rejects; `ios-emitted-v1.json` pins iOS's proofs once it exports them.
 
 ## Amendment 2026-11-01 — a same-plane displacement counts as a closed claim (contract revision 6)
 

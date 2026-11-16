@@ -188,6 +188,18 @@ The only doubles are the leaves with a hardware or UI side (notifier, tflite tex
 The wiring mirrors `di/AppModule` + `di/MeshModule` by hand, so a constructor change is a compile error here
 rather than a silently narrower rig.
 
+**The link door** (#313, `LabDoor`). `MeshLab.link` registers a link with no handshake. `MeshLab.doorLink(a, b)`
+runs each end's real link handshake first, over an in-memory socket pair with bounded reads (`LinkHandshake`'s
+sealed form toward a build whose advert seals, the plain form with §7 otherwise, each refusal counted through
+`LinkSealPolicy`), registers only when both halves linked, and then sends every frame on that link through the
+sockets each half registered (through the seal on a sealed link, with `armFailureCount` armed). `LabLimits.linkDoor`
+gives a node an older build's door (`LinkDoor.PROOF` for v2.11.x, `PLAIN` for v2.10.x), re-stated from the release
+branches, because `LinkHandshake` writes this build's caps only; the mesh above the door stays this build's.
+`dialRaw(target) { … }` writes a hostile dialer's raw records at a node's accept, and
+`LabTransport.tamperNext` rewrites one raw write on a live door link. The door does not run `LinkClaims` or the
+planes' backoffs, and files and custody digests still cross as objects. Scenarios: `LinkDoorLabTest`,
+`MaliciousForkLabTest`'s seal cases.
+
 It exists for the bug that lives **between** two nodes — A's real send order meeting B's real state — which
 neither `MeshManagerTest` (real sender, recording transport, mocked repos) nor `InboundPipelineTest` (real
 receiver, hand-built frames, mocked repos) can see, because each half is checked against a stand-in for the

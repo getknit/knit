@@ -123,11 +123,13 @@ named follow-up) is what this is, with encryption added for the same round trip.
   readers, which read nothing from a blinded payload; that design has to carry the flag some other way.
 - No rekeying: the 2^48 frame cap closes a link first.
 
-The mesh lab has no radio layer (`LabTransport` registers links without a handshake), so no lab scenario covers the
-seal. `LinkHandshakeTest` over pipes (both forms, both roles, every failed seal, §7 both ways, old-build-shaped peers),
-`SealedLinkSocketTest`, `LinkSealTest`, `LinkProofTest`, `LinkFramingTest`, `BleAdvertPayloadTest`, the planes' dial
-and accept decision tests, and the device trials (T1-T6) do. #286's `assertConverged` scenario waits for a socket mode
-in the lab. `vectors/keyed-v1.json` → `link.seal` pins the key shares, keys, sealed HELLOs, both transcripts and PROOF
-frames, the splits and the rejects; `ios-emitted-v1.json` → `link.seal` (knit-ios `68ce9f4`) pins Carol's key shares,
-keys, sealed HELLOs and transcripts byte for byte, and her randomized sealed PROOFs, which `IosEmittedVectorTest`
-opens and verifies and checks fail under the other role and the v1 label.
+The mesh lab's `MeshLab.doorLink` (#313) runs both ends' handshake over an in-memory socket pair and sends a door link's
+frames through the sockets it registered: `MaliciousForkLabTest` covers §7's refusal, a bad key share and a flipped bit
+in a `SEALED` frame, and `LinkDoorLabTest` a mesh of v2.10.x-, v2.11.x- and sealing doors converging. It runs no
+`LinkClaims` and no plane's backoff. `LinkHandshakeTest` over pipes (both forms, both roles, every failed seal, §7 both
+ways, old-build-shaped peers), `SealedLinkSocketTest`, `LinkSealTest`, `LinkProofTest`, `LinkFramingTest`,
+`BleAdvertPayloadTest`, the planes' dial and accept decision tests, and the device trials (T1-T6) cover the rest.
+`vectors/keyed-v1.json` → `link.seal` pins the key shares, keys, sealed HELLOs, both transcripts and PROOF frames, the
+splits and the rejects; `ios-emitted-v1.json` → `link.seal` (knit-ios `68ce9f4`) pins Carol's key shares, keys, sealed
+HELLOs and transcripts byte for byte, and her randomized sealed PROOFs, which `IosEmittedVectorTest` opens and verifies
+and checks fail under the other role and the v1 label.

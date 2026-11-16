@@ -326,6 +326,10 @@ class LabTransport(
 
         // Set by [disconnect] under the `heldFiles` lock: a stream begun on a pipe already torn down is cut at once.
         var closed = false
+
+        // The link door this direction's frames cross ([LabDoor.Crossing], #313), or null for a lab link with none.
+        @Volatile
+        var door: LabDoor.Crossing? = null
         val heldFiles = mutableListOf<HeldFile>()
 
         /** Parks [file] if this pipe is holding files; false means land it. One lock with [releaseFiles]. */
@@ -560,12 +564,19 @@ class LabTransport(
         publish: Boolean = true,
         lossy: (WireEnvelope) -> Boolean = { false },
         arm: () -> Unit = {},
+        // The link door's two directions, this side's toward [other] first ([MeshLab.doorLink], #313): every frame either
+        // way then crosses the sockets the handshake registered. Null links with no door, as every lab link did before.
+        doors: Pair<LabDoor.Crossing, LabDoor.Crossing>? = null,
     ) {
         if (other.nodeId == nodeId) return
         crossings.forget(other.nodeId)
         other.crossings.forget(nodeId)
-        pipes[other.nodeId] = Pipe(other).also { it.lossy = lossy }
-        other.pipes[nodeId] = Pipe(this)
+        pipes[other.nodeId] =
+            Pipe(other).also {
+                it.lossy = lossy
+                it.door = doors?.first
+            }
+        other.pipes[nodeId] = Pipe(this).also { it.door = doors?.second }
         // The pipes exist and neither end lists the link yet — not in `neighbors.value`, not to a collector — so what
         // [arm] holds or streams is in place before anything can send over it (`MeshLab.link`).
         arm()
@@ -586,7 +597,10 @@ class LabTransport(
      * streaming across it either way is cut, and its receiver keeps what came — `FramedLink.close()` (#116).
      */
     fun disconnect(other: LabTransport) {
-        listOfNotNull(pipes.remove(other.nodeId), other.pipes.remove(nodeId)).forEach { cutStreams(it) }
+        listOfNotNull(pipes.remove(other.nodeId), other.pipes.remove(nodeId)).forEach {
+            cutStreams(it)
+            it.door?.close()
+        }
         crossings.forget(other.nodeId)
         other.crossings.forget(nodeId)
         presentNeighbors()
@@ -671,6 +685,17 @@ class LabTransport(
         drop: (WireEnvelope) -> Boolean = { false },
     ) {
         pipe(to).lossy = drop
+    }
+
+    /**
+     * Rewrites the next bytes this node's side of the door toward [to] writes, once ([LabDoor.Bytes.tamperNext]): the
+     * hostile radio between two phones, for a scenario that flips a bit in a `SEALED` frame on a live link (#313).
+     */
+    fun tamperNext(
+        to: LabTransport,
+        rewrite: (ByteArray) -> ByteArray,
+    ) {
+        checkNotNull(pipe(to).door) { "$nodeId has no door toward ${to.nodeId}: link it with MeshLab.doorLink" }.raw.tamperNext = rewrite
     }
 
     /** What is parked for [to] right now, in send order — for a scenario that waits for a frame to be held. */
@@ -953,7 +978,11 @@ class LabTransport(
         frames: List<WireEnvelope>,
     ) {
         // Two held copies of one frame (the flood's and the fast path's) are one write here, as on the phone.
-        frames.forEach { if (crosses(pipe, FrameKey.ofSigned(it), VIA_LINK)) pipe.target.deliver(it, nodeId, VIA_LINK) }
+        frames.forEach { held ->
+            if (!doorGone(pipe) && crosses(pipe, FrameKey.ofSigned(held), VIA_LINK)) {
+                throughDoor(pipe, held)?.let { pipe.target.deliver(it, nodeId, VIA_LINK) }
+            }
+        }
     }
 
     /**
@@ -1061,9 +1090,36 @@ class LabTransport(
             // A held frame is judged by the memo at [release], not here.
             pipe.park(out) -> Unit
 
+            doorGone(pipe) -> Unit
+
             !crosses(pipe, key, VIA_LINK) -> Unit
 
-            else -> pipe.target.deliver(out, nodeId, VIA_LINK)
+            else -> throughDoor(pipe, out)?.let { pipe.target.deliver(it, nodeId, VIA_LINK) }
+        }
+    }
+
+    /**
+     * A door link already down — failed, or replaced since the caller read [pipes]: its frame is lost before the memo, so
+     * the key never lands in the memo of a newer link to the same node (a phone's dead `FramedLink` touches no new one).
+     */
+    private fun doorGone(pipe: Pipe): Boolean {
+        val door = pipe.door ?: return false
+        return door.broken || pipes[pipe.target.nodeId] !== pipe
+    }
+
+    /**
+     * [wire] as the far end read it off the link's door ([LabDoor.Crossing]), or [wire] itself on a link with none. Null
+     * when the door failed under it — a frame that would not open, a record no seal carries: the link is down from here,
+     * as `FramedLink`'s reader ends it, and the frame is lost with it.
+     */
+    private fun throughDoor(
+        pipe: Pipe,
+        wire: WireEnvelope,
+    ): WireEnvelope? {
+        val door = pipe.door ?: return wire
+        return door.cross(wire) ?: run {
+            if (pipes[pipe.target.nodeId] === pipe) disconnect(pipe.target)
+            null
         }
     }
 
@@ -1123,9 +1179,11 @@ class LabTransport(
             // A held frame is judged by the memo at [release], not here.
             pipe.park(wire) -> Unit
 
+            doorGone(pipe) -> Unit
+
             !crosses(pipe, key, VIA_FAST) -> Unit
 
-            else -> pipe.target.deliverNow(wire, nodeId, VIA_FAST)
+            else -> throughDoor(pipe, wire)?.let { pipe.target.deliverNow(it, nodeId, VIA_FAST) }
         }
     }
 

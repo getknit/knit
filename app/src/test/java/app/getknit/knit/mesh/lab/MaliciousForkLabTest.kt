@@ -11,6 +11,8 @@ import app.getknit.knit.mesh.CarrierPullPolicy
 import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.SeenSet
+import app.getknit.knit.mesh.link.LinkFraming
+import app.getknit.knit.mesh.link.LinkHandshake
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.DEFAULT_TTL
@@ -1168,6 +1170,109 @@ class MaliciousForkLabTest : StrandedLabBase() {
             lab.assertConverged(listOf(alice, mallory), atLeast = 1) { groupId }
         }
 
+    /**
+     * The link door's refusals (#313, ADR 2026-11.8mhs): a plain opening between two sealing builds (§7), a key share of
+     * the wrong length and the all-zero point each register nothing and count once on the side that refused, and the
+     * honest pair then links sealed and proven, and converges.
+     */
+    @Test
+    fun aDowngradedOrForgedOpeningRegistersNothingAndTheHonestPairLinksSealed() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val mallory = lab.node("mallory").apply { setDisplayName("Mallory") }
+
+            fun refused(n: LabNode) = n.metrics.frames().linkSealRefused
+
+            fun failed(n: LabNode) = n.metrics.frames().linkSealFailed
+
+            // A relay stripped the seal flag from Bob's advert: Alice dials plain, her HELLO carries the bit, Bob's build
+            // seals too, so he refuses with no reply (§7) and Alice reads the silence as no reply, counting nothing.
+            val stripped = lab.doorLink(alice, bob, advertSeals = false)
+            assertFalse("a plain link between two sealing builds registers: $stripped", stripped.linked)
+            assertEquals("bob counts the plain opening once", 1L, refused(bob))
+            assertEquals("alice's side is a dial with no reply", 0L, refused(alice) + failed(alice))
+
+            // Mallory writes a plain HELLO with the seal bit herself: refused the same way, before any admission.
+            val plain =
+                lab.dialRaw(bob) {
+                    val hello = Protocol.hello(mallory.nodeId, LinkHandshake.freshNonce()).encodeToByteArray()
+                    LinkFraming.write(it.output, LinkFraming.Type.HELLO, hello)
+                    it.output.flush()
+                }
+            assertTrue("bob answers a forged plain opening: $plain", plain is LabDoor.Half.Refused)
+            assertEquals(2L, refused(bob))
+
+            // A key share one byte short, then the all-zero point: bytes that arrived and were wrong, a failed seal each.
+            val shares = listOf("31 bytes" to ByteArray(SHORT_KEY_SHARE), "the zero point" to ByteArray(LinkFraming.KEY_SHARE_BYTES))
+            for ((what, share) in shares) {
+                val before = failed(bob)
+                val half =
+                    lab.dialRaw(bob) {
+                        it.output.write(LinkFraming.encode(LinkFraming.Type.KEY_SHARE, share))
+                        it.output.flush()
+                    }
+                assertTrue("bob seals over $what: $half", half is LabDoor.Half.Refused)
+                assertEquals("a key share of $what counts one failed seal", before + 1, failed(bob))
+            }
+            val failedBefore = failed(bob)
+
+            val honest = lab.doorLink(alice, bob)
+            assertTrue("the honest pair links sealed and proven: $honest", honest.sealed && honest.proven)
+            assertEquals(1L, alice.metrics.frames().linksSealed)
+            assertEquals(1L, bob.metrics.frames().linksSealed)
+            lab.awaitAcquainted(alice, bob)
+            assertTrue(alice.sendDm(bob, "sealed"))
+            assertTrue(bob.sendDm(alice, "both ways"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { n -> if (n === alice) n.dmWith(bob) else n.dmWith(alice) }
+            assertEquals("the live link failed no seal", failedBefore, failed(bob))
+            assertEquals(0L, failed(alice))
+        }
+
+    /**
+     * A flipped bit in a `SEALED` frame on a live link (#313): the frame does not open, the receiver counts one failed seal
+     * and the link goes down, so nothing the radio changed is read. The pair links sealed again and custody re-serves what
+     * the cut lost: the scenario ends converged.
+     */
+    @Test
+    fun aFlippedBitInASealedFrameClosesTheLinkAndThePairHealsSealed() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            assertTrue(lab.doorLink(alice, bob).sealed)
+            lab.awaitAcquainted(alice, bob)
+            val thread = { n: LabNode -> if (n === alice) n.dmWith(bob) else n.dmWith(alice) }
+            assertTrue(alice.sendDm(bob, "before"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, conversation = thread)
+
+            // The radio between them flips the last bit of Alice's next frame: the GCM tag no longer holds.
+            alice.transport.tamperNext(bob.transport) { frame ->
+                frame.copyOf().also { it[it.lastIndex] = (it[it.lastIndex].toInt() xor 1).toByte() }
+            }
+            assertTrue(alice.sendDm(bob, "tampered"))
+            lab.await(1) {
+                bob.metrics
+                    .frames()
+                    .linkSealFailed
+                    .toInt()
+            }
+            lab.await(1) {
+                if (bob.transport.neighbors.value
+                        .none { it.nodeId == alice.nodeId }
+                ) {
+                    1
+                } else {
+                    0
+                }
+            }
+            assertEquals("only the receiver counts it", 0L, alice.metrics.frames().linkSealFailed)
+            lab.unlink(alice, bob)
+
+            assertTrue("the pair links sealed again", lab.doorLink(alice, bob).sealed)
+            lab.assertConverged(listOf(alice, bob), atLeast = 2, conversation = thread)
+            assertEquals("one failed seal, the flipped frame's", 1L, bob.metrics.frames().linkSealFailed)
+        }
+
     /** A `blobreq` for [hash] with the whole pull budget, as a current build's root sends it, but for [relay]. */
     private fun ask(
         from: LabNode,
@@ -1201,5 +1306,8 @@ class MaliciousForkLabTest : StrandedLabBase() {
 
         // The reaction sweep's grace (`ReactionRepository.ORPHAN_GRACE_MILLIS`).
         const val DAY_MS = 24 * 60 * MINUTE_MS
+
+        // #313: a key share one byte short of `LinkFraming.KEY_SHARE_BYTES`.
+        const val SHORT_KEY_SHARE = 31
     }
 }

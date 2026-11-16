@@ -89,6 +89,7 @@ import app.getknit.knit.mesh.SPOOL_COVER_MS
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.ContactCard
+import app.getknit.knit.mesh.crypto.LinkProver
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
@@ -1301,6 +1302,12 @@ data class LabLimits(
     val sendsPresenceKeys: Boolean = true,
     /** How long a link-up waits before its presence-key reconcile (a random 2–20 s in the field). */
     val presenceLinkUpDelayMs: Long = MeshLab.PRESENCE_LINK_UP_MS,
+    /**
+     * The link door the node's build opens when [MeshLab.doorLink] links it (#313): this build's sealed form by default,
+     * or an older build's ([LinkDoor.PROOF] for v2.11.x, [LinkDoor.PLAIN] for v2.10.x), whose proof and seal bits its
+     * profile then withholds too. A node linked by [MeshLab.link] runs no door, whatever this says.
+     */
+    val linkDoor: LinkDoor = LinkDoor.SEALED,
 ) {
     /** These limits with the Internet plane's timed waits cut to [MeshLab.CALENDAR_ROUND_MS] (see [spoolTickMs]). */
     fun calendarRounds(): LabLimits = copy(spoolTickMs = MeshLab.CALENDAR_ROUND_MS, spoolAttachmentRetryMs = MeshLab.CALENDAR_ROUND_MS)
@@ -1489,7 +1496,15 @@ class LabNode internal constructor(
      * The bits of `LOCAL_CAPABILITIES` the node's profile leaves out at this boot, as `MeshManager.withheldCapabilities`: a
      * node that does not read tags models a build from before the Bluetooth reader shipped the bit (ADR 2026-11.xp6d).
      */
-    private fun withheldCapabilities(): Long = if (blindAdvert) 0L else Protocol.CAP_BLIND_ADVERT
+    private fun withheldCapabilities(): Long =
+        (if (blindAdvert) 0L else Protocol.CAP_BLIND_ADVERT) or (limits.linkDoor.withheld and Protocol.CAP_BLIND_ADVERT.inv())
+
+    /** The link door this node's build opens ([LabLimits.linkDoor]). */
+    val linkDoor: LinkDoor get() = limits.linkDoor
+
+    /** This node's end of a link door ([MeshLab.doorLink]): its identity's proof half, its build, its counters. */
+    internal fun doorEnd(): LabDoor.End =
+        LabDoor.End(nodeId, limits.linkDoor, LinkProver(keyStore.keys().publicBundle, messageCrypto::signRaw), metrics)
 
     /** The bits beyond `LOCAL_CAPABILITIES` the node's profile carries at this boot, as `MeshManager.extraCapabilities`. */
     private fun profileCapabilities(): Long =
