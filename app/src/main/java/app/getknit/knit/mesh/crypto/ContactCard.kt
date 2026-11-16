@@ -152,13 +152,27 @@ object ContactCard {
     /**
      * The cheap "is this a card at all" probe for an incoming intent: one of the link forms anywhere in
      * the text, the legacy code, or a bare card of plausible length. Deliberately stricter than [parse]'s
-     * bare form — a shared word or a node id must not read as a card and hijack the share flow.
+     * bare form — a shared word or a node id must not read as a card and hijack the share flow. A bare run
+     * is only checked for its alphabet and length, so text another app shares goes through [isSharedCard].
      */
     fun looksLikeCard(text: String): Boolean {
         val trimmed = text.trim()
         if (trimmed.startsWith(LEGACY_PREFIX)) return true
         if (hasLinkPrefix(trimmed)) return extractCompact(trimmed) != null
         return trimmed.length >= MIN_BARE_CHARS && extractCompact(trimmed) != null
+    }
+
+    /**
+     * Whether text another app shared is a card to import rather than a message. A link form or the legacy
+     * code counts as soon as it [looksLikeCard], so a damaged link still reaches Add contact, which names
+     * what is wrong with it. A bare run counts only when [parse] accepts it: an API key, a digest or an
+     * encoded blob is in the same alphabet, and taking one from the share flow leaves it no way into a chat
+     * (#303).
+     */
+    fun isSharedCard(text: String): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.startsWith(LEGACY_PREFIX) || hasLinkPrefix(trimmed)) return looksLikeCard(trimmed)
+        return looksLikeCard(trimmed) && parse(trimmed) is Parsed.Card
     }
 
     private fun hasLinkPrefix(text: String): Boolean = text.contains(URL_PREFIX) || text.contains(SCHEME_PREFIX)

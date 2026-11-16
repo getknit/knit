@@ -50,6 +50,8 @@ document:
 
 ### Fixed
 
+- Sharing a long string with no spaces into Knit, such as a key or a code, opened Add contact instead of
+  the list of chats. It now goes to a chat unless it really is someone's contact link (#303).
 - After you restore Knit from a backup, messages to and from contacts you only reach over the Internet get
   through again. Before, neither side heard the other until your phones were next in radio range. This needs a
   backup made with this version or later (#324).
