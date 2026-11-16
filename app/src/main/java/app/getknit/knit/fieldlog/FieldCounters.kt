@@ -68,6 +68,8 @@ object FieldCounters {
                 btConnectFailsByReason.forEach { (reason, n) -> put("btFail_${reason.name}", n) }
                 put("btLinksEstablished", btLinksEstablished)
                 put("bleLinkDupSkipped", bleLinkDupSkipped)
+                put("bleInboundWaits", bleInboundWaits)
+                put("bleInboundWaitMs", bleInboundWaitMs)
                 put("bleCodedSightings", bleCodedSightings)
                 put("bleCodedDials", bleCodedDials)
                 put("blePhyStepsDown", blePhyStepsDown)

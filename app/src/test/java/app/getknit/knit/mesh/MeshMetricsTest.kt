@@ -50,6 +50,17 @@ class MeshMetricsTest {
     }
 
     @Test
+    fun `a link reader's waits for room count each frame and add up the ms`() {
+        val metrics = MeshMetrics()
+        metrics.onBleInboundWaited(40)
+        metrics.onBleInboundWaited(2)
+        metrics.onBleInboundWaited(-5) // a clock that stepped back adds nothing, but the wait still counts
+        val snap = metrics.snapshot().bluetooth
+        assertEquals(3L, snap.bleInboundWaits)
+        assertEquals(42L, snap.bleInboundWaitMs)
+    }
+
+    @Test
     fun `failed rounds are counted per session loop and a loop that never failed is left out`() {
         val metrics = MeshMetrics()
         assertEquals(emptyMap<MeshRound, Long>(), metrics.frames().roundsFailedBy)

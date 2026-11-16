@@ -485,8 +485,9 @@ class BluetoothMeshTransport internal constructor(
     private val publishLock = Any()
     private var awareLogged = AwareCandidateTracker.EMPTY
 
-    private val _inbound = MutableSharedFlow<InboundFrame>(extraBufferCapacity = 256)
-    override val inbound = _inbound.asSharedFlow()
+    // Links and pages in lanes of their own, so a link's reader waiting for room never shuts a page out (#331).
+    private val lanes = BleInbound()
+    override val inbound: Flow<InboundFrame> = lanes.flow
 
     private val _incomingFiles = MutableSharedFlow<ReceivedFile>(extraBufferCapacity = 32)
     override val incomingFiles = _incomingFiles.asSharedFlow()
@@ -722,7 +723,9 @@ class BluetoothMeshTransport internal constructor(
                     return
                 }
                 Log.i(TAG, "ble-side heard ${env.type} id=${env.id} from=${env.senderId}")
-                _inbound.tryEmit(InboundFrame(wire, env, env.senderId))
+                // A scan callback cannot wait: a page finding its own lane full is dropped (#331), never shut out by a link's
+                // reader waiting in the other. It marked no crossing; counted for the device trial.
+                if (!lanes.page(InboundFrame(wire, env, env.senderId))) metrics.onBleSideDropped(BleSideDrop.INBOUND_FULL)
             }
 
             override fun onAvailabilityChanged() {
@@ -756,10 +759,29 @@ class BluetoothMeshTransport internal constructor(
             if (dialStreak.confirm()) resetStreak(link.nodeId, dialKey) // success resets the peer's streak
         }
 
-        override fun onInbound(frame: InboundFrame) {
-            // In counts as a crossing too: nothing we later hand this link may be the frame it just gave us.
-            crossings.firstCrossing(frame.fromNodeId, FrameKey.of(frame.wire, frame.envelope))
-            _inbound.tryEmit(frame)
+        // Waits for room in the links' lane rather than drop a frame the peer already counts as crossed, and marks the crossing
+        // (in counts too: nothing we later hand this link may be the frame it just gave us) only for the link [links]
+        // holds now (#331, ADR 2026-11.43f7). Made at the first frame: [link] is set before the reader starts.
+        private val handOff by lazy {
+            val self = link
+            LinkInbound(
+                nodeId = self.nodeId,
+                inbound = lanes.links,
+                crossings = crossings,
+                current = { links[self.nodeId] === self },
+                now = SystemClock::elapsedRealtime,
+                log = { Log.i(TAG, it) },
+                onWaited = metrics::onBleInboundWaited,
+            )
+        }
+
+        override suspend fun onInbound(frame: InboundFrame) {
+            handOff.hand(frame)
+        }
+
+        /** On the reader, as its loop ends (FramedLink's `onReadEnd`): a spell of waits it was in ends with it. */
+        fun onReadEnd() {
+            handOff.end()
         }
 
         override fun onDigest(digest: ReceivedDigest) {
@@ -4665,6 +4687,7 @@ class BluetoothMeshTransport internal constructor(
                 onKeepaliveWritten = { onKeepaliveWritten(events.link) },
                 proven = proven,
                 onFirstRecord = events::onFirstRecord,
+                onReadEnd = events::onReadEnd,
                 onTagNext = { bytes -> onTagNext(events.link, proven, advert, bytes) },
             )
         events.link = framed
@@ -4675,7 +4698,6 @@ class BluetoothMeshTransport internal constructor(
         // Before framed.start(), so the peer's announce finds it. An iPhone's is exempt from the whole check (#203).
         val silence = LinkSilence(exempt = DoorbellPolicy.serves(advert.capabilities), uptime = SystemClock::uptimeMillis)
         silences[framed] = SilentLink(silence, link.stamps)
-        crossings.forget(nodeId) // a fresh stream starts clean: the peer may have restarted with an empty SeenSet
         if (!sighted) neverSighted.add(framed)
         device?.let {
             linkAddresses[framed] = it.address
@@ -4689,6 +4711,9 @@ class BluetoothMeshTransport internal constructor(
         if (dialStartedAt != null) dialedByMe[framed] = dialKey ?: nodeId
         linkStamps.onLinkEvent(nodeId, elapsed())
         val prev = links.put(nodeId, framed)
+        // A fresh stream starts clean: the peer may have restarted with an empty SeenSet. After the put, so a mark the
+        // replaced link's reader judged while it still held the id lands before this, never in [framed]'s memo (#331).
+        crossings.forget(nodeId)
         // R3 on this plane: a proven link took the place of an unproven one claiming the id (the prev close below).
         val displaced = proven && prev != null && !prev.proven
         if (prev != null) {

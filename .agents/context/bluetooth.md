@@ -229,6 +229,21 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   edge probes, never closes. `bt link silent`, `bt link probe … via=<trigger>`, `bt link answers`, `bt link edge`, `bt link close slow`
   and `bt stack suspect` (after `LOST` closes only, a soft signal) are new lines; `bt link down: <id> (silent)` is the
   harness's `down`. Tests: `LinkSilenceTest`, `SocketStampsTest`, `FramedLinkTest`.
+- **When touching `mesh/bluetooth/LinkInbound`, `BleInbound`, `LinkCallbacks.onInbound`, `FramedLink`'s `onReadEnd`, `FramedLink.readLoop` / `handleFrame`,
+  `LinkCrossings.firstCrossingIf` / `forget`, `BluetoothMeshTransport.LinkEvents.onInbound`, the `crossings.forget` in
+  `registerLink`, the side listener's `tryEmit`, or the lab's `LabLimits.inboundSlots`:** READ ADR 2026-11.43f7 (#331)
+  and ADR 2026-09.6nmy, then the "A frame crosses a BLE link once" section of `.agents/context/mesh-transport.md`. A
+  link's reader waits for room in the links' lane (`BleInbound.links`) instead of dropping, since the far end already counts the frame crossed
+  and skips its re-serves for ten minutes (knit-ios ADR 2026-10.f5zs rule 6 is the iPhone's twin). The wait is a
+  suspension inside `readerJob` that `close()` cancels — never a blocking wait. A crossing is marked after the
+  hand-off and only while `links[nodeId] === link` (`firstCrossingIf` reads it under `forget`'s lock, and
+  `registerLink` forgets after `links.put`). Pages `tryEmit` into a lane of their own (`BleInbound`, merged with the
+  links' lane), so a waiting reader never shuts them out; a full page lane counts `BleSideDrop.INBOUND_FULL`. Wi-Fi Aware
+  keeps its drop. Android's L2CAP credit pushback while a reader waits is unverified until the device trial.
+  `LinkSilence` is the backstop, unchanged. `bt inbound wait <id>` / `bt inbound waited <id> frames=<n> ms=<ms>
+  (room|closed|replaced|ended)` are new lines, one `waited` per `wait` (FramedLink's reader-only `onReadEnd` closes a
+  spell at the link's end; no harness reads them yet); `bleInboundWaits` / `bleInboundWaitMs`. Tests:
+  `LinkInboundTest`, `LinkCrossingsTest`, `InboundBurstLabTest`.
 - **When touching `mesh/bluetooth/GattPayloads`, `BleGattPayloadReader`, `BleAdvertPayload.FLAG_DIALS_GATT_PEERS`,
   `BuildConfig.BLE_GATT_PEERS`, `BleScanner`'s UUID filter, or `BluetoothMeshTransport.onScanResult` / `sight`:**
   READ ADR 2026-09.kwq2 (companion change A3; knit-ios ADR 2026-09.xzpt) and its section in

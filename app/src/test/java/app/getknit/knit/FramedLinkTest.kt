@@ -76,7 +76,7 @@ class FramedLinkTest {
         val files = LinkedBlockingQueue<ReceivedFile>()
         val downs = LinkedBlockingQueue<String>()
 
-        override fun onInbound(frame: InboundFrame) {
+        override suspend fun onInbound(frame: InboundFrame) {
             inbound.add(frame)
         }
 

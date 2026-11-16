@@ -46,7 +46,7 @@ class NeighborViewTest {
     }
 
     private object NoCallbacks : LinkCallbacks {
-        override fun onInbound(frame: InboundFrame) = Unit
+        override suspend fun onInbound(frame: InboundFrame) = Unit
 
         override fun onDigest(digest: ReceivedDigest) = Unit
 

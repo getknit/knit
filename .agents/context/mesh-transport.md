@@ -585,7 +585,10 @@ would have dropped, and a peer that restarted with an empty `SeenSet` gets a cle
 additionally never routes a frame to its own author (a page-first hearing re-fans with the author as hop,
 which the router's split horizon can't exclude). Counter: `bleLinkDupSkipped`, about one per room frame per
 link. The lab's `LabTransport` keeps the same memo (`dupSkipped`), so the box stays the plane as shipped
-(`SideChannelLabTest.aFrameCrossesEachPipeOnce`). ADR 2026-09.6nmy.
+(`SideChannelLabTest.aFrameCrossesEachPipeOnce`). ADR 2026-09.6nmy. The invariant holds only if a frame marked on
+the way in reaches the router: a link's reader therefore waits for room in the plane's inbound queue instead of
+dropping, the wait a suspension `FramedLink.close()` cancels, and marks the crossing after the hand-off and only while
+its link is still the plane's (`LinkInbound`, `LinkCrossings.firstCrossingIf`; ADR 2026-11.43f7, #331).
 
 The loops around the radio no longer poll on a fixed short tick: `scanLoop`'s paused branch waits 60 s while
 the adapter is off (the `STATE_ON` receiver wakes it) and the longest connect watchdog + 3 s while a connect is in

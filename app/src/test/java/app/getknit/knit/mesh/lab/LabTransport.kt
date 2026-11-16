@@ -13,6 +13,7 @@ import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.bluetooth.BleFastRoutePolicy
+import app.getknit.knit.mesh.bluetooth.BleInbound
 import app.getknit.knit.mesh.furthestByKey
 import app.getknit.knit.mesh.link.FileHeaderWire
 import app.getknit.knit.mesh.link.FileIntake
@@ -27,7 +28,12 @@ import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
@@ -38,6 +44,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.UUID
@@ -210,7 +218,7 @@ class LabTransport(
         flow {
             _inbound.asSharedFlow().lagged().collect {
                 emit(it)
-                if (!handledDownstream) framesHandled.incrementAndGet()
+                if (!handledDownstream) handledOne(it)
             }
         }
 
@@ -223,8 +231,15 @@ class LabTransport(
     internal var handledDownstream = false
 
     /** One of this plane's frames handled by the router behind a composite ([handledDownstream]). */
-    internal fun frameHandled() {
+    internal fun frameHandled(frame: InboundFrame) {
+        handledOne(frame)
+    }
+
+    // One frame the router finished: counted for the drains, and its slot freed in its own lane ([inboundSlots]): a link's
+    // for a pipe waiting on one, a page's for the next page.
+    private fun handledOne(frame: InboundFrame) {
         framesHandled.incrementAndGet()
+        (if (frame.onLink) slots else pageSlots)?.release()
     }
 
     private val _incomingFiles = MutableSharedFlow<ReceivedFile>(extraBufferCapacity = BUFFER)
@@ -330,6 +345,15 @@ class LabTransport(
         // The link door this direction's frames cross ([LabDoor.Crossing], #313), or null for a lab link with none.
         @Volatile
         var door: LabDoor.Crossing? = null
+
+        // With the target's [inboundSlots]: the frames this pipe carried that its target's reader has not handed its router
+        // yet, in order, and that reader ([readerFor]). The phone's L2CAP stream behind a `FramedLink` reader that waits.
+        // Under the pipe's own lock.
+        var inbox: Channel<InboundFrame>? = null
+        var reader: Job? = null
+
+        // Set by [closeInbox] under the pipe's lock, inbox or none: a delivery racing the pipe's end gets no reader.
+        var inboxClosed = false
         val heldFiles = mutableListOf<HeldFile>()
 
         /** Parks [file] if this pipe is holding files; false means land it. One lock with [releaseFiles]. */
@@ -569,14 +593,19 @@ class LabTransport(
         doors: Pair<LabDoor.Crossing, LabDoor.Crossing>? = null,
     ) {
         if (other.nodeId == nodeId) return
+        pipes
+            .put(
+                other.nodeId,
+                Pipe(other).also {
+                    it.lossy = lossy
+                    it.door = doors?.first
+                },
+            )?.let(::closeInbox)
+        other.pipes.put(nodeId, Pipe(this).also { it.door = doors?.second })?.let(::closeInbox)
+        // After the puts, as `BluetoothMeshTransport.registerLink` forgets after its `links.put`: a mark an old pipe's
+        // reader or a send that picked the old pipe judged before them lands before this, never in the new pipe's memo.
         crossings.forget(other.nodeId)
         other.crossings.forget(nodeId)
-        pipes[other.nodeId] =
-            Pipe(other).also {
-                it.lossy = lossy
-                it.door = doors?.first
-            }
-        other.pipes[nodeId] = Pipe(this).also { it.door = doors?.second }
         // The pipes exist and neither end lists the link yet — not in `neighbors.value`, not to a collector — so what
         // [arm] holds or streams is in place before anything can send over it (`MeshLab.link`).
         arm()
@@ -600,6 +629,7 @@ class LabTransport(
         listOfNotNull(pipes.remove(other.nodeId), other.pipes.remove(nodeId)).forEach {
             cutStreams(it)
             it.door?.close()
+            closeInbox(it)
         }
         crossings.forget(other.nodeId)
         other.crossings.forget(nodeId)
@@ -874,6 +904,56 @@ class LabTransport(
      */
     var feedStallMs: Long = MeshLab.FEED_STALL_MS
 
+    /**
+     * How many frames this node's router queues, handed over and not yet handled, or null for no bound ([MeshLab] sets it
+     * from `LabLimits.inboundSlots`, before any link). With a bound the node is the Bluetooth plane as shipped (#331, ADR
+     * 2026-11.43f7): a frame a pipe carries waits on that pipe for a slot, behind the pipe's earlier frames, as a link's
+     * reader waits for room, and is marked crossed on this end only once the router's queue holds it and only while its
+     * pipe is still up. A send never waits for it: the pipe takes the frame as `FramedLink.send` does. A page has a lane of
+     * its own (`BleInbound.PAGE_SLOTS`), never one a waiting pipe could take: it finds room there at once or is dropped
+     * ([inboundRefused]), as a scan callback cannot wait.
+     */
+    @Volatile
+    var inboundSlots: Int? = null
+        set(value) {
+            field = value
+            slots = value?.let { Semaphore(it) }
+            pageSlots = value?.let { Semaphore(BleInbound.PAGE_SLOTS) }
+        }
+
+    // [inboundSlots] as permits: taken by a frame as it is handed to the router, given back as the router finishes it
+    // ([handledOne]). Fair, so the pipes waiting take them in the order they began to wait, as a `MutableSharedFlow`
+    // resumes its waiting emitters.
+    @Volatile
+    private var slots: Semaphore? = null
+
+    // The pages' lane, as the plane's `BleInbound` keeps one: a pipe waiting on [slots] never shuts a page out.
+    @Volatile
+    private var pageSlots: Semaphore? = null
+
+    // On the scope's threads: each pipe's reader, waiting for a slot.
+    private val readers = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private val refused = AtomicLong()
+    private val refusedIds = ConcurrentHashMap<String, Int>()
+    private val waited = AtomicLong()
+    private val held = AtomicLong()
+
+    /** Pages this node dropped because the pages' lane was full. A link frame is never dropped: it waits. */
+    val inboundRefused: Long get() = refused.get()
+
+    /** How many copies of the frame [id] this node dropped because the pages' lane was full. */
+    fun inboundRefused(id: String): Int = refusedIds[id] ?: 0
+
+    /**
+     * How many times a pipe's reader found every one of this node's [inboundSlots] taken and waited for one. A reader takes
+     * one frame at a time, so the frames behind it wait in its inbox and are not counted here: [inboundHeld] counts those.
+     */
+    val inboundWaited: Long get() = waited.get()
+
+    /** Link frames that crossed a pipe to this node and are not yet handed to its router: what the readers hold now. */
+    val inboundHeld: Long get() = held.get()
+
     // When each held head was first read as a feed: its stall window counts from there. By identity, under itself.
     private val feedSeenAt = java.util.IdentityHashMap<Any, Long>()
 
@@ -980,7 +1060,7 @@ class LabTransport(
         // Two held copies of one frame (the flood's and the fast path's) are one write here, as on the phone.
         frames.forEach { held ->
             if (!doorGone(pipe) && crosses(pipe, FrameKey.ofSigned(held), VIA_LINK)) {
-                throughDoor(pipe, held)?.let { pipe.target.deliver(it, nodeId, VIA_LINK) }
+                throughDoor(pipe, held)?.let { pipe.target.deliver(pipe, this, it, VIA_LINK) }
             }
         }
     }
@@ -1094,7 +1174,7 @@ class LabTransport(
 
             !crosses(pipe, key, VIA_LINK) -> Unit
 
-            else -> throughDoor(pipe, out)?.let { pipe.target.deliver(it, nodeId, VIA_LINK) }
+            else -> throughDoor(pipe, out)?.let { pipe.target.deliver(pipe, this, it, VIA_LINK) }
         }
     }
 
@@ -1183,7 +1263,7 @@ class LabTransport(
 
             !crosses(pipe, key, VIA_FAST) -> Unit
 
-            else -> throughDoor(pipe, wire)?.let { pipe.target.deliverNow(it, nodeId, VIA_FAST) }
+            else -> throughDoor(pipe, wire)?.let { pipe.target.deliverNow(pipe, this, it, VIA_FAST) }
         }
     }
 
@@ -1199,6 +1279,8 @@ class LabTransport(
         if (env.senderId == nodeId) return // OWN_ECHO
         heardOnPages += "${env.type} ${env.id} ${env.senderId.take(NODE_ID_CHARS)}"
         framesIn.incrementAndGet()
+        // A page takes a slot in its own lane or is dropped: nothing waits, and a pipe waiting for a link slot takes none.
+        if (pageSlots?.tryAcquire() == false) return refuse(env.id)
         emitNow(InboundFrame(wire, env, env.senderId))
     }
 
@@ -1323,22 +1405,100 @@ class LabTransport(
 
     private fun pipe(to: LabTransport): Pipe = checkNotNull(pipes[to.nodeId]) { "$nodeId is not linked to ${to.nodeId}" }
 
+    // [wire] off [pipe], which [sender] wrote it to: straight to the router, or with [inboundSlots] into the pipe's inbox.
     private suspend fun deliver(
+        pipe: Pipe,
+        sender: LabTransport,
         wire: WireEnvelope,
-        fromNodeId: String,
         via: String,
     ) {
-        val frame = received(wire, fromNodeId, via) ?: return
-        _inbound.emit(frame)
+        val bounded = slots != null
+        val frame = received(wire, sender.nodeId, via, mark = !bounded) ?: return
+        if (bounded) hold(pipe, sender, frame) else _inbound.emit(frame)
     }
 
     private fun deliverNow(
+        pipe: Pipe,
+        sender: LabTransport,
         wire: WireEnvelope,
-        fromNodeId: String,
         via: String,
     ) {
-        val frame = received(wire, fromNodeId, via) ?: return
-        emitNow(frame)
+        val bounded = slots != null
+        val frame = received(wire, sender.nodeId, via, mark = !bounded) ?: return
+        if (bounded) hold(pipe, sender, frame) else emitNow(frame)
+    }
+
+    // [frame] joins [pipe]'s inbox, behind what its reader has yet to hand over.
+    private fun hold(
+        pipe: Pipe,
+        sender: LabTransport,
+        frame: InboundFrame,
+    ) {
+        held.incrementAndGet()
+        // Refused only by an inbox its pipe's end already closed, which calls no [gone] for a refused send.
+        if (readerFor(pipe, sender).trySend(frame).isFailure) gone()
+    }
+
+    // A held frame that died with its pipe: counted in on arrival, so counted handled, and no longer held.
+    private fun gone() {
+        held.decrementAndGet()
+        framesHandled.incrementAndGet()
+    }
+
+    /**
+     * [pipe]'s inbox at this end, and the reader that hands its frames to the router one slot at a time: the link's
+     * `FramedLink` reader waiting in `LinkInbound.hand`. Unbounded, so the sender never waits. A frame left in it when the
+     * pipe goes down ([closeInbox]) dies with the link and counts as handled, so a drain never waits on it.
+     */
+    private fun readerFor(
+        pipe: Pipe,
+        sender: LabTransport,
+    ): Channel<InboundFrame> =
+        synchronized(pipe) {
+            // A pipe already down hands back a closed inbox, so [hold] counts the frame gone; no reader nobody cancels.
+            if (pipe.inboxClosed) return@synchronized Channel<InboundFrame>(Channel.RENDEZVOUS).apply { close() }
+            pipe.inbox ?: Channel<InboundFrame>(Channel.UNLIMITED, onUndeliveredElement = { gone() })
+                .also { inbox ->
+                    pipe.inbox = inbox
+                    pipe.reader = readers.launch { for (frame in inbox) handOver(pipe, sender, frame) }
+                }
+        }
+
+    /**
+     * One frame off [pipe] to the router once a slot is free, as `LinkInbound.hand` does it: nothing off a pipe that went
+     * down meanwhile, and the crossing marked after the hand-off, only while the pipe is still the one [sender] writes to.
+     */
+    private suspend fun handOver(
+        pipe: Pipe,
+        sender: LabTransport,
+        frame: InboundFrame,
+    ) {
+        val gate = checkNotNull(slots)
+        val live = { sender.pipes[nodeId] === pipe }
+        var handed = false
+        try {
+            if (!live()) return
+            if (!gate.tryAcquire()) {
+                waited.incrementAndGet()
+                gate.acquire()
+            }
+            if (!live()) return gate.release()
+            _inbound.emit(frame) // unbounded: at once
+            handed = true
+            held.decrementAndGet()
+            crossings.firstCrossingIf(sender.nodeId, FrameKey.of(frame.wire, frame.envelope), live)
+        } finally {
+            if (!handed) gone() // the router will never have it
+        }
+    }
+
+    /** [pipe] went down or was replaced: its reader stops, and what it had not handed over is gone with the link. */
+    private fun closeInbox(pipe: Pipe) {
+        synchronized(pipe) {
+            pipe.inboxClosed = true
+            pipe.reader?.cancel()
+            pipe.inbox?.cancel()
+        }
     }
 
     /** Mirror the real transport: decode the routing envelope on receipt (drop undecodable bytes), and log it on the sender. */
@@ -1346,9 +1506,11 @@ class LabTransport(
         wire: WireEnvelope,
         fromNodeId: String,
         via: String,
+        // Whether the crossing is marked here: always but with [inboundSlots], where [handOver] marks it.
+        mark: Boolean,
     ): InboundFrame? {
         val envelope = WireCodec.decodeEnvelope(wire.signed) ?: return null
-        crossings.firstCrossing(fromNodeId, FrameKey.of(wire, envelope)) // in counts: it never goes back this way
+        if (mark) crossings.firstCrossing(fromNodeId, FrameKey.of(wire, envelope)) // in counts: it never goes back this way
         when (envelope.type) {
             FrameType.BLOB_REQ -> {
                 WireCodec.decodePayload<BlobReqContent>(envelope.payload)?.let { ask ->
@@ -1383,6 +1545,14 @@ class LabTransport(
         // Every pipe delivery is a link's, the fast path's copy too (the real one rides the same `FramedLink`): the frame's
         // hop identity is the linked peer, as `FramedLink.handleFrame` says (ADR 2026-11.264w). [hearPage] is not a link.
         return InboundFrame(wire, envelope, fromNodeId, onLink = true)
+    }
+
+    // A page heard with every slot taken: dropped, and counted handled at once, so a drain waits only on what the router
+    // was given.
+    private fun refuse(id: String) {
+        refused.incrementAndGet()
+        refusedIds.merge(id, 1, Int::plus)
+        framesHandled.incrementAndGet()
     }
 
     private fun emitNow(frame: InboundFrame) {

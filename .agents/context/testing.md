@@ -184,6 +184,10 @@ Bare, it is a link plane with no fast plane (one flood copy per link); with `pag
 Bluetooth plane as shipped, side channel included (below). Either way a pipe carries a frame once, through
 the same `LinkCrossings` memo the phone keeps (`dupSkipped` on the transport lists what it refused), on the
 node's lab clock: its window is the router's seen window, so the two lapse together under a calendar jump.
+A pipe's send never waits on the far router; with `LabLimits.inboundSlots` (`MeshLab.PHONE_INBOUND_SLOTS`) a link
+frame that finds the far router's queue full waits on its pipe for a slot and is marked crossed only once handed over,
+as a phone link's reader does, while a page takes a slot in a lane of its own or is dropped (`inboundWaited`,
+`inboundHeld`, `inboundRefused`; ADR 2026-11.43f7).
 The only doubles are the leaves with a hardware or UI side (notifier, tflite text moderators, image moderator).
 The wiring mirrors `di/AppModule` + `di/MeshModule` by hand, so a constructor change is a compile error here
 rather than a silently narrower rig.

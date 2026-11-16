@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.forward.ForwardRepository
+import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
@@ -28,6 +29,11 @@ import org.robolectric.RobolectricTestRunner
  * unread. A mobility simulation met it at 48 walkers, where a gather hands each node its neighbours' whole custody
  * at once: 15 to 21 DMs of 270 sat in a linked recipient's queue and never arrived. On that pipe this scenario's burst
  * never finishes crossing.
+ *
+ * A phone's router reads its frames out of a bounded queue, though. Its Bluetooth plane used to hand each one over with a
+ * `tryEmit` whose refusal nobody read, so a frame that found the queue full was lost, after both ends had counted it as
+ * crossed (#331). Now the link's reader waits for room (ADR 2026-11.43f7), and [LabLimits.inboundSlots] plays that: the
+ * frame waits on its pipe, and the send that carried it still returns at once.
  */
 @RunWith(RobolectricTestRunner::class)
 class InboundBurstLabTest {
@@ -72,9 +78,65 @@ class InboundBurstLabTest {
             lab.assertConverged(listOf(alice, bob), atLeast = DMS) { it.dmWith(if (it === alice) bob else alice) }
         }
 
+    /**
+     * The same burst at a router queued as a phone's is ([MeshLab.PHONE_INBOUND_SLOTS]): every send still returns, what
+     * found the queue full waits on the link instead of being dropped, and once the router moves all of it is handled. The
+     * DM ahead of the burst lands, and its tick crosses.
+     */
+    @Test
+    fun aPhoneQueueHoldsWhatFindsItFull() =
+        runBlocking {
+            val (alice, bob) = friendsWithASession(LabLimits(inboundSlots = MeshLab.PHONE_INBOUND_SLOTS))
+            alice.custodyGate.hold { it.type == FrameType.CHAT && it.senderId == bob.nodeId && it.recipientId == alice.nodeId }
+            assertTrue(bob.sendDm(alice, "read once the gate opens"))
+            lab.await(1) { alice.custodyGate.parked }
+
+            val burst = launch(Dispatchers.Default) { bob.burstSigned(alice, List(PHONE_BURST) { typingCue(bob, alice) }) }
+            assertTrue("a send waited on the far router", lab.tryAwait(1) { if (burst.isCompleted) 1 else 0 })
+            assertEquals(1, alice.custodyGate.parked)
+            // The DM holds a slot and the burst could take only the rest: at least what was left over waits on the link.
+            val leftOver = PHONE_BURST - (MeshLab.PHONE_INBOUND_SLOTS - 1).toLong()
+            lab.await(1) { if (alice.transport.inboundHeld >= leftOver) 1 else 0 }
+
+            alice.custodyGate.release()
+            lab.assertConverged(listOf(alice, bob), atLeast = DMS) { it.dmWith(if (it === alice) bob else alice) }
+            // Every cue reaches her router: the link holds none back. Under chaos a router reads cues slowly, so this waits
+            // as long as the DM burst's convergence may; what is left after it is at most one queue, which the drain covers.
+            lab.await(1, timeoutMs = BURST_AWAIT_MS) { if (alice.transport.inboundHeld == 0L) 1 else 0 }
+            alice.transport.awaitInboundDrained()
+        }
+
+    /**
+     * #331: Bob hands Alice, over their one link, more of his DMs than her router queues, with it parked on the first.
+     * The claim turns on the queue being full, not on its size, so a queue of [BURST_SLOTS] plays a phone's 322 at a
+     * scale a chaos run can afford. Each crossed the link, and both ends' crossings count it for ten minutes
+     * ([SeenSet.DEFAULT_TTL_MS]), so a frame her queue lost was one his re-serves skipped for that long: custody stayed
+     * apart, and a DM the custody cap evicted meanwhile was gone for good. Her link's reader waits for room instead, as
+     * the iPhone's does (knit-ios ADR 2026-10.f5zs, rule 6): released, every DM lands over the link it came by, well
+     * inside the window.
+     */
+    @Test
+    fun aDmBurstPastAPhoneQueueLandsOverItsLink() =
+        runBlocking {
+            val (alice, bob) = friendsWithASession(LabLimits(inboundSlots = BURST_SLOTS))
+            val from = lab.clock.now()
+            alice.custodyGate.hold { it.type == FrameType.CHAT && it.senderId == bob.nodeId && it.recipientId == alice.nodeId }
+            repeat(DM_BURST) { assertTrue(bob.sendDm(alice, "burst $it")) }
+            lab.await(1) { alice.custodyGate.parked }
+
+            // More than her queue holds came in behind the parked DM, so some of it waited on the link for room.
+            lab.await(1) { if (alice.transport.inboundWaited > 0) 1 else 0 }
+
+            alice.custodyGate.release()
+            lab.assertConverged(listOf(alice, bob), atLeast = 2 + DM_BURST, timeoutMs = BURST_AWAIT_MS) {
+                it.dmWith(if (it === alice) bob else alice)
+            }
+            assertTrue("the lab clock passed the crossing window", lab.clock.now() - from < SeenSet.DEFAULT_TTL_MS)
+        }
+
     // Linked, contacts, and one DM each way delivered: what follows is ordinary ratchet traffic, not a first contact.
-    private suspend fun friendsWithASession(): Pair<LabNode, LabNode> {
-        val alice = lab.node("alice")
+    private suspend fun friendsWithASession(aliceLimits: LabLimits = LabLimits()): Pair<LabNode, LabNode> {
+        val alice = lab.node("alice", aliceLimits)
         val bob = lab.node("bob")
         lab.link(alice, bob)
         lab.awaitAcquainted(alice, bob)
@@ -110,5 +172,17 @@ class InboundBurstLabTest {
 
         /** Hello, its answer, and the one in the gate. */
         const val DMS = 3
+
+        /** Half again what a phone queues: a third of it finds the queue full and waits on the link. */
+        const val PHONE_BURST = 500
+
+        /** The router's queue in the DM burst: small, so the burst can overflow it with few sealed DMs. */
+        const val BURST_SLOTS = 16
+
+        /** Twice what [BURST_SLOTS] queues, and far below the custody cap. */
+        const val DM_BURST = 2 * BURST_SLOTS
+
+        /** What [DM_BURST] DMs, each sealed, custodied and ticked, take to converge on a busy runner. */
+        const val BURST_AWAIT_MS = 120_000L
     }
 }

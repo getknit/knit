@@ -16,7 +16,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -35,7 +37,12 @@ import kotlin.math.abs
  * read and write loop can end), so implementations must be idempotent.
  */
 interface LinkCallbacks {
-    fun onInbound(frame: InboundFrame)
+    /**
+     * A frame the link's reader decoded, called on the reader. It may suspend: the reader reads nothing more until it
+     * returns, and [FramedLink.close] cancels the wait. The Bluetooth plane waits here for room in its router's queue
+     * rather than drop a frame the far end already counts as crossed (#331, ADR 2026-11.43f7).
+     */
+    suspend fun onInbound(frame: InboundFrame)
 
     fun onDigest(digest: ReceivedDigest)
 
@@ -109,6 +116,9 @@ class FramedLink(
     // tag. The Bluetooth plane judges it (a proven link whose HELLO carried `CAP_BLIND_ADVERT`); every other plane passes
     // nothing and ignores it. A wrong length never gets here: [LinkFraming.read] throws and the link drops.
     private val onTagNext: (ByteArray) -> Unit = {},
+    // Called once on the reader as its loop ends, however it ends, before [LinkCallbacks.onLinkDown]: the reader's own end,
+    // which the writer never reports. The Bluetooth plane closes a spell of waits for room there (ADR 2026-11.43f7).
+    private val onReadEnd: () -> Unit = {},
 ) {
     /**
      * Whether this link's bytes ride the link seal (ADR 2026-11.8mhs): fixed for the link's life, like [proven], which a
@@ -601,7 +611,9 @@ class FramedLink(
         onFirstRecord()
     }
 
-    private fun readLoop(input: java.io.InputStream) {
+    // Suspends only in [handleFrame]'s hand-off, inside [readerJob], so [close] cancels a reader waiting there (#331).
+    @Suppress("BlockingMethodInNonBlockingContext") // only under [start]'s launch(Dispatchers.IO), on an IO worker
+    private suspend fun readLoop(input: java.io.InputStream) {
         try {
             while (scope.isActive && !closed) {
                 val msg = readRecord(input) ?: break
@@ -656,6 +668,7 @@ class FramedLink(
             // A read error only ends the link: the seal's own faults are counted by the socket.
             log("read loop ended for $nodeId: ${e.message}")
         } finally {
+            onReadEnd()
             callbacks.onLinkDown(nodeId)
         }
     }
@@ -695,7 +708,7 @@ class FramedLink(
         }
     }
 
-    private fun handleFrame(bytes: ByteArray) {
+    private suspend fun handleFrame(bytes: ByteArray) {
         val wire = WireCodec.decodeWire(bytes)
         if (wire == null) {
             metrics.onDropped(DropReason.DECODE_FAILED)
@@ -706,6 +719,8 @@ class FramedLink(
             metrics.onDropped(DropReason.DECODE_FAILED)
             return
         }
+        // A reader [close] cancelled between its read and here hands nothing over: the frame dies with its link.
+        currentCoroutineContext().ensureActive()
         callbacks.onInbound(InboundFrame(wire, envelope, nodeId, onLink = true))
     }
 

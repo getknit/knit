@@ -407,7 +407,7 @@ class WifiAwareTransport(
         // Set by [registerConn] before the link's loops start, so it is never null when they call back.
         @Volatile var conn: NanLink? = null
 
-        override fun onInbound(frame: InboundFrame) {
+        override suspend fun onInbound(frame: InboundFrame) {
             _inbound.tryEmit(frame)
         }
 

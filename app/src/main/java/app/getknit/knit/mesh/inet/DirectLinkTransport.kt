@@ -255,7 +255,7 @@ class DirectLinkTransport(
         }
         val callbacks =
             object : LinkCallbacks {
-                override fun onInbound(frame: InboundFrame) {
+                override suspend fun onInbound(frame: InboundFrame) {
                     arrivals.trySend(frame)
                 }
 

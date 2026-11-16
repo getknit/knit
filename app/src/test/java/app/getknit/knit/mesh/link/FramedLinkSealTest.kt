@@ -64,7 +64,7 @@ class FramedLinkSealTest {
         val inbound = LinkedBlockingQueue<InboundFrame>()
         val downs = LinkedBlockingQueue<String>()
 
-        override fun onInbound(frame: InboundFrame) {
+        override suspend fun onInbound(frame: InboundFrame) {
             inbound.add(frame)
         }
 

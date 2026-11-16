@@ -445,6 +445,13 @@ enum class BleSideDrop {
 
     /** A page carrying our own frame came back (a relay of it) — never delivered to ourselves. */
     OWN_ECHO,
+
+    /**
+     * The pages' own lane toward the router was full when the page was heard (`BleInbound`, #331, ADR 2026-11.43f7): the
+     * router is behind on pages, and a scan callback cannot wait. A link's reader waiting in the other lane takes none of
+     * it. A page marks no crossing; custody repairs a page from a linked author, not one from an author we never linked.
+     */
+    INBOUND_FULL,
 }
 
 /**
@@ -603,6 +610,8 @@ class MeshMetrics {
     private val bleRotations: Map<BleRotation, AtomicLong> = BleRotation.entries.associateWith { AtomicLong() }
     private val bleAdvertWrites: Map<BleAdvertWrite, AtomicLong> = BleAdvertWrite.entries.associateWith { AtomicLong() }
     private val bleLinkDupSkipped = AtomicLong()
+    private val bleInboundWaits = AtomicLong()
+    private val bleInboundWaitMs = AtomicLong()
     private val bleCodedSightings = AtomicLong()
     private val bleCodedDials = AtomicLong()
     private val blePhyStepsDown = AtomicLong()
@@ -1418,6 +1427,16 @@ class MeshMetrics {
         bleLinkDupSkipped.incrementAndGet()
     }
 
+    /**
+     * A Bluetooth link's reader waited [ms] for room in the plane's inbound queue before it handed a frame over, the
+     * router behind (#331, ADR 2026-11.43f7). Steady near zero; a gather that hands a node its neighbours' custody at once
+     * climbs it. The wait's total says how far behind the router fell.
+     */
+    fun onBleInboundWaited(ms: Long) {
+        bleInboundWaits.incrementAndGet()
+        bleInboundWaitMs.addAndGet(ms.coerceAtLeast(0L))
+    }
+
     /** A presence advert was heard on the Coded PHY (the experiment, ADR 2026-10.yvn6) — one per scan callback. */
     fun onBleCodedSighting() {
         bleCodedSightings.incrementAndGet()
@@ -2103,6 +2122,8 @@ class MeshMetrics {
             btConnectFailsByReason = connectByReason.filterValues { it > 0 },
             btLinksEstablished = btLinksEstablished.get(),
             bleLinkDupSkipped = bleLinkDupSkipped.get(),
+            bleInboundWaits = bleInboundWaits.get(),
+            bleInboundWaitMs = bleInboundWaitMs.get(),
             bleCodedSightings = bleCodedSightings.get(),
             bleCodedDials = bleCodedDials.get(),
             blePhyStepsDown = blePhyStepsDown.get(),
@@ -2444,6 +2465,9 @@ class MeshMetrics {
             val btConnectFailsByReason: Map<ConnectFailReason, Long> = emptyMap(),
             val btLinksEstablished: Long = 0,
             val bleLinkDupSkipped: Long = 0,
+            // ADR 2026-11.43f7 (#331): frames a link's reader held while it waited for room, and the ms it waited in all.
+            val bleInboundWaits: Long = 0,
+            val bleInboundWaitMs: Long = 0,
             val bleCodedSightings: Long = 0,
             val bleCodedDials: Long = 0,
             val blePhyStepsDown: Long = 0,

@@ -1792,6 +1792,9 @@ class DebugBridgeReceiver :
             .put("bleRotationsByCause", JSONObject(snap.bluetooth.bleRotationsByCause.mapKeys { it.key.name }))
             .put("bleAdvertWritesByEvent", JSONObject(snap.bluetooth.bleAdvertWritesByEvent.mapKeys { it.key.name }))
             .put("bleLinkDupSkipped", snap.bluetooth.bleLinkDupSkipped)
+            // A link's reader waiting for room in the router's queue (ADR 2026-11.43f7, #331): frames held, and ms waited.
+            .put("bleInboundWaits", snap.bluetooth.bleInboundWaits)
+            .put("bleInboundWaitMs", snap.bluetooth.bleInboundWaitMs)
             .put("bleCodedSightings", snap.bluetooth.bleCodedSightings)
             .put("bleCodedDials", snap.bluetooth.bleCodedDials)
             .put("blePhyStepsDown", snap.bluetooth.blePhyStepsDown)

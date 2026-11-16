@@ -1136,6 +1136,13 @@ class MeshLab {
         const val FEED_STALL_MS = 2_000L
 
         /**
+         * What a phone queues for its router before a link's reader waits for room (`LabLimits.inboundSlots`, #331, ADR
+         * 2026-11.43f7): the Bluetooth plane's inbound buffer of 256, the frame the composite's `merge` took from it and
+         * waits to put in its channel of 64, that channel, and the frame the router is handling.
+         */
+        const val PHONE_INBOUND_SLOTS = 256 + 1 + 64 + 1
+
+        /**
          * How long a fetch waits for its holder queries' answers, lengthened the same way
          * ([app.getknit.knit.mesh.BlobExchange.QUERY_WAIT_MS] is 5 s; ADR 2026-10.6e5t): a scenario that counts asks
          * must not race a slow runner's answer. With [FIRST_ASK_GRACE_MS] it stays under
@@ -1309,6 +1316,12 @@ data class LabLimits(
      * idle close must allow. [LabNode.blindAdvert] moves it across a restart.
      */
     val blindAdvert: Boolean = false,
+    /**
+     * How many frames the node's router queues before a link frame waits on its pipe for room and a page is dropped, as a
+     * phone's Bluetooth plane does ([MeshLab.PHONE_INBOUND_SLOTS], [LabTransport.inboundSlots]). Null, the default, queues
+     * every frame at once: a scenario about what crosses a link, not about a router that fell behind.
+     */
+    val inboundSlots: Int? = null,
     /**
      * Whether the node mints and sends its own presence keys, as `BuildConfig.PRESENCE_KEYS` decides (ADR 2026-11.xp6d's
      * staging): on, every build as shipped; off, a build that reads tags and receives, stores and resolves its contacts'
@@ -1852,7 +1865,7 @@ class LabNode internal constructor(
         val radio = transport
         radio.handledDownstream = composite != null
         if (!radio.handledDownstream) return
-        manager.onInboundHandled = { frame -> if (frame.kind == radio.kind) radio.frameHandled() }
+        manager.onInboundHandled = { frame -> if (frame.kind == radio.kind) radio.frameHandled(frame) }
         manager.onDigestAnswered = { digest -> if (digest.via == radio.kind) radio.digestAnswered() }
     }
 
@@ -1993,6 +2006,7 @@ class LabNode internal constructor(
                 advertises = helloCapabilities()
                 clock = now
                 feedStallMs = limits.feedStallMs
+                inboundSlots = limits.inboundSlots
             }
         metrics = MeshMetrics()
         // The Internet plane is opted into through the same two settings the relay editor writes; the
@@ -2311,6 +2325,9 @@ class LabNode internal constructor(
      */
     suspend fun pauseMesh() {
         check(!meshPaused) { "$name's mesh is already paused" }
+        // A bounded node's slots go back only as its router finishes a frame: frames left in the queue for the collector
+        // this stop cancels never do, and the resumed session's pipes would wait on slots nobody frees.
+        check(transport.inboundSlots == null) { "$name has inboundSlots: a pause would strand its taken slots (ADR 2026-11.43f7)" }
         meshPaused = true
         val peers = transport.disconnectAll()
         transport.detach()

@@ -30,6 +30,10 @@ class LinkCrossings(
 ) {
     private val perLink = ConcurrentHashMap<String, SeenSet>()
 
+    // Orders [firstCrossingIf]'s read of its link with [forget], so a mark judged for a link that was current lands
+    // before the forget that follows its end, never after it in the next link's memo.
+    private val lock = Any()
+
     /**
      * Records that [key] crosses the link to [peerId] now. True the first time inside the window — write
      * it; false for a repeat — skip it, the far end has it.
@@ -39,9 +43,22 @@ class LinkCrossings(
         key: String,
     ): Boolean = perLink.computeIfAbsent(peerId) { SeenSet(maxPerLink, ttlMillis, clock) }.add(key)
 
+    /**
+     * [firstCrossing], only while [current] says the link that carried [key] is still the one held for [peerId]; false,
+     * and nothing marked, once it is not. For a mark made by a link that may have ended or been replaced meanwhile (a
+     * Bluetooth reader that waited for room, #331, ADR 2026-11.43f7): [current] is read under the lock [forget] takes,
+     * so its owner, which takes the link out of its table before it forgets the peer, never finds a stale mark in the
+     * memo it starts the next link on.
+     */
+    fun firstCrossingIf(
+        peerId: String,
+        key: String,
+        current: () -> Boolean,
+    ): Boolean = synchronized(lock) { current() && firstCrossing(peerId, key) }
+
     /** The link to [peerId] went down (or came up anew): whatever crossed it no longer counts. */
     fun forget(peerId: String) {
-        perLink.remove(peerId)
+        synchronized(lock) { perLink.remove(peerId) }
     }
 
     fun clear() = perLink.clear()
