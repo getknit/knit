@@ -468,6 +468,9 @@ class MeshManager(
     // Standalone custodied read frames per rolling 24 h ([ReadSync.DAILY_BUDGET]). Injectable for `mesh/lab`, whose cost
     // scenario sets it under a carrier's tight per-sender slack.
     readBudget: Int = ReadSync.DAILY_BUDGET,
+    // How long after a read the quick copy goes to a near author ([ReadSync.QUICK_DELAY_MS]). Injectable for `mesh/lab`,
+    // whose scenarios about the other routes set it out of reach.
+    readQuickDelayMs: Long = ReadSync.QUICK_DELAY_MS,
 ) : MeshController,
     TransferSignals,
     CallSignals,
@@ -731,12 +734,17 @@ class MeshManager(
             originate = { authorId, ids -> originateReads(authorId, ids) },
             spoolPush = { authorId, ids -> spoolReads(authorId, ids) },
             now = clock,
+            // The quick copy's reach (the maintainer's ask, 2026-11-16): best effort, so a link or plane that merely claims
+            // the author's id costs one sealed frame it cannot open, and moves no deadline.
+            nearby = { authorId -> readNearby(authorId) },
+            quick = { authorId, ids -> quickReads(authorId, ids) },
             liveRoot = { authorId -> ratchet.rootTagFor(authorId) },
             wakeScope = { sessionScope },
             metrics = metrics,
             linkedDeadlineMs = readLinkedDeadlineMs,
             absentBaseMs = readAbsentBaseMs,
             budget = readBudget,
+            quickDelayMs = readQuickDelayMs,
         )
 
     // The "someone nearby is open to chat" cue: the join of our own flag, the short-range reachable set, the
@@ -3338,6 +3346,9 @@ class MeshManager(
         // How many owed reads may ride this tick (ADR 2026-11.z6jw): only a caller that hands it off `relay = true` (or into
         // a spool) passes any, and it tells or gives back [SealedTick.riders]. Taken here, after the one pin read.
         readRiderLimit: Int = 0,
+        // Whether a held ✓✓ for these ids counts as answered once sealed. False for a best-effort copy ([quickReads]): one
+        // that may be lost must not release the only carrier a declined ✓✓ has (crypto review, 2026-11-16).
+        releasesHeld: Boolean = true,
     ): TickSeal {
         val peer = peers.find(authorId) ?: return TickSeal.CannotSeal
         if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return TickSeal.CannotSeal
@@ -3373,7 +3384,7 @@ class MeshManager(
                 ) {
                     is RatchetSessions.AnswerSeal.Sealed -> {
                         // Whatever this tick covers is answered now: a held copy of it must not be sealed again (shape 9).
-                        releaseHeldTicks(authorId, ackIds)
+                        if (releasesHeld) releaseHeldTicks(authorId, ackIds)
                         outcome
                     }
 
@@ -3408,6 +3419,16 @@ class MeshManager(
      */
     private fun readLinked(authorId: String): Boolean =
         linkClaims.isProofCapable(authorId) && transport.neighbors.value.any { it.nodeId == authorId }
+
+    /**
+     * Whether [ReadSync]'s quick copy can reach [authorId] now: a live link, or a short-range plane that hears them (AckSync's
+     * ride escalation reads the same pair). LoRa's `fastSend` airs nothing, so a peer only the board hears is not near.
+     */
+    private fun readNearby(authorId: String): Boolean {
+        if (transport.neighbors.value.any { it.nodeId == authorId }) return true
+        val air = (transport as? CompositeMeshTransport)?.shortRangeReachable ?: transport.reachable
+        return air.value.any { it.nodeId == authorId }
+    }
 
     /** A `CTL_RECEIPT` for [ids] with read mask [rm]: one id rides `ack`, a batch `acks`. */
     private fun receiptContent(
@@ -3597,6 +3618,25 @@ class MeshManager(
                 ReadSync.Sent.CannotSeal
             }
         }
+
+    /**
+     * [ReadSync]'s quick form toward a near author: the same answer-only receipt, `relay = false` — unsigned when it sealed
+     * v3 (ADR 059: the receiver's unsigned door admits a `CTL_RECEIPT`), signed toward a v2 peer — handed to
+     * [MeshTransport.fastSend], which takes a live link where one is up and the short-range fast plane otherwise. Never
+     * flooded, custodied or spooled, never on LoRa, and it tells nothing. False when nothing was sealed.
+     */
+    private suspend fun quickReads(
+        authorId: String,
+        ids: List<String>,
+    ): Boolean {
+        // A block that landed after the wake armed (security review, 2026-11-16): `watchReads`' drop of the owed marks runs
+        // on its own collector, so the list is read again here rather than trusted to have won the race.
+        if (authorId in settings.blockedNodeIds.first()) return false
+        val tick = (sealTick(authorId, ids, answer = true, releasesHeld = false) as? TickSeal.Sealed)?.tick ?: return false
+        val wire = if (tick.v3) unsigned(tick.env).also { metrics.onTickUnsigned() } else sign(tick.env, relay = false)
+        transport.fastSend(wire, Peer(authorId))
+        return true
+    }
 
     /**
      * [ReadSync]'s spool form: the same answer-only receipt, signed `relay = false` and pushed straight into [authorId]'s

@@ -261,6 +261,7 @@ receipt and reaction are untouched.
 | `MessageContent.rm` / compact label 20 | `Long?` | read bitmask over a receipt's acked ids (§9); absent toward an incapable author |
 | `Protocol.CAP_READ_RECEIPTS` | `0x200000` | the receiver reads `rm`; always advertised, never the setting (§9) |
 | `ReadSync.LINKED_DEADLINE_MS` | 45 s | how long an owed read waits for a ride toward a linked author before its own frame |
+| `ReadSync.QUICK_DELAY_MS` | 1 s | how long after the first read of a burst the best-effort quick copy goes to a near author |
 | `ReadSync.ABSENT_BASE_MS` / `ABSENT_CAP_MS` | 15 min / 8 h | an absent author's deadline, doubling per standalone frame, reset by a ride or a link |
 | `ReadSync.DAILY_BUDGET` | 50 per rolling 24 h | standalone custodied read frames per reader (`DEFAULT_MAX_PER_SENDER / 4`) |
 | `read_marks` owed / told TTL | 24 h / 48 h | the reader's durable outbox; told marks kept so a later receipt can carry the bit again |
@@ -297,6 +298,13 @@ told). `ReadSync` then:
 - otherwise, at the author's deadline (45 s while linked, 15 min doubling to 8 h while absent), pushes one frame into
   the author's spool scope if a spool covers them, else originates one sealed, answer-only `CTL_RECEIPT`
   `relay = true`, custodied on the 24 h TTL, within a budget of 50 such frames a day per reader;
+- while the author is near (a live link, or a short-range fast plane that hears them), also sends the owed reads not
+  yet sent this way once, 1 s after the first read of a burst, as the same sealed answer-only `CTL_RECEIPT`
+  `relay = false` (unsigned when it sealed v3, ADR 059's tick) through `fastSend`: one hop, no custody row, no spool,
+  never LoRa. Best effort, so it tells nothing: the deadline's frame above still goes unless a ride tells first. It
+  never releases a held ✓✓, and it re-reads the block list before sealing. What it costs is cover: a read near its
+  author no longer hides in the next ✓✓, so anyone in radio range who can read the envelope sees a receipt for
+  already-acked ids about a second after the read (timing, out of scope per §7);
 - marks a read **told** only after a `relay = true` frame carrying it is originated, or the spool push returns
   `pushed`. A seal, a live-link send, a compact LoRa bit, an owed entry, a decline and every cleartext fallback leave
   it owed. A refusal is never re-sealed;

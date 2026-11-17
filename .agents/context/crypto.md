@@ -205,12 +205,15 @@ LoRa plane (2026-09.ggq4).
   `prekey`, and never inserts a peer row.
 - **When touching read receipts on the wire or the seal paths — `MessageContent.rm` / `MessageContentV2` label 20,
   `ReadMask`, `Protocol.CAP_READ_RECEIPTS`, `ReadSync` / `ReadRiding` / `ReadMarkStore`, `MeshManager.onMessagesRead` /
-  `originateReads` / `spoolReads` / `inlineReadsFor` / `tellInlineReads`, `SealedTick.read` / `.riders`, or
+  `originateReads` / `spoolReads` / `quickReads` / `readNearby` / `inlineReadsFor` / `tellInlineReads`, `SealedTick.read` /
+  `.riders`, or
   `InboundPipeline.applyReceiptIds` / `receiptReads` / `applySealedReceipt`'s `read`:** READ ADR 2026-11.z6jw, then
   `docs/ENCRYPTED_RECEIPTS_REACTIONS.md` §9. A read rides a `CTL_RECEIPT` or inline acks as a mask over the ids as
   sent; never a new ctl (the compact and unsigned doors refuse one). Toward a capable author `rm` is always present
   at a width set by the list's length alone (`ReadMask`); toward any other, absent and byte-identical. "Told" is only a `relay = true` originate or a
   `pushed` spool push, never a seal, a live-link send, a compact bit or an owed entry; a refusal is never re-sealed.
+  The quick copy to a near author (`ReadSync.QUICK_DELAY_MS`, `quickReads`, the 2026-11-16 amendment) is one of those
+  live-link sends: best effort, it tells nothing and moves no deadline.
   Reads never claim or record in `DmReAckLedger` (8hn6's qualification), and the standalone frame is an answer-only
   seal that never mints an init. Regression: `ReadMaskTest`, `ReadSyncTest`, `InboundPipelineTest`'s read cases,
   `MeshManagerTest`'s compact-mask cases, `GoldenVectorTest`, `ReadReceiptLabTest`.

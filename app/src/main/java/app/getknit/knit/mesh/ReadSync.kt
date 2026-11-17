@@ -192,6 +192,13 @@ interface ReadMarkStore {
  * [ABSENT_CAP_MS], the doubling reset by a ride or a link. At most [budget] custodied ones in any rolling 24 h; past it
  * the marks wait for a ride or the spool. A decline leaves the marks owed for [onRootChanged] or the heal.
  *
+ * **Quick, while the author is near.** The deadline above is too slow for someone watching a thread across the room
+ * (device trial, 2026-11-16: the read waited out the 45 s for a ride). So [quickDelayMs] after the first read of a burst
+ * toward an author [nearby] (a live link or a short-range fast plane), the owed reads not yet sent this way go once more
+ * in the same sealed form, `relay = false`, over [quick]: one hop, no flood, no custody row, no spool, never LoRa. Best
+ * effort, so it tells nothing: the marks stay owed and the standalone form still runs on its deadline unless a ride tells
+ * them first, and a duplicate lands on the author's fill-null-only `readAt`.
+ *
  * **Eras.** A root change toward an author owes again every read of the last 24 h told under another root
  * ([ReadMarkStore.reOweNotUnder]): a reset or a restore leaves the author unable to open what told it.
  *
@@ -208,6 +215,10 @@ class ReadSync(
     // The same, signed `relay = false` and pushed straight into the author's spool scope (`ScopeSync.pushDirect`).
     private val spoolPush: suspend (authorId: String, ids: List<String>) -> Sent,
     private val now: () -> Long,
+    // Whether a quick copy can reach the author now: a live link or a short-range fast plane that hears them.
+    private val nearby: (authorId: String) -> Boolean = { false },
+    // The same receipt sealed and sent `relay = false` over that link or plane, best effort; false when nothing was sealed.
+    private val quick: suspend (authorId: String, ids: List<String>) -> Boolean = { _, _ -> false },
     // The root the author's session holds now (`RatchetSessions.rootTagFor`), read again after a tell: a reset that
     // committed while the hand-off was suspended leaves the tell under a dead root (review round 1, B2).
     private val liveRoot: suspend (authorId: String) -> Long? = { null },
@@ -216,6 +227,7 @@ class ReadSync(
     private val linkedDeadlineMs: Long = LINKED_DEADLINE_MS,
     private val absentBaseMs: Long = ABSENT_BASE_MS,
     private val budget: Int = DAILY_BUDGET,
+    private val quickDelayMs: Long = QUICK_DELAY_MS,
 ) : ReadRiding {
     /** What a standalone route did with one batch. */
     sealed interface Sent {
@@ -253,6 +265,12 @@ class ReadSync(
 
     // Our clock at each standalone custodied send in the last 24 h: the per-reader budget.
     private val custodied = ArrayDeque<Long>()
+
+    // Author → the token of its armed quick wake: the wake disarms only its own, however it ends.
+    private val quickArmed = HashMap<String, Any>()
+
+    // Ids already sent once by the quick path, oldest first, at most [QUICK_SENT_CAP]: a later burst sends only new reads.
+    private val quickSent = LinkedHashSet<String>()
 
     override suspend fun readSet(
         authorCaps: Long?,
@@ -332,7 +350,10 @@ class ReadSync(
     suspend fun onRead(reads: List<ReadMarkEntity>) {
         if (reads.isEmpty() || !enabled()) return
         marks.mark(reads)
-        reads.map { it.authorId }.distinct().forEach { schedule(it) }
+        reads.map { it.authorId }.distinct().forEach {
+            schedule(it)
+            armQuick(it)
+        }
     }
 
     /**
@@ -394,6 +415,7 @@ class ReadSync(
             steps.clear()
             declined.clear()
             armedAt.clear()
+            quickSent.clear()
         }
         marks.dropOwed()
     }
@@ -409,6 +431,7 @@ class ReadSync(
             steps.remove(authorId)
             declined.remove(authorId)
             armedAt.remove(authorId)
+            quickArmed.remove(authorId)
         }
         marks.dropOwedFor(authorId)
     }
@@ -480,6 +503,42 @@ class ReadSync(
                 synchronized(this@ReadSync) { owedSince[authorId] }?.let { arm(authorId, it + deadlineMs(authorId)) }
             }
         }
+    }
+
+    /**
+     * The quick copy's wake toward [authorId] (the class doc's "Quick"): one per author, armed only while they are near.
+     * Disarmed before the send, so a read landing while it seals arms the next burst, and again however the wake ends: a
+     * session stopped inside the delay (or before the wake ever ran) must not leave the author armed for the process's life.
+     */
+    private fun armQuick(authorId: String) {
+        if (!nearby(authorId)) return
+        val scope = wakeScope() ?: return
+        val token = Any()
+        if (!synchronized(this) { quickArmed.putIfAbsent(authorId, token) == null }) return
+        val disarm = { synchronized(this) { quickArmed.remove(authorId, token) } }
+        scope
+            .launch {
+                delay(quickDelayMs)
+                disarm()
+                quickFlush(authorId)
+            }.invokeOnCompletion { disarm() }
+    }
+
+    /**
+     * Owed reads toward [authorId] not yet sent quick, up to [ReadMask.MAX_IDS], sent once over [quick]. Nothing is claimed
+     * and nothing is told: a ride or the standalone form carrying the same ids meanwhile costs one duplicate read.
+     */
+    private suspend fun quickFlush(authorId: String) {
+        if (!enabled() || !nearby(authorId)) return
+        val seen = synchronized(this) { quickSent.size }
+        val owed = marks.owedFor(authorId, ReadMask.MAX_IDS + seen)
+        val ids = synchronized(this) { owed.filter { it !in quickSent }.take(ReadMask.MAX_IDS) }
+        if (ids.isEmpty() || !quick(authorId, ids)) return
+        synchronized(this) {
+            quickSent += ids
+            while (quickSent.size > QUICK_SENT_CAP) quickSent.remove(quickSent.first())
+        }
+        metrics.onReadsQuick()
     }
 
     /**
@@ -599,6 +658,12 @@ class ReadSync(
 
         /** A told mark's life: the spool's retention, so a re-ack within it can still carry the bit. */
         const val TOLD_TTL_MS = 48 * 60 * 60_000L
+
+        /** A quick copy goes this long after the first read of a burst toward a near author, so a scroll's reads share it. */
+        const val QUICK_DELAY_MS = 1_000L
+
+        /** Ids remembered as sent quick: a few screens' worth, past which an old id may go quick a second time. */
+        private const val QUICK_SENT_CAP = 512
 
         private const val MAX_SHIFT = 10
     }

@@ -109,7 +109,9 @@ to its author. Only when nothing rides does `ReadSync` originate one sealed `CTL
 on the 24 h TTL like any DM-form frame, never purging anything). That happens at most once per 45 s window while the
 author is linked, and at 15 min doubling to 8 h while they are absent. It stays within 50 frames per reader per
 rolling day, a quarter of its own per-sender bucket. No custody rule reads the frame differently, which is what
-keeps digests convergent. Its durable outbox is `read_marks` (`.agents/context/storage.md`).
+keeps digests convergent. Its durable outbox is `read_marks` (`.agents/context/storage.md`). The quick copy a near
+author gets a second after the read (`ReadSync.QUICK_DELAY_MS`, the 2026-11-16 amendment) is `relay = false` over
+`fastSend` and never enters custody; it tells nothing, so this bound is unchanged.
 
 ## Bounds (`ForwardRepository`)
 

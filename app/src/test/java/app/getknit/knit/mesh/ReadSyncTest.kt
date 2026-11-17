@@ -3,8 +3,12 @@ package app.getknit.knit.mesh
 import app.getknit.knit.data.receipt.ReadMarkEntity
 import app.getknit.knit.mesh.protocol.Protocol
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -16,6 +20,7 @@ import org.junit.Test
  * [ReadSync], the reader's half of read receipts (ADR 2026-11.z6jw): when a read is told, by which route, and what
  * stays owed. Pure, over an in-memory [ReadMarkStore] and recording routes.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class ReadSyncTest {
     private class FakeMarks : ReadMarkStore {
         val rows = LinkedHashMap<String, ReadMarkEntity>()
@@ -81,10 +86,15 @@ class ReadSyncTest {
 
     private class Rig(
         budget: Int = ReadSync.DAILY_BUDGET,
+        // The wake scope: null (the default) arms nothing, so only flushDue sends; a quick test passes the test's own.
+        var wake: CoroutineScope? = null,
     ) {
         var now = 1_000_000L
         var on = true
         val linkedTo = HashSet<String>()
+        val near = HashSet<String>()
+        val quicked = mutableListOf<Pair<String, List<String>>>()
+        var quickAnswer = true
         val spoolCovers = HashSet<String>()
         val marks = FakeMarks()
         val metrics = MeshMetrics()
@@ -117,7 +127,13 @@ class ReadSyncTest {
                     spoolAnswer
                 },
                 now = { now },
+                nearby = { it in near },
+                quick = { author, ids ->
+                    quicked += author to ids
+                    quickAnswer
+                },
                 liveRoot = { liveRoot },
+                wakeScope = { wake },
                 metrics = metrics,
                 budget = budget,
             )
@@ -287,7 +303,6 @@ class ReadSyncTest {
         }
 
     /** B2: a reset that commits while the standalone hand-off is suspended leaves no read told under the dead root. */
-    @OptIn(ExperimentalCoroutinesApi::class) // runCurrent
     @Test
     fun `a root that moves during the hand-off owes the read again`() =
         runTest {
@@ -466,6 +481,114 @@ class ReadSyncTest {
             rig.now += ReadSync.ABSENT_BASE_MS
             again.flushDue()
             assertEquals(setOf(ALICE, BOB), rig.originated.map { it.first }.toSet())
+        }
+
+    @Test
+    fun `a near author gets one quick copy a second after the read, and the standalone form still runs`() =
+        runTest {
+            val rig = Rig(wake = backgroundScope)
+            rig.near += ALICE
+            rig.linkedTo += ALICE
+            rig.read("m1", "m2")
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS - 1)
+            runCurrent()
+            assertTrue(rig.quicked.isEmpty())
+            // A read inside the window joins the same copy.
+            rig.read("m3")
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(listOf(ALICE to listOf("m1", "m2", "m3")), rig.quicked)
+            assertEquals(1L, rig.metrics.receipts().readsQuick)
+            // Best effort: nothing told, nothing custodied, and the deadline's frame still carries every read.
+            assertEquals(setOf("m1", "m2", "m3"), rig.marks.owed())
+            assertEquals(0L, rig.metrics.receipts().readsSealed)
+            rig.now += ReadSync.LINKED_DEADLINE_MS
+            rig.sync.flushDue()
+            assertEquals(listOf(ALICE to listOf("m1", "m2", "m3")), rig.originated)
+        }
+
+    @Test
+    fun `a later burst sends only its own reads quick, and a copy nothing sealed is tried again`() =
+        runTest {
+            val rig = Rig(wake = backgroundScope)
+            rig.near += ALICE
+            rig.read("m1")
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+            rig.read("m2")
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+            assertEquals(listOf(ALICE to listOf("m1"), ALICE to listOf("m2")), rig.quicked)
+
+            // No session to seal under: the ids are not remembered, so the next burst carries them too.
+            rig.quickAnswer = false
+            rig.read("m3")
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+            rig.quickAnswer = true
+            rig.read("m4")
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+            assertEquals(ALICE to listOf("m3", "m4"), rig.quicked.last())
+            assertEquals(3L, rig.metrics.receipts().readsQuick)
+        }
+
+    @Test
+    fun `no quick copy toward an author out of reach, with the setting off, or once a ride told the reads`() =
+        runTest {
+            val rig = Rig(wake = backgroundScope)
+            rig.read("far")
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+
+            // The setting turned off with a wake armed: the wake's own check is all that stops it.
+            rig.near += ALICE
+            rig.read("off")
+            rig.on = false
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+
+            rig.on = true
+            rig.read("rode")
+            rig.sync.told(ALICE, listOf("far", "off", "rode"), ROOT, riders = 3)
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+            assertTrue(rig.quicked.isEmpty())
+            assertEquals(0L, rig.metrics.receipts().readsQuick)
+        }
+
+    @Test
+    fun `an author blocked inside the window gets no quick copy, and a later read arms again`() =
+        runTest {
+            val rig = Rig(wake = backgroundScope)
+            rig.near += ALICE
+            rig.read("m1")
+            rig.sync.onAuthorGone(ALICE)
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+            assertTrue(rig.quicked.isEmpty())
+
+            rig.read("m2")
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+            assertEquals(listOf(ALICE to listOf("m2")), rig.quicked)
+        }
+
+    @Test
+    fun `a session stopped inside the window leaves the author armable`() =
+        runTest {
+            val session = CoroutineScope(backgroundScope.coroutineContext + Job(backgroundScope.coroutineContext[Job]))
+            val rig = Rig(wake = session)
+            rig.near += ALICE
+            rig.read("m1")
+            session.cancel()
+            runCurrent()
+            // The next session's first read arms a fresh wake, carrying the read the stopped one never sent.
+            rig.wake = backgroundScope
+            rig.read("m2")
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+            assertEquals(listOf(ALICE to listOf("m1", "m2")), rig.quicked)
         }
 
     @Test

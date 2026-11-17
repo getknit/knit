@@ -85,3 +85,22 @@ details lists each reader and the time.
   plus a mask is one packet), `InboundPipelineTest`, `ReadSyncTest`, `ReadReceiptLabTest`,
   `MessageReceiptRepositoryTest`, `ReadMarkRepositoryTest`, `KnitDatabaseMigrationTest` (34 → 35),
   `MessageDetailsViewModelTest`, `ChatViewModelTest` and `DeliveryStatusTest`.
+
+**Amended 2026-11-16 (a quick copy for a near author):** on two lab phones linked over Bluetooth, the author watched
+the thread and saw nothing until their next message, whose ✓✓ carried the read: it was waiting out the 45 s for a
+ride. The maintainer asked for a best-effort quick path with no custody cost. So `ReadSync` now also sends, 1 s
+(`QUICK_DELAY_MS`) after the first read of a burst toward an author on a live link or a short-range fast plane
+(`MeshManager.readNearby`, AckSync's ride-escalation pair), the owed reads not yet sent this way, once, as the same
+sealed answer-only `CTL_RECEIPT` `relay = false` through `fastSend` (`MeshManager.quickReads`; unsigned when sealed v3,
+ADR 059's door admits a `CTL_RECEIPT`). It is one hop, never custodied, spooled or on LoRa (that plane's `fastSend` airs
+nothing), and it is one of the live-link sends that tell nothing, so the marks stay owed and the standalone frame
+still goes at its deadline unless a ride tells first: the custody bound above is unchanged, and the author's
+fill-null-only `readAt` absorbs the duplicate. Its reach is not proven (a link or plane that merely claims the
+author's id gets a sealed frame it cannot open) and moves no deadline, which is why `linked`'s proof rule (review
+round 1, N1) does not apply. The cost is privacy, not custody: a read near its author no longer hides inside the next
+✓✓, so every read burst toward a near author is its own receipt frame about a second after the rows appear, for ids
+already acked and with nothing from the author in between. Anyone in radio range who can read the envelope (#286)
+sees "this person is reading that thread now", inside the spec's out-of-scope timing posture (§7). It never releases
+a held ✓✓ (`sealTick(releasesHeld = false)`: a lost copy must not take the ✓✓'s only carrier with it), and it reads the
+block list again before it seals, since the block's drop of owed marks runs on its own collector. Counted as
+`readsQuick`. Regression: `ReadSyncTest`'s quick cases, `ReadReceiptLabTest.aNearAuthorSeesTheReadBeforeTheDeadline`.

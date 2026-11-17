@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.lab
 
+import app.getknit.knit.mesh.ReadSync
 import app.getknit.knit.mesh.lora.FakeMeshtasticAir
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -319,7 +320,20 @@ class ReadReceiptLabTest {
             // The read frames, by id: what bob's bucket gained.
             lab.await(BURST_BUDGET) { (carol.custodyIdsFrom(bob) - preset).size }
             assertEquals("the budget's worth of frames", BURST_BUDGET.toLong(), bob.metrics.receipts().readsCustodied)
-            assertTrue("the rest held by the budget", bob.metrics.receipts().readsBudgetHeld >= 1)
+            // The third batch meets the spent budget on a flush of its own, which may not have run yet: the heal above can
+            // return on a basket already under way, and a batch a decline refunded waits for the next pass (mesh-lab review,
+            // 2026-11-16: chaos seed 381602113). Heal until the hold is an event, and say what was owed if it never comes.
+            val held =
+                lab.tryAwait(1) {
+                    if (bob.metrics.receipts().readsBudgetHeld < 1) bob.heal()
+                    minOf(bob.metrics.receipts().readsBudgetHeld, 1L).toInt()
+                }
+            val r = bob.metrics.receipts()
+            assertTrue(
+                "the rest held by the budget (custodied ${r.readsCustodied}, held ${r.readsBudgetHeld}, " +
+                    "re-owed ${r.readsReOwed}, still owed to ${bob.db.readMarkDao().owedAuthors()})",
+                held,
+            )
             carol.transport.awaitInboundDrained()
             val gone = preset.filterNot { it in carol.custodyIds() }
             assertTrue("nothing of bob's was evicted: $gone, gained ${carol.custodyIdsFrom(bob) - preset}", gone.isEmpty())
@@ -421,6 +435,46 @@ class ReadReceiptLabTest {
             lab.assertConverged(listOf(alice, bob), atLeast = 4) { it.dmWith(if (it === alice) bob else alice) }
         }
 
+    /**
+     * 8. A near author sees the read at once (the maintainer's device trial, 2026-11-16): over the Bluetooth plane as
+     * shipped, the quick copy crosses the link a second after the read, with the deadline still ten lab minutes off and no
+     * custody row for it. Best effort, so the read stays owed and the deadline's own frame still goes.
+     */
+    @Test
+    fun aNearAuthorSeesTheReadBeforeTheDeadline() =
+        runBlocking {
+            val pages = LabPages()
+            val quick = READS.copy(readQuickDelayMs = ReadSync.QUICK_DELAY_MS)
+            val alice = lab.node("alice", quick, pages = pages, board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", quick, pages = pages, board = false).apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            // Accepted, not message requests: a request's reads are never told.
+            lab.befriend(alice, bob)
+            val id = dmLands(alice, bob, "seen across the room")
+            // Its ✓✓ with alice first, so the read cannot ride it.
+            lab.awaitReceipt(alice, id, bob)
+            bob.reads(id)
+            // No clock jump: only the quick copy can carry it before LINKED_MS.
+            lab.await(1) {
+                bob.metrics
+                    .receipts()
+                    .readsQuick
+                    .toInt()
+            }
+            awaitRead(alice, id, bob)
+            assertEquals("no read frame in custody yet", 0L, bob.metrics.receipts().readsCustodied)
+
+            pastDeadline(bob, LINKED_MS)
+            lab.await(1) {
+                bob.metrics
+                    .receipts()
+                    .readsCustodied
+                    .toInt()
+            }
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
     /** The ✓✓ for [author]'s DM [id] is held after the row commits: end the hold only once it is in it. */
     private suspend fun LabNode.awaitHeld(
         author: LabNode,
@@ -457,7 +511,13 @@ class ReadReceiptLabTest {
          */
         const val LINKED_MS = 10 * 60_000L
         const val ABSENT_MS = 30 * 60_000L
-        val READS = LabLimits(readLinkedDeadlineMs = LINKED_MS, readAbsentBaseMs = ABSENT_MS)
+
+        /**
+         * The quick copy's delay outside scenario 8: an hour of real time, so it never fires and no copy in flight lands
+         * inside another scenario's baselines (mesh-lab review, 2026-11-16: in a boards run the composite carries it).
+         */
+        const val QUICK_OFF_MS = 60 * 60_000L
+        val READS = LabLimits(readLinkedDeadlineMs = LINKED_MS, readAbsentBaseMs = ABSENT_MS, readQuickDelayMs = QUICK_OFF_MS)
 
         /** The coalescer's hold in the LoRa scenario: long enough that only the scenario ends it. */
         const val HOLD_MS = 5 * 60_000L

@@ -1279,6 +1279,11 @@ data class LabLimits(
     /** Read receipts' daily budget of standalone custodied frames (`ReadSync.DAILY_BUDGET` by default). */
     val readBudget: Int = ReadSync.DAILY_BUDGET,
     /**
+     * How long after a read the best-effort quick copy goes to a near author (`ReadSync.QUICK_DELAY_MS`, real time). A
+     * scenario about another route sets it out of reach, so a quick copy in flight never lands inside its baselines.
+     */
+    val readQuickDelayMs: Long = ReadSync.QUICK_DELAY_MS,
+    /**
      * How often the board's linger sweep re-reads its heard set (`LoraMeshTransport.LINGER_SWEEP_MS`, a minute in the
      * field). A scenario that moves the calendar past `REACHABLE_LINGER_MS` shortens it, so the boards forget each
      * other inside an await — the jump moves the decision, never the `delay` that asks it.
@@ -2112,6 +2117,7 @@ class LabNode internal constructor(
                 readLinkedDeadlineMs = limits.readLinkedDeadlineMs,
                 readAbsentBaseMs = limits.readAbsentBaseMs,
                 readBudget = limits.readBudget,
+                readQuickDelayMs = limits.readQuickDelayMs,
                 spoolTickMs = limits.spoolTickMs,
                 spoolAttachmentRetryMs = limits.spoolAttachmentRetryMs,
                 firstAskGraceMs = limits.firstAskGraceMs,

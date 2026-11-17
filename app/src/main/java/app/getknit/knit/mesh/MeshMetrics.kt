@@ -545,6 +545,7 @@ class MeshMetrics {
     private val readsRidden = AtomicLong()
     private val readsCustodied = AtomicLong()
     private val readsSpooled = AtomicLong()
+    private val readsQuick = AtomicLong()
     private val readsLoraOffered = AtomicLong()
     private val readsReOwed = AtomicLong()
     private val readsBudgetHeld = AtomicLong()
@@ -1087,6 +1088,14 @@ class MeshMetrics {
     /** A read batch nothing carried, pushed straight into its author's spool scope: no custody row (ADR 2026-09.y5f3). */
     fun onReadsSpooled() {
         readsSpooled.incrementAndGet()
+    }
+
+    /**
+     * A best-effort quick read batch sent `relay = false` toward a near author over a live link or a short-range fast plane
+     * (`ReadSync`'s quick copy): no custody row, and it tells nothing. Batches handed to the transport, not frames landed.
+     */
+    fun onReadsQuick() {
+        readsQuick.incrementAndGet()
     }
 
     /**
@@ -2019,6 +2028,7 @@ class MeshMetrics {
             readsRidden = readsRidden.get(),
             readsCustodied = readsCustodied.get(),
             readsSpooled = readsSpooled.get(),
+            readsQuick = readsQuick.get(),
             readsLoraOffered = readsLoraOffered.get(),
             readsReOwed = readsReOwed.get(),
             readsBudgetHeld = readsBudgetHeld.get(),
@@ -2339,11 +2349,12 @@ class MeshMetrics {
             val receiptsSpooled: Long = 0,
             val ticksUnsigned: Long = 0,
             // Read receipts (`ReadSync`): ids told, ids that rode, standalone batches custodied or spooled, compact offers
-            // carrying a bit, ids owed again by a root change, batches the daily budget held.
+            // carrying a bit, ids owed again by a root change, batches the daily budget held; quick batches sent best effort.
             val readsSealed: Long = 0,
             val readsRidden: Long = 0,
             val readsCustodied: Long = 0,
             val readsSpooled: Long = 0,
+            val readsQuick: Long = 0,
             val readsLoraOffered: Long = 0,
             val readsReOwed: Long = 0,
             val readsBudgetHeld: Long = 0,
