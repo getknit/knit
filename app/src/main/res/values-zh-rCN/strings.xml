@@ -191,7 +191,7 @@
     <string name="chat_sending">正在发送…</string>
     <string name="chat_attachment_image_desc">照片附件</string>
     <string name="chat_attachment_unavailable">无法显示此附件</string>
-    <string name="chat_attachment_wait_relay">也可以通过你连接的中继服务器从互联网接收</string>
+    <string name="chat_attachment_wait_relay">也可通过已连接的中继服务器经互联网接收</string>
     <string name="chat_attachment_wait_frames_only">已连接的中继节点仅转发消息</string>
     <string name="chat_commons_attachment_coming">正在从此聊天室的中继获取</string>
     <string name="chat_commons_attachment_offline">此聊天室的中继连接后即可收到</string>
@@ -501,7 +501,7 @@
     <string name="chat_transfer_consent_can_title">工作原理</string>
     <string name="chat_transfer_consent_can_body">Knit 会在你们的手机之间建立一条私密的加密 WLAN 连接。文件不会经过 Mesh 网络，其他手机也不会存储或转发它。</string>
     <string name="chat_transfer_consent_cannot_title">文件传输期间</string>
-    <string name="chat_transfer_consent_cannot_body">传输期间，Knit 会暂停通过 WLAN 的 Mesh 连接，其他消息可能延迟。传完前，请让两部手机保持靠近。</string>
+    <string name="chat_transfer_consent_cannot_body">传输期间，Knit 会暂停 Wi-Fi Mesh 连接，因此其他消息可能会延迟送达。请在传输完成前保持两部手机彼此靠近。</string>
     <string name="chat_transfer_consent_scope_send">文件在传输过程中是加密的。对方会先看到文件名和大小，再决定是否接收；你们任何一方都可以随时停止传输。</string>
     <string name="chat_transfer_consent_scope_receive">文件在传输过程中是加密的，之后会像普通文件一样保存到你的“下载”文件夹，不再受 Knit 加密保护。Knit 不会扫描文件中的有害内容，因此请只接受你信任的文件。</string>
     <string name="chat_transfer_consent_scope_receive_models">模型在传输过程中是加密的。Knit 会在安装前用自己的校验和核对每个文件，不会将任何内容保存到你的“下载”文件夹。</string>
@@ -924,9 +924,9 @@
     <string name="settings_calls_summary_own_stun">你自己的 STUN 服务器</string>
     <string name="settings_calls_summary_own_turn">你自己的 TURN 服务器</string>
     <string name="settings_calls_summary_own_both">你自己的 STUN 和 TURN 服务器</string>
-    <string name="settings_calls_summary_none">不接收来电</string>
-    <string name="settings_calls_summary_no_live">不接收实时通话来电</string>
-    <string name="settings_calls_summary_no_walkie">不接收 Mesh 通话来电</string>
+    <string name="settings_calls_summary_none">不接听来电</string>
+    <string name="settings_calls_summary_no_live">不接听实时通话</string>
+    <string name="settings_calls_summary_no_walkie">不接听 Mesh 通话</string>
     <string name="settings_calls_summary_walkie">接收 Mesh 通话来电</string>
     <string name="settings_calls_summary_relayed">%1$s · 所有通话经由服务器</string>
     <string name="call_settings_stun_title">使用自己的 STUN 服务器</string>
