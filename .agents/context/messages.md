@@ -33,7 +33,8 @@ lines.
   `BridgedRoomQueries`,
   `DeliveryStatus.NotSent` / `Unconfirmed`, `bridgedBoardOf` / `roomFactsFor`, `meshcoreRoomClashKeys` / `meshcoreNameClashes`,
   `meshcoreAuthorLine`, `MessageDetailsViewModel`'s sender, `MeshOrigin.meshcore` /
-  `nameClash`, `NotificationChannels.MESHCORE`, `SettingsStore.meshcorePostConsented` / `setMeshcoreRoomEnabled`, or a
+  `nameClash`, `NotificationChannels.MESHCORE`, `SettingsStore.meshcorePostConsented` / `meshcorePostConsentPosition` /
+  `setMeshcoreRoomEnabled`, `ChatViewModel`'s `meshcoreSharesPosition`, or a
   reader that turns `originNode` into a label:** READ ADR 2026-11.gsqu's Stage 6 amendment (part 6b), then "The Meshtastic
   room" and "MeshCore's Public channel" in `lora-bridge.md`. Every rule both rooms share reads the one predicate. A MeshCore
   room post is always a stranger's: the fixed sentinel `originNode`, never resolved, never `!hex`, named by its own claim or

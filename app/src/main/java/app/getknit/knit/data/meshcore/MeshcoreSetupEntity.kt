@@ -67,4 +67,8 @@ interface MeshcoreSetupDao {
 
     @Query("DELETE FROM meshcore_setup WHERE address = :address")
     suspend fun clear(address: String)
+
+    /** Whether any setup record is kept, for any board (the restore dialog's warning, Stage 7). */
+    @Query("SELECT EXISTS(SELECT 1 FROM meshcore_setup)")
+    suspend fun any(): Boolean
 }

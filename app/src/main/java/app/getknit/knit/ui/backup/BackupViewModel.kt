@@ -17,6 +17,7 @@ import app.getknit.knit.data.backup.BackupWriter
 import app.getknit.knit.data.backup.RestoreStager
 import app.getknit.knit.mesh.MeshService
 import app.getknit.knit.notifications.ConversationShortcuts
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -73,6 +74,11 @@ sealed interface RestorePhase {
     /** Decrypted, verified and staged; the confirm dialog is up. */
     data class Staged(
         val manifest: BackupManifest,
+        /**
+         * This phone keeps a MeshCore setup record, or could not tell (ADR 2026-11.gsqu's Stage 7 amendment): the restore
+         * replaces it with the backup's empty table, so the dialog says to restore the board first.
+         */
+        val meshcoreSetup: Boolean = false,
     ) : RestorePhase
 
     data class Failed(
@@ -95,6 +101,11 @@ class BackupViewModel(
     @field:SuppressLint("StaticFieldLeak") private val context: Context,
     private val writer: BackupWriter,
     private val stager: RestoreStager,
+    /**
+     * Whether this phone keeps a MeshCore setup record (`MeshcoreSetupStore.anyRecord`), only where the build carries the
+     * MeshCore plane; a read that throws counts as yes, since the warning costs nothing and its absence costs the board.
+     */
+    private val meshcoreSetupOnPhone: (suspend () -> Boolean)? = null,
 ) : ViewModel() {
     private val _backup = MutableStateFlow<BackupPhase>(BackupPhase.Idle)
     val backup: StateFlow<BackupPhase> = _backup
@@ -179,7 +190,7 @@ class BackupViewModel(
                                 stager.stage(input, key) { done, total -> _restore.value = RestorePhase.Staging(done, total) }
                             }
                         } ?: throw IOException("could not open $uri")
-                    _restore.value = RestorePhase.Staged(manifest)
+                    _restore.value = RestorePhase.Staged(manifest, meshcoreSetup = meshcoreSetupKept())
                 } catch (e: BackupException) {
                     Log.w(TAG, "restore refused: ${e.message}", e)
                     _restore.value = RestorePhase.Failed(uri, e.problem)
@@ -189,6 +200,13 @@ class BackupViewModel(
                 }
             }
         }
+    }
+
+    private suspend fun meshcoreSetupKept(): Boolean {
+        val check = meshcoreSetupOnPhone ?: return false
+        return runCatching { check() }
+            .onFailure { if (it is CancellationException) throw it }
+            .getOrDefault(true)
     }
 
     /**

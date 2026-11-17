@@ -710,6 +710,12 @@ internal class FakeMeshcoreBoard(
             clockSetAt = air.now()
         }
     var batteryMv = 4_100
+
+    /** `advert_loc_policy`, the telemetry byte (`env << 4 | loc << 2 | base`) and the live position, as `SELF_INFO` reports them. */
+    var advertLocPolicy = 0
+    var telemetryModes = 0
+    var latE6 = 0
+    var lonE6 = 0
     var freqKhz = 869_525L
     var bwHz = 250_000L
     var sf = 11
@@ -1051,7 +1057,14 @@ internal class FakeMeshcoreBoard(
         appStarts++
         val rekeyed = reportedKey?.takeIf { reportedKeyFrom?.let { from -> appStarts >= from } ?: true }
         (rekeyed ?: key).copyInto(out, 4)
+        java.nio.ByteBuffer
+            .wrap(out, 36, 8)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            .putInt(latE6)
+            .putInt(lonE6)
         out[44] = multiAcks.toByte()
+        out[45] = advertLocPolicy.toByte()
+        out[46] = telemetryModes.toByte()
         out[47] = manualAdd.toByte()
         u32(freqKhz).copyInto(out, 48)
         u32(bwHz).copyInto(out, 52)

@@ -7,7 +7,9 @@ import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.lora.AirPurpose
 import app.getknit.knit.mesh.lora.BoardAddr
+import app.getknit.knit.mesh.lora.BoardBattery
 import app.getknit.knit.mesh.lora.BoardPacket
+import app.getknit.knit.mesh.lora.BoardSetupState
 import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.Ceiling
 import app.getknit.knit.mesh.lora.Destination
@@ -41,12 +43,14 @@ import app.getknit.knit.mesh.lora.SendPurpose
 import app.getknit.knit.mesh.lora.SlotCheck
 import app.getknit.knit.mesh.lora.WallShift
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -119,6 +123,9 @@ class MeshcoreHooksTest {
 
         override val consent = MutableStateFlow<MeshcoreConsent?>(null)
 
+        /** The setup state the session published (Stage 7): what the face reads. */
+        override val setupState = MutableStateFlow<MeshcoreSetupView?>(null)
+
         override suspend fun unbind(address: String): MeshcoreUnbind = MeshcoreUnbind.NOTHING
 
         override suspend fun removeUntaught(key: ByteArray): ContactWrite {
@@ -148,6 +155,18 @@ class MeshcoreHooksTest {
 
         override fun faceMoved() {
             faces++
+        }
+
+        /** The debug bridge's raw payloads queued (Stage 7): payload, label, and the wall clock it is fresh until. */
+        val debugQueued = mutableListOf<Triple<ByteArray, String, Long>>()
+
+        override fun enqueueDebug(
+            payload: ByteArray,
+            label: String,
+            freshUntilWall: Long,
+        ): Boolean {
+            debugQueued += Triple(payload, label, freshUntilWall)
+            return true
         }
 
         override val maxPayload = MeshcoreProto.CHANNEL_DATA_CAP
@@ -224,6 +243,7 @@ class MeshcoreHooksTest {
         dialled: String = "DD:DD",
         namedForKnit: Boolean = true,
         publicSlot: MeshcorePublicSlot? = PUBLIC,
+        sharesPosition: Boolean = false,
     ) = MeshcoreDetail(
         publicKey = key,
         versionCode = 11,
@@ -239,6 +259,7 @@ class MeshcoreHooksTest {
         // The session's own address, deliberately not the plane's configured one ("AA:1"): the key goes out under this.
         dialled = dialled,
         publicSlot = publicSlot,
+        sharesPosition = sharesPosition,
     )
 
     private fun ready(
@@ -1264,6 +1285,216 @@ class MeshcoreHooksTest {
                 assertFalse("$word in: $everything", everything.contains(word))
             }
             assertEquals(1L, hooks.counters.publicPostsEnded.get())
+        }
+
+    // --- Stage 7: the radio screen's face, the Forget's fence, the bridge's raw send ---
+
+    /** The face (Stage 7): the Ready board's facts, the setup state off the record (away too), never a name or a key. */
+    @Test
+    fun theFaceCarriesTheBoardsFactsAndTheSetupStateAwayToo() {
+        ops.setupState.value = MeshcoreSetupView(BOARD, BoardSetupState.SET_UP)
+        val r = ready(detail = detail(sharesPosition = true))
+        hooks.beforeReady(r)
+        val face = checkNotNull(hooks.statusOf(r, LoraStatus(battery = BoardBattery(null, 3.712f, false))).meshcore)
+        assertEquals("v1.18.0", face.firmware)
+        assertEquals(869_525L, face.freqKhz)
+        assertEquals(8, face.spreadFactor)
+        assertEquals(62_500, face.bandwidthHz)
+        assertEquals(5, face.codingRate)
+        assertEquals(false, face.defaultScope)
+        assertEquals(3_712, face.batteryMv)
+        assertEquals(true, face.sharesPosition)
+        assertEquals(BoardSetupState.SET_UP, face.setup)
+        assertFalse("no key in the face", face.toString().contains("a0a1"))
+        // Away: the Ready's facts go, the position and the setup state stay for the same address.
+        val down = BoardState.Down(TransportHealth.Degraded, MeshcoreLinkState.Connecting)
+        val away = checkNotNull(hooks.statusOf(down, LoraStatus()).meshcore)
+        assertNull(away.firmware)
+        assertNull(away.freqKhz)
+        assertNull(away.batteryMv)
+        assertEquals(true, away.sharesPosition)
+        assertEquals(BoardSetupState.SET_UP, away.setup)
+        // Another address's state is not the bound board's, and nothing read yet is unknown, never "none".
+        ops.setupState.value = MeshcoreSetupView("ZZ:ZZ", BoardSetupState.NONE)
+        assertEquals(BoardSetupState.UNKNOWN, hooks.statusOf(down, LoraStatus()).meshcore?.setup)
+        core.config = LoraConfig("ZZ:ZZ", 0)
+        assertNull("never read for this address", hooks.statusOf(down, LoraStatus()).meshcore?.sharesPosition)
+    }
+
+    /** Stage 7: a setup state the session moves republishes the face, so the screen follows it while the board is away. */
+    @Test
+    fun aSetupStateMoveRepublishesTheFace() {
+        val before = core.faces
+        ops.setupState.value = MeshcoreSetupView(BOARD, BoardSetupState.PENDING)
+        assertTrue(core.faces > before)
+    }
+
+    /**
+     * Stage 7 (security B2/B3): a grant made before a Forget never reaches the claim store after it — not a retry of a claim
+     * edit that threw, not a consent the collector applies late — while a grant made after it (a new setup) does.
+     */
+    @Test
+    fun aForgetFencesOffEveryGrantMadeBeforeIt() {
+        var failing = true
+        val edits = mutableListOf<ByteArray?>()
+        val h =
+            MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, _, _ ->
+                if (k != null && failing) throw java.io.IOException("DataStore")
+                edits += k
+            })
+        // A grant whose edit throws: owed, and retried after a backoff.
+        ops.consent.value = consent(granted = true)
+        assertTrue(edits.isEmpty())
+        // A grant made before the Forget, which the collector will apply only after it.
+        val late = consent(granted = true)
+        val forgot = mutableListOf<String>()
+        kotlinx.coroutines.runBlocking { h.forgetClaim(BOARD) { forgot += "edit" } }
+        assertEquals(listOf("edit"), forgot)
+        failing = false
+        scope.testScheduler.advanceTimeBy(MeshcoreHooks.CLAIM_RETRY_MAX_MS * 2)
+        scope.testScheduler.runCurrent()
+        ops.consent.value = late
+        assertTrue("no key written after the Forget: $edits", edits.none { it != null })
+        assertTrue(h.counters.claimsFenced.get() >= 1)
+        // A new setup's grant, made after the Forget, is the user's again.
+        ops.consent.value = consent(granted = true)
+        assertTrue(edits.last()!!.contentEquals(boardKey))
+    }
+
+    /**
+     * Both reviewers (Stage 7a): a Forget whose own edit threw owes the claim's withdrawal, fenced at the seq it took then. When
+     * the user sets the same board up again before a retry lands, the new setup's claim stands: the retry withdraws nothing and
+     * fences no later grant. Without a re-setup, the retry withdraws.
+     */
+    @Test
+    fun anOwedWithdrawalNeverUndoesASetupMadeAfterItsForget() {
+        val edits = mutableListOf<ByteArray?>()
+        val h =
+            MeshcoreHooks(ops, core, scope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = { k, _, _ ->
+                edits += k
+            })
+        ops.consent.value = consent(granted = true)
+
+        fun forget() =
+            MeshcoreForget(
+                scope = scope,
+                boundAddress = { BOARD },
+                unbind = { MeshcoreUnbind.CLEARED },
+                fenceClaim = { address, edit -> h.forgetClaim(address, edit) },
+                clearBinding = { throw java.io.IOException("DataStore") },
+                withdrawClaim = { edits += null },
+                log = { logs += it },
+                fenceClaimUpTo = { address, upTo, edit -> h.forgetClaimUpTo(address, upTo, edit) },
+            )
+        assertEquals(MeshcoreForgetResult.FAILED, kotlinx.coroutines.runBlocking { forget().forget() })
+        // The same board set up again before the retry: its grant is newer than the Forget, and lands.
+        ops.consent.value = consent(granted = true)
+        assertTrue(edits.last()!!.contentEquals(boardKey))
+        val fenced = h.counters.claimsFenced.get()
+        scope.testScheduler.advanceTimeBy(MeshcoreHooks.CLAIM_RETRY_MAX_MS * 2)
+        scope.testScheduler.runCurrent()
+        assertTrue("the new setup's claim is still published: $edits", edits.last()!!.contentEquals(boardKey))
+        assertTrue(logs.any { it == "lora forget kind=meshcore retry dropped: the board was set up again" })
+        // And a later grant is not fenced by the retry.
+        ops.consent.value = consent(granted = true)
+        assertEquals(fenced, h.counters.claimsFenced.get())
+        assertTrue(edits.last()!!.contentEquals(boardKey))
+        // No re-setup this time: the retry withdraws.
+        assertEquals(MeshcoreForgetResult.FAILED, kotlinx.coroutines.runBlocking { forget().forget() })
+        scope.testScheduler.advanceTimeBy(MeshcoreHooks.CLAIM_RETRY_FIRST_MS + 1)
+        scope.testScheduler.runCurrent()
+        assertNull("withdrawn on the retry", edits.last())
+    }
+
+    /** Stage 7: a claim edit already running when the Forget comes lands first; the Forget's edit is after it, never before. */
+    @Test
+    fun aForgetWaitsBehindAClaimEditAlreadyRunning() =
+        runTest {
+            val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val order = mutableListOf<String>()
+            val h =
+                MeshcoreHooks(ops, core, backgroundScope, clock = { now }, log = { logs += it }, wallClock = { WALL_NOW }, onBoardKey = {
+                    k,
+                    _,
+                    _,
+                    ->
+                    if (k != null) gate.await()
+                    order += if (k != null) "grant" else "withdraw"
+                })
+            ops.consent.value = consent(granted = true)
+            runCurrent()
+            val forget = async { h.forgetClaim(BOARD) { order += "forget" } }
+            runCurrent()
+            assertTrue("the Forget waits on the stalled edit: $order", order.isEmpty())
+            gate.complete(Unit)
+            forget.await()
+            assertEquals(listOf("grant", "forget"), order.take(2))
+        }
+
+    /**
+     * The bridge's raw send (Stage 7, lora L3, security N5): through the core's queue (priced as a room post, the Knit slot's
+     * debug purpose at the write), answered with its outcome, its slot and its booked milliseconds — and refused up front
+     * without consent, off a board that is not Ready, or while the law holds. The payload is in no line.
+     */
+    @Test
+    fun aDebugSendGoesThroughTheQueueAndIsRefusedWithoutConsentOrUnderTheLaw() =
+        runTest {
+            assertEquals(MeshcoreRawSend.NOT_READY, hooks.debugSend("probe".encodeToByteArray()).result)
+            knitBoardReady(consented = false)
+            assertEquals(MeshcoreRawSend.NO_CONSENT, hooks.debugSend("probe".encodeToByteArray()).result)
+            ops.consent.value = consent(granted = true)
+            val answer = async { hooks.debugSend("secret probe".encodeToByteArray()) }
+            runCurrent()
+            val (payload, label, fresh) = core.debugQueued.single()
+            assertEquals("secret probe", payload.decodeToString())
+            assertEquals(WALL_NOW + MeshcoreRawSend.WAIT_MS, fresh)
+            assertEquals("one at a time", MeshcoreRawSend.BUSY, hooks.debugSend("again".encodeToByteArray()).result)
+            val purposes = mutableListOf<SendPurpose>()
+            hooks.sendKindFrame(
+                OutboundFrame(listOf(payload), label, destination = Destination.Debug, gate = RideGate(freshUntil = fresh)),
+            ) {
+                _,
+                purpose,
+                ->
+                purposes += purpose
+                FragmentOutcome.SENT
+            }
+            val sent = answer.await()
+            assertEquals(FragmentOutcome.SENT.name, sent.result)
+            assertEquals(KNIT_SLOT, sent.slot)
+            assertEquals(listOf<SendPurpose>(SendPurpose.Debug(KNIT_SLOT)), purposes)
+            assertTrue("booked at its price", (sent.bookedMs ?: 0) > 0)
+            assertFalse(sent.lawHolding)
+            assertFalse(logs.joinToString().contains("secret"))
+            // The law holds: refused before the queue.
+            hooks.onIdentified(boardKey)
+            hooks.beforeReady(ready(detail = detail(freqKhz = 868_100), radio = RadioParams(8, 125_000, 5)))
+            ops.ready = ready(detail = detail(freqKhz = 868_100), radio = RadioParams(8, 125_000, 5))
+            hooks.onRadioStats(WALL_NOW, uptimeSecs = 100, txAirSecs = 40)
+            val held = hooks.debugSend("probe".encodeToByteArray())
+            assertEquals(MeshcoreRawSend.LAW_HOLDS, held.result)
+            assertTrue(held.lawHolding)
+            assertEquals(1, core.debugQueued.size)
+        }
+
+    /** Stage 7: a raw payload past its freshness is never written, and its caller hears so. */
+    @Test
+    fun aStaleDebugSendIsNeverWritten() =
+        runTest {
+            knitBoardReady()
+            val answer = async { hooks.debugSend("probe".encodeToByteArray()) }
+            runCurrent()
+            val (payload, label, _) = core.debugQueued.single()
+            var wrote = false
+            hooks.sendKindFrame(OutboundFrame(listOf(payload), label, destination = Destination.Debug, gate = RideGate(freshUntil = 0))) {
+                _,
+                _,
+                ->
+                wrote = true
+                FragmentOutcome.SENT
+            }
+            assertFalse(wrote)
+            assertEquals(MeshcoreRawSend.STALE, answer.await().result)
         }
 
     private companion object {

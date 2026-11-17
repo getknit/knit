@@ -309,7 +309,9 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   false` across a calendar jump: a reboot's pre-boot term holds the pacer for up to an hour. A mirror room takes no
   receipts, so its own rows fail the oracle's tick leg: run the oracle on Nearby over a link. And on a node with a board,
   `awaitAcquainted` does not wait for its manager's link-up pass to finish: a frame count read right after a meeting can
-  still move from that pass, so compare what crossed or what a node without a board originated.
+  still move from that pass, so compare what crossed or what a node without a board originated. `MeshcoreForgetLabTest`
+  (Stage 7a) forgets through `LabNode.forgetMeshcore`, wired as `di/LoraWiring.meshcoreForget` is; the withdrawal reaches
+  the contact over a link only (a profile never rides the board), so link before awaiting their view of the key.
 - **`SideChannelLabTest` is the BLE side-channel set** (ADR 2026-09.sjaa, 2026-09-17): `lab.node(name, pages =
   pages)` puts the node's radio on a shared `LabPages` — one radio range, joined the way a board joins a
   `FakeMeshtasticAir` — and `LabTransport` then declares `hasFastPlane` and routes `fastFanout`/`fastSend`

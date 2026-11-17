@@ -1237,6 +1237,7 @@
     <string name="backup_restore_confirm_named">%1$s 的备份，创建于 %2$s，由 Knit %3$s 制作。</string>
     <string name="backup_restore_confirm_unnamed">备份创建于 %1$s，由 Knit %2$s 制作。</string>
     <string name="backup_restore_confirm_body">Knit 在这部手机上保存的所有内容（Knit 身份、联系人、群组和消息）都会被备份替换，随后应用会重启。你的联系人会把你视为同一个人；对方的手机重新连接后，与对方的对话会继续。如果旧手机仍在运行 Knit，请停止在那部手机上使用。</string>
+    <string name="backup_restore_confirm_meshcore">在这部手机上为 Knit 设置过的 MeshCore 开发板，在恢复备份后仍会保留 Knit 的设置和你联系人的电台密钥，而届时 Knit 将无法再撤消这些设置。如要让开发板回到原来的状态，请先在 LoRa 电台设置中撤消它的设置。</string>
     <string name="backup_action_restore">恢复并重启</string>
     <string name="backup_restore_failed">备份未恢复：%1$s</string>
     <string name="backup_restarting">正在重启 Knit…</string>
@@ -1416,12 +1417,15 @@
     <string name="lora_title">LoRa 电台</string>
     <string name="settings_lora_title">使用 LoRa 电台</string>
     <string name="settings_lora_subtitle">通过 Bluetooth 配对 Meshtastic 开发板，借助远距离 LoRa 扩大“附近”聊天室和私信的覆盖范围。群组、输入状态和照片仍只通过手机之间的无线模块传送。</string>
+    <string name="settings_lora_subtitle_any">通过 Bluetooth 配对 Meshtastic 或 MeshCore 开发板，借助远距离 LoRa 扩大“附近”聊天室和私信的覆盖范围。群组、输入状态和照片仍只通过手机之间的无线模块传送。</string>
     <string name="lora_off_note">关闭后将断开与开发板的连接。群组和附件从不通过 LoRa 传送。</string>
     <string name="lora_dm_title">通过 LoRa 发送私信</string>
     <string name="lora_dm_subtitle">私信仍保持端到端加密，但谁在给谁发消息、何时发送，范围内的任何 LoRa 电台都能看到，而这个范围以公里计，不是以米计。关闭此功能，私信将只通过手机之间的无线模块传送。</string>
     <string name="lora_board_section">开发板</string>
     <string name="lora_board_none">未找到已配对的 Meshtastic 开发板。请先在 Bluetooth 设置中配对一块（开发板会在屏幕上显示 PIN 码）。</string>
+    <string name="lora_board_none_any">未找到已配对的 LoRa 开发板。请先在 Bluetooth 设置中配对一块 Meshtastic 或 MeshCore 开发板，输入它屏幕上显示的 PIN 码，或之前为它设定的 PIN 码。</string>
     <string name="lora_board_none_meshtastic">你已配对的设备中，没有一台像是 Meshtastic 开发板。请在 Bluetooth 设置中配对一块，或显示所有已配对设备。</string>
+    <string name="lora_board_none_supported">你已配对的设备中，没有一台像是 Meshtastic 或 MeshCore 开发板。请在 Bluetooth 设置中配对一块，或显示所有已配对设备。</string>
     <string name="lora_show_all_boards">显示所有已配对设备</string>
     <plurals name="lora_boards_hidden">
         <item quantity="other">已隐藏另外 %d 台已配对设备</item>
@@ -1463,6 +1467,8 @@
     <string name="lora_status_connecting">正在连接…</string>
     <string name="lora_status_reconnecting">正在重新连接…</string>
     <string name="lora_status_needs_pairing">需要配对：请在 Bluetooth 设置中重新配对开发板</string>
+    <string name="lora_status_wrong_firmware">未运行 Meshtastic，或在配对后重新刷写过固件。请忘记它并重新配对，或选择另一块开发板。</string>
+    <string name="lora_status_wrong_firmware_meshcore">未运行 MeshCore Companion 固件，或在配对后重新刷写过固件。请忘记它并重新配对，或选择另一块开发板。</string>
     <string name="lora_status_bt_off">Bluetooth 已关闭或开发板不可用</string>
     <string name="lora_status_off">未使用</string>
     <string name="lora_signal">信号：SNR %1$.1f dB · RSSI %2$d dBm</string>
@@ -1483,6 +1489,39 @@
     <string name="lora_room_subtitle_dedicated">此开发板使用专用频率时会隐藏：没有公共电台能接收到它，因此没有可读的频道。恢复开发板设置即可找回聊天室。</string>
     <string name="lora_meshcore_room_title">MeshCore 聊天室</string>
     <string name="lora_meshcore_room_subtitle">将你 MeshCore 开发板的“Public”频道显示为 Knit 中的聊天室，以便你阅读并参与该频道上的其他内容。关闭后，该聊天室会隐藏且保持静默，Knit 也会忽略该频道，但你的开发板仍会传送 Knit 自己的消息。</string>
+    <string name="lora_meshcore_kind">MeshCore 开发板</string>
+    <string name="lora_meshcore_radio">电台 %1$s MHz · SF%2$d · BW %3$s kHz · CR 4/%4$d</string>
+    <string name="lora_meshcore_scope_set">默认区域范围：已设置</string>
+    <string name="lora_meshcore_scope_none">默认区域范围：无</string>
+    <string name="lora_meshcore_battery">电池 %1$.2f V</string>
+    <plurals name="lora_meshcore_knit_radios">
+        <item quantity="other">范围内有 %d 台 Knit 电台</item>
+    </plurals>
+    <string name="lora_meshcore_knit_radios_zero" tools:ignore="PluralsCandidate">范围内的 Knit 电台：%d 台</string>
+    <string name="lora_meshcore_state_none">尚未为 Knit 设置</string>
+    <string name="lora_meshcore_state_set_up">已为 Knit 设置</string>
+    <string name="lora_meshcore_state_pending">此开发板上仍带有 Knit 的设置。开发板下次连接时，Knit 会进行清理。</string>
+    <string name="lora_meshcore_state_unknown">无法检查此开发板是否已为 Knit 设置。</string>
+    <string name="lora_meshcore_setup_body">设置后，这块开发板就交由 Knit 使用：Knit 会清除它的联系人和其他频道，添加 Knit 自己的频道，并重命名开发板。它的“Public”频道会保留。</string>
+    <string name="lora_meshcore_setup_confirm_body">Knit 会清除此开发板上的所有联系人，以及除“Public”之外的所有频道，添加 Knit 自己的频道，并将开发板重命名为“Knit”加一个短代码。此后，开发板的联系人由 Knit 管理，因此请只搭配 Knit 使用这块开发板。你的 Knit 联系人能看出这块开发板是你的。</string>
+    <string name="lora_meshcore_setup_erase">此操作无法撤消，即使撤消设置也不行。</string>
+    <plurals name="lora_meshcore_erase_contacts">
+        <item quantity="other">开发板上大约有 %d 个联系人。</item>
+    </plurals>
+    <plurals name="lora_meshcore_erase_channels">
+        <item quantity="other">它另有 %d 个频道正在使用。</item>
+    </plurals>
+    <string name="lora_meshcore_position">此开发板可能会分享它所在的位置：在它发出的广播中（范围内的任何电台都能读取），或分享给请求位置的联系人。Knit 不会改变这一点。如果不想让别人知道它的位置，请在你的 MeshCore 应用中关闭位置共享。</string>
+    <string name="lora_meshcore_replace_title">重新设置此开发板？</string>
+    <string name="lora_meshcore_replace_body">此开发板在这部手机上为 Knit 设置之后，已被重置或更换，因此 Knit 无法再还原当时所做的更改。</string>
+    <string name="lora_meshcore_replace_action">仍要设置</string>
+    <string name="lora_meshcore_forget_pending_title">Knit 未能清理开发板</string>
+    <string name="lora_meshcore_forget_pending_body">开发板上仍带有 Knit 的设置和你联系人的电台密钥。如果保留它，开发板下次连接时 Knit 会进行清理。如果仍要忘记它，开发板会保持现在的状态。</string>
+    <string name="lora_meshcore_forget_keep">保留</string>
+    <string name="lora_meshcore_forget_anyway">仍要忘记</string>
+    <string name="lora_meshcore_forget_failed">无法忘记此开发板。请重试。</string>
+    <string name="lora_meshcore_forget_mismatch">已忘记开发板。它在 Knit 设置之后被重置或更换过，因此 Knit 让它保持原样。</string>
+    <string name="lora_meshcore_restored">开发板已恢复原有名称和设置。设置时清除的联系人和频道不会恢复。在你重新设置开发板之前，LoRa 会保持关闭。</string>
     <string name="lora_airtime">发射时间已用当前配额的 %1$d%%</string>
     <string name="lora_radio_config">电台 %1$s</string>
     <string name="lora_public_channel">主频道 %1$s</string>
@@ -1735,6 +1774,7 @@
     <string name="chat_meshcore_consent_name_body">每条发言都会以“%1$s: …”的形式发出。这个名称在每条发言中都相同，并能识别出你的开发板，因此把你加为联系人的人，或认识你开发板的人，都能认出这是你。</string>
     <string name="chat_meshcore_consent_name_body_unknown">每条发言都会以你开发板的名称发出，即“Knit”加四个字符。这个名称在每条发言中都相同，并能识别出你的开发板，因此把你加为联系人的人，或认识你开发板的人，都能认出这是你。</string>
     <string name="chat_meshcore_consent_rules">发言发出后无法撤回。任何人都可以用任何名称发言，包括你的名称。直接给你的开发板发消息的 MeshCore 用户不会收到回复：Knit 不会读取这些消息。</string>
+    <string name="chat_meshcore_consent_position">你的开发板还可能会分享它所在的位置：在它的广播中，或分享给请求位置的联系人。如果不想让你的发言与某个地点关联起来，请在你的 MeshCore 应用中关闭位置共享。</string>
     <string name="chat_commons_subtitle">此中继上的所有人</string>
     <string name="commons_details_title">聊天室信息</string>
     <string name="commons_details_relay">位于 %1$s</string>

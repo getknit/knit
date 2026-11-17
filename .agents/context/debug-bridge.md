@@ -296,7 +296,13 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   and since Stage 5d the bind's (`meshcoreBindUnanswered`: no answer, another client's command in the sign buffer, or a
   bind skipped for want of a node id — one counter, told apart by the `meshcore bind unanswered` / `meshcore bind skipped`
   lines; `meshcoreBindRefused`: a signature that does not verify under the proven key).
-  `--es prov unbind` may also answer `FAILED`: the record could not be marked pending, so the binding is to stay. Keys: `built`, `enabled`, `dms`, `bound`, `state`, `version`
+  `--es prov unbind` may also answer `FAILED`: the record could not be marked pending, so the binding is to stay. Since Stage 7: `--es prov setup` answers `DifferentBoard` over
+  another board's record, and `--ez replace true` replaces it with that refusal's own token (`replaced`); `--es prov preview`
+  answers `contacts` and `slots` (counts, null unanswered); `--es prov forget [--ez anyway true]` runs `MeshcoreForget` and
+  answers `result` (`CLEARED`, `PENDING`, `FORGOTTEN_PENDING`, `MISMATCH`, `FAILED`, `NOT_BOUND`), `bound` and `claimed`; the
+  dump adds `setup` (`BoardSetupState`), `sharesPosition`, `batteryMv` and the counters `meshcoreDifferentBoards`,
+  `meshcoreClaimsFenced`. `…debug.LORATX --es kind meshcore --es text <s>` is MeshCore's raw send through the plane's own
+  path (`lora-bridge.md`, "Stage 7: the radio screen's half"): `result`, `slot`, `bookedMs`, `law`; never the text. Keys: `built`, `enabled`, `dms`, `bound`, `state`, `version`
   (cleaned), `versionCode`, `slot` (the board's Knit slot), `radio`, `multiAcks`, `defaultScope`, `queued`, `queueFree`,
   `heard` (fresh-frame authors at any hop count, unverified), `boardsHeard` (radios counted by verified pinned zero-hop author:
   on MeshCore compare it with `meshcoreZeroHopKnitPosts`, not `heard`), `direct`, `airtime` (`known`, `usedMs`, `allowanceMs`,

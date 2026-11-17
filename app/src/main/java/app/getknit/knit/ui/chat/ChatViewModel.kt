@@ -664,6 +664,9 @@ data class ChatUiState(
     // The bound MeshCore board's own name (`Knit xxxx`), which goes on the front of every post — what the MeshCore room's
     // consent sheet names (security B3). Null outside that room, or with none known yet.
     val meshcoreBoardName: String? = null,
+    // Whether the bound MeshCore board may put where it is on the air (null: not read yet): the MeshCore room's consent sheet
+    // says so unless it is known not to (ADR 2026-11.gsqu's Stage 7 amendment). Null outside that room.
+    val meshcoreSharesPosition: Boolean? = null,
     // Whether the thread holds messages older than the loaded window, so the screen can draw a loading row
     // above the oldest bubble and ask for the next page as the reader reaches it. See [ChatWindow].
     val hasOlder: Boolean = false,
@@ -766,6 +769,9 @@ class ChatViewModel(
     // The bound MeshCore board's own name, `Knit xxxx` (`MeshcoreNames.forKey` over the claimed key), or null with none
     // known: what the MeshCore room's consent sheet shows and the name-clash marker compares (security B3, N2).
     meshcoreBoardName: Flow<String?> = flowOf(null),
+    // Whether the bound MeshCore board may share where it is (`MeshcoreBoardFace.sharesPosition`), null while not read: the
+    // MeshCore room's consent sheet says so, and asks again when a board that does was consented without that line.
+    meshcoreSharesPosition: Flow<Boolean?> = flowOf(null),
 ) : ViewModel() {
     // Null by a constant in a build without translation (TRANSLATE_WIRED), so R8 drops every path that reads it.
     private val translation: ChatTranslation? = if (TRANSLATE_WIRED) translation else null
@@ -1581,15 +1587,33 @@ class ChatViewModel(
         val directLinksOn: Boolean,
         // The MeshCore board's own `Knit xxxx`, in the MeshCore room alone (null elsewhere).
         val boardName: String? = null,
+        // Whether that board may share where it is, in the MeshCore room alone (null elsewhere or not read yet).
+        val sharesPosition: Boolean? = null,
+    )
+
+    /** A room's post consent as its sheet needs it: given or not, and the MeshCore board's name and position policy. */
+    private data class RoomConsent(
+        val consented: Boolean,
+        val boardName: String? = null,
+        val sharesPosition: Boolean? = null,
     )
 
     // The room's own kind's consent, never the other's (security N13): the Meshtastic sheet never posts through a MeshCore
-    // board. Ridden with the board's name, which only the MeshCore room reads.
-    private val publicConsent: Flow<Pair<Boolean, String?>> =
+    // board. Ridden with the board's name, which only the MeshCore room reads. A MeshCore consent given without the position
+    // line counts only while the board is known not to share where it is: unknown asks again, as the sheet shows the line for
+    // it (ADR 2026-11.gsqu's Stage 7b amendment, security-reviewer).
+    private val publicConsent: Flow<RoomConsent> =
         if (isMeshcoreRoom) {
-            combine(settings.meshcorePostConsented, meshcoreBoardName) { consented, board -> consented to board }
+            combine(
+                settings.meshcorePostConsented,
+                settings.meshcorePostConsentPosition,
+                meshcoreBoardName,
+                meshcoreSharesPosition,
+            ) { consented, withPosition, board, shares ->
+                RoomConsent(consented && (shares == false || withPosition), board, shares)
+            }
         } else {
-            settings.meshtasticPostConsented.map { it to null }
+            settings.meshtasticPostConsented.map { RoomConsent(it) }
         }
 
     private val publicIdentity: Flow<PublicInputs> =
@@ -1599,7 +1623,9 @@ class ChatViewModel(
             if (isCommons) commons?.observe(conversationId) ?: flowOf(null) else flowOf(null),
             if (isCommons) commons?.observeMemberIds(conversationId) ?: flowOf(emptyList()) else flowOf(emptyList()),
             directLinksOn,
-        ) { name, (consented, board), room, roster, linksOn -> PublicInputs(name, consented, room, roster, linksOn, board) }
+        ) { name, consent, room, roster, linksOn ->
+            PublicInputs(name, consent.consented, room, roster, linksOn, consent.boardName, consent.sharesPosition)
+        }
 
     // The peer directory, read once for this screen: the thread state and the pinned bar both name senders from it, and
     // each change to the peer table reads the whole table and rebuilds its label index, so it is shared, not collected
@@ -1930,6 +1956,7 @@ class ChatViewModel(
                 needsPublicConsent = isBridged && !publicConsented,
                 isMeshcoreRoom = isMeshcoreRoom,
                 meshcoreBoardName = publicId.boardName.takeIf { isMeshcoreRoom },
+                meshcoreSharesPosition = publicId.sharesPosition.takeIf { isMeshcoreRoom },
                 isBlocked = isPeerThread && conversationId in blocked,
                 canCall = calls?.liveEnabled == true && callable && offers(Protocol.CAP_CALL),
                 canMeshCall = calls?.walkieEnabled == true && callable && offers(Protocol.CAP_WALKIE),
@@ -2683,10 +2710,16 @@ class ChatViewModel(
      * button that said "Post" on a sheet, not on their message, and making one tap do both would mean the
      * words went out in the same motion as the decision to allow them to.
      */
-    fun acceptPublicConsent() {
+    fun acceptPublicConsent(positionShown: Boolean = false) {
         viewModelScope.launch {
-            // The room's own kind's answer, never the other's (security N13).
-            if (isMeshcoreRoom) settings.acceptMeshcorePostConsent() else settings.acceptMeshtasticPostConsent()
+            // The room's own kind's answer, never the other's (security N13). [positionShown] is whether the MeshCore sheet the
+            // user accepted showed its position line, as that sheet rendered it: never read back from the state at the tap,
+            // which may have moved since (security-reviewer, Stage 7b).
+            if (isMeshcoreRoom) {
+                settings.acceptMeshcorePostConsent(withPosition = positionShown)
+            } else {
+                settings.acceptMeshtasticPostConsent()
+            }
             _showPublicConsent.value = false
         }
     }

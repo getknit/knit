@@ -38,6 +38,18 @@ internal interface LoraPlaneStatus : BoardKindSource {
         previous: BoardSettings? = null,
     ): ProvisionResult
 
+    /**
+     * Sets the board up over another board's setup record at its address (MeshCore's [ProvisionResult.DifferentBoard], ADR
+     * 2026-11.gsqu's Stage 7 amendment), refused again if that record changed since [token] was handed out.
+     */
+    suspend fun provisionReplacing(token: ReplaceToken): ProvisionResult = ProvisionResult.NotReady(LinkState.Idle)
+
+    /**
+     * What a setup of the Ready board would erase, read fresh (MeshCore's: contacts and slots in use, counts only, null for one
+     * not answered); null on a kind or a plane with nothing to say. Call it when the confirmation opens.
+     */
+    suspend fun setupPreview(): SetupPreview? = null
+
     /** The plane in a build that does not ship it: idle forever, and never provisions. */
     object Dark : LoraPlaneStatus {
         override val status: StateFlow<LoraStatus> = MutableStateFlow(LoraStatus())

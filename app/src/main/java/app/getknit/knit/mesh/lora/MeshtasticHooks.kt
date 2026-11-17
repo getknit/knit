@@ -362,6 +362,8 @@ internal class MeshtasticHooks(
         send: suspend (ByteArray, SendPurpose) -> FragmentOutcome,
     ) {
         val message = frame.messages.firstOrNull() ?: return
+        // Only the two frames this kind queues: never anything else to slot 0 (MeshCore's debug payload is MeshCore's alone).
+        if (frame.destination != Destination.Reply && frame.destination != Destination.Public) return
         val reply = frame.destination == Destination.Reply
         // The auto-reply is the one direct send without `want_ack`: a stock client's board answers nobody's retries
         // for us, and the window would pay for them (ADR 2026-09.4n5p).

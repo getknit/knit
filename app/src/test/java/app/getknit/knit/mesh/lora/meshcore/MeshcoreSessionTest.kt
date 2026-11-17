@@ -6,17 +6,22 @@ import app.getknit.knit.mesh.crypto.MeshcoreBind
 import app.getknit.knit.mesh.lora.AckProof
 import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.BoardPacket
+import app.getknit.knit.mesh.lora.BoardSetupState
 import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.BondState
 import app.getknit.knit.mesh.lora.GattResult
 import app.getknit.knit.mesh.lora.KnitChannel
+import app.getknit.knit.mesh.lora.LinkState
 import app.getknit.knit.mesh.lora.LoraContactPolicy
 import app.getknit.knit.mesh.lora.PacketIdSource
 import app.getknit.knit.mesh.lora.PacketOutcome
+import app.getknit.knit.mesh.lora.PairingCause
 import app.getknit.knit.mesh.lora.RadioParams
 import app.getknit.knit.mesh.lora.RefusalClass
+import app.getknit.knit.mesh.lora.ReplaceToken
 import app.getknit.knit.mesh.lora.SendPurpose
 import app.getknit.knit.mesh.lora.SendResult
+import app.getknit.knit.mesh.lora.SetupPreview
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -1401,7 +1406,12 @@ class MeshcoreSessionTest {
             advanceTimeBy(600_000)
             runCurrent()
             assertEquals("backed off once, then terminal", 2, r.dialer.modes.size)
-            assertEquals(MeshcoreLinkState.StaleBond("AA:BB"), r.session.state.value.detail)
+            assertEquals(MeshcoreLinkState.StaleBond("AA:BB", PairingCause.NO_SERVICE), r.session.state.value.detail)
+            // The core's neutral state carries the cause too (Stage 7): the screen words wrong firmware and a stale cache as one.
+            assertEquals(
+                LinkState.StaleBond("AA:BB", PairingCause.NO_SERVICE),
+                meshcoreDownState(requireNotNull(r.session.state.value.detail)),
+            )
         }
 
     // --- Stage 5b-2: the taught set, the reconcile, the erase ---
@@ -3329,6 +3339,257 @@ class MeshcoreSessionTest {
             )
             assertTrue("never asked to sign", r.ch.codes.none { it == MeshcoreProto.CMD_SIGN_START })
             assertTrue(r.bindsAsked().isEmpty())
+        }
+
+    // --- Stage 7: the radio screen's facts, the preview, a different board, the debug send ---
+
+    /** The board's facts for the screen (Stage 7): the setup state off the record with the board away, never "none" unread. */
+    @Test
+    fun theSetupStateComesOffTheRecordWithTheBoardAwayAndAFailedReadIsUnknown() =
+        runTest {
+            val journal = CountingJournal()
+            val r = rig(records = journal)
+            r.dialer.dialResult = { NusDialResult.Failed(133, "connect") }
+            r.session.start("AA:BB")
+            runCurrent()
+            assertEquals(MeshcoreSetupView("AA:BB", BoardSetupState.SET_UP), r.session.setupState.value)
+            kotlinx.coroutines.runBlocking { journal.inner.put("AA:CC", "00", SETUP_RECORD, pending = true) }
+            r.session.start("AA:CC")
+            runCurrent()
+            assertEquals(MeshcoreSetupView("AA:CC", BoardSetupState.PENDING), r.session.setupState.value)
+            r.session.start("AA:DD")
+            runCurrent()
+            assertEquals(MeshcoreSetupView("AA:DD", BoardSetupState.NONE), r.session.setupState.value)
+            journal.failReads = true
+            r.session.start("AA:EE")
+            advanceTimeBy(1_000) // the read's three tries, 200 ms apart
+            runCurrent()
+            assertEquals(
+                "a read that failed is not \"no record\"",
+                BoardSetupState.UNKNOWN,
+                r.session.setupState.value
+                    ?.state,
+            )
+            r.session.stop()
+        }
+
+    /** With the board up the proof decides it (Stage 7): set up, a proof nobody answered unknown, an unbind none. */
+    @Test
+    fun theHandshakeReadsTheSetupStateAndAnUnansweredProofIsUnknown() =
+        runTest {
+            val r = rig()
+            up(r)
+            assertEquals(
+                BoardSetupState.SET_UP,
+                r.session.setupState.value
+                    ?.state,
+            )
+            assertEquals(MeshcoreUnbind.CLEARED, r.session.unbind("AA:BB"))
+            assertEquals(
+                BoardSetupState.NONE,
+                r.session.setupState.value
+                    ?.state,
+            )
+            val unanswered = rig()
+            unanswered.alice.dropSignFinish = 1
+            up(unanswered)
+            assertEquals(
+                BoardSetupState.UNKNOWN,
+                unanswered.session.setupState.value
+                    ?.state,
+            )
+            val other = rig(consented = false)
+            other.records.put("AA:BB", MeshcoreHooks.digest(FakeMeshcoreAir.keyOf("someone else")), SETUP_RECORD, pending = false)
+            other.session.stop()
+            up(other)
+            assertEquals(
+                "another key's record: this board is not set up",
+                BoardSetupState.NONE,
+                other.session.setupState.value
+                    ?.state,
+            )
+        }
+
+    /** The setup preview (Stage 7): counts read fresh off the Ready board, Public and Knit's slots apart; unknown is null. */
+    @Test
+    fun theSetupPreviewCountsTheContactsAndTheSlotsTheEraseWouldTake() =
+        runTest {
+            // No consent: the Ready reconcile would make the board's table the taught set, and the preview count what it left.
+            val r = rig(consented = false)
+            assertNull("not Ready: no preview", r.session.setupPreview())
+            val carol = r.air.board("carol")
+            r.alice.addContact(carol, name = "Carol Smith", flags = 0)
+            r.alice.setChannel(2, "Hiking", ByteArray(16) { 3 })
+            up(r)
+            assertEquals(SetupPreview(contacts = 2, slots = 1), r.session.setupPreview())
+            r.errOn { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACTS }
+            assertEquals(
+                "a count the board refused is unknown, never 0",
+                SetupPreview(contacts = null, slots = 1),
+                r.session.setupPreview(),
+            )
+        }
+
+    /**
+     * A different board (Stage 7, lora L5, security B5): a record for another key at the address refuses the setup on the
+     * actor before any write, with a token; the token replaces only that record as it was; and every step runs.
+     */
+    @Test
+    fun aSetupOverAnotherBoardsRecordIsRefusedBeforeAnyWriteAndReplacedOnlyWithItsToken() =
+        runTest {
+            val r = rig(knitSlot = false, consented = false)
+            val other = MeshcoreHooks.digest(FakeMeshcoreAir.keyOf("the board before the reflash"))
+            r.records.put("AA:BB", other, SETUP_RECORD, pending = false)
+            // A contact of the user's own, which only an erase removes.
+            val carol = r.air.board("carol")
+            r.alice.addContact(carol, name = "Carol Smith", flags = 0)
+            up(r)
+            val before = r.ch.writes.size
+            val refused = r.session.setup() as MeshcoreSetupResult.DifferentBoard
+            val writes = r.ch.codes.drop(before)
+            val boardWrites =
+                setOf(
+                    MeshcoreProto.CMD_SET_ADVERT_NAME,
+                    MeshcoreProto.CMD_REMOVE_CONTACT,
+                    MeshcoreProto.CMD_SET_CHANNEL,
+                    MeshcoreProto.CMD_SET_OTHER_PARAMS,
+                    MeshcoreProto.CMD_SET_AUTOADD_CONFIG,
+                )
+            assertTrue("nothing written to the board: $writes", writes.none { it in boardWrites })
+            assertEquals("the record stays the other board's", other, r.records.entryOf("AA:BB")?.digest)
+            assertNotNull("nothing erased", r.alice.contact(carol.key))
+            assertEquals("the token names nothing", "ReplaceToken", refused.token.toString())
+            assertEquals(
+                BoardSetupState.NONE,
+                r.session.setupState.value
+                    ?.state,
+            )
+            // The record moved since the refusal: refused again, with a token for the record as it is now.
+            r.records.put("AA:BB", other, SETUP_RECORD, pending = true)
+            val again = r.session.setupReplacing(refused.token) as MeshcoreSetupResult.DifferentBoard
+            assertEquals(other, r.records.entryOf("AA:BB")?.digest)
+            // A token for the very record, but issued at another address, replaces nothing either.
+            val print = checkNotNull(r.records.entryOf("AA:BB")).fingerprint()
+            assertTrue(r.session.setupReplacing(ReplaceToken("ZZ:ZZ", print)) is MeshcoreSetupResult.DifferentBoard)
+            val done = r.session.setupReplacing(again.token) as MeshcoreSetupResult.Done
+            assertTrue(done.record.slotWritten)
+            assertTrue("a replace runs the erase too: ${done.erasedContacts}", done.erasedContacts > 0)
+            assertNull("the user's contact is erased", r.alice.contact(carol.key))
+            val kept = checkNotNull(r.records.entryOf("AA:BB"))
+            assertEquals("the record is this board's now", MeshcoreHooks.digest(r.alice.key), kept.digest)
+            assertFalse(kept.pending)
+            assertTrue(r.consents.last().granted)
+            assertEquals(MeshcoreNames.forKey(r.alice.key), r.alice.advertName.decodeToString())
+            assertEquals(
+                BoardSetupState.SET_UP,
+                r.session.setupState.value
+                    ?.state,
+            )
+            assertEquals(
+                3L,
+                r.session.counters.differentBoards
+                    .get(),
+            )
+        }
+
+    /** Stage 7: a replace that leaves nothing of its own on the board puts the other board's record back exactly as it was. */
+    @Test
+    fun aFailedReplacePutsTheOtherBoardsRecordBackAsItWas() =
+        runTest {
+            val r = rig(knitSlot = false, consented = false)
+            val other = MeshcoreHooks.digest(FakeMeshcoreAir.keyOf("the board before the reflash"))
+            r.records.put("AA:BB", other, SETUP_RECORD, pending = false)
+            up(r)
+            val token = (r.session.setup() as MeshcoreSetupResult.DifferentBoard).token
+            val print = checkNotNull(r.records.entryOf("AA:BB")).fingerprint()
+            // The erase cannot list the board: it fails before it removes anything.
+            r.errOn { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACTS }
+            assertTrue(r.session.setupReplacing(token) is MeshcoreSetupResult.Failed)
+            val back = checkNotNull(r.records.entryOf("AA:BB"))
+            assertEquals(other, back.digest)
+            assertFalse(back.pending)
+            assertArrayEquals("the other board's record, field for field", print, back.fingerprint())
+            assertFalse(r.consents.last().granted)
+            assertNotNull(r.alice.contact(r.bob.key))
+        }
+
+    /** ADR ~1085's follow-up, closed (Stage 7): a key re-imported mid-Restore ends the session before its name write. */
+    @Test
+    fun aKeyChangedBetweenRestoresSlotStepAndItsNameWriteEndsTheSessionWithTheRecordPending() =
+        runTest {
+            val r = rig()
+            up(r)
+            val starts = r.ch.codes.count { it == MeshcoreProto.CMD_APP_START }
+            // Another client imports a key: from the next APP_START on, SELF_INFO reports it (the slot step reads no SELF_INFO).
+            r.alice.reportedKey = FakeMeshcoreAir.keyOf("an imported key")
+            r.alice.reportedKeyFrom = starts + 1
+            val before = r.ch.writes.size
+            assertEquals(MeshcoreRestoreResult.NotReady, r.session.restore())
+            val writes = r.ch.codes.drop(before)
+            assertEquals(
+                1L,
+                r.session.counters.keyChanged
+                    .get(),
+            )
+            assertTrue("no name written: $writes", writes.none { it == MeshcoreProto.CMD_SET_ADVERT_NAME })
+            assertTrue("no setting written: $writes", writes.none { it == MeshcoreProto.CMD_SET_OTHER_PARAMS })
+            assertTrue("the record is pending, its cleanup owed", checkNotNull(r.records.entryOf("AA:BB")).pending)
+            assertFalse(r.consents.last().granted)
+        }
+
+    /** Stage 7: an unbind on a board whose record is another key's says so: Knit cannot clean that board. */
+    @Test
+    fun anUnbindOfABoardThatIsNotTheOneSetUpIsAMismatch() =
+        runTest {
+            val r = rig(consented = false)
+            val other = MeshcoreHooks.digest(FakeMeshcoreAir.keyOf("the board before the reflash"))
+            r.records.put("AA:BB", other, SETUP_RECORD, pending = false)
+            up(r)
+            assertEquals(MeshcoreUnbind.MISMATCH, r.session.unbind("AA:BB"))
+            assertEquals(other, r.records.entryOf("AA:BB")?.digest)
+            assertFalse(r.consents.last().granted)
+            assertEquals(MeshcoreNames.forKey(r.alice.key), r.alice.advertName.decodeToString())
+        }
+
+    /** The bridge's raw payload (Stage 7): the room post's write on the Knit slot, never Public, and only with consent. */
+    @Test
+    fun aDebugSendIsKnitSlotChannelDataAndNeedsConsentAtTheWrite() =
+        runTest {
+            val r = rig()
+            up(r)
+            val payload = "hello board".encodeToByteArray()
+            val from = r.ch.writes.size
+            assertTrue(r.session.send(payload, SendPurpose.Debug(1)).result is SendResult.Queued)
+            val wrote =
+                r.ch.writes
+                    .drop(from)
+                    .single { it[0].toInt() == MeshcoreProto.CMD_SEND_CHANNEL_DATA }
+            assertEquals("on the Knit slot", 1, wrote[1].toInt())
+            val public = r.session.send(payload, SendPurpose.Debug(0)).result
+            assertEquals(MeshcoreRefusal.SLOT_NOT_KNIT, (public as SendResult.Rejected).res)
+            val unconsented = rig(consented = false)
+            up(unconsented)
+            val before = unconsented.ch.writes.size
+            val refused = unconsented.session.send(payload, SendPurpose.Debug(1)).result
+            assertEquals(MeshcoreRefusal.NOT_SET_UP, (refused as SendResult.Rejected).res)
+            assertTrue(
+                unconsented.ch.codes
+                    .drop(before)
+                    .none { it == MeshcoreProto.CMD_SEND_CHANNEL_DATA },
+            )
+        }
+
+    /** Stage 7: the Ready says whether the board airs a position, and says it again when another client turns it on. */
+    @Test
+    fun theReadySaysWhetherTheBoardAirsAPositionAndFollowsAChange() =
+        runTest {
+            val r = rig()
+            up(r)
+            assertFalse((r.ready.detail as MeshcoreDetail).sharesPosition)
+            r.alice.advertLocPolicy = 1
+            // The next SELF_INFO this connection reads (a Public post's gate, a setup) carries it to the Ready.
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Done)
+            assertTrue((r.ready.detail as MeshcoreDetail).sharesPosition)
         }
 
     private companion object {

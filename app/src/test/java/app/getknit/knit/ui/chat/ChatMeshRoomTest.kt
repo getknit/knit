@@ -79,6 +79,9 @@ class ChatMeshRoomTest {
     private var profileOpened: String? = null
     private var consentAccepted = false
 
+    // Whether the accepted sheet said it showed the MeshCore position line (the consent records exactly that).
+    private var acceptedWithPosition: Boolean? = null
+
     /** Held rather than made inline, so a test can seed a draft and read back what the field kept of it. */
     private val inputState = TextFieldState("")
 
@@ -127,7 +130,10 @@ class ChatMeshRoomTest {
                     onOpenGroupDetails = {},
                     onSend = {},
                     showPublicConsent = showConsent,
-                    onAcceptPublicConsent = { consentAccepted = true },
+                    onAcceptPublicConsent = { shown ->
+                        consentAccepted = true
+                        acceptedWithPosition = shown
+                    },
                     onAttachClick = {},
                     onClearAttachment = {},
                     onReceiveImage = {},
@@ -505,6 +511,7 @@ class ChatMeshRoomTest {
         gate: PublicPostGate = PublicPostGate.Open,
         keyIsPublic: Boolean = true,
         boardName: String? = "Knit 1a2b",
+        sharesPosition: Boolean? = null,
     ) = render(
         Conversations.MESHCORE_PUBLIC,
         ChatUiState(
@@ -513,6 +520,7 @@ class ChatMeshRoomTest {
             isBridged = true,
             isMeshcoreRoom = true,
             meshcoreBoardName = boardName,
+            meshcoreSharesPosition = sharesPosition,
             canSendFile = false,
             publicPostBudget = 149,
             publicPostGate = gate,
@@ -572,6 +580,27 @@ class ChatMeshRoomTest {
         compose.onNodeWithText("Anyone with a Meshtastic radio", substring = true).assertDoesNotExist()
         compose.onNodeWithTag("chat_mesh_consent_accept").performScrollTo().performClick()
         assertTrue(consentAccepted)
+    }
+
+    /**
+     * The sheet hands its accept the line it drew (ADR 2026-11.gsqu's Stage 7b amendment, security-reviewer): a board known not
+     * to share where it is gets no position line, and the consent says so.
+     */
+    @Test
+    fun aSheetWithoutThePositionLineAcceptsWithoutIt() {
+        renderMeshcore(listOf(row(origin = meshcoreOrigin)), showConsent = true, sharesPosition = false)
+        compose.onNodeWithTag("chat_meshcore_consent_position").assertDoesNotExist()
+        compose.onNodeWithTag("chat_mesh_consent_accept").performScrollTo().performClick()
+        assertEquals(false, acceptedWithPosition)
+    }
+
+    /** A board not read yet may share where it is: the sheet shows the line, and the consent records that it did. */
+    @Test
+    fun aSheetWithThePositionLineAcceptsWithIt() {
+        renderMeshcore(listOf(row(origin = meshcoreOrigin)), showConsent = true, sharesPosition = null)
+        compose.onNodeWithTag("chat_meshcore_consent_position").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("chat_mesh_consent_accept").performScrollTo().performClick()
+        assertEquals(true, acceptedWithPosition)
     }
 
     @Test

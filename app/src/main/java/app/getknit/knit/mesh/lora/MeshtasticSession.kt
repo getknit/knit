@@ -290,7 +290,11 @@ internal class MeshtasticSession(
                 if (absentAgain) {
                     log("lora dial service absent again: wrong firmware or a stale GATT cache, stopping")
                     _state.value =
-                        if (dialer.bondState(address) == BondState.BONDED) LinkState.StaleBond(address) else LinkState.NeedsPairing(address)
+                        if (dialer.bondState(address) == BondState.BONDED) {
+                            LinkState.StaleBond(address, PairingCause.NO_SERVICE)
+                        } else {
+                            LinkState.NeedsPairing(address, PairingCause.NO_SERVICE)
+                        }
                     null
                 } else {
                     log("lora dial service absent: retrying once")

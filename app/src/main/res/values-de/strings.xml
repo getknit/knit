@@ -1262,6 +1262,7 @@
     <string name="backup_restore_confirm_named">Backup von %1$s vom %2$s, erstellt mit Knit %3$s.</string>
     <string name="backup_restore_confirm_unnamed">Backup vom %1$s, erstellt mit Knit %2$s.</string>
     <string name="backup_restore_confirm_body">Alles, was Knit auf diesem Smartphone speichert – Identität, Kontakte, Gruppen und Nachrichten –, wird durch das Backup ersetzt, und die App startet neu. Deine Kontakte sehen dich als dieselbe Person; die Unterhaltungen mit ihnen gehen weiter, sobald sich ihre Smartphones wieder verbinden. Wenn auf dem alten Smartphone noch Knit läuft, nutze es dort nicht mehr.</string>
+    <string name="backup_restore_confirm_meshcore">Ein auf diesem Smartphone eingerichtetes MeshCore-Board behält nach einer Wiederherstellung Knits Einrichtung und die Funkschlüssel deiner Kontakte, und Knit kann das dann nicht mehr rückgängig machen. Um das Board wieder in seinen alten Zustand zu bringen, mache zuerst seine Einrichtung in den LoRa-Einstellungen rückgängig.</string>
     <string name="backup_action_restore">Wiederherstellen und neu starten</string>
     <string name="backup_restore_failed">Die Wiederherstellung des Backups ist fehlgeschlagen: %1$s</string>
     <string name="backup_restarting">Knit wird neu gestartet…</string>
@@ -1443,12 +1444,15 @@
     <string name="lora_title">LoRa-Funk</string>
     <string name="settings_lora_title">LoRa-Funk nutzen</string>
     <string name="settings_lora_subtitle">Erweitere die Reichweite des Raums „In der Nähe“ und deiner privaten Nachrichten per LoRa-Langstreckenfunk, indem du ein Meshtastic-Board per Bluetooth koppelst. Gruppen, Tippanzeigen und Fotos laufen weiterhin nur direkt von Smartphone zu Smartphone.</string>
+    <string name="settings_lora_subtitle_any">Erweitere die Reichweite des Raums „In der Nähe“ und deiner privaten Nachrichten per LoRa-Langstreckenfunk, indem du ein Meshtastic- oder MeshCore-Board per Bluetooth koppelst. Gruppen, Tippanzeigen und Fotos laufen weiterhin nur direkt von Smartphone zu Smartphone.</string>
     <string name="lora_off_note">Beim Ausschalten wird die Verbindung zum Board getrennt. Gruppen und Anhänge werden nie über LoRa übertragen.</string>
     <string name="lora_dm_title">Private Nachrichten über LoRa</string>
     <string name="lora_dm_subtitle">Direktnachrichten bleiben Ende-zu-Ende-verschlüsselt, aber wer wem wann schreibt, kann jedes LoRa-Funkgerät in Reichweite sehen – und die reicht Kilometer weit, nicht nur Meter. Schalte dies aus, damit private Nachrichten nur direkt von Smartphone zu Smartphone laufen.</string>
     <string name="lora_board_section">Board</string>
     <string name="lora_board_none">Keine gekoppelten Meshtastic-Boards gefunden. Kopple zuerst eines in den Bluetooth-Einstellungen (das Board zeigt eine PIN auf seinem Display).</string>
+    <string name="lora_board_none_any">Keine gekoppelten LoRa-Boards gefunden. Kopple zuerst ein Meshtastic- oder MeshCore-Board in den Bluetooth-Einstellungen, mit der PIN, die sein Display zeigt, oder der, die dafür festgelegt wurde.</string>
     <string name="lora_board_none_meshtastic">Keines deiner gekoppelten Geräte sieht wie ein Meshtastic-Board aus. Kopple eines in den Bluetooth-Einstellungen oder zeige alle gekoppelten Geräte an.</string>
+    <string name="lora_board_none_supported">Keines deiner gekoppelten Geräte sieht wie ein Meshtastic- oder MeshCore-Board aus. Kopple eines in den Bluetooth-Einstellungen oder zeige alle gekoppelten Geräte an.</string>
     <string name="lora_show_all_boards">Alle gekoppelten Geräte anzeigen</string>
     <plurals name="lora_boards_hidden">
         <item quantity="one">%d weiteres gekoppeltes Gerät ausgeblendet</item>
@@ -1491,6 +1495,8 @@
     <string name="lora_status_connecting">Wird verbunden…</string>
     <string name="lora_status_reconnecting">Wird neu verbunden…</string>
     <string name="lora_status_needs_pairing">Kopplung nötig – kopple das Board in den Bluetooth-Einstellungen neu</string>
+    <string name="lora_status_wrong_firmware">Läuft nicht mit Meshtastic oder wurde nach dem Koppeln neu geflasht. Vergiss das Board und kopple es erneut oder wähle ein anderes Board.</string>
+    <string name="lora_status_wrong_firmware_meshcore">Läuft nicht mit der MeshCore-Companion-Firmware oder wurde nach dem Koppeln neu geflasht. Vergiss das Board und kopple es erneut oder wähle ein anderes Board.</string>
     <string name="lora_status_bt_off">Bluetooth aus oder Board nicht verfügbar</string>
     <string name="lora_status_off">Nicht verwendet</string>
     <string name="lora_signal">Signal: SNR %1$.1f dB · RSSI %2$d dBm</string>
@@ -1513,6 +1519,42 @@
     <string name="lora_room_subtitle_dedicated">Ausgeblendet, solange dieses Board auf einer eigenen Frequenz ist: Kein öffentliches Funkgerät kann es empfangen, also gibt es keinen Kanal zum Lesen. Stelle das Board wieder her, um den Raum zurückzubekommen.</string>
     <string name="lora_meshcore_room_title">MeshCore-Raum</string>
     <string name="lora_meshcore_room_subtitle">Zeigt den Kanal „Public“ deines MeshCore-Boards als Raum in Knit an, damit du alles, was dort sonst läuft, lesen und dich daran beteiligen kannst. Ist dies aus, ist der Raum ausgeblendet und stumm, und Knit ignoriert diesen Kanal – dein Board überträgt weiterhin Knits eigene Nachrichten.</string>
+    <string name="lora_meshcore_kind">MeshCore-Board</string>
+    <string name="lora_meshcore_radio">Funkprofil %1$s MHz · SF%2$d · BW %3$s kHz · CR 4/%4$d</string>
+    <string name="lora_meshcore_scope_set">Standard-Regionsbereich: festgelegt</string>
+    <string name="lora_meshcore_scope_none">Standard-Regionsbereich: keiner</string>
+    <string name="lora_meshcore_battery">Akku %1$.2f V</string>
+    <plurals name="lora_meshcore_knit_radios">
+        <item quantity="one">%d Knit-Funkgerät in Reichweite</item>
+        <item quantity="other">%d Knit-Funkgeräte in Reichweite</item>
+    </plurals>
+    <string name="lora_meshcore_knit_radios_zero" tools:ignore="PluralsCandidate">%d Knit-Funkgeräte in Reichweite</string>
+    <string name="lora_meshcore_state_none">Nicht für Knit eingerichtet</string>
+    <string name="lora_meshcore_state_set_up">Für Knit eingerichtet</string>
+    <string name="lora_meshcore_state_pending">Knits Einrichtung ist noch auf diesem Board. Knit bereinigt das Board, sobald es sich das nächste Mal verbindet.</string>
+    <string name="lora_meshcore_state_unknown">Es konnte nicht geprüft werden, ob dieses Board für Knit eingerichtet ist.</string>
+    <string name="lora_meshcore_setup_body">Mit der Einrichtung übergibst du das Board an Knit: Knit löscht seine Kontakte und seine anderen Kanäle, fügt einen eigenen Kanal hinzu und benennt das Board um. Der Kanal „Public“ des Boards bleibt erhalten.</string>
+    <string name="lora_meshcore_setup_confirm_body">Knit löscht alle Kontakte und alle Kanäle auf diesem Board außer dem Kanal „Public“, fügt einen eigenen Kanal hinzu und benennt das Board um: „Knit“ und ein kurzer Code. Von da an verwaltet Knit die Kontakte des Boards, nutze das Board daher nur noch mit Knit. Deine Knit-Kontakte können erkennen, dass das Board dir gehört.</string>
+    <string name="lora_meshcore_setup_erase">Das lässt sich nicht rückgängig machen – auch dann nicht, wenn du die Einrichtung rückgängig machst.</string>
+    <plurals name="lora_meshcore_erase_contacts">
+        <item quantity="one">Das Board enthält etwa %d Kontakt.</item>
+        <item quantity="other">Das Board enthält etwa %d Kontakte.</item>
+    </plurals>
+    <plurals name="lora_meshcore_erase_channels">
+        <item quantity="one">Es nutzt %d weiteren Kanal.</item>
+        <item quantity="other">Es nutzt %d weitere Kanäle.</item>
+    </plurals>
+    <string name="lora_meshcore_position">Dieses Board teilt möglicherweise seinen Standort: in den Adverts, die es aussendet und die jedes Funkgerät in Reichweite lesen kann, oder mit Kontakten, die danach fragen. Knit ändert daran nichts. Schalte die Standortfreigabe in deiner MeshCore-App aus, wenn das niemand wissen soll.</string>
+    <string name="lora_meshcore_replace_title">Dieses Board erneut einrichten?</string>
+    <string name="lora_meshcore_replace_body">Dieses Board wurde zurückgesetzt oder ausgetauscht, nachdem es auf diesem Smartphone für Knit eingerichtet wurde. Daher kann Knit nicht mehr wiederherstellen, was es damals geändert hat.</string>
+    <string name="lora_meshcore_replace_action">Trotzdem einrichten</string>
+    <string name="lora_meshcore_forget_pending_title">Knit konnte das Board nicht bereinigen</string>
+    <string name="lora_meshcore_forget_pending_body">Auf dem Board befinden sich noch Knits Einrichtung und die Funkschlüssel deiner Kontakte. Wenn du es behältst, bereinigt Knit das Board, sobald es sich das nächste Mal verbindet. Wenn du es trotzdem vergisst, bleibt das Board in diesem Zustand.</string>
+    <string name="lora_meshcore_forget_keep">Behalten</string>
+    <string name="lora_meshcore_forget_anyway">Trotzdem vergessen</string>
+    <string name="lora_meshcore_forget_failed">Das Board konnte nicht vergessen werden. Versuche es noch einmal.</string>
+    <string name="lora_meshcore_forget_mismatch">Board vergessen. Es wurde zurückgesetzt oder ausgetauscht, nachdem Knit es eingerichtet hatte, daher hat Knit es so gelassen, wie es ist.</string>
+    <string name="lora_meshcore_restored">Name und Einstellungen des Boards wurden wiederhergestellt. Die Kontakte und Kanäle, die bei der Einrichtung gelöscht wurden, bleiben gelöscht. LoRa bleibt aus, bis du wieder ein Board einrichtest.</string>
     <string name="lora_airtime">Sendezeit: %1$d %% des aktuellen Budgets</string>
     <string name="lora_radio_config">Funkprofil %1$s</string>
     <string name="lora_public_channel">Primärkanal %1$s</string>
@@ -1769,6 +1811,7 @@
     <string name="chat_meshcore_consent_name_body">Jeder Beitrag wird als „%1$s: …“ gesendet. Dieser Name ist bei jedem Beitrag derselbe und identifiziert dein Board, sodass Personen, die dich als Kontakt haben oder dein Board kennen, erkennen können, dass du es bist.</string>
     <string name="chat_meshcore_consent_name_body_unknown">Jeder Beitrag wird unter dem Namen deines Boards gesendet: „Knit“ und vier Zeichen. Dieser Name ist bei jedem Beitrag derselbe und identifiziert dein Board, sodass Personen, die dich als Kontakt haben oder dein Board kennen, erkennen können, dass du es bist.</string>
     <string name="chat_meshcore_consent_rules">Ein Beitrag lässt sich nicht zurücknehmen. Alle können unter jedem beliebigen Namen senden, auch unter deinem. MeshCore-Nutzende, die deinem Board direkt schreiben, bekommen keine Antwort: Knit liest diese Nachrichten nicht.</string>
+    <string name="chat_meshcore_consent_position">Dein Board teilt möglicherweise auch seinen Standort, in seinen Adverts oder mit Kontakten, die danach fragen. Schalte die Standortfreigabe in deiner MeshCore-App aus, wenn deine Beiträge nicht mit einem Ort verknüpft werden sollen.</string>
     <string name="chat_commons_subtitle">Alle auf diesem Relay</string>
     <string name="commons_details_title">Rauminfo</string>
     <string name="commons_details_relay">Auf %1$s</string>

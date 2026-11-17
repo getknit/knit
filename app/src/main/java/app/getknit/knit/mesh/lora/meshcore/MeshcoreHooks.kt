@@ -13,6 +13,7 @@ import app.getknit.knit.mesh.lora.BoardPacket
 import app.getknit.knit.mesh.lora.BoardPlane
 import app.getknit.knit.mesh.lora.BoardSettings
 import app.getknit.knit.mesh.lora.BoardState
+import app.getknit.knit.mesh.lora.Destination
 import app.getknit.knit.mesh.lora.FragmentOutcome
 import app.getknit.knit.mesh.lora.KeyTeach
 import app.getknit.knit.mesh.lora.KeyWrite
@@ -32,14 +33,16 @@ import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.lora.ProvisionResult
 import app.getknit.knit.mesh.lora.PublicPostEnded
 import app.getknit.knit.mesh.lora.PublicPostResult
+import app.getknit.knit.mesh.lora.ReplaceToken
 import app.getknit.knit.mesh.lora.SeenStamp
 import app.getknit.knit.mesh.lora.SendPurpose
+import app.getknit.knit.mesh.lora.SetupPreview
 import app.getknit.knit.mesh.lora.SlotCheck
 import app.getknit.knit.mesh.lora.WallShift
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.withLock
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
@@ -89,9 +92,9 @@ internal class MeshcoreHooks(
      * The bound board reported its 32-byte public key, from the session that dialled [dialled] (the `dialled` race, Stage
      * 5a-2), with its signature binding our node id when the session's bind succeeded (Stage 5d; null otherwise): what
      * `MeshcoreClaimStore.setBoardKey` writes, as one edit, only while that address is still the bound one. Called from the
-     * consent alone ([onConsent]); null key withdraws both.
+     * consent alone ([onConsent], through [MeshcoreClaimEdits]); null key withdraws both.
      */
-    private val onBoardKey: suspend (key: ByteArray?, sig: ByteArray?, dialled: String?) -> Unit = { _, _, _ -> },
+    onBoardKey: suspend (key: ByteArray?, sig: ByteArray?, dialled: String?) -> Unit = { _, _, _ -> },
     /**
      * Delivers a post heard on the board's slot 0 into the MeshCore Public room (Stage 6), launched on the plane's scope as
      * the Meshtastic room's is: the sink writes the row, never this.
@@ -162,6 +165,9 @@ internal class MeshcoreHooks(
     private val public =
         MeshcorePublicChannel(session, core, scope, clock, wallClock, log, counters, consent = { consent }, onPublicPost)
 
+    /** The profile's claim edits, one at a time, the latest winning, retried, and fenced by a Forget ([MeshcoreClaimEdits]). */
+    private val claims = MeshcoreClaimEdits(scope, counters, onBoardKey)
+
     @Volatile
     override var provisioning = false
         private set
@@ -170,6 +176,9 @@ internal class MeshcoreHooks(
         session.observer = this
         // Our board's floods of a DM of ours (the pin did not hold): the surcharge over the direct airing booked at send.
         scope.launch { session.air.collect(::onAir) }
+        // The setup state the radio screen shows (Stage 7): the face is published again on every move. Not the flow's empty
+        // start, and the core publishes nothing before its transport is built (lora-reviewer, Stage 7a).
+        scope.launch { session.setupState.filterNotNull().collect { core.faceMoved() } }
         // The consent, in the order the actor decided it, the latest winning: nothing here reads or writes the record.
         scope.launch {
             session.consent.collect { c ->
@@ -179,6 +188,7 @@ internal class MeshcoreHooks(
                         if (it is kotlinx.coroutines.CancellationException) throw it
                         counters.consentApplyFailures.incrementAndGet()
                     }
+                    counters.consentApplied.set(c.seq)
                 }
             }
         }
@@ -186,11 +196,24 @@ internal class MeshcoreHooks(
 
     // --- the face ---
 
-    /** The link state the settings row and the field log render, the version cleaned before anything shows it. */
+    /**
+     * The link state the settings row and the field log render, the version cleaned before anything shows it, and the board's
+     * own facts for the radio screen ([MeshcoreBoardFace], Stage 7).
+     */
     override fun statusOf(
         state: BoardState,
         status: LoraStatus,
-    ): LoraStatus = status.copy(state = linkStateOf(state), boardNodeNum = null, publicChannel = public.face(state))
+    ): LoraStatus =
+        status.copy(
+            state = linkStateOf(state),
+            boardNodeNum = null,
+            publicChannel = public.face(state),
+            meshcore = meshcoreFaceOf(core.config?.address, state, status.battery, session.setupState.value, lastShares),
+        )
+
+    /** Whether the board at an address airs a position, as its last `SELF_INFO` read said (Stage 7): kept while it is away. */
+    @Volatile
+    private var lastShares: Pair<String, Boolean>? = null
 
     /** The band's law as it stands now: the MeshCore dump's `law` block and the plane's face. */
     fun lawState(): MeshcoreLawState =
@@ -403,11 +426,22 @@ internal class MeshcoreHooks(
     /** Queued Public posts that ended without airing ([MeshcorePublicChannel.ended]). */
     override val publicPostsEnded: Flow<PublicPostEnded> get() = public.ended
 
-    /** A queued Public post, written under its frame's stamp ([MeshcorePublicChannel.send]): the only kind frame queued. */
+    /**
+     * A queued Public post, written under its frame's stamp ([MeshcorePublicChannel.send]), or the debug bridge's raw payload
+     * on the bound Knit slot ([sendDebug], Stage 7): the only kind frames this kind queues.
+     */
     override suspend fun sendKindFrame(
         frame: OutboundFrame,
         send: suspend (ByteArray, SendPurpose) -> FragmentOutcome,
-    ) = public.send(frame, send)
+    ) {
+        if (frame.destination == Destination.Debug) raw.write(frame, send) else public.send(frame, send)
+    }
+
+    /** The debug bridge's raw payload (Stage 7): its own half, as the Public room's is ([MeshcoreRawSend]). */
+    private val raw = MeshcoreRawSend(session, core, clock, wallClock, log, consent = { consent }, law = ::lawState)
+
+    /** Queues a raw debug payload and waits for its write ([MeshcoreRawSend.send]): `…debug.LORATX --es kind meshcore`. */
+    suspend fun debugSend(payload: ByteArray): MeshcoreDebugSend = raw.send(payload)
 
     // --- the kind's limiters that outlive the process ---
 
@@ -519,79 +553,41 @@ internal class MeshcoreHooks(
         consent = c.granted
         // A withdrawal goes to the claim first (security N2): nothing after it can skip it. An unread record leaves the claim
         // as the last consent left it.
-        if (!c.unread && !c.granted) claim(c.address, null, null)
+        if (!c.unread && !c.granted) claim(c.address, null, null, c.seq)
         if (holders != null) reteach()
         core.holdersMoved()
-        if (!c.unread && c.granted) claim(c.address, c.key, c.sig)
+        if (!c.unread && c.granted) claim(c.address, c.key, c.sig, c.seq)
         // Whether a Public post may leave rests on this consent (the room's face, Stage 6).
         core.faceMoved()
     }
 
-    /** The claim edit owed, the latest winning, retried until it lands ([claim]). */
-    private class OwedClaim(
-        val address: String,
-        val key: ByteArray?,
-        val sig: ByteArray?,
-    )
-
-    @Volatile
-    private var owedClaim: OwedClaim? = null
-
-    private var claimRetry: kotlinx.coroutines.Job? = null
-
-    /**
-     * Publishes ([key], with its bind [sig] when the consent carried one) or withdraws (null) the claim for [address]; an edit
-     * that throws (a DataStore I/O error) is owed and retried with a backoff until it lands or a newer one replaces it, so a
-     * withdrawal is never lost (security N2).
-     */
     private suspend fun claim(
         address: String,
         key: ByteArray?,
         sig: ByteArray?,
-    ) {
-        val owed = OwedClaim(address, key, sig?.takeIf { key != null })
-        owedClaim = owed
-        if (tryClaim(owed)) return
-        synchronized(lock) {
-            claimRetry?.cancel()
-            claimRetry =
-                scope.launch {
-                    var wait = CLAIM_RETRY_FIRST_MS
-                    // The one check of whether [owed] is still the edit owed is inside [tryClaim], under the mutex.
-                    while (true) {
-                        kotlinx.coroutines.delay(wait)
-                        if (tryClaim(owed)) return@launch
-                        wait = (wait * 2).coerceAtMost(CLAIM_RETRY_MAX_MS)
-                    }
-                }
-        }
-    }
-
-    /** Claim edits, one at a time (security and lora, 5b-2 tail): a stale retry never lands after a newer edit. */
-    private val claimMutex = kotlinx.coroutines.sync.Mutex()
-
-    /**
-     * One attempt at [owed], under [claimMutex], re-checked inside it: true when it landed, or when a newer edit replaced
-     * it (nothing left to do for this one).
-     */
-    private suspend fun tryClaim(owed: OwedClaim): Boolean {
-        val landed =
-            claimMutex.withLock {
-                if (owedClaim !== owed) return true
-                runCatching { onBoardKey(owed.key, owed.sig, owed.address) }
-                    .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
-                    .isSuccess
-            }
-        if (landed) {
-            if (owedClaim === owed) owedClaim = null
-        } else {
-            counters.consentApplyFailures.incrementAndGet()
-        }
-        return landed
-    }
+        seq: Long,
+    ) = claims.claim(address, key, sig, seq)
 
     /** Unbinds the board at [address], through the session's actor ([MeshcoreBoardOps.unbind]). */
     suspend fun unbind(address: String): MeshcoreUnbind = session.unbind(address)
+
+    /** A Forget's claim edit ([MeshcoreClaimEdits.forget], Stage 7): behind any edit running, and fencing every grant made before it. */
+    suspend fun forgetClaim(
+        address: String,
+        edit: suspend () -> Unit,
+    ) {
+        claims.forget(address, edit = edit)
+    }
+
+    /**
+     * An owed withdrawal's retry ([MeshcoreClaimEdits.forget] with [upTo], Stage 7a): fenced at the seq its failed Forget took,
+     * and skipped (false) once a grant made after it has landed for [address].
+     */
+    suspend fun forgetClaimUpTo(
+        address: String,
+        upTo: Long,
+        edit: suspend () -> Unit,
+    ): Boolean = claims.forget(address, upTo, edit)
 
     // --- the session's observer: on its actor, returns at once ---
 
@@ -629,6 +625,7 @@ internal class MeshcoreHooks(
     override fun beforeReady(ready: BoardState.Ready) {
         val detail = ready.detail as? MeshcoreDetail
         multiAcks = detail?.multiAcks ?: 0
+        detail?.dialled?.let { lastShares = it to detail.sharesPosition }
         val radio = ready.radio
         val freq = detail?.freqKhz
         val duty = if (radio != null && freq != null) MeshcoreTraits.dutyPolicy(freq, radio.bandwidthHz) else null
@@ -740,8 +737,28 @@ internal class MeshcoreHooks(
         }
     }
 
-    private suspend fun setup(): ProvisionResult =
-        when (val r = session.setup()) {
+    private suspend fun setup(): ProvisionResult = setupResult(session.setup())
+
+    /** A setup over another board's record ([ProvisionResult.DifferentBoard]'s token, Stage 7), through the session. */
+    override suspend fun provisionReplacing(token: ReplaceToken): ProvisionResult {
+        provisioning = true
+        try {
+            return setupResult(session.setupReplacing(token))
+        } finally {
+            provisioning = false
+        }
+    }
+
+    /** What a setup would erase, read fresh on the session's actor (Stage 7). */
+    override suspend fun setupPreview(): SetupPreview? = session.setupPreview()
+
+    private fun setupResult(r: MeshcoreSetupResult): ProvisionResult =
+        when (r) {
+            is MeshcoreSetupResult.DifferentBoard -> {
+                log("lora setup kind=meshcore refused: another board's record at this address")
+                ProvisionResult.DifferentBoard(r.token)
+            }
+
             is MeshcoreSetupResult.Done -> {
                 // The record and the consent are the session's, written and granted inside its own transaction.
                 log("lora setup kind=meshcore slot=${r.slot} erased contacts=${r.erasedContacts} slots=${r.clearedSlots}")
@@ -909,6 +926,7 @@ internal class MeshcoreHooks(
         const val VERSION_MAX = 32
 
         private const val MS_PER_SECOND = 1_000L
+
         private const val DIGEST_BYTES = 8
         private const val NO_DEDICATED_SLOT = "a MeshCore board has no dedicated slot: Knit never moves its radio"
         private const val NOT_THIS_BOARD = "the connected board is not the one this phone set up at that address"
@@ -1048,6 +1066,15 @@ internal class MeshcorePlaneCounters {
 
     /** A consent the hooks could not apply (the claim's write, a reteach threw): the next one is applied whole. */
     val consentApplyFailures = AtomicLong()
+
+    /** A claim grant a Forget fenced off: made before the Forget, never written after it (Stage 7, `meshcoreClaimsFenced`). */
+    val claimsFenced = AtomicLong()
+
+    /** Claim edits (a grant or a withdrawal) that landed in the claim store (Stage 7a): what a scenario waits past. */
+    val claimEdits = AtomicLong()
+
+    /** The seq ([MeshcoreConsent.seq]) of the last consent these hooks finished applying: a scenario waits for it to catch up. */
+    val consentApplied = AtomicLong()
 
     /** Of [acksBooked], those booked along the pinned path alone: the sender's contact taught and pinned zero-hop. */
     val acksBookedDirect = AtomicLong()

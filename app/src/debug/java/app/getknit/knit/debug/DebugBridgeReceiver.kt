@@ -2825,6 +2825,11 @@ class DebugBridgeReceiver :
             .put("radio", ready?.radio?.let { "SF${it.spreadFactor}/BW${it.bandwidthHz}/CR4/${it.codingRate}" } ?: JSONObject.NULL)
             .put("multiAcks", detail?.multiAcks ?: JSONObject.NULL)
             .put("defaultScope", detail?.defaultScope ?: JSONObject.NULL)
+            // The radio screen's own-board facts (Stage 7): this phone's setup state, read off its record (shown away too), and
+            // whether the board airs a position — a boolean, never the position.
+            .put("setup", status.meshcore?.setup?.name ?: JSONObject.NULL)
+            .put("sharesPosition", status.meshcore?.sharesPosition ?: JSONObject.NULL)
+            .put("batteryMv", status.meshcore?.batteryMv ?: JSONObject.NULL)
             .put("queued", status.queued)
             .put("queueFree", status.queueFree ?: JSONObject.NULL)
             .put("heard", status.heard)
@@ -2914,6 +2919,9 @@ class DebugBridgeReceiver :
                     .put("meshcoreRecordWriteFailures", sc.recordWriteFailures.get())
                     .put("meshcoreRestoreMismatches", sc.restoreMismatches.get())
                     .put("meshcoreConsentApplyFailures", c?.consentApplyFailures?.get() ?: 0)
+                    // Stage 7: setups refused over another board's record, and claim grants a Forget fenced off.
+                    .put("meshcoreDifferentBoards", sc.differentBoards.get())
+                    .put("meshcoreClaimsFenced", c?.claimsFenced?.get() ?: 0)
                     .put("meshcoreDirectFlooded", sc.directFlooded.get())
                     .put("meshcorePinFailures", sc.pinFailures.get())
                     .put("meshcoreRepinsDone", sc.repinsDone.get())
@@ -2956,12 +2964,47 @@ class DebugBridgeReceiver :
                 }
                 val contacts = sc.setupErasedContacts.get()
                 val slots = sc.setupClearedSlots.get()
-                val r = plane.provisionKnitChannel(app.getknit.knit.mesh.lora.ProvisionMode.Setup, null)
+                var r = plane.provisionKnitChannel(app.getknit.knit.mesh.lora.ProvisionMode.Setup, null)
+                // Another board's record at this address (Stage 7): refused unless `--ez replace true`, which replaces it with the
+                // token from this same refusal — the screen's "replace" — and is refused again if the record moved in between.
+                val different = r as? app.getknit.knit.mesh.lora.ProvisionResult.DifferentBoard
+                val replace = different != null && intent.getBooleanExtra("replace", false)
+                if (replace) r = plane.provisionReplacing(requireNotNull(different).token)
                 result
                     .put("prov", "setup")
                     .put("result", r::class.simpleName)
+                    .put("replaced", replace)
                     .put("erasedContacts", sc.setupErasedContacts.get() - contacts)
                     .put("clearedSlots", sc.setupClearedSlots.get() - slots)
+            }
+
+            // What a setup would erase, read fresh (Stage 7): the screen's "about N contacts, M channels". Counts only.
+            "preview" -> {
+                val p = plane.setupPreview()
+                result
+                    .put("prov", "preview")
+                    .put("contacts", p?.contacts ?: JSONObject.NULL)
+                    .put("slots", p?.slots ?: JSONObject.NULL)
+            }
+
+            // The radio screen's Forget (Stage 7, `MeshcoreForget`): the one path, on the app's scope. `--ez anyway true` is
+            // "Forget anyway" after PENDING. The result's name, whether a board is still bound and whether a claim is published.
+            "forget" -> {
+                val forget =
+                    getKoin().getOrNull<app.getknit.knit.mesh.lora.meshcore.MeshcoreForget>()
+                        ?: return reply("error", "no MeshCore plane")
+                val r = forget.forget(anyway = intent.getBooleanExtra("anyway", false))
+                result
+                    .put("prov", "forget")
+                    .put("result", r.name)
+                    .put("bound", settings.meshcoreDeviceAddress.first() != null)
+                    .put(
+                        "claimed",
+                        getKoin()
+                            .get<app.getknit.knit.data.settings.MeshcoreClaimStore>()
+                            .boardKey
+                            .first() != null,
+                    )
             }
 
             "restore" -> {
@@ -2976,7 +3019,7 @@ class DebugBridgeReceiver :
             }
 
             else -> {
-                reply("error", "--es prov setup|restore|unbind")
+                reply("error", "--es prov setup|preview|restore|unbind|forget")
             }
         }
     }
@@ -2994,6 +3037,7 @@ class DebugBridgeReceiver :
      */
     private suspend fun handleLoraTx(intent: Intent): JSONObject {
         val text = intent.getStringExtra(EXTRA_TEXT) ?: return reply("error", "missing --es text")
+        if (intent.getStringExtra("kind") == "meshcore") return meshcoreTx(text)
         val channel = settings.loraChannelIndex.first()
         val hop = if (intent.hasExtra("hop")) intent.getIntExtra("hop", 0) else null
         val result = loraLink.send(text.encodeToByteArray(), channel, hopLimit = hop)
@@ -3001,6 +3045,31 @@ class DebugBridgeReceiver :
             .put("result", result::class.simpleName)
             .put("channel", channel)
             .put("hopLimit", hop ?: JSONObject.NULL)
+    }
+
+    /**
+     * MeshCore's raw send (`…debug.LORATX --es kind meshcore --es text <s>`, ADR 2026-11.gsqu's Stage 7 amendment): through the
+     * plane's own path (`MeshcoreHooks.debugSend`: the pacer, the ledger, the band's law and the session's actor), on the Knit
+     * slot only, refused without consent or while the law holds. Answers the outcome, the slot, the milliseconds booked and
+     * the law's verdict; never the text.
+     */
+    private suspend fun meshcoreTx(text: String): JSONObject {
+        val plane =
+            getKoin().getOrNull<app.getknit.knit.mesh.lora.LoraMeshTransport>(loraPlane(BoardKind.MESHCORE))
+                ?: return reply("error", "no MeshCore plane")
+        val hooks = plane.kindHooks as? app.getknit.knit.mesh.lora.meshcore.MeshcoreHooks ?: return reply("error", "no MeshCore plane")
+        val sent = hooks.debugSend(text.encodeToByteArray())
+        return reply("ok", "meshcore")
+            .put("result", sent.result)
+            .put("slot", sent.slot ?: JSONObject.NULL)
+            .put("bookedMs", sent.bookedMs ?: JSONObject.NULL)
+            .put(
+                "law",
+                JSONObject()
+                    .put("holding", sent.lawHolding)
+                    .put("trailingTxSecs", sent.trailingTxSecs ?: JSONObject.NULL)
+                    .put("limitSecs", sent.limitSecs ?: JSONObject.NULL),
+            )
     }
 
     /**

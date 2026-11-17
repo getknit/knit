@@ -97,3 +97,42 @@ internal object BoardBindPolicy {
         if (kind == BoardKind.MESHCORE) prefs.remove(own.name) else prefs[own.name] = name
     }
 }
+
+/**
+ * Forgetting a MeshCore board (ADR 2026-11.gsqu's Stage 7 amendment, `MeshcoreForget`), as pure edits of the preferences that
+ * the caller applies inside one `DataStore.edit` each, beside [BoardBindPolicy]. Never `SettingsStore.clearLoraDevice`: that
+ * is Meshtastic's, and clears Meshtastic's setup record. Each edit lands only while [address] is still the bound MeshCore
+ * board's, checked inside the same edit, so a Forget that waited (a Restore running long) never clears a board bound since;
+ * a bind of another board has already cleared what these would.
+ */
+internal object MeshcoreForgetPolicy {
+    /**
+     * The whole binding: [BoardKeys.MESHCORE]'s identity — address, name, the claimed key and its bind — and the shared plane
+     * switch off ([loraEnabled]), as Meshtastic's forget switches it off, since the plane has nothing to bind to. The setup
+     * record is SQLCipher's and the session's: never touched here. True when it landed.
+     */
+    fun forget(
+        prefs: MutablePreferences,
+        address: String,
+        loraEnabled: Preferences.Key<Boolean>,
+    ): Boolean {
+        if (prefs[BoardKeys.MESHCORE.address] != address) return false
+        BoardKeys.MESHCORE.identity.forEach { prefs.remove(it) }
+        prefs[loraEnabled] = false
+        return true
+    }
+
+    /**
+     * The published claim alone (`MESHCORE_PUBKEY`, `MESHCORE_BIND`), the binding kept: a Forget whose board is away keeps the
+     * binding so the next connection runs its cleanup, and withdraws the claim now, whether or not the plane runs (with it
+     * off nothing else would). True when it landed.
+     */
+    fun withdrawClaim(
+        prefs: MutablePreferences,
+        address: String,
+    ): Boolean {
+        if (prefs[BoardKeys.MESHCORE.address] != address) return false
+        BoardKeys.MESHCORE.reported.forEach { prefs.remove(it) }
+        return true
+    }
+}

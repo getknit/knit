@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.lora.BoardLink
 import app.getknit.knit.mesh.lora.BoardPacket
 import app.getknit.knit.mesh.lora.BoardPlane
 import app.getknit.knit.mesh.lora.BoardSend
+import app.getknit.knit.mesh.lora.BoardSetupState
 import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.DirectDm
 import app.getknit.knit.mesh.lora.DirectKind
@@ -34,11 +35,13 @@ import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -135,6 +138,9 @@ class MeshcoreHearingTest {
         override suspend fun teach(key: ByteArray): ContactWrite = ContactWrite.NOT_READY
 
         override suspend fun removeUntaught(key: ByteArray): ContactWrite = ContactWrite.NOT_READY
+
+        /** The session's setup state for the screen (Stage 7). */
+        override val setupState = MutableStateFlow<MeshcoreSetupView?>(null)
     }
 
     /** Seals readably; opens a DM from bob whose second byte is [OPENS], stamped at its next four bytes' seconds. */
@@ -211,9 +217,12 @@ class MeshcoreHearingTest {
         val logs: MutableList<String>,
     )
 
-    private fun TestScope.node(): Node {
+    private fun TestScope.node(
+        ops: Ops = Ops(),
+        hooksScope: CoroutineScope = backgroundScope,
+        start: Boolean = true,
+    ): Node {
         val board = FakeBoard()
-        val ops = Ops()
         val logs = mutableListOf<String>()
         var made: MeshcoreHooks? = null
         val transport =
@@ -224,7 +233,7 @@ class MeshcoreHearingTest {
                         MeshcoreHooks(
                             ops,
                             core,
-                            backgroundScope,
+                            hooksScope,
                             { testScheduler.currentTime },
                             { logs += it },
                         ).also { made = it }
@@ -258,10 +267,39 @@ class MeshcoreHearingTest {
             )
         // The session's observer runs before Ready: the ledger at the board's 10 % band.
         requireNotNull(ops.observer).beforeReady(board.ready)
-        transport.start()
+        if (start) transport.start()
         runCurrent()
         return Node(transport, board, { requireNotNull(made) }, logs)
     }
+
+    /**
+     * Lora-reviewer (Stage 7a): the hooks start their collectors in their own constructor, before the transport's status fields
+     * exist; a scope that runs them at once (here unconfined, in the field a multi-threaded one that wins the race) must not
+     * reach `publishStatus` then. The move is published once construction ends, and the collector lives on to publish the next.
+     */
+    @Test
+    fun aFaceMoveBeforeTheTransportIsBuiltNeverKillsItsCollector() =
+        runTest {
+            val ops = Ops().apply { setupState.value = MeshcoreSetupView(BOARD_ADDRESS, BoardSetupState.PENDING) }
+            val eager = CoroutineScope(backgroundScope.coroutineContext + UnconfinedTestDispatcher(testScheduler))
+            val n = node(ops, hooksScope = eager, start = false)
+            // The move skipped during construction, published as construction ended: the status carries the face at all only
+            // through that publish (its default has none), unknown until the plane's start names the bound address.
+            assertEquals(
+                BoardSetupState.UNKNOWN,
+                n.transport.status.value.meshcore
+                    ?.setup,
+            )
+            n.transport.start()
+            runCurrent()
+            ops.setupState.value = MeshcoreSetupView(BOARD_ADDRESS, BoardSetupState.SET_UP)
+            runCurrent()
+            assertEquals(
+                BoardSetupState.SET_UP,
+                n.transport.status.value.meshcore
+                    ?.setup,
+            )
+        }
 
     /** Bob's board did not answer our DM: his mark is unreachable, as a lost board leaves it. */
     private fun TestScope.markBobUnreachable(n: Node) {

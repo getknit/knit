@@ -166,6 +166,27 @@ class BackupViewModelTest {
         assertEquals(RestorePhase.Idle, vm.restore.value)
     }
 
+    /**
+     * A restore loses this phone's MeshCore setup records (ADR 2026-11.gsqu's Stage 7 amendment): the staged dialog says so
+     * when one is kept, or when the read could not tell; never in a build without the plane (no check wired).
+     */
+    @Test
+    fun aKeptMeshcoreSetupIsNamedBeforeTheRestore() {
+        File(target.path!!).writeBytes(byteArrayOf(9))
+        coEvery { stager.stage(any(), any(), any()) } returns manifest
+        val none: (suspend () -> Boolean)? = null
+        val noRecord: suspend () -> Boolean = { false }
+        val aRecord: suspend () -> Boolean = { true }
+        val unreadable: suspend () -> Boolean = { throw IllegalStateException("database closed") }
+        for ((check, expected) in listOf(none to false, noRecord to false, aRecord to true, unreadable to true)) {
+            val vm = BackupViewModel(context, writer, stager, meshcoreSetupOnPhone = check)
+            vm.pickRestore(target)
+            vm.stageRestore(BackupKeys.generate())
+            val staged = vm.restore.await { it is RestorePhase.Staged } as RestorePhase.Staged
+            assertEquals("check=${check != null} expected=$expected", expected, staged.meshcoreSetup)
+        }
+    }
+
     @Test
     fun aRefusedRestoreNamesItsProblemAndCanBeRetried() {
         File(target.path!!).writeBytes(byteArrayOf(9))

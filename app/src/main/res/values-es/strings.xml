@@ -1287,6 +1287,7 @@
     <string name="backup_restore_confirm_named">Backup de %1$s del %2$s, hecho con Knit %3$s.</string>
     <string name="backup_restore_confirm_unnamed">Backup del %1$s, hecho con Knit %2$s.</string>
     <string name="backup_restore_confirm_body">Todo lo que Knit guarda en este teléfono (su identidad, contactos, grupos y mensajes) se reemplaza por el backup, y la app se reinicia. Tus contactos te ven como la misma persona; las conversaciones con ellos se retoman a medida que sus teléfonos se vuelven a conectar. Si el teléfono anterior todavía tiene Knit, deja de usar la app allí.</string>
+    <string name="backup_restore_confirm_meshcore">Una placa MeshCore configurada en este teléfono conserva la configuración de Knit y las claves de radio de tus contactos después de restaurar, y entonces Knit ya no puede deshacer esa configuración. Para dejar la placa como estaba, primero deshaz su configuración en la configuración de la radio LoRa.</string>
     <string name="backup_action_restore">Restaurar y reiniciar</string>
     <string name="backup_restore_failed">No se restauró el backup: %1$s</string>
     <string name="backup_restarting">Reiniciando Knit…</string>
@@ -1470,12 +1471,15 @@
     <string name="lora_title">Radio LoRa</string>
     <string name="settings_lora_title">Usar una radio LoRa</string>
     <string name="settings_lora_subtitle">Amplía el alcance de la sala Cerca y de tus mensajes privados con LoRa de largo alcance vinculando una placa Meshtastic por Bluetooth. Los grupos, los indicadores de escritura y las fotos se quedan en las radios de teléfono a teléfono.</string>
+    <string name="settings_lora_subtitle_any">Amplía el alcance de la sala Cerca y de tus mensajes privados con LoRa de largo alcance vinculando una placa Meshtastic o MeshCore por Bluetooth. Los grupos, los indicadores de escritura y las fotos se quedan en las radios de teléfono a teléfono.</string>
     <string name="lora_off_note">Al desactivarlo se cierra la conexión con la placa. Los grupos y los adjuntos nunca viajan por LoRa.</string>
     <string name="lora_dm_title">Mensajes privados por LoRa</string>
     <string name="lora_dm_subtitle">Los mensajes directos siguen cifrados de extremo a extremo, pero quién escribe a quién, y cuándo, es visible para cualquier radio LoRa al alcance — kilómetros, no metros. Desactívalo para mantener los mensajes privados en las radios de teléfono a teléfono.</string>
     <string name="lora_board_section">Placa</string>
     <string name="lora_board_none">No se encontraron placas Meshtastic vinculadas. Primero vincula una en la configuración de Bluetooth (la placa muestra un PIN en su pantalla).</string>
+    <string name="lora_board_none_any">No se encontraron placas LoRa vinculadas. Primero vincula una placa Meshtastic o MeshCore en la configuración de Bluetooth, con el PIN que muestra su pantalla o el que tenga configurado.</string>
     <string name="lora_board_none_meshtastic">Ninguno de tus dispositivos vinculados parece una placa Meshtastic. Vincula una en la configuración de Bluetooth o muestra todos los dispositivos vinculados.</string>
+    <string name="lora_board_none_supported">Ninguno de tus dispositivos vinculados parece una placa Meshtastic o MeshCore. Vincula una en la configuración de Bluetooth o muestra todos los dispositivos vinculados.</string>
     <string name="lora_show_all_boards">Mostrar todos los dispositivos vinculados</string>
     <plurals name="lora_boards_hidden">
         <item quantity="one">%d otro dispositivo vinculado oculto</item>
@@ -1519,6 +1523,8 @@
     <string name="lora_status_connecting">Conectando…</string>
     <string name="lora_status_reconnecting">Reconectando…</string>
     <string name="lora_status_needs_pairing">Hay que vincularla — vuelve a vincular la placa en la configuración de Bluetooth</string>
+    <string name="lora_status_wrong_firmware">No tiene Meshtastic, o se reinstaló desde que se vinculó. Olvídala y vuelve a vincularla, o elige otra placa.</string>
+    <string name="lora_status_wrong_firmware_meshcore">No tiene el firmware companion de MeshCore, o se reinstaló desde que se vinculó. Olvídala y vuelve a vincularla, o elige otra placa.</string>
     <string name="lora_status_bt_off">Bluetooth desactivado o placa no disponible</string>
     <string name="lora_status_off">Sin usar</string>
     <string name="lora_signal">Señal: SNR %1$.1f dB · RSSI %2$d dBm</string>
@@ -1543,6 +1549,45 @@
     <string name="lora_room_subtitle_dedicated">Oculta mientras esta placa esté en una frecuencia exclusiva: ninguna radio pública puede oírla, así que no hay canal que leer. Restaura la placa para recuperar la sala.</string>
     <string name="lora_meshcore_room_title">Sala MeshCore</string>
     <string name="lora_meshcore_room_subtitle">Muestra el canal “Public” de tu placa MeshCore como una sala en Knit, para que puedas leer y participar en todo lo demás que haya en él. Si lo desactivas, la sala queda oculta y en silencio, y Knit ignora ese canal — tu placa sigue llevando los mensajes propios de Knit.</string>
+    <string name="lora_meshcore_kind">Placa MeshCore</string>
+    <string name="lora_meshcore_radio">Radio %1$s MHz · SF%2$d · BW %3$s kHz · CR 4/%4$d</string>
+    <string name="lora_meshcore_scope_set">Ámbito de región predeterminado: definido</string>
+    <string name="lora_meshcore_scope_none">Ámbito de región predeterminado: ninguno</string>
+    <string name="lora_meshcore_battery">Batería %1$.2f V</string>
+    <plurals name="lora_meshcore_knit_radios">
+        <item quantity="one">%d radio de Knit al alcance</item>
+        <item quantity="many">%d radios de Knit al alcance</item>
+        <item quantity="other">%d radios de Knit al alcance</item>
+    </plurals>
+    <string name="lora_meshcore_knit_radios_zero" tools:ignore="PluralsCandidate">%d radios de Knit al alcance</string>
+    <string name="lora_meshcore_state_none">No configurada para Knit</string>
+    <string name="lora_meshcore_state_set_up">Configurada para Knit</string>
+    <string name="lora_meshcore_state_pending">La configuración de Knit sigue en esta placa. Knit la limpia la próxima vez que la placa se conecte.</string>
+    <string name="lora_meshcore_state_unknown">No se pudo comprobar si esta placa está configurada para Knit.</string>
+    <string name="lora_meshcore_setup_body">Configurar la placa la deja en manos de Knit: Knit borra sus contactos y sus otros canales, agrega su propio canal y cambia el nombre de la placa. Su canal “Public” se mantiene.</string>
+    <string name="lora_meshcore_setup_confirm_body">Knit borra todos los contactos y todos los canales de esta placa excepto “Public”, agrega su propio canal y le cambia el nombre a la placa por “Knit” y un código corto. A partir de entonces, Knit administra los contactos de la placa, así que usa la placa solo con Knit. Tus contactos de Knit pueden saber que la placa es tuya.</string>
+    <string name="lora_meshcore_setup_erase">Esto no se puede deshacer, ni siquiera deshaciendo la configuración.</string>
+    <plurals name="lora_meshcore_erase_contacts">
+        <item quantity="one">La placa guarda aproximadamente %d contacto.</item>
+        <item quantity="many">La placa guarda aproximadamente %d contactos.</item>
+        <item quantity="other">La placa guarda aproximadamente %d contactos.</item>
+    </plurals>
+    <plurals name="lora_meshcore_erase_channels">
+        <item quantity="one">Tiene %d canal más en uso.</item>
+        <item quantity="many">Tiene %d canales más en uso.</item>
+        <item quantity="other">Tiene %d canales más en uso.</item>
+    </plurals>
+    <string name="lora_meshcore_position">Esta placa podría compartir dónde está: en los anuncios que envía, que cualquier radio al alcance puede leer, o con los contactos que se lo pidan. Knit no cambia eso. Desactiva la opción de compartir la ubicación en tu app de MeshCore si no quieres que eso se sepa.</string>
+    <string name="lora_meshcore_replace_title">¿Volver a configurar esta placa?</string>
+    <string name="lora_meshcore_replace_body">Esta placa se restableció o se reemplazó desde que se configuró para Knit en este teléfono, así que Knit ya no puede revertir lo que cambió entonces.</string>
+    <string name="lora_meshcore_replace_action">Configurar de todos modos</string>
+    <string name="lora_meshcore_forget_pending_title">Knit no pudo limpiar la placa</string>
+    <string name="lora_meshcore_forget_pending_body">La placa todavía tiene la configuración de Knit y las claves de radio de tus contactos. Si la conservas, Knit la limpia la próxima vez que la placa se conecte. Si la olvidas de todos modos, la placa se queda así.</string>
+    <string name="lora_meshcore_forget_keep">Conservarla</string>
+    <string name="lora_meshcore_forget_anyway">Olvidar de todos modos</string>
+    <string name="lora_meshcore_forget_failed">No se pudo olvidar la placa. Vuelve a intentarlo.</string>
+    <string name="lora_meshcore_forget_mismatch">Placa olvidada. Se restableció o se reemplazó desde que Knit la configuró, así que Knit la dejó como está.</string>
+    <string name="lora_meshcore_restored">Se restauraron el nombre y los ajustes propios de la placa. Los contactos y los canales que borró la configuración siguen borrados. LoRa queda desactivado hasta que vuelvas a configurar una placa.</string>
     <string name="lora_airtime">Tiempo de aire: %1$d%% del límite actual</string>
     <string name="lora_radio_config">Radio %1$s</string>
     <string name="lora_public_channel">Canal principal %1$s</string>
@@ -1803,6 +1848,7 @@
     <string name="chat_meshcore_consent_name_body">Cada publicación sale como “%1$s: …”. Ese nombre es el mismo en todas las publicaciones e identifica tu placa, así que quienes te tienen como contacto, o quienes conocen tu placa, pueden saber que eres tú.</string>
     <string name="chat_meshcore_consent_name_body_unknown">Cada publicación sale con el nombre de tu placa, “Knit” y cuatro caracteres. Ese nombre es el mismo en todas las publicaciones e identifica tu placa, así que quienes te tienen como contacto, o quienes conocen tu placa, pueden saber que eres tú.</string>
     <string name="chat_meshcore_consent_rules">Una publicación no se puede retirar. Cualquiera puede publicar con cualquier nombre, incluido el tuyo. Quienes usan MeshCore y envían mensajes directos a tu placa no reciben respuesta: Knit no lee esos mensajes.</string>
+    <string name="chat_meshcore_consent_position">Tu placa también podría compartir dónde está, en sus anuncios o con los contactos que se lo pidan. Desactiva la opción de compartir la ubicación en tu app de MeshCore si no quieres que tus publicaciones queden asociadas a un lugar.</string>
     <string name="chat_commons_subtitle">Todos en este retransmisor</string>
     <string name="commons_details_title">Información de la sala</string>
     <string name="commons_details_relay">En %1$s</string>

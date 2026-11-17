@@ -14,6 +14,7 @@ import app.getknit.knit.mesh.lora.BoardDialPolicy
 import app.getknit.knit.mesh.lora.BoardLink
 import app.getknit.knit.mesh.lora.BoardPacket
 import app.getknit.knit.mesh.lora.BoardSend
+import app.getknit.knit.mesh.lora.BoardSetupState
 import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.BondSettle
 import app.getknit.knit.mesh.lora.BondState
@@ -24,13 +25,16 @@ import app.getknit.knit.mesh.lora.LinkState
 import app.getknit.knit.mesh.lora.LoraContactPolicy
 import app.getknit.knit.mesh.lora.PacketIdSource
 import app.getknit.knit.mesh.lora.PacketOutcome
+import app.getknit.knit.mesh.lora.PairingCause
 import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.lora.ProvisionResult
 import app.getknit.knit.mesh.lora.ProvisionSpec
 import app.getknit.knit.mesh.lora.QueueInfo
 import app.getknit.knit.mesh.lora.RadioParams
+import app.getknit.knit.mesh.lora.ReplaceToken
 import app.getknit.knit.mesh.lora.SendPurpose
 import app.getknit.knit.mesh.lora.SendResult
+import app.getknit.knit.mesh.lora.SetupPreview
 import app.getknit.knit.mesh.power.ElapsedWait
 import app.getknit.knit.mesh.runRound
 import kotlinx.coroutines.CoroutineScope
@@ -212,6 +216,15 @@ internal class MeshcoreSession(
      */
     override val consent: StateFlow<MeshcoreConsent?> = _consent.asStateFlow()
 
+    private val _setupState = MutableStateFlow<MeshcoreSetupView?>(null)
+
+    /**
+     * Whether this phone set the bound board up, for the radio screen (ADR 2026-11.gsqu's Stage 7 amendment): read off the
+     * record at [start] (the board away), then by the handshake and after every setup, Restore, unbind and cleanup, on the
+     * actor or under [consentLock] — [MeshcoreSetupStates]. A display only: nothing gates on it.
+     */
+    override val setupState: StateFlow<MeshcoreSetupView?> = _setupState.asStateFlow()
+
     /** A Ready's reconcile not yet run: [setKnitContacts] wakes the actor for it. Mirrors the connection's own flag. */
     @Volatile
     private var reconcilePending = false
@@ -244,14 +257,41 @@ internal class MeshcoreSession(
     private suspend fun withdrawAtStart(address: String) {
         consentLock.withLock {
             // Only for the board still bound (security, 5b-2 tail): a start of another board since makes this one's moot.
-            if (boundAddress != address || _consent.value?.address == address) return
-            val entry = (readEntry(address) ?: return).getOrNull()
+            if (boundAddress != address) return
+            val consentKnown = _consent.value?.address == address
+            // The screen's setup state with the board away (Stage 7), unless a handshake already read it for this address.
+            val viewKnown = _setupState.value?.address == address
+            if (consentKnown && viewKnown) return
+            val read = readEntry(address)
+            if (!viewKnown) noteSetup(address, MeshcoreSetupStates.of(read, digest = null, consent = false, away = true))
+            if (consentKnown) return
+            val entry = (read ?: return).getOrNull()
             if (entry == null ||
                 entry.pending
             ) {
                 _consent.value = MeshcoreConsent(address, entry?.digest.orEmpty(), granted = false, key = null)
             }
         }
+    }
+
+    /** Publishes the screen's setup state for [address] (Stage 7). */
+    private fun noteSetup(
+        address: String,
+        state: BoardSetupState,
+    ) {
+        _setupState.value = MeshcoreSetupView(address, state)
+    }
+
+    /**
+     * Reads the record for [address] again after an op that wrote it, and publishes its setup state: [c] the connected
+     * board's, or null for one away. A read that fails says [BoardSetupState.UNKNOWN], never "none".
+     */
+    private suspend fun refreshSetup(
+        c: Conn?,
+        address: String,
+    ) {
+        val read = readEntry(address)
+        noteSetup(address, MeshcoreSetupStates.of(read, c?.digest, c?.consent == true, away = c == null))
     }
 
     override fun stop() {
@@ -297,6 +337,7 @@ internal class MeshcoreSession(
                     MeshcoreSetupResult.NoFreeSlot -> ProvisionResult.NoFreeSlot
                     is MeshcoreSetupResult.Failed -> ProvisionResult.Failed(r.reason)
                     MeshcoreSetupResult.NotReady -> ProvisionResult.NotReady(linkStateOf(_state.value))
+                    is MeshcoreSetupResult.DifferentBoard -> ProvisionResult.DifferentBoard(r.token)
                 }
             }
 
@@ -319,7 +360,39 @@ internal class MeshcoreSession(
      */
     override suspend fun setup(): MeshcoreSetupResult =
         call({ MeshcoreSetupResult.NotReady }, { MeshcoreSetupResult.Failed(TIMED_OUT, left = null) }, setupDeadlineMs) { c ->
-            runSetup(c)
+            runSetup(c, replace = null).also { refreshSetup(c, c.address) }
+        }
+
+    /**
+     * [setup] over the other board's record [token] was issued for (ADR 2026-11.gsqu's Stage 7 amendment): refused again,
+     * nothing written, unless the record at the address is still exactly that one (read in the write-ahead, on the actor).
+     * Every step runs as ever: the proof, the write-ahead (pending, this board's digest), the erase, the writes, the grant;
+     * a setup that leaves nothing of its own puts the other board's record back as it was.
+     */
+    override suspend fun setupReplacing(token: ReplaceToken): MeshcoreSetupResult =
+        call({ MeshcoreSetupResult.NotReady }, { MeshcoreSetupResult.Failed(TIMED_OUT, left = null) }, setupDeadlineMs) { c ->
+            runSetup(c, replace = token).also { refreshSetup(c, c.address) }
+        }
+
+    /**
+     * What a setup would erase, read fresh on the actor (ADR 2026-11.gsqu's Stage 7 amendment): the board's contact count
+     * (`GET_CONTACTS` past every `lastmod`, the count alone) and the slots in use besides Public and Knit's, each slot read
+     * again. Counts only, each null when the board did not answer it; nothing written. Null when the board is not Ready.
+     */
+    override suspend fun setupPreview(): SetupPreview? =
+        call({ null }, { null }) { c ->
+            val contacts = countContacts(c)
+            val count = requireNotNull(c.info).maxChannels.coerceIn(1, MAX_SLOTS)
+            var slots: Int? = 0
+            for (i in (0 until count).filter { it != PUBLIC_SLOT }) {
+                val slot = readSlot(c, i)
+                if (slot == null) {
+                    slots = null
+                    break
+                }
+                if (!slot.empty && !slot.knit) slots = slots?.plus(1)
+            }
+            SetupPreview(contacts = contacts, slots = slots)
         }
 
     /**
@@ -331,7 +404,7 @@ internal class MeshcoreSession(
             { MeshcoreRestoreResult.NotReady },
             { MeshcoreRestoreResult.Done(false, emptyList(), listOf(TIMED_OUT)) },
             setupDeadlineMs,
-        ) { c -> restoreOwn(c) }
+        ) { c -> restoreOwn(c).also { refreshSetup(c, c.address) } }
 
     /**
      * Writes [key] as a Knit contact (zero-hop, favourite, `Knit xxxx`), only into a free slot (the count the Ready's listing
@@ -388,8 +461,14 @@ internal class MeshcoreSession(
             val readyHere = inbox.get() != null && ((_state.value as? BoardState.Ready)?.detail as? MeshcoreDetail)?.dialled == address
             // The op checks the address again (security F3): a retarget in the window falls through to the away path.
             val onActor =
-                if (readyHere) call({ null }, { null }, Long.MAX_VALUE) { c -> if (c.address == address) runUnbind(c) else null } else null
-            onActor ?: unbindAway(address)
+                if (readyHere) {
+                    call({ null }, { null }, Long.MAX_VALUE) { c ->
+                        if (c.address == address) runUnbind(c).also { refreshSetup(c, address) } else null
+                    }
+                } else {
+                    null
+                }
+            onActor ?: unbindAway(address).also { refreshSetup(null, address) }
         }
 
     override fun pinnedZeroHop(from: BoardAddr.MeshCore): Boolean = pins.keyFor(from) != null && pins.isVerified(from)
@@ -589,7 +668,15 @@ internal class MeshcoreSession(
         if (serviceAbsentInRow < SERVICE_ABSENT_TERMINAL) return backoffAndWait("$REASON_DIAL service absent", streak)
         log("meshcore dial: no NUS service twice in a row, terminal")
         val bonded = dialer.bondState(address) == BondState.BONDED
-        _state.value = down(if (bonded) MeshcoreLinkState.StaleBond(address) else MeshcoreLinkState.NeedsPairing(address))
+        // The wrong-firmware cause (Stage 7): the screen says "not running MeshCore, or reflashed since it was paired".
+        _state.value =
+            down(
+                if (bonded) {
+                    MeshcoreLinkState.StaleBond(address, PairingCause.NO_SERVICE)
+                } else {
+                    MeshcoreLinkState.NeedsPairing(address, PairingCause.NO_SERVICE)
+                },
+            )
         return null
     }
 
@@ -794,19 +881,27 @@ internal class MeshcoreSession(
      * and is read again as an idle job with a backoff (security N2). Runs under [consentLock], with the Ready that follows.
      */
     private suspend fun readConsent(c: Conn) {
+        val read = decideConsent(c)
+        // The screen's setup state off the same read (Stage 7): an unanswered or refused proof is unknown, never "none".
+        noteSetup(c.address, MeshcoreSetupStates.of(read, c.digest, c.consent, away = false))
+    }
+
+    /** [readConsent]'s decision; the read it rested on, or null when there was none to make or every try failed. */
+    @Suppress("ReturnCount")
+    private suspend fun decideConsent(c: Conn): Result<MeshcoreSetupEntry?>? {
         c.consent = false
         c.cleanup = null
         c.consentUnread = false
-        val digest = c.digest ?: return
+        val digest = c.digest ?: return null
         val read = readEntry(c.address)
         if (read == null) {
             counters.consentReadFailures.incrementAndGet()
             log("meshcore consent read failed: read again later")
             unreadLater(c)
-            return
+            return null
         }
         c.consentBackoffMs = 0
-        val record = read.getOrNull() ?: return
+        val record = read.getOrNull() ?: return read
         when {
             record.digest != digest -> {
                 counters.consentMismatches.incrementAndGet()
@@ -845,6 +940,7 @@ internal class MeshcoreSession(
                 }
             }
         }
+        return read
     }
 
     /** The consent could not be decided this time: the claim stays as it was, the offers close, asked again on a backoff. */
@@ -1089,6 +1185,8 @@ internal class MeshcoreSession(
         val done: MeshcoreRestoreResult,
         val marked: RecordOutcome? = null,
         val cleared: RecordOutcome? = null,
+        /** The record is for another key than the connected board's (Stage 7: [MeshcoreUnbind.MISMATCH]). */
+        val otherBoard: Boolean = false,
     )
 
     /**
@@ -1103,7 +1201,7 @@ internal class MeshcoreSession(
         if (entry.digest != c.digest || !bonded(c)) {
             counters.restoreMismatches.incrementAndGet()
             log("meshcore restore refused: not the bonded board this phone set up at that address")
-            return RestoreRun(MeshcoreRestoreResult.Mismatch)
+            return RestoreRun(MeshcoreRestoreResult.Mismatch, otherBoard = entry.digest != c.digest)
         }
         val marked = markAhead(c, c.address)
         // A proof nobody answered, or one that does not verify (maybe another client's sign buffer), is no answer (lora L3, N3).
@@ -1139,7 +1237,11 @@ internal class MeshcoreSession(
         // No mark yet (an unread record, another board's): the mark is the one write, under the rule.
         val marked = run.marked ?: markAhead(c, c.address)
         return when {
+            // Another key's record (Stage 7): Knit cannot clean this board, whatever the mark did; it stays as it was, pending.
+            run.otherBoard && marked != RecordOutcome.FAILED -> MeshcoreUnbind.MISMATCH
+
             marked == RecordOutcome.DONE || run.cleared == RecordOutcome.PENDING -> MeshcoreUnbind.PENDING
+
             else -> MeshcoreUnbind.FAILED
         }
     }
@@ -1177,17 +1279,43 @@ internal class MeshcoreSession(
         return done
     }
 
+    /** What a setup's write-ahead came to. */
+    private sealed interface Ahead {
+        /** The planned record is on disk, pending: the setup may write the board. */
+        data object Written : Ahead
+
+        /** Nothing proven, the record unread, or the write did not land: nothing written to the board. */
+        data object Failed : Ahead
+
+        /** Another key's record at the address, and no [ReplaceToken] for it as it is now: refused, nothing written (Stage 7). */
+        class OtherBoard(
+            val token: ReplaceToken,
+        ) : Ahead
+    }
+
     /**
      * The setup's write-ahead (security N1): the record before it is kept on the connection ([Conn.setupPrior]) and the
-     * planned one, merged as [keepRecord] merges, written pending under the rule. True only when that write itself landed.
+     * planned one, merged as [keepRecord] merges, written pending under the rule. [Ahead.Written] only when that write itself
+     * landed.
+     *
+     * **A different board is refused here** (ADR 2026-11.gsqu's Stage 7 amendment, lora L5, security B5), on the actor —
+     * the record's only writer while the board is up (the maintainer's decision, 2026-11-13), which is the exclusion
+     * `consentLock` gives the handshake; the lock itself is never taken in an actor op, since an unbind holds it while it
+     * waits on the actor — after the proof and before any write: a record at the address for another key is the same
+     * hardware reset or reflashed (a new key at the same address), or another board, and replacing it silently would lose
+     * the only memory of what Knit changed there. Unless [replace] was issued for exactly the record read now
+     * ([MeshcoreSetupEntry.fingerprint]), the setup answers [Ahead.OtherBoard] with a token for it and writes nothing.
      */
     private suspend fun writeAhead(
         c: Conn,
         record: MeshcoreSetupRecord,
-    ): Boolean {
-        val digest = c.provenKey?.let(MeshcoreHooks::digest) ?: return false
-        val prior = readEntry(c.address) ?: return false
-        c.setupPrior = prior.getOrNull()
+        replace: ReplaceToken?,
+    ): Ahead {
+        val digest = c.provenKey?.let(MeshcoreHooks::digest) ?: return Ahead.Failed
+        val prior = readEntry(c.address) ?: return Ahead.Failed
+        val found = prior.getOrNull()
+        otherBoard(c, found, digest, replace)?.let { return Ahead.OtherBoard(it) }
+        c.setupPrior = found
         val merged =
             c.setupPrior
                 ?.takeIf { it.digest == digest }
@@ -1210,7 +1338,23 @@ internal class MeshcoreSession(
         // A kept consent stands only over a write-ahead that landed (lora, the tail's review): anything else revokes it now.
         if (consented && ahead != RecordOutcome.DONE) revoke(c, c.address, digest)
         c.setupOpen = ahead == RecordOutcome.DONE
-        return ahead == RecordOutcome.DONE
+        return if (ahead == RecordOutcome.DONE) Ahead.Written else Ahead.Failed
+    }
+
+    /**
+     * The token for [found] when it is another key's record than [digest] and [replace] was not issued for it as it is now
+     * (Stage 7: [writeAhead]'s refusal, counted and logged), else null.
+     */
+    private fun otherBoard(
+        c: Conn,
+        found: MeshcoreSetupEntry?,
+        digest: String,
+        replace: ReplaceToken?,
+    ): ReplaceToken? {
+        if (found == null || found.digest == digest || replace?.matches(c.address, found.fingerprint()) == true) return null
+        counters.differentBoards.incrementAndGet()
+        log("meshcore setup refused: this phone set up another board at that address")
+        return found.tokenAt(c.address)
     }
 
     /** A setup that left nothing of its own on the board: the record goes back to what it was before its write-ahead. */
@@ -1357,6 +1501,7 @@ internal class MeshcoreSession(
         // Under the rule: a clear that does not land leaves the record pending, so the next connection repeats the cleanup.
         if (clean) withdrawWrite(c, c.address, { entryOf(c.address) == null }) { records.clear(c.address) }
         log("lora cleanup kind=meshcore done=$clean contacts=${done?.contactsRemoved ?: 0}")
+        refreshSetup(c, c.address)
     }
 
     /** `DEVICE_QUERY`, the firmware floor, `APP_START` and every slot: the board's identity, or why the session ends. */
@@ -1430,6 +1575,7 @@ internal class MeshcoreSession(
                 manualAdd = self.manualAdd,
                 dialled = c.address,
                 publicSlot = c.publicSlot,
+                sharesPosition = self.sharesPosition,
             )
         val ready =
             BoardState.Ready(
@@ -2010,6 +2156,11 @@ internal class MeshcoreSession(
                         purpose.timestampSecs?.let { sendPublic(c, payload, it, handle) } ?: unsupported()
                     }
 
+                    // The bridge's raw payload (Stage 7): the room post's write, on a board this connection consents for only.
+                    is SendPurpose.Debug -> {
+                        sendDebug(c, payload, purpose.channel, handle)
+                    }
+
                     is SendPurpose.AutoReply, is SendPurpose.Admin -> {
                         unsupported()
                     }
@@ -2068,6 +2219,24 @@ internal class MeshcoreSession(
             }
         }
     }
+
+    /**
+     * The debug bridge's raw payload (`…debug.LORATX --es kind meshcore`, ADR 2026-11.gsqu's Stage 7 amendment): the same
+     * channel data on the same bound Knit slot as an own room post ([sendRoom]), never slot 0, and only while this connection
+     * consents for a board set up for Knit ([knitBoard]) — asked here, at the write, as the bridge asked it at enqueue. On the
+     * actor like every send, so no other write can take its answer or a DM flight's `RESP_SENT`.
+     */
+    private suspend fun sendDebug(
+        c: Conn,
+        payload: ByteArray,
+        slot: Int,
+        handle: UInt,
+    ): SendResult =
+        when {
+            slot == PUBLIC_SLOT -> SendResult.Rejected(handle, MeshcoreRefusal.SLOT_NOT_KNIT)
+            !knitBoard(c) -> SendResult.Rejected(handle, MeshcoreRefusal.NOT_SET_UP)
+            else -> sendRoom(c, payload, slot, handle)
+        }
 
     /**
      * A post on the board's Public slot (0) as a channel text, under the sender [timestampSecs] fixed when it was queued (ADR
@@ -2731,7 +2900,10 @@ internal class MeshcoreSession(
      * `[38, 1]`, the `Knit abcd` name, and the channel last. A failed write puts back what was written ([runRestore]); what
      * the erase removed stays removed. The radio is never touched (ADR 045), and nothing here can factory-reset the board.
      */
-    private suspend fun runSetup(c: Conn): MeshcoreSetupResult {
+    private suspend fun runSetup(
+        c: Conn,
+        replace: ReplaceToken?,
+    ): MeshcoreSetupResult {
         // Only a bonded board that proves its key is erased and set up (security N1): an unproven link could otherwise leave
         // priors a later proven connection would keep for good.
         if (!bonded(c) || proveKey(c) != Proof.PROVEN) {
@@ -2758,10 +2930,25 @@ internal class MeshcoreSession(
         try {
             // The intent before any board write (security N1): the planned record, merged, kept pending, so a setup cut off
             // anywhere after — a session end, a process death, a failed grant — leaves a cleanup that puts the board back.
-            if (!writeAhead(c, plan.record)) {
-                return MeshcoreSetupResult.Failed("the setup's record could not be written first: nothing written", left = null)
-            }
-            return setupWrites(c, plan)
+            val refused =
+                when (val ahead = writeAhead(c, plan.record, replace)) {
+                    // Written: the setup goes on to the board.
+                    Ahead.Written -> {
+                        null
+                    }
+
+                    Ahead.Failed -> {
+                        MeshcoreSetupResult.Failed(
+                            "the setup's record could not be written first: nothing written",
+                            left = null,
+                        )
+                    }
+
+                    is Ahead.OtherBoard -> {
+                        MeshcoreSetupResult.DifferentBoard(ahead.token)
+                    }
+                }
+            return refused ?: setupWrites(c, plan)
         } finally {
             if (c.setupOpen) {
                 c.setupOpen = false
@@ -3014,7 +3201,11 @@ internal class MeshcoreSession(
             counters.keyChanged.incrementAndGet()
             throw EndSession(SessionEnd("$REASON_HANDSHAKE the board's key changed"))
         }
+        val moved = c.self?.sharesPosition != self.sharesPosition
         c.self = self
+        // Another client turned the board's position on or off (Stage 7): the face and the consent sheet read the Ready.
+        val ready = (_state.value as? BoardState.Ready)?.detail as? MeshcoreDetail
+        if (moved && ready?.dialled == c.address && ready.sharesPosition != self.sharesPosition) publishReady(c)
     }
 
     private suspend fun autoaddIs(

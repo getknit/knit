@@ -1312,6 +1312,7 @@
     <string name="backup_restore_confirm_named">Резервна копія від %2$s, створена в Knit %3$s. Власник: %1$s.</string>
     <string name="backup_restore_confirm_unnamed">Резервна копія від %1$s, створена в Knit %2$s.</string>
     <string name="backup_restore_confirm_body">Усе, що Knit зберігає на цьому телефоні, — профіль, контакти, групи й повідомлення — буде замінено резервною копією, і застосунок перезапуститься. Контакти бачитимуть вас як ту саму людину; розмови з ними продовжаться, щойно їхні телефони знову підключаться. Якщо на старому телефоні досі працює Knit, припиніть ним там користуватися.</string>
+    <string name="backup_restore_confirm_meshcore">Плата MeshCore, налаштована на цьому телефоні, після відновлення зберігає налаштування Knit і радіоключі ваших контактів, і тоді Knit уже не зможе скасувати ці налаштування. Щоб повернути плату до попереднього стану, спершу скасуйте її налаштування в налаштуваннях радіо LoRa.</string>
     <string name="backup_action_restore">Відновити й перезапустити</string>
     <string name="backup_restore_failed">Резервну копію не відновлено: %1$s</string>
     <string name="backup_restarting">Перезапуск Knit…</string>
@@ -1497,12 +1498,15 @@
     <string name="lora_title">Радіо LoRa</string>
     <string name="settings_lora_title">Використовувати радіо LoRa</string>
     <string name="settings_lora_subtitle">Розширте охоплення кімнати «Поруч» і ваших особистих повідомлень через LoRa великої дальності: сполучіть плату Meshtastic через Bluetooth. Групи, набір тексту й фото лишаються на радіозв’язку між телефонами.</string>
+    <string name="settings_lora_subtitle_any">Розширте охоплення кімнати «Поруч» і ваших особистих повідомлень через LoRa великої дальності: сполучіть плату Meshtastic або MeshCore через Bluetooth. Групи, набір тексту й фото лишаються на радіозв’язку між телефонами.</string>
     <string name="lora_off_note">Якщо вимкнути, з’єднання з платою закриється. Групи й вкладення ніколи не передаються через LoRa.</string>
     <string name="lora_dm_title">Особисті повідомлення через LoRa</string>
     <string name="lora_dm_subtitle">Особисті повідомлення лишаються під наскрізним шифруванням, але хто кому пише і коли — видно будь-якому радіо LoRa в радіусі дії, а це кілометри, а не метри. Вимкніть, щоб особисті повідомлення передавалися лише радіозв’язком між телефонами.</string>
     <string name="lora_board_section">Плата</string>
     <string name="lora_board_none">Не знайдено сполучених плат Meshtastic. Спершу сполучіть плату в налаштуваннях Bluetooth (плата покаже PIN-код на екрані).</string>
+    <string name="lora_board_none_any">Не знайдено сполучених плат LoRa. Спершу сполучіть плату Meshtastic або MeshCore у налаштуваннях Bluetooth — із PIN-кодом, який показує її екран, або з тим, який для неї задали.</string>
     <string name="lora_board_none_meshtastic">Жоден зі сполучених пристроїв не схожий на плату Meshtastic. Сполучіть плату в налаштуваннях Bluetooth або покажіть усі сполучені пристрої.</string>
+    <string name="lora_board_none_supported">Жоден зі сполучених пристроїв не схожий на плату Meshtastic чи MeshCore. Сполучіть плату в налаштуваннях Bluetooth або покажіть усі сполучені пристрої.</string>
     <string name="lora_show_all_boards">Показати всі сполучені пристрої</string>
     <plurals name="lora_boards_hidden">
         <item quantity="one">Приховано %d інший сполучений пристрій</item>
@@ -1547,6 +1551,8 @@
     <string name="lora_status_connecting">Підключення…</string>
     <string name="lora_status_reconnecting">Повторне підключення…</string>
     <string name="lora_status_needs_pairing">Потрібне сполучення — сполучіть плату знову в налаштуваннях Bluetooth</string>
+    <string name="lora_status_wrong_firmware">На платі немає прошивки Meshtastic, або її перепрошили після сполучення. Забудьте її та сполучіть знову або виберіть іншу плату.</string>
+    <string name="lora_status_wrong_firmware_meshcore">На платі немає прошивки MeshCore Companion, або її перепрошили після сполучення. Забудьте її та сполучіть знову або виберіть іншу плату.</string>
     <string name="lora_status_bt_off">Bluetooth вимкнено або плата недоступна</string>
     <string name="lora_status_off">Не використовується</string>
     <string name="lora_signal">Сигнал: SNR %1$.1f дБ · RSSI %2$d дБм</string>
@@ -1573,6 +1579,48 @@
     <string name="lora_room_subtitle_dedicated">Приховано, поки плата на окремій частоті: жодне публічне радіо її не чує, тож читати нема чого. Відновіть плату, щоб повернути кімнату.</string>
     <string name="lora_meshcore_room_title">Кімната MeshCore</string>
     <string name="lora_meshcore_room_subtitle">Показувати канал Public вашої плати MeshCore як кімнату в Knit, щоб ви могли читати все інше, що в ньому є, і долучатися. Якщо вимкнути, кімната прихована й беззвучна, а Knit ігнорує цей канал — ваша плата все одно передає власні повідомлення Knit.</string>
+    <string name="lora_meshcore_kind">Плата MeshCore</string>
+    <string name="lora_meshcore_radio">Радіо %1$s MHz · SF%2$d · BW %3$s kHz · CR 4/%4$d</string>
+    <string name="lora_meshcore_scope_set">Типова регіональна зона: задано</string>
+    <string name="lora_meshcore_scope_none">Типова регіональна зона: немає</string>
+    <string name="lora_meshcore_battery">Батарея %1$.2f В</string>
+    <plurals name="lora_meshcore_knit_radios">
+        <item quantity="one">%d радіо Knit у радіусі дії</item>
+        <item quantity="few">%d радіо Knit у радіусі дії</item>
+        <item quantity="many">%d радіо Knit у радіусі дії</item>
+        <item quantity="other">%d радіо Knit у радіусі дії</item>
+    </plurals>
+    <string name="lora_meshcore_knit_radios_zero" tools:ignore="PluralsCandidate">%d радіо Knit у радіусі дії</string>
+    <string name="lora_meshcore_state_none">Не налаштовано для Knit</string>
+    <string name="lora_meshcore_state_set_up">Налаштовано для Knit</string>
+    <string name="lora_meshcore_state_pending">Налаштування Knit досі на цій платі. Knit прибере їх, коли плата наступного разу підключиться.</string>
+    <string name="lora_meshcore_state_unknown">Не вдалося перевірити, чи налаштовано цю плату для Knit.</string>
+    <string name="lora_meshcore_setup_body">Налаштувавши плату, ви передаєте її Knit: Knit стирає її контакти та інші канали, додає власний канал і перейменовує плату. Її канал Public лишається.</string>
+    <string name="lora_meshcore_setup_confirm_body">Knit зітре всі контакти й усі канали на цій платі, крім каналу Public, додасть власний канал і перейменує плату на «Knit» і короткий код. Відтоді контактами плати керуватиме Knit, тож використовуйте плату лише з Knit. Ваші контакти в Knit можуть зрозуміти, що це ваша плата.</string>
+    <string name="lora_meshcore_setup_erase">Стертого не повернути, навіть якщо скасувати налаштування.</string>
+    <plurals name="lora_meshcore_erase_contacts">
+        <item quantity="one">На платі приблизно %d контакт.</item>
+        <item quantity="few">На платі приблизно %d контакти.</item>
+        <item quantity="many">На платі приблизно %d контактів.</item>
+        <item quantity="other">На платі приблизно %d контактів.</item>
+    </plurals>
+    <plurals name="lora_meshcore_erase_channels">
+        <item quantity="one">На ній використовується ще %d канал.</item>
+        <item quantity="few">На ній використовуються ще %d канали.</item>
+        <item quantity="many">На ній використовується ще %d каналів.</item>
+        <item quantity="other">На ній використовується ще %d каналів.</item>
+    </plurals>
+    <string name="lora_meshcore_position">Ця плата може ділитися своїм місцезнаходженням: в оголошеннях, які вона надсилає і які може прочитати будь-яке радіо в зоні дії, або з контактами, які його запитують. Knit цього не змінює. Якщо не хочете, щоб це було відомо, вимкніть передавання місцезнаходження у своєму застосунку MeshCore.</string>
+    <string name="lora_meshcore_replace_title">Налаштувати цю плату ще раз?</string>
+    <string name="lora_meshcore_replace_body">Відколи цю плату налаштували для Knit на цьому телефоні, її скинули або замінили, тож Knit уже не може повернути те, що тоді змінив.</string>
+    <string name="lora_meshcore_replace_action">Усе одно налаштувати</string>
+    <string name="lora_meshcore_forget_pending_title">Knit не вдалося прибрати свої налаштування з плати</string>
+    <string name="lora_meshcore_forget_pending_body">На платі досі є налаштування Knit і радіоключі ваших контактів. Якщо залишите її, Knit прибере все це, коли плата наступного разу підключиться. Якщо все одно забудете її, усе це так і лишиться на платі.</string>
+    <string name="lora_meshcore_forget_keep">Залишити</string>
+    <string name="lora_meshcore_forget_anyway">Усе одно забути</string>
+    <string name="lora_meshcore_forget_failed">Не вдалося забути плату. Спробуйте ще раз.</string>
+    <string name="lora_meshcore_forget_mismatch">Плату забуто. Її скинули або замінили, відколи Knit її налаштував, тож Knit залишив її як є.</string>
+    <string name="lora_meshcore_restored">Платі повернуто її назву й параметри. Контакти й канали, стерті під час налаштування, не відновлено. LoRa вимкнено, доки ви знову не налаштуєте плату.</string>
     <string name="lora_airtime">Ефірний час: %1$d%% поточного ліміту</string>
     <string name="lora_radio_config">Радіо %1$s</string>
     <string name="lora_public_channel">Головний канал %1$s</string>
@@ -1837,6 +1885,7 @@
     <string name="chat_meshcore_consent_name_body">Кожен допис виходить у вигляді «%1$s: …». Це ім’я однакове в усіх дописах, і за ним можна впізнати вашу плату, тож люди, у яких ви є серед контактів, або ті, хто знає вашу плату, можуть зрозуміти, що це ви.</string>
     <string name="chat_meshcore_consent_name_body_unknown">Кожен допис виходить під іменем вашої плати: «Knit» і чотири символи. Це ім’я однакове в усіх дописах, і за ним можна впізнати вашу плату, тож люди, у яких ви є серед контактів, або ті, хто знає вашу плату, можуть зрозуміти, що це ви.</string>
     <string name="chat_meshcore_consent_rules">Допис не можна відкликати. Будь-хто може писати під будь-яким ім’ям, зокрема й під вашим. Користувачі MeshCore, які пишуть вашій платі напряму, не отримують відповіді: Knit не читає цих повідомлень.</string>
+    <string name="chat_meshcore_consent_position">Ваша плата також може ділитися своїм місцезнаходженням — в оголошеннях або з контактами, які його запитують. Якщо не хочете, щоб ваші дописи пов’язували з певним місцем, вимкніть передавання місцезнаходження у своєму застосунку MeshCore.</string>
     <string name="chat_commons_subtitle">Усі на цьому ретрансляторі</string>
     <string name="commons_details_title">Про кімнату</string>
     <string name="commons_details_relay">Ретранслятор: %1$s</string>

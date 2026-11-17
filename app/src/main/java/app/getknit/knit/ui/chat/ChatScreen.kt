@@ -1008,7 +1008,8 @@ internal fun ChatScreenContent(
     // The bridged room's first-use disclosure. Raised by the ViewModel when a post is attempted before it
     // has been accepted, so the draft the user already wrote is what gets sent once they accept.
     showPublicConsent: Boolean = false,
-    onAcceptPublicConsent: () -> Unit = {},
+    // Whether the MeshCore sheet accepted showed its position line (false for the Meshtastic sheet, which has none).
+    onAcceptPublicConsent: (positionShown: Boolean) -> Unit = {},
     onDismissPublicConsent: () -> Unit = {},
     // "Send location": the composer's staged position, the first-use disclosure, and the overflow item's
     // and tile's actions. All defaulted so the previews and the content tests need not name them.
@@ -2171,11 +2172,12 @@ internal fun ChatScreenContent(
                 if (state.isMeshcoreRoom) {
                     MeshcorePostConsentBody(
                         boardName = state.meshcoreBoardName,
+                        sharesPosition = state.meshcoreSharesPosition,
                         onAccept = onAcceptPublicConsent,
                         onDecline = onDismissPublicConsent,
                     )
                 } else {
-                    PublicPostConsentBody(onAccept = onAcceptPublicConsent, onDecline = onDismissPublicConsent)
+                    PublicPostConsentBody(onAccept = { onAcceptPublicConsent(false) }, onDecline = onDismissPublicConsent)
                 }
             }
         }
@@ -2629,7 +2631,10 @@ private fun PublicPostConsentBody(
 @Composable
 private fun MeshcorePostConsentBody(
     boardName: String?,
-    onAccept: () -> Unit,
+    // Whether the board may share where it is (null: not read yet): the position line shows unless it is known not to.
+    sharesPosition: Boolean?,
+    // Called with whether this rendering showed the position line: what the consent records.
+    onAccept: (positionShown: Boolean) -> Unit,
     onDecline: () -> Unit,
 ) {
     // Scrolls: it says more than the Meshtastic sheet, and every line of it must be reachable on a small screen.
@@ -2658,6 +2663,14 @@ private fun MeshcorePostConsentBody(
         )
         Text(stringResource(R.string.chat_mesh_consent_cannot_title), style = MaterialTheme.typography.titleSmall)
         Text(stringResource(R.string.chat_mesh_consent_cannot_body), style = MaterialTheme.typography.bodyMedium)
+        val positionShown = sharesPosition != false
+        if (positionShown) {
+            Text(
+                text = stringResource(R.string.chat_meshcore_consent_position),
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.testTag("chat_meshcore_consent_position"),
+            )
+        }
         Text(
             text = stringResource(R.string.chat_meshcore_consent_rules),
             style = MaterialTheme.typography.bodySmall,
@@ -2670,7 +2683,7 @@ private fun MeshcorePostConsentBody(
             TextButton(onClick = onDecline) { Text(stringResource(R.string.chat_mesh_consent_decline)) }
             Spacer(Modifier.width(8.dp))
             Button(
-                onClick = onAccept,
+                onClick = { onAccept(positionShown) },
                 modifier = Modifier.testTag("chat_mesh_consent_accept"),
             ) { Text(stringResource(R.string.chat_mesh_consent_accept)) }
         }

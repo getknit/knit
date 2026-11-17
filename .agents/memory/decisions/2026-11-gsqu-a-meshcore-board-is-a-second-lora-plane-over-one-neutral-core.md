@@ -447,7 +447,9 @@ Built under the bluetooth design pass's binding rules, reachable from nothing un
   before a reflash is fixed by re-pairing. The "Pairing needed" wording for the wrong-firmware cause is Stage 7's
   (strings and translations).
 - **Left for Stage 5.** A MeshCore dial that finds no NUS service still backs off (`Failed`, phase `service`); nothing
-  dials a board the picker did not name MeshCore, and Stage 5 decides whether that ends terminal too.
+  dials a board the picker did not name MeshCore, and Stage 5 decides whether that ends terminal too. *(Decided in the Stage
+  5a-2 amendment: terminal on the second reading in a row, as Meshtastic's; its cause is `PairingCause.NO_SERVICE` since
+  Stage 7.)*
 
 ## Amendment 2026-11-13 — Stage 4: the profile names a MeshCore board, sealed-only and with no bit (draft)
 
@@ -1083,7 +1085,9 @@ unbind with a second writer:
   survives a throw (`consentApplyFailures`, N3).
 - **Follow-ups (security):** `MeshcoreClaimStore.setBoardKey` withdraws nothing once the configured address is null, so
   Stage 7's unbind must withdraw the key before clearing the binding; `restoreSetup` re-reads `selfOf(c)` without checking
-  the digest again (a key imported mid-connection by another client).
+  the digest again (a key imported mid-connection by another client). *(Both closed by the Stage 7a amendment: the Forget
+  clears the claim in the binding's own edit, behind the claim fence; `restoreSetup`'s read goes through `takeSelf`, pinned
+  by a test.)*
 
 **The maintainer's decision, 2026-11-14: withdraw only the bound board** (the review stop rule again: lora-reviewer's new
 Blocking finding). Consent is one `StateFlow` and one hooks field, so an unbind of address A while board B was Ready on
@@ -1113,7 +1117,7 @@ Residuals, recorded (security):
 - The signed challenge stops a spoofer short of one holding the board's pairing: a live relay paired with the real board can
   pass it, and such a party already controls the board. Like #274, the proof is not bound to the connection.
 - A setup can replace another board's record at the same address (trust on first use); a "different board" refusal or prompt
-  is a Stage 7 item.
+  is a Stage 7 item. *(Built in Stage 7a: `MeshcoreSetupResult.DifferentBoard` and a token-gated replace.)*
 - For 5d: a bind statement the board signs proves only that some client holding the board's PIN asked for it.
 
 Follow-ups of the bound-board round (lora L1-L3, security S1-S3, 2026-11-14), applied:
@@ -1181,7 +1185,7 @@ with one cause — the record was written after the board writes, so an interrup
 - **An unbind's writer** is chosen on a live inbox too, and an adapter-off session reads down only after its actor stopped.
 - **Owed by Stage 7:** the unbind's withdrawal must land before `meshcore_device_address` is cleared
   (`setBoardKey(null, dialled)` is a no-op afterwards, and the hooks' claim retry counts that skip as landed), or the pubkey
-  is cleared in the same edit.
+  is cleared in the same edit. *(Stage 7a: the same edit, behind the claim fence, `MeshcoreForget`.)*
 - **Cost, by design:** a re-run setup of a board without consent withdraws and republishes the claim (its write-ahead
   revokes), so two sealed-profile mints under 5b-1's fan-out. A re-setup of a consented board does not (the 5b-2 tail's
   `keepConsent` exception, below).
@@ -2001,7 +2005,8 @@ text, disambiguation included, and its name, the alias where the stored name is 
   it finds them (the `SELF_INFO` read passes over both, `MeshcoreProto.kt:545-547`), and a post ties the user's words, under
   the board's name, to an advert that may carry a position set earlier. The consent sheet does not say so. Owed to Stage 7:
   setup reads `advert_loc_policy` and a non-zero position from `SELF_INFO`, and the sheet shows a line about it only then
-  (or setup offers to clear the position).
+  (or setup offers to clear the position). *(Stage 7a, amended by its design pass: the parser reads the policy and the
+  telemetry modes, never the position — 0,0 before a GPS fix says nothing — into `sharesPosition`; Knit writes neither.)*
 - **Heard-row ids share the `messages` key space with Knit frame ids.** This is the #301 class; the detail is kept with that
   issue. The decision is the maintainer's.
 
@@ -2040,3 +2045,168 @@ Translations of the new strings are the main session's. The trials above stand.
   The room orders by `sentAt`, then by id, a hash: under `heardPostLock` each heard post is stamped strictly after the
   last (`InboundPipeline.heardStamp`), so posts drained in one millisecond keep their order. The offline scenario checks
   the sixteen rows in the room's display order against the board's.
+
+## Amendment 2026-11-15 — Stage 7a: the radio screen's facts, Forget, a different board, wrong firmware and the raw send (draft)
+
+The plane side of Stage 7, built after the lora- and security-reviewers' design pass (L1–L9, S-B1..B5, S-N1..N8). Debug builds
+only (`MESHCORE_PLANE`); a release build constructs none of it. No wire byte, `FieldEvent.Lora`, profile field or frozen
+constant moved. The app half (the picker, the screen, its strings) is 7b's.
+
+- **Position (refs #285; L1, B1, N2).** `MeshcoreProto.sharesPosition` reads one boolean inside the `SELF_INFO` parser: any
+  non-zero `advert_loc_policy` (every self advert then carries the live position, `MyMesh.cpp:1299, 1383, 2438`), or location
+  telemetry `ALLOW_ALL` beside base `ALLOW_ALL` (`MyMesh.cpp:639-660`; `ALLOW_FLAGS` grants nothing to a contact Knit taught,
+  whose flags carry only the favourite bit). The latitude and longitude are read by nothing: a board indoors reports 0,0 and
+  airs its fix later, so they say nothing. Knit writes none of the three. It rides `McFrame.SelfInfo`, `MeshcoreDetail` and the
+  face as a boolean, and a `SELF_INFO` read mid-connection that moves it publishes the Ready again. Pinned on golden bytes.
+- **The screen's facts (L8, L9, N4)** ride the MeshCore plane's own `LoraStatus` as one field, `LoraStatus.meshcore`
+  (`MeshcoreBoardFace`, built by the pure `meshcoreFaceOf`): the cleaned firmware, the radio (kHz, SF, BW, CR), the default scope as a boolean, the battery in
+  millivolts, `sharesPosition` (the last read for the bound address, null while none) and `setup` (`BoardSetupState`: NONE,
+  SET_UP, PENDING, UNKNOWN). Counts and booleans only. The setup state is the session's (`MeshcoreBoardOps.setupState`): read
+  off the record at `start` with the board away, by the handshake, and after every setup, Restore, unbind and cleanup, on the
+  actor or under `consentLock` (`MeshcoreSetupStates`). A failed read, an unanswered or refused proof and an unbonded board are
+  UNKNOWN, never NONE; another key's record is NONE. A move republishes the face (`faceMoved`).
+- **The setup preview** (`LoraPlaneStatus.setupPreview` → `MeshcoreSession.setupPreview`, on the actor while Ready): the
+  board's contact count (`GET_CONTACTS` past every `lastmod`) and the slots in use besides Public and Knit's, read fresh;
+  each null when the board did not answer, never 0. No write, no air.
+- **Forget (L2, L4, B2, B3, N6, N7)** is `MeshcoreForget`, one function for the screen and the bridge, run on the application's
+  scope (`di/LoraWiring.meshcoreForget`), one at a time. The unbind first; then CLEARED / NOTHING clear the whole
+  `BoardKeys.MESHCORE.identity` and set `lora_enabled` false in one edit (`MeshcoreForgetPolicy.forget`, beside
+  `BoardBindPolicy`, never `clearLoraDevice`); PENDING keeps the binding so the next connection cleans the board and removes the
+  claim (`MESHCORE_PUBKEY`, `MESHCORE_BIND`) in one edit now (`withdrawClaim`), plane running or not; "Forget anyway" clears
+  the binding with the record left pending (`FORGOTTEN_PENDING`); FAILED writes nothing. Each edit lands only while the
+  address is still bound, checked inside it. Each runs through `MeshcoreHooks.forgetClaim`: under the hooks' claim lock
+  (`MeshcoreClaimEdits`, which now holds the 5b-2 tail's `claimMutex` and owed edit; after any claim edit already running) with a fence at the latest consent made (`MeshcoreConsent.seq`), so no grant made
+  before the Forget is written after it — a retry, a stalled edit, a late collector — while a later setup's grant is
+  (`meshcoreClaimsFenced`). The binding address the claim writer checks is the belt for CLEARED; the fence closes PENDING,
+  whose binding stays.
+- **A different board (L5, B5).** A setup whose write-ahead reads a record at the address for another key — the same
+  hardware reset or reflashed, or another board — is refused there, after the proof and before any write
+  (`MeshcoreSetupResult.DifferentBoard`, `ProvisionResult.DifferentBoard`, `meshcoreDifferentBoards`), with a `ReplaceToken`:
+  the address and a fingerprint of the record, nothing showable. `provisionReplacing(token)` re-reads the record and refuses
+  again unless it is unchanged; a replace runs every step (proof, write-ahead pending under the new digest, erase, writes,
+  grant), and one that leaves nothing of its own puts the other board's record back as it was (`restorePrior`). An unbind
+  of such a board answers `MeshcoreUnbind.MISMATCH`, the Forget `MISMATCH` (the binding goes: nothing could be cleaned by
+  keeping it). **Decided differently from the brief:** the refusal is made on the actor, the record's only writer while the
+  board is up, and not inside `consentLock` — an unbind holds that lock while it waits on the actor, so an actor op taking
+  it would deadlock; the exclusion is the same.
+- **`restoreSetup`'s digest (L6, N1)**: closed, as found — every mid-connection `SELF_INFO` goes through `takeSelf`; now
+  pinned by a test (a key re-imported between Restore's slot step and its name write ends the session, record pending, no
+  name or setting written). The Stage 5b-2 follow-up above is closed.
+- **Wrong firmware (L7).** `LinkState.NeedsPairing` / `StaleBond` (and `MeshcoreLinkState`'s) carry a `PairingCause`:
+  `NO_SERVICE` for a dial that twice found no service of its kind (Meshtastic's `ServiceAbsent`, MeshCore's no-NUS
+  `onServiceAbsent`), `AUTH` otherwise. A field, not a state: `LoraFieldLog` maps the two states as before and
+  `FieldEvent.Lora` is unchanged. It cannot tell wrong firmware from a cache older than a reflash; the screen's words cover
+  both. The Stage 3c/3d amendment's "Left for Stage 5" is answered by the Stage 5a-2 amendment's no-NUS item.
+- **The raw send (L3, N5)**: `…debug.LORATX --es kind meshcore` calls `MeshcoreHooks.debugSend` (`MeshcoreRawSend`), which queues one
+  `Destination.Debug` frame through the core (`PlaneCore.enqueueDebug`: `FrameClass.ROOM`, `Ceiling.FLOOD`, priced and braked
+  as a room post on the slot, fresh for 45 s — under the bridge's `goAsync()` limit, so its reply is never lost) — the pacer, the ledger and the law as every frame — and the session writes it
+  as `SendPurpose.Debug`: the room post's channel data on the bound Knit slot, never 0, refused at the write without
+  consent. Refused before the queue when not Ready, without consent, while the law holds, past the window or while one
+  waits. It answers the outcome, the slot, the milliseconds booked and the law; never the text. Meshtastic refuses the
+  purpose and its hooks never write the destination.
+- **Debts closed:** the Stage 3c/3d "Pairing needed" wording is 7b's (strings); the 5b-2 "Owed: Stage 7's unbind and consent
+  UI" is this Forget plus 7b's screen; "Stage 7's unbind must withdraw the key before clearing the binding" is the one-edit
+  clear (the identity includes the claim) behind the fence; the different-board residual is the refusal above; the 6b
+  position residual is `sharesPosition`. Still owed to 7b: the backup-restore line (5b-2's follow-up), the strings, the
+  picker's Forget-first, and showing all of the above.
+
+**The review round (lora- and security-reviewer, 2026-11-15): nothing blocking; four non-blocking, applied.** Both deviations
+above — the different-board refusal on the actor outside `consentLock`, and MISMATCH clearing the binding — were judged
+sound by both reviewers.
+
+- **The face before the transport exists** (lora): the hooks start their collectors in their own constructor, before the
+  core's status fields are assigned, so a collector on a multi-threaded scope could call `faceMoved` into a null lock and die
+  for the process. The setup-state collector skips the flow's empty start, and `PlaneCore.faceMoved` publishes nothing until
+  the transport is built, publishing a move it skipped once construction ends.
+- **A Forget whose own edit throws** (security, N2): after an unbind that withdrew, a DataStore error in the Forget's edit
+  answers FAILED with the binding untouched, and owes the claim's withdrawal (`MeshcoreForgetPolicy.withdrawClaim`, behind the
+  fence) on the claim backoff until it lands — with the plane off nothing else would ever withdraw it.
+- **The plane never started** (security): pinned through `di/meshcoreForget` over a never-started session — PENDING with a
+  record, CLEARED without, no claim left either way (`MeshcoreForgetWiringTest`).
+- **The raw send's wait** (lora): 45 s, under the bridge's `goAsync()` limit.
+
+The follow-up (lora clean, security no blocking; both found the same edge): an owed withdrawal re-fenced at each retry's own
+latest consent, so a setup of the same board between the failed Forget and the retry had its claim withdrawn and its grant
+fenced. Now the retry is fenced at the seq its Forget took when it failed (`MeshcoreHooks.forgetClaimUpTo`,
+`MeshcoreClaimEdits.forget`'s `upTo`, fences kept per address), and skips the withdrawal when a grant from a later consent has
+landed for that address (`lora forget kind=meshcore retry dropped: the board was set up again`). **Accepted:** the owed retry
+lives in memory only. On a process death with the plane off, the claim stays published until the next Forget or the plane's
+next start (`withdrawAtStart` then withdraws it, the record being pending or absent); it is reachable only by a DataStore write
+failure followed by a process death within the backoff.
+
+Board trials owed (the reviewers' list): a GPS board with no fix shows the position line (and the face reads true before the
+fix); Forget three ways on two phones (in range, away then back, away then "Forget anyway"), with the second phone's view of
+the key gone each time; reflash a set-up board, then Setup (refused, different board) and replace; a raw `LORATX` during a
+DM in flight (the DM's `SENT` still matched, the raw send booked); a Meshtastic binding on a MeshCore board (terminal,
+`NO_SERVICE`). And lora-reviewer's five: a cold start, then Forget with the board away (no `MeshScope.*uncaught` line, the
+dump's `setup` reads PENDING within 2 s); reflash, then Forget (MISMATCH, `bound` false, `claimed` false, a later setup
+answers DifferentBoard); the preview on a board of about 300 contacts during a DM in flight; the raw send's refusals
+(NoConsent, LawHolds, no air booked for either); the position with only telemetry open (ALLOW_ALL / ALLOW_ALL reads true,
+base ALLOW_FLAGS false).
+
+The last pass (lora-reviewer, 2026-11-16) closed one more edge: a Forget's own claim edit read its fence before taking the
+claim lock and could be skipped by a grant that landed while it waited, answering CLEARED with the claim still published.
+`MeshcoreClaimEdits.forget` now reads the fence inside the lock for the Forget's own edit and never skips it; only an owed
+retry, fenced at its own seq, can be skipped (`MeshcoreClaimEditsTest`). All four reviewers then stamped the stage clean.
+
+## Amendment 2026-11-16 — Stage 7b: the radio screen drives a MeshCore board (draft)
+
+Status: Draft (2026-11-16)
+
+**Context:** 7a gave the MeshCore plane a face, a Forget, a different-board refusal and a wrong-firmware cause. Nothing on
+screen reached them: the radio screen drove Meshtastic's plane alone, greyed MeshCore boards out, and said "Meshtastic"
+wherever it named a board.
+
+**Decision:**
+
+- **One screen, the bound kind's plane.** `LoraRadioViewModel` takes MeshCore's `LoraPlaneStatus` and the `MeshcoreForget`
+  beside Meshtastic's, both `getOrNull` and only where `BuildConfig.MESHCORE_PLANE` is on; it reads the bound kind's status
+  (`boundBoardKind`), and the picker's address is whichever kind is bound. Off — a release build, or a plane or Forget
+  missing — it reads exactly as a Meshtastic-only build: a MeshCore board listed greyed, no MeshCore row, no Forget, no
+  preview, and `meshcoreDeviceAddress` never read (`LoraRadioViewModelMeshcoreTest`'s flag-off case).
+- **A MeshCore board's own rows.** Kind, firmware, the radio (`Radio 869.618 MHz · SF8 · BW 62.5 kHz · CR 4/8`, numbers in the
+  reader's locale), whether a default region scope is set, the battery in volts, Knit radios in range; none of Meshtastic's
+  (node number, signal, region and preset, public channel, the dedicated slot, the rename). The setup state is shown away
+  too; Set up is offered at NONE or UNKNOWN, Restore at SET_UP, nothing while PENDING (the cleanup runs at the connection).
+- **The setup confirmation says what it costs.** What Knit does to the board, that the erase can't be undone (not even by
+  undoing the setup), the preview's counts when the board answered more than none ("about"), and — unless the board is known
+  not to — that it may share where it is and that the user's contacts can tell the board is theirs. A different board opens
+  "Set this board up again?" and a replace carries the refusal's token.
+- **Forget first.** Picking another board, or Forget, with a MeshCore board bound runs `MeshcoreForget` first and waits on it:
+  CLEARED / FORGOTTEN_PENDING / NOT_BOUND bind the pick (the plane switch kept as it was), MISMATCH binds with a line,
+  FAILED binds nothing and says so, PENDING asks "Keep it" (the default: the binding stays for the next connection's
+  cleanup) or "Forget anyway", the pick waiting on the answer. A MeshCore restore turns the plane off and writes no
+  Meshtastic record.
+- **The post consent names the position.** The MeshCore room's sheet shows the position line unless the board is known not
+  to share (`chat_meshcore_consent_position`); a consent records whether the line was shown
+  (`meshcore_post_consent_position`, one edit with the consent, riding a backup with it), and a board that shares is asked
+  again until a consent named it.
+- **A restore names what it loses.** The backup restore dialog warns when this phone keeps a MeshCore setup record
+  (`MeshcoreSetupStore.anyRecord`), or could not tell: the table is `DEVICE_LOCAL`, so a restore empties it and Knit can no
+  longer undo the board's setup.
+- **Wording.** With the plane built, the picker and the master switch name both kinds; a session that ended on
+  `PairingCause.NO_SERVICE` reads "Not running Meshtastic / MeshCore companion firmware, or reflashed since it was paired".
+
+**Consequences / limits:** 34 strings in every shipped locale (machine pass, safety lines read by hand); `values-es-rAR`
+takes no voseo overrides, as for every earlier string. A pick after a Forget that switched the plane off switches it back
+on, since the user's switch was on before the Forget. Regression: `LoraRadioViewModelMeshcoreTest`,
+`LoraRadioMeshcoreScreenTest`, `ChatViewModelTest`'s position cases, `BackupViewModelTest.aKeptMeshcoreSetupIsNamedBeforeTheRestore`,
+`SettingsStoreLoraTest.theMeshcoreConsentRecordsWhetherItsPositionLineWasShown`, `SettingsSnapshotTest`.
+
+**The review round (security- and unit-test-reviewer, 2026-11-16): nothing blocking; three non-blocking, applied.**
+
+- **The consent records the sheet it was given on** (security): the accept read the board's policy at the tap, so a sheet
+  drawn without the position line and accepted after the policy moved recorded a line the user never saw; and an unknown
+  policy let a consent without the line stand while the sheet showed it. The sheet now passes whether it showed the line
+  (`acceptPublicConsent(positionShown)`), and a consent without it counts only while the board is known not to share
+  (`ChatViewModelTest.aMeshcoreConsentRecordsTheSheetItWasGivenOnNotTheStateAtTheTap`).
+- **Two disclosures as strong as their siblings** (security): the restore line names the contacts' radio keys the board
+  keeps, and "your Knit contacts can tell the board is yours" moved from the position line into the confirmation's body, so
+  it shows whatever the board's position policy.
+- **The first wrong-firmware state** (unit-test): `StaleBond(NO_SERVICE)` — where a MeshCore session with no NUS ends first —
+  is pinned; a mutant forcing it false had survived.
+
+Board trials owed: the screen through every 7a trial (a GPS board's position line in the confirmation and the post sheet; a
+Forget with the board away answering Keep it and Forget anyway; a reflashed board's replace dialog); a pick from a bound
+MeshCore board onto a Meshtastic one, the first board cleaned and the plane back on; a restore from a backup on a phone with
+a set-up board, the dialog's line shown.

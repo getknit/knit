@@ -1326,6 +1326,52 @@ section is the plane (6a); the room, its rows and its composer are 6b's.
   stock client over USB, then post: `meshcorePublicPostsEnded` +1 and nothing on the stock client. `grep` logcat for the
   stock post's words and sender name: zero hits.
 
+### Stage 7: the radio screen's half (ADR 2026-11.gsqu's Stage 7a amendment)
+
+- **The face.** The MeshCore plane's `LoraStatus.meshcore` (`MeshcoreBoardFace`) carries what the radio screen shows of the
+  board: the cleaned firmware, the radio (kHz, SF, BW, CR) and the default scope while Ready, the battery in millivolts (MeshCore
+  gives no percent and no "powered"), `sharesPosition` as the last `SELF_INFO` for the bound address read it, and the setup
+  state off this phone's record (`BoardSetupState`), away too. 7b's view model reads it from `loraPlane(MESHCORE)`'s
+  `LoraPlaneStatus` with `getOrNull` (a release build defines none).
+- **Position.** Any non-zero `advert_loc_policy`, or location telemetry `ALLOW_ALL` beside base `ALLOW_ALL`: the board airs a
+  position Knit never writes. The flag is all that leaves the parser.
+- **Preview.** `setupPreview()` on the Ready board: the contact count and the slots in use besides Public and Knit's, each
+  null when unanswered. The screen says "about N".
+- **Forget.** `MeshcoreForget.forget(anyway)` (Koin single, debug builds): the unbind, then one settings edit a branch behind
+  the hooks' claim fence. CLEARED / MISMATCH / FORGOTTEN_PENDING: the binding and claim gone, the plane off. PENDING: the
+  binding kept for the next connection's cleanup (`lora cleanup kind=meshcore done=…`), the claim gone now. FAILED: nothing
+  written; a settings edit that throws after an unbind that withdrew answers FAILED and owes the claim's withdrawal, retried on
+  the claim backoff until it lands (`lora forget kind=meshcore claim withdrawn on retry`). Each logs `lora forget kind=meshcore
+  result=… anyway=…`.
+- **A different board.** A setup over another key's record answers `ProvisionResult.DifferentBoard(token)` before any write
+  (`meshcore setup refused: this phone set up another board at that address`, `meshcoreDifferentBoards`);
+  `provisionReplacing(token)` replaces it only while that record is unchanged.
+- **Wrong firmware.** `NeedsPairing` / `StaleBond` carry `PairingCause.NO_SERVICE` after two dials with no service of the
+  kind: wrong firmware, or a GATT cache from before a reflash; the phone cannot tell them apart.
+- **The raw send.** `…debug.LORATX --es kind meshcore --es text <s>`: one `Destination.Debug` frame through the pacer, priced
+  and booked as a room post on the Knit slot, held by the law like any frame, written by the actor as `SendPurpose.Debug`
+  (refused at the write without consent). The answer is `result` (`SENT`, `ENDED`, `Stale`, `Queued` past the 45-s wait — under the bridge's `goAsync()` limit of about a minute, so the reply is never lost; the frame is never written past it either, or
+  a refusal: `NotReady`, `NoConsent`, `LawHolds`, `NoKnitSlot`, `TooLarge`, `NoAir`, `Busy`, `QueueFull`), `slot`, `bookedMs`
+  and `law` (`holding`, `trailingTxSecs`, `limitSecs`); never the text. Lines: `lora debug tx queued <n>B slot=… bookedMs=…`,
+  `lora debug tx <outcome>`. A Knit receiver decodes nothing of it; a stock client holding the Knit channel shows nothing
+  either (channel data under Knit's data type), so the oracle is the sender's `SENT`, the ledger and the board's own
+  `tx_air`.
+
+### Stage 7b: the screen (ADR 2026-11.gsqu's Stage 7b amendment)
+
+- **Which plane.** The view model reads the bound kind's status: MeshCore's while `boundBoardKind` is MESHCORE and the build
+  carries the plane, else Meshtastic's. A MeshCore board is pickable only there; picking it binds MeshCore (`bindBoard`).
+- **Rows.** Kind, firmware, radio, scope, volts and Knit radios while Ready; the setup state always. Set up at NONE or
+  UNKNOWN, Restore at SET_UP, nothing at PENDING.
+- **Setup.** The confirmation reads `setupPreview()` as it opens and shows the counts above zero; the erase line always; the
+  position line unless `sharesPosition` is false. DifferentBoard opens the replace dialog; its action calls
+  `provisionReplacing` with the token. Nothing is written to settings: the record is the plane's.
+- **Forget.** Forget, or a pick while a MeshCore board is bound, runs `MeshcoreForget.forget(false)`: PENDING opens Keep it /
+  Forget anyway (`forget(true)`), FAILED and MISMATCH show a line. A pick that follows a Forget restores the plane switch.
+- **Device check.** On a lab phone with a set-up MeshCore board: the setup line, the volts and the confirmation's position
+  line match `…debug.LORA --es kind meshcore`'s `setup`, `batteryMv` and `sharesPosition`; Forget with the board off shows the
+  dialog and `lora forget kind=meshcore result=PENDING`; Keep it leaves `bound` true and `claimed` false.
+
 ## Board setup (once, Meshtastic CLI or app)
 
 Flash `firmware-heltec-v4-<ver>`; `--set lora.region <US|EU_868|…>`; `--set network.wifi_enabled false`;

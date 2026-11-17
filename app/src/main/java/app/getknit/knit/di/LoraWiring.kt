@@ -43,13 +43,17 @@ import app.getknit.knit.mesh.lora.PublicPostEnded
 import app.getknit.knit.mesh.lora.PublicPostKey
 import app.getknit.knit.mesh.lora.PublicPostResult
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreContacts
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreForget
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHooks
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreNames
 import app.getknit.knit.mesh.lora.meshcore.MeshcorePublicPost
 import app.getknit.knit.mesh.protocol.FrameId
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -295,3 +299,25 @@ internal fun meshcorePostEnds(ended: Flow<PublicPostEnded>): Flow<PublicPostEnd>
  * named so (ADR 2026-11.gsqu's Stage 6 amendment): what the room's consent sheet shows and the bubble's clash set holds.
  */
 internal fun meshcoreBoardName(key: String?): String? = key?.let(MeshcoreKey::bytesOrNull)?.let(MeshcoreNames::forKey)
+
+/**
+ * The MeshCore Forget as the app wires it (ADR 2026-11.gsqu's Stage 7 amendment): the radio screen's and the debug bridge's
+ * one path, on the application's [scope], over the MeshCore plane's [hooks] (resolved at call time: the plane and the
+ * manager construct each other) and [settings]' two one-edit writes. The lab builds it through here too.
+ */
+internal fun meshcoreForget(
+    scope: CoroutineScope,
+    settings: SettingsStore,
+    hooks: () -> MeshcoreHooks,
+    log: (String) -> Unit,
+): MeshcoreForget =
+    MeshcoreForget(
+        scope = scope,
+        boundAddress = { settings.meshcoreDeviceAddress.first() },
+        unbind = { address -> hooks().unbind(address) },
+        fenceClaim = { address, edit -> hooks().forgetClaim(address, edit) },
+        clearBinding = settings::forgetMeshcoreBoard,
+        withdrawClaim = settings::withdrawMeshcoreClaim,
+        log = log,
+        fenceClaimUpTo = { address, upTo, edit -> hooks().forgetClaimUpTo(address, upTo, edit) },
+    )

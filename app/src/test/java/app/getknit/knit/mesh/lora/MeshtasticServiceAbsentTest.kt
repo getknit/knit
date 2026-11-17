@@ -43,7 +43,8 @@ class MeshtasticServiceAbsentTest {
             assertEquals(1, (first as LinkState.Disconnected).streak)
             advanceTimeBy(5_001) // the base backoff: one more direct dial
             runCurrent()
-            assertEquals(LinkState.StaleBond("AA"), session.state.value)
+            // The wrong-firmware cause rides the terminal state (ADR 2026-11.gsqu's Stage 7 amendment): the field log reads the state.
+            assertEquals(LinkState.StaleBond("AA", PairingCause.NO_SERVICE), session.state.value)
             advanceTimeBy(3_600_000)
             runCurrent()
             assertEquals("never redialled after the second", 2, dialer.dials)
@@ -61,7 +62,7 @@ class MeshtasticServiceAbsentTest {
             runCurrent()
             advanceTimeBy(5_001)
             runCurrent()
-            assertEquals(LinkState.NeedsPairing("AA"), session.state.value)
+            assertEquals(LinkState.NeedsPairing("AA", PairingCause.NO_SERVICE), session.state.value)
             session.stop()
         }
 

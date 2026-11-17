@@ -146,7 +146,8 @@ class LoraAirtimeKindParityTest {
     /** Every shape a queued frame takes: each destination, with and without a compact DM, at each payload size. */
     private fun frames(): List<OutboundFrame> =
         buildList {
-            for (destination in Destination.entries) {
+            // Every destination a Meshtastic frame can have: MeshCore's debug payload (Stage 7) never rides this kind.
+            for (destination in Destination.entries.filter { it != Destination.Debug }) {
                 for (direct in listOf(null, DirectSend("bob", BoardAddr(2u), "f", DirectKind.MESSAGE))) {
                     for (size in listOf(1, 60, 153, 165, 166, 219, MeshtasticProto.MAX_PAYLOAD)) {
                         val klass = if (direct != null) FrameClass.DIRECT else FrameClass.ROOM

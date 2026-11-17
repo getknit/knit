@@ -203,6 +203,36 @@ internal sealed interface ProvisionResult {
     data class NotReady(
         val state: LinkState,
     ) : ProvisionResult
+
+    /**
+     * A MeshCore setup refused, nothing written: this phone keeps a setup record at the board's address for another key —
+     * the same hardware reset or reflashed since, or another board (ADR 2026-11.gsqu's Stage 7 amendment). Knit can no longer
+     * put back what it changed then. [token] stands for the record found, and a replace (`provisionReplacing`) runs only
+     * while that record is unchanged.
+     */
+    data class DifferentBoard(
+        val token: ReplaceToken,
+    ) : ProvisionResult
+}
+
+/**
+ * An opaque handle on the setup record a [ProvisionResult.DifferentBoard] found (ADR 2026-11.gsqu's Stage 7 amendment): the
+ * address and a fingerprint of the record as it was read, so a replace is refused again if the record moved in between.
+ * Nothing in it is a digest, a key or a field the screen could show, and its [toString] names nothing.
+ */
+internal class ReplaceToken(
+    internal val address: String,
+    fingerprint: ByteArray,
+) {
+    private val print = fingerprint.copyOf()
+
+    /** Whether this token stands for the record at [address] fingerprinted [fingerprint] now. */
+    internal fun matches(
+        address: String,
+        fingerprint: ByteArray,
+    ): Boolean = this.address == address && java.security.MessageDigest.isEqual(print, fingerprint)
+
+    override fun toString(): String = "ReplaceToken"
 }
 
 /** The link's lifecycle. Terminal states ([NeedsPairing], [StaleBond]) stop retrying until [MeshtasticLink.start]. */
@@ -248,12 +278,31 @@ internal sealed interface LinkState {
     /** The board is bonded-away or never paired — the user must pair it in the picker; retries stop. */
     data class NeedsPairing(
         val address: String,
+        /** Why the session stopped ([PairingCause]): a refused bond, or a board that twice showed no service of its kind. */
+        val cause: PairingCause = PairingCause.AUTH,
     ) : LinkState
 
     /** A stale bond the stack keeps rejecting — the user must forget the device in Settings and re-pair. */
     data class StaleBond(
         val address: String,
+        val cause: PairingCause = PairingCause.AUTH,
     ) : LinkState
+}
+
+/**
+ * Why a link ended terminal in [LinkState.NeedsPairing] or [LinkState.StaleBond] (ADR 2026-11.gsqu's Stage 7 amendment, the
+ * wrong-firmware cause): a field, not a state of its own, since the field log maps both states and `FieldEvent.Lora` is
+ * frozen. Presentation only: nothing retries or routes on it.
+ */
+internal enum class PairingCause {
+    /** The stack refused the bond (an auth status on a write, or the dial's own subscribe). */
+    AUTH,
+
+    /**
+     * Discovery succeeded twice in a row without the kind's service (Meshtastic's, or MeshCore's NUS): another firmware, or a
+     * GATT cache from before a reflash. The two cannot be told apart from the phone, so the screen's words cover both.
+     */
+    NO_SERVICE,
 }
 
 /** Identity of the connected board, learned from `my_info`/`metadata` during the handshake. */

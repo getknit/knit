@@ -533,6 +533,15 @@ val meshModule =
                 // set of nothing, which the Ready reconcile turns into removals (`meshcoreBoardHolders` adds no start value).
                 boardMap = { meshcoreBoardHolders(flow { emitAll(get<MeshManager>().meshcoreBoardMap()) }) },
             )
+            // The Forget (ADR 2026-11.gsqu's Stage 7 amendment): the radio screen's and the bridge's one path, on the app's scope.
+            single {
+                meshcoreForget(
+                    scope = get(),
+                    settings = get(),
+                    hooks = { get<LoraMeshTransport>(loraPlane(BoardKind.MESHCORE)).kindHooks as MeshcoreHooks },
+                    log = { line -> Log.d("MeshcorePlane", line) },
+                )
+            }
         }
         // The Internet (spool) plane's socket factory. Cleartext `ws://` is a debug-build affordance for a
         // LAN daemon (which terminates no TLS of its own); release and staging accept `wss://` only, so a

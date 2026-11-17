@@ -70,6 +70,67 @@ internal data class LoraStatus(
      * [state].
      */
     val publicChannel: PublicChannelFace? = null,
+    /**
+     * A MeshCore board's own facts for the radio screen (ADR 2026-11.gsqu's Stage 7 amendment), on the MeshCore plane's
+     * status alone, null on Meshtastic. Counts, booleans and the board's radio only: never a name, a key, a digest or a
+     * setup record's field.
+     */
+    val meshcore: MeshcoreBoardFace? = null,
+)
+
+/**
+ * What the radio screen shows of a bound MeshCore board (ADR 2026-11.gsqu's Stage 7 amendment). Every fact but [setup] and
+ * [sharesPosition] is the Ready board's and null while it is away; [setup] is read off this phone's setup record, so it is
+ * shown while the board is away too; [sharesPosition] is the last `SELF_INFO` this connection or an earlier one to the same
+ * address read, null while none was.
+ */
+internal data class MeshcoreBoardFace(
+    /** The firmware version string, cleaned for one line (`MeshcoreHooks.cleanVersion`), as the bridge shows it. */
+    val firmware: String? = null,
+    val freqKhz: Long? = null,
+    val spreadFactor: Int? = null,
+    val bandwidthHz: Int? = null,
+    /** The coding rate's denominator: 5 for 4/5. */
+    val codingRate: Int? = null,
+    /** Whether the board floods under a default scope (set by the user's own app, never by Knit): "set" or "none". */
+    val defaultScope: Boolean? = null,
+    /** The board's battery in millivolts, as MeshCore reports it: no percent and no "powered" (the firmware says neither). */
+    val batteryMv: Int? = null,
+    /**
+     * Whether the board puts a position on the air (`advert_loc_policy`, or location telemetry open to anyone; refs #285).
+     * Knit never writes either: the screen and the Public post's consent sheet only say so.
+     */
+    val sharesPosition: Boolean? = null,
+    val setup: BoardSetupState = BoardSetupState.UNKNOWN,
+)
+
+/**
+ * Whether this phone set the bound MeshCore board up for Knit (ADR 2026-11.gsqu's Stage 7 amendment), read from its setup
+ * record and, while the board is up, the board's proof: never [NONE] for what could not be read.
+ */
+internal enum class BoardSetupState {
+    /** No record for the board at that address, or a record for another board there: Knit's setup is not on it. */
+    NONE,
+
+    /** A record of this board, not pending, and — while the board is up — proven and consenting on this connection. */
+    SET_UP,
+
+    /** A cleanup is owed: an unbind, a Forget or a setup cut off left its record pending; it runs at the next connection. */
+    PENDING,
+
+    /** Not known: the record could not be read, or the board did not answer its proof, or nothing was read yet. */
+    UNKNOWN,
+}
+
+/**
+ * What a MeshCore setup is about to erase (ADR 2026-11.gsqu's Stage 7 amendment), read fresh off the Ready board when the
+ * confirmation opens: [contacts] on the board and [slots] channel slots in use besides Public and Knit's. Counts only; null
+ * for a count the board did not answer, never 0 for unknown. The screen words it "about N": another client can add or remove
+ * between this read and the erase.
+ */
+internal data class SetupPreview(
+    val contacts: Long?,
+    val slots: Int?,
 )
 
 /**

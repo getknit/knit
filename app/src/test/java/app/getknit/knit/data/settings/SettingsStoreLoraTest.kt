@@ -86,6 +86,27 @@ class SettingsStoreLoraTest {
             assertEquals(true, store.meshcorePostConsented.first())
         }
 
+    /**
+     * The MeshCore consent's position line (ADR 2026-11.gsqu's Stage 7 amendment): recorded only by a consent given with it,
+     * in the same edit, and never cleared by a later consent given without it.
+     */
+    @Test
+    fun theMeshcoreConsentRecordsWhetherItsPositionLineWasShown() =
+        runTest {
+            val store = newStore()
+            assertFalse(store.meshcorePostConsentPosition.first())
+
+            store.acceptMeshcorePostConsent()
+            assertEquals(true, store.meshcorePostConsented.first())
+            assertFalse("given without the line", store.meshcorePostConsentPosition.first())
+
+            store.acceptMeshcorePostConsent(withPosition = true)
+            assertEquals(true, store.meshcorePostConsentPosition.first())
+
+            store.acceptMeshcorePostConsent()
+            assertEquals("a later consent without the line keeps it", true, store.meshcorePostConsentPosition.first())
+        }
+
     @Test
     fun aNewBoardForgetsTheOldBoardsNodeAndKey() =
         runTest {

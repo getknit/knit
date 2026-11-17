@@ -577,6 +577,13 @@ internal enum class Destination {
      * what makes the firmware encrypt it to that node rather than to the channel.
      */
     Reply,
+
+    /**
+     * A debug bridge's raw payload on the bound Knit slot (MeshCore's `…debug.LORATX`, ADR 2026-11.gsqu's Stage 7
+     * amendment): written by the kind ([BoardKindHooks.sendKindFrame], [SendPurpose.Debug]), priced and braked as a room post
+     * on that slot, never on slot 0. A kind that queues none ignores it.
+     */
+    Debug,
 }
 
 /**
@@ -781,7 +788,7 @@ internal class OutboundFrame(
      * bound slot. Never a compact DM, nor the Meshtastic room's post or the auto-reply: those are the band's own kind of
      * traffic, already floored at 30 s and capped at half the window.
      */
-    val braked: Boolean get() = klass == FrameClass.ROOM && destination == Destination.Knit
+    val braked: Boolean get() = klass == FrameClass.ROOM && (destination == Destination.Knit || destination == Destination.Debug)
 
     /**
      * Where this frame stands when a full queue sheds, lowest first: a room post (2), then a ✓✓ (1), then a DM or a
@@ -818,7 +825,12 @@ internal class OutboundFrame(
         get() =
             when {
                 destination == Destination.Knit -> if (direct != null) AirPurpose.DIRECT_DM else AirPurpose.ROOM_FLOOD
+
+                // The bridge's raw payload is the same channel data on the same slot: a room post's price.
+                destination == Destination.Debug -> AirPurpose.ROOM_FLOOD
+
                 destination == Destination.Public && direct == null -> AirPurpose.PUBLIC_POST
+
                 else -> AirPurpose.REPLY
             }
 

@@ -206,14 +206,15 @@ doc). **Don't start a deferred item without explicit direction.**
   - **The iOS half,** a knit-pair change against the ADR and the `vectors/` entries.
 
 - **A MeshCore board kind on the LoRa plane** (ADR 2026-10.jend, scope decided 2026-10-18 from a two-board spike on
-  MeshCore companion v1.18.0; build shape ADR 2026-11.gsqu, proposed 2026-11-12; nothing built). Parity with the
+  MeshCore companion v1.18.0; build shape ADR 2026-11.gsqu, proposed 2026-11-12; Stages 0–7 built on `feat/meshcore`
+  by 2026-11-16, debug builds only behind `MESHCORE_PLANE`, unmerged). Parity with the
   Meshtastic plane as ADR 2026-10.rp3s narrowed it: own room posts flood in up to two elided packets under
   `Ceiling.FLOOD`, compact DMs ride as COBS-framed contact text DMs pinned zero-hop, plus the Public-channel mirror and
   board setup/restore. One plane instance per board kind over a neutral core; one board bound at a time in v1.
-  - **Owed to build it** (gsqu's stages): the board-neutral seam
-    (`BoardLink`, `BoardKindHooks`, `BoardTraits`, behaviour unchanged); per-kind scaffolding; the MeshCore client and
-    GATT; `meshcoreKey` / `CAP_MESHCORE_DIRECT` on the profile (paired iOS change); the kind in the plane; the
-    Public-channel mirror; setup, radio screen and strings; lab scenarios.
+  - **Built (Stages 0–7):** the board-neutral seam, per-kind scaffolding, the MeshCore client and GATT,
+    `meshcoreKey` / `CAP_MESHCORE_DIRECT` on the profile, the kind in the plane, the Public-channel mirror, setup,
+    Forget and the radio screen with its strings. **Owed:** Stage 8's remaining lab scenarios, and the paired iOS
+    change to parse and keep the profile field.
   - **Owed before release:** the board trials in gsqu's Stage 8, including a third board as a repeater and real-range
     loss outdoors, and a 157 B DM through the board's BLE notify (the one bench check a simulator can't answer);
     then a registered `data_type` (MeshCore's `number_allocations.md` asks for a working app first).

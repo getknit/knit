@@ -75,6 +75,7 @@ import app.getknit.knit.data.settings.TicketKeyStore
 import app.getknit.knit.di.bindingAddress
 import app.getknit.knit.di.loraAuthorIds
 import app.getknit.knit.di.meshcoreBoardHolders
+import app.getknit.knit.di.meshcoreForget
 import app.getknit.knit.di.meshcoreHeard
 import app.getknit.knit.di.meshcorePostEnds
 import app.getknit.knit.di.pinnedAuthorCheck
@@ -150,6 +151,8 @@ import app.getknit.knit.mesh.lora.meshcore.FakeMeshcoreBoard
 import app.getknit.knit.mesh.lora.meshcore.FakeMeshcoreDialer
 import app.getknit.knit.mesh.lora.meshcore.FakeNusChannel
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreDialer
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreForget
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreForgetResult
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreHooks
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreSession
 import app.getknit.knit.mesh.lora.meshcore.NusChannel
@@ -2226,6 +2229,7 @@ class LabNode internal constructor(
         // so the profile names it, and reports itself bound so the profile carries its node number.
         lora = air?.let { boardOn(it, scope) }
         meshcore = meshcoreOn(scope)
+        meshcoreForgetter = null
         link = directLinkPlane(scope)
         composite = compositeOver(scope)
         val meshTransport: MeshTransport = composite ?: transport
@@ -2410,8 +2414,8 @@ class LabNode internal constructor(
      * 2026-11.gsqu's Stage 5c-2b amendment): the session dialling this node's board, `meshcorePlane`'s hooks, and the
      * transport at **its own pace** (MeshCore's `LoraAirtime`, gap 0 — never the Meshtastic lab's injected one); the
      * board's key reaching the claim store through `bindingAddress` and `MeshcoreClaimStore.setBoardKey` under the hooks'
-     * `claimMutex`, the setup records under SQLCipher, the pinned author check, the author ids and the plane state as
-     * production wires them. The board is bound as the picker binds one ([meshcoreAddress]).
+     * claim lock (`MeshcoreClaimEdits`), the setup records under SQLCipher, the pinned author check, the author ids and the
+     * plane state as production wires them. The board is bound as the picker binds one ([meshcoreAddress]).
      *
      * **Three clocks.** The session's `now` is monotonic (`System.nanoTime`, as production's `elapsedRealtime`), so a
      * `lab.clock.advance` never ends its `ElapsedWait`s — a jump would otherwise time out every wait in flight, barrier and
@@ -2569,6 +2573,24 @@ class LabNode internal constructor(
             } != null
         check(done) { "$name's MeshCore board never got to $stage: ${session.state.value}\n  ${loraLog.takeLast(MeshLab.WINDOW_LORA)}" }
     }
+
+    /**
+     * The radio screen's Forget (ADR 2026-11.gsqu's Stage 7 amendment), wired as `di/LoraWiring.meshcoreForget` wires the app's:
+     * this boot's scope as the application's, this node's settings, and this boot's MeshCore hooks.
+     */
+    internal suspend fun forgetMeshcore(anyway: Boolean = false): MeshcoreForgetResult {
+        val forget =
+            meshcoreForgetter ?: meshcoreForget(
+                scope = checkNotNull(scope) { "$name is not booted" },
+                settings = settings,
+                hooks = { meshcoreHooks },
+                log = { loraLog += it },
+            ).also { meshcoreForgetter = it }
+        return forget.forget(anyway)
+    }
+
+    /** This boot's Forget, one per boot as production keeps one `single`: built on first use, dropped by [boot]. */
+    private var meshcoreForgetter: MeshcoreForget? = null
 
     /** Whether the claim store holds [key] with a bind that verifies over this node's id: what our sealed profile claims. */
     private suspend fun claimsBoard(key: String): Boolean {

@@ -133,6 +133,10 @@ object SettingsKeys {
     const val MESHCORE_ROOM_ENABLED = "meshcore_room_enabled"
     const val MESHCORE_POST_CONSENTED = "meshcore_post_consented"
 
+    // The MeshCore post consent was given with the sheet's position line shown (ADR 2026-11.gsqu's Stage 7 amendment): a
+    // board that shares where it is asks again until it was. Rides a backup with the consent it qualifies.
+    const val MESHCORE_POST_CONSENT_POSITION = "meshcore_post_consent_position"
+
     // The sealed profile's MeshCore claim (ADR 2026-11.gsqu, Stage 4, `MeshcoreClaimStore`): the version a claim change
     // was published under and a fingerprint of what it published (never the key). Both ride a backup, as the badge's
     // pair does, since a restored phone must never publish below a version its peers hold.

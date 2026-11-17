@@ -61,7 +61,8 @@ lines.
   and naming the board's key digest (`boardDigest`: it counts for no other board at that address),
   `DEVICE_LOCAL` (never in a backup), cleared by sign-out with the whole database, untouched by a cross-kind bind, and the
   consent the MeshCore session touches that board's contacts under; an unbind that cannot reach the board leaves it
-  `pendingCleanup`. v33–v37 fold into the next release's single bump. The database copy goes
+  `pendingCleanup`. A restore empties it, so the restore dialog warns while a record is kept or unreadable
+  (`MeshcoreSetupStore.anyRecord`, `RestorePhase.Staged.meshcoreSetup`, ADR 2026-11.gsqu's Stage 7b amendment). v33–v37 fold into the next release's single bump. The database copy goes
   through a raw single-connection driver on purpose (`ATTACH` is read-only to SQLite and lands on a pool
   reader; the SQLCipher layer rewrites `BEGIN` to `EXCLUSIVE`) — don't move it onto the Room connection.
 - **When touching `dm_scope_anchors` (`data/scopeanchor/`, DB v34), `DmScopeAnchorDao`, `mesh/spool/DmScopeAnchors`,

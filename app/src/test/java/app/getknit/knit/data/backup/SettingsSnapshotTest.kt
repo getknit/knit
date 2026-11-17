@@ -112,6 +112,8 @@ class SettingsSnapshotTest {
             SettingsKeys.MESHCORE_BOARD_BIND,
             "meshcore_room_enabled",
             "meshcore_post_consented",
+            // Whether that consent was given with the sheet's position line (Stage 7): it qualifies the consent it rides with.
+            SettingsKeys.MESHCORE_POST_CONSENT_POSITION,
             "lora_board_key",
             "lora_board_node",
             "lora_room_enabled",

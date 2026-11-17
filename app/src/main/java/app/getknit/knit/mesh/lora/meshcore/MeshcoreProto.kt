@@ -284,6 +284,11 @@ internal object MeshcoreProto {
     private const val APP_START_RESERVED = 7
     private const val APP_NAME = "Knit"
     private const val SELF_INFO_FIXED = 58
+
+    // `SELF_INFO`'s telemetry byte: `env << 4 | loc << 2 | base`, each a `TELEM_MODE_*` (`NodePrefs.h:7-9`, `MyMesh.cpp:1101`).
+    private const val TELEM_MODE_MASK = 0x03
+    private const val TELEM_LOC_SHIFT = 2
+    private const val TELEM_MODE_ALLOW_ALL = 2
     private const val DEVICE_INFO_MIN = 4
     private const val DEVICE_INFO_VERSION_AT = 60
     private const val DEVICE_INFO_VERSION_BYTES = 20
@@ -544,15 +549,35 @@ internal object MeshcoreProto {
         val key = frame.copyOfRange(i, i + KEY_BYTES)
         i += KEY_BYTES + 8 // the key, then the position: skipped, never kept
         val multiAcks = u8(frame, i++)
-        i++ // advert_loc_policy
-        i++ // telemetry modes
+        val locPolicy = u8(frame, i++)
+        val telemetry = u8(frame, i++)
         val manualAdd = u8(frame, i++)
         val freqKhz = u32(frame, i)
         val bwHz = u32(frame, i + 4)
         val sf = u8(frame, i + 8)
         val cr = u8(frame, i + 9)
         val name = frame.copyOfRange(SELF_INFO_FIXED, frame.size)
-        return McFrame.SelfInfo(key, multiAcks, manualAdd, freqKhz, bwHz, sf, cr, name)
+        return McFrame.SelfInfo(key, multiAcks, manualAdd, freqKhz, bwHz, sf, cr, name, sharesPosition(locPolicy, telemetry))
+    }
+
+    /**
+     * Whether the board puts a position on the air for anyone to read (refs #285; ADR 2026-11.gsqu's Stage 7 amendment), from
+     * `SELF_INFO`'s `advert_loc_policy` and telemetry byte alone — never the latitude and longitude beside them, which are read
+     * by nothing: a board indoors before a GPS fix reports 0,0 and airs its fix later (`EnvironmentSensorManager.cpp:939-947`),
+     * so the coordinates say nothing about what the next advert carries.
+     * - Any non-zero `advert_loc_policy` (`AdvertDataHelpers.h:29-30`, values the firmware may add later too): every self
+     *   advert carries the live `node_lat` / `node_lon` (`MyMesh.cpp:1299, 1383, 2438`).
+     * - Location telemetry `ALLOW_ALL` with base telemetry `ALLOW_ALL` (`MyMesh.cpp:639-660`): any contact may ask for it, and
+     *   only a base permission makes the board answer at all. `ALLOW_FLAGS` answers a contact by its flags, and Knit teaches
+     *   the favourite bit alone, which grants none.
+     */
+    fun sharesPosition(
+        locPolicy: Int,
+        telemetry: Int,
+    ): Boolean {
+        val base = telemetry and TELEM_MODE_MASK
+        val loc = (telemetry shr TELEM_LOC_SHIFT) and TELEM_MODE_MASK
+        return locPolicy != 0 || (loc == TELEM_MODE_ALLOW_ALL && base == TELEM_MODE_ALLOW_ALL)
     }
 
     /**
@@ -794,7 +819,8 @@ internal sealed interface McFrame {
 
     /**
      * `SELF_INFO`: the board's own [key] (32 B), `multi_acks`, `manual_add_contacts`, its radio as programmed —
-     * [freqKhz] (`freq × 1000`), [bwHz] (`bw × 1000`), [sf], [cr] — and its advert [name]. The position is never read.
+     * [freqKhz] (`freq × 1000`), [bwHz] (`bw × 1000`), [sf], [cr] — and its advert [name]. The position is never read: only
+     * [sharesPosition], whether the board puts one on the air ([MeshcoreProto.sharesPosition], Stage 7).
      */
     class SelfInfo(
         val key: ByteArray,
@@ -805,6 +831,7 @@ internal sealed interface McFrame {
         val sf: Int,
         val cr: Int,
         val name: ByteArray,
+        val sharesPosition: Boolean = false,
     ) : McFrame {
         override fun toString(): String = "SelfInfo"
     }

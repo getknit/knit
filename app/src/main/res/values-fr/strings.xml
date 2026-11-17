@@ -1287,6 +1287,7 @@
     <string name="backup_restore_confirm_named">Sauvegarde de %1$s du %2$s, réalisée avec Knit %3$s.</string>
     <string name="backup_restore_confirm_unnamed">Sauvegarde du %1$s, réalisée avec Knit %2$s.</string>
     <string name="backup_restore_confirm_body">Tout ce que Knit contient sur ce téléphone — son profil, ses contacts, groupes et messages — est remplacé par la sauvegarde, et l’application redémarre. Vos contacts vous voient comme la même personne ; les conversations avec eux reprennent à mesure que leurs téléphones se reconnectent. Si l’ancien téléphone utilise encore Knit, cessez de l’y utiliser.</string>
+    <string name="backup_restore_confirm_meshcore">Une carte MeshCore configurée sur ce téléphone garde la configuration de Knit et les clés radio de vos contacts après une restauration, et Knit ne peut alors plus annuler cette configuration. Pour remettre la carte dans son état d’origine, annulez d’abord sa configuration dans les paramètres de la radio LoRa.</string>
     <string name="backup_action_restore">Restaurer et redémarrer</string>
     <string name="backup_restore_failed">La sauvegarde n’a pas été restaurée : %1$s</string>
     <string name="backup_restarting">Redémarrage de Knit…</string>
@@ -1470,12 +1471,15 @@
     <string name="lora_title">Radio LoRa</string>
     <string name="settings_lora_title">Utiliser une radio LoRa</string>
     <string name="settings_lora_subtitle">Étendez la portée du salon À proximité et de vos messages privés grâce à la radio LoRa longue portée, en associant une carte Meshtastic en Bluetooth. Les groupes, l’indicateur de saisie et les photos restent sur les radios de téléphone à téléphone.</string>
+    <string name="settings_lora_subtitle_any">Étendez la portée du salon À proximité et de vos messages privés grâce à la radio LoRa longue portée, en associant une carte Meshtastic ou MeshCore en Bluetooth. Les groupes, l’indicateur de saisie et les photos restent sur les radios de téléphone à téléphone.</string>
     <string name="lora_off_note">Désactiver cette option ferme la connexion à la carte. Les groupes et les pièces jointes ne passent jamais par LoRa.</string>
     <string name="lora_dm_title">Messages privés par LoRa</string>
     <string name="lora_dm_subtitle">Les messages directs restent chiffrés de bout en bout, mais qui écrit à qui, et quand, est visible par toute radio LoRa à portée — à des kilomètres, pas des mètres. Désactivez cette option pour garder les messages privés sur les radios de téléphone à téléphone.</string>
     <string name="lora_board_section">Carte</string>
     <string name="lora_board_none">Aucune carte Meshtastic associée trouvée. Associez-en d’abord une dans les paramètres Bluetooth (la carte affiche un code PIN sur son écran).</string>
+    <string name="lora_board_none_any">Aucune carte LoRa associée trouvée. Associez d’abord une carte Meshtastic ou MeshCore dans les paramètres Bluetooth, avec le code PIN affiché sur son écran ou celui qui lui a été attribué.</string>
     <string name="lora_board_none_meshtastic">Aucun de vos appareils associés ne ressemble à une carte Meshtastic. Associez-en une dans les paramètres Bluetooth, ou affichez tous les appareils associés.</string>
+    <string name="lora_board_none_supported">Aucun de vos appareils associés ne ressemble à une carte Meshtastic ou MeshCore. Associez-en une dans les paramètres Bluetooth, ou affichez tous les appareils associés.</string>
     <string name="lora_show_all_boards">Afficher tous les appareils associés</string>
     <plurals name="lora_boards_hidden">
         <item quantity="one">%d autre appareil associé masqué</item>
@@ -1519,6 +1523,8 @@
     <string name="lora_status_connecting">Connexion…</string>
     <string name="lora_status_reconnecting">Reconnexion…</string>
     <string name="lora_status_needs_pairing">Association requise — associez de nouveau la carte dans les paramètres Bluetooth</string>
+    <string name="lora_status_wrong_firmware">N’utilise pas Meshtastic, ou a été reprogrammée depuis son association. Oubliez-la et associez-la de nouveau, ou choisissez une autre carte.</string>
+    <string name="lora_status_wrong_firmware_meshcore">N’utilise pas le micrologiciel companion de MeshCore, ou a été reprogrammée depuis son association. Oubliez-la et associez-la de nouveau, ou choisissez une autre carte.</string>
     <string name="lora_status_bt_off">Bluetooth désactivé ou carte indisponible</string>
     <string name="lora_status_off">Non utilisée</string>
     <string name="lora_signal">Signal : SNR %1$.1f dB · RSSI %2$d dBm</string>
@@ -1543,6 +1549,45 @@
     <string name="lora_room_subtitle_dedicated">Masqué tant que cette carte est sur une fréquence dédiée : aucune radio publique ne peut l’entendre, il n’y a donc aucun canal à lire. Restaurez la carte pour retrouver le salon.</string>
     <string name="lora_meshcore_room_title">Salon MeshCore</string>
     <string name="lora_meshcore_room_subtitle">Affichez le canal Public de votre carte MeshCore comme un salon dans Knit, pour lire tout ce qui s’y échange et y participer. Si cette option est désactivée, le salon est masqué et silencieux, et Knit ignore ce canal — votre carte transporte toujours les messages de Knit.</string>
+    <string name="lora_meshcore_kind">Carte MeshCore</string>
+    <string name="lora_meshcore_radio">Radio %1$s MHz · SF%2$d · BW %3$s kHz · CR 4/%4$d</string>
+    <string name="lora_meshcore_scope_set">Périmètre régional par défaut : défini</string>
+    <string name="lora_meshcore_scope_none">Périmètre régional par défaut : aucun</string>
+    <string name="lora_meshcore_battery">Batterie %1$.2f V</string>
+    <plurals name="lora_meshcore_knit_radios">
+        <item quantity="one">%d radio Knit à portée</item>
+        <item quantity="many">%d radios Knit à portée</item>
+        <item quantity="other">%d radios Knit à portée</item>
+    </plurals>
+    <string name="lora_meshcore_knit_radios_zero" tools:ignore="PluralsCandidate">%d radio Knit à portée</string>
+    <string name="lora_meshcore_state_none">Non configurée pour Knit</string>
+    <string name="lora_meshcore_state_set_up">Configurée pour Knit</string>
+    <string name="lora_meshcore_state_pending">La configuration de Knit est toujours sur cette carte. Knit la retire à la prochaine connexion de la carte.</string>
+    <string name="lora_meshcore_state_unknown">Impossible de vérifier si cette carte est configurée pour Knit.</string>
+    <string name="lora_meshcore_setup_body">La configuration confie la carte à Knit : Knit efface ses contacts et ses autres canaux, ajoute son propre canal et renomme la carte. Son canal Public est conservé.</string>
+    <string name="lora_meshcore_setup_confirm_body">Knit efface tous les contacts et tous les canaux de cette carte, sauf le canal Public, ajoute son propre canal et renomme la carte « Knit » suivi d’un code court. Dès lors, c’est Knit qui gère les contacts de la carte : n’utilisez donc la carte qu’avec Knit. Vos contacts Knit peuvent savoir que la carte est la vôtre.</string>
+    <string name="lora_meshcore_setup_erase">Cet effacement est irréversible, même en annulant la configuration.</string>
+    <plurals name="lora_meshcore_erase_contacts">
+        <item quantity="one">La carte contient environ %d contact.</item>
+        <item quantity="many">La carte contient environ %d contacts.</item>
+        <item quantity="other">La carte contient environ %d contacts.</item>
+    </plurals>
+    <plurals name="lora_meshcore_erase_channels">
+        <item quantity="one">Elle utilise %d autre canal.</item>
+        <item quantity="many">Elle utilise %d autres canaux.</item>
+        <item quantity="other">Elle utilise %d autres canaux.</item>
+    </plurals>
+    <string name="lora_meshcore_position">Cette carte peut partager l’endroit où elle se trouve : dans les annonces qu’elle diffuse, que toute radio à portée peut lire, ou avec les contacts qui le lui demandent. Knit n’y change rien. Désactivez le partage de la position dans votre application MeshCore si vous ne voulez pas que l’on sache où elle se trouve.</string>
+    <string name="lora_meshcore_replace_title">Configurer à nouveau cette carte ?</string>
+    <string name="lora_meshcore_replace_body">Cette carte a été réinitialisée ou remplacée depuis sa configuration pour Knit sur ce téléphone : Knit ne peut donc plus rétablir ce qu’il avait modifié à ce moment-là.</string>
+    <string name="lora_meshcore_replace_action">Configurer quand même</string>
+    <string name="lora_meshcore_forget_pending_title">Knit n’a pas pu nettoyer la carte</string>
+    <string name="lora_meshcore_forget_pending_body">La carte contient toujours la configuration de Knit et les clés radio de vos contacts. Si vous la gardez, Knit la nettoie la prochaine fois qu’elle se connecte. Si vous l’oubliez quand même, la carte reste dans cet état.</string>
+    <string name="lora_meshcore_forget_keep">La garder</string>
+    <string name="lora_meshcore_forget_anyway">Oublier quand même</string>
+    <string name="lora_meshcore_forget_failed">Impossible d’oublier la carte. Réessayez.</string>
+    <string name="lora_meshcore_forget_mismatch">Carte oubliée. Elle a été réinitialisée ou remplacée depuis que Knit l’a configurée, donc Knit l’a laissée telle quelle.</string>
+    <string name="lora_meshcore_restored">Carte restaurée avec son propre nom et ses réglages. Les contacts et les canaux effacés par la configuration restent effacés. LoRa reste désactivé jusqu’à ce que vous configuriez à nouveau une carte.</string>
     <string name="lora_airtime">Temps d’antenne : %1$d %% du budget actuel</string>
     <string name="lora_radio_config">Radio %1$s</string>
     <string name="lora_public_channel">Canal principal %1$s</string>
@@ -1803,6 +1848,7 @@
     <string name="chat_meshcore_consent_name_body">Chaque message part sous la forme « %1$s: … ». Ce nom est le même sur chaque message et identifie votre carte : les personnes qui vous ont dans leurs contacts, ou qui connaissent votre carte, peuvent donc savoir que c’est vous.</string>
     <string name="chat_meshcore_consent_name_body_unknown">Chaque message part sous le nom de votre carte, « Knit » suivi de quatre caractères. Ce nom est le même sur chaque message et identifie votre carte : les personnes qui vous ont dans leurs contacts, ou qui connaissent votre carte, peuvent donc savoir que c’est vous.</string>
     <string name="chat_meshcore_consent_rules">Un message publié ne peut pas être retiré. N’importe qui peut publier sous n’importe quel nom, y compris le vôtre. Un message MeshCore envoyé directement à votre carte reste sans réponse : Knit ne lit pas ces messages.</string>
+    <string name="chat_meshcore_consent_position">Votre carte peut aussi partager l’endroit où elle se trouve, dans ses annonces ou avec les contacts qui le demandent. Désactivez le partage de la position dans votre application MeshCore si vous ne voulez pas que vos messages soient associés à un lieu.</string>
     <string name="chat_commons_subtitle">Tout le monde sur ce relais</string>
     <string name="commons_details_title">Infos du salon</string>
     <string name="commons_details_relay">Sur %1$s</string>

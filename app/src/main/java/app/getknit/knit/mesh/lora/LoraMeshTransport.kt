@@ -248,6 +248,17 @@ internal class LoraMeshTransport(
     /** The board kind's numbers (ADR 2026-11.gsqu, Stage 1a), injected with its link and hooks since Stage 5a-2. */
     private val traits: BoardTraits = plane.traits
 
+    /**
+     * Whether construction has ended: [PlaneCore.faceMoved] publishes only then. The kind's hooks are built, and start their
+     * collectors, before the status fields further down are assigned — a collector on a multi-threaded scope can call in first.
+     */
+    @Volatile
+    private var built = false
+
+    /** A face move that came before [built]: published once construction ends. */
+    @Volatile
+    private var faceSkipped = false
+
     /** The board as the core reads it, the kind's link seen through the neutral seam, with no buffering of its own (Stage 1b). */
     private val board: BoardLink = plane.board
 
@@ -290,7 +301,30 @@ internal class LoraMeshTransport(
                     ),
                 )
 
-            override fun faceMoved() = publishStatus()
+            override fun enqueueDebug(
+                payload: ByteArray,
+                label: String,
+                freshUntilWall: Long,
+            ): Boolean =
+                this@LoraMeshTransport.enqueue(
+                    OutboundFrame(
+                        listOf(payload),
+                        label,
+                        FrameClass.ROOM,
+                        Ceiling.FLOOD,
+                        Destination.Debug,
+                        gate = RideGate(freshUntil = freshUntilWall),
+                    ),
+                )
+
+            // Never before this transport is built (lora-reviewer, Stage 7a): the hooks start their collectors in their own
+            // constructor, before `_status` and `statusLock` exist; a move that early is published once construction ends.
+            override fun faceMoved() {
+                if (built) return publishStatus()
+                faceSkipped = true
+                // Construction may have ended between the two reads: then it may not have seen the mark, so publish here.
+                if (built) publishStatus()
+            }
 
             override fun limitersMoved() {
                 stateWake.trySend(Unit)
@@ -883,6 +917,10 @@ internal class LoraMeshTransport(
         mode: ProvisionMode,
         previous: BoardSettings?,
     ): ProvisionResult = hooks.provision(mode, previous)
+
+    override suspend fun provisionReplacing(token: ReplaceToken): ProvisionResult = hooks.provisionReplacing(token)
+
+    override suspend fun setupPreview(): SetupPreview? = hooks.setupPreview()
 
     // --- outbound (fast plane only) ---
 
@@ -2848,6 +2886,12 @@ internal class LoraMeshTransport(
     private fun sigKey(wire: WireEnvelope): String {
         val n = minOf(SIG_KEY_BYTES, wire.sig.size)
         return buildString(n * 2) { for (i in 0 until n) append("%02x".format(Locale.ROOT, wire.sig[i])) }
+    }
+
+    // Last in the class body, so every field above is assigned first.
+    init {
+        built = true
+        if (faceSkipped) publishStatus()
     }
 
     /** Tuning constants; not private so the JVM tests can assert against the numbers rather than restate them. */

@@ -138,6 +138,15 @@ internal sealed interface SendPurpose {
     data class Admin(
         val to: BoardAddr,
     ) : SendPurpose
+
+    /**
+     * A raw payload from the debug bridge (`…debug.LORATX --es kind meshcore`, ADR 2026-11.gsqu's Stage 7 amendment) on the
+     * bound Knit [channel], never Public: the same channel data a room post is, through the pacer, the ledger and the
+     * session's actor, and refused by a board this phone has no consent for. MeshCore's only; Meshtastic refuses it.
+     */
+    data class Debug(
+        val channel: Int,
+    ) : SendPurpose
 }
 
 /**
@@ -301,6 +310,15 @@ internal interface BoardKindHooks {
         mode: ProvisionMode,
         previous: BoardSettings?,
     ): ProvisionResult
+
+    /**
+     * A setup over another board's record at the address ([ProvisionResult.DifferentBoard], ADR 2026-11.gsqu's Stage 7
+     * amendment): MeshCore's alone; a kind with no setup record refuses it.
+     */
+    suspend fun provisionReplacing(token: ReplaceToken): ProvisionResult = ProvisionResult.Failed(NO_REPLACE)
+
+    /** What a setup would erase, read fresh off the Ready board (MeshCore's, Stage 7); null on a kind that erases nothing. */
+    suspend fun setupPreview(): SetupPreview? = null
 
     /** True while [provision] runs: nothing is taught to the board inside its admin transaction. */
     val provisioning: Boolean
@@ -473,6 +491,18 @@ internal interface PlaneCore {
     fun limitersMoved()
 
     /**
+     * Queues the debug bridge's raw [payload] for the kind to write on its bound Knit slot ([Destination.Debug], ADR
+     * 2026-11.gsqu's Stage 7 amendment): one room-class frame under [Ceiling.FLOOD], priced as a room post, through the one
+     * pacer and ledger. [freshUntilWall] is the wall-clock instant past which the kind never writes it. False when the queue
+     * refused it. A kind that writes no such frame never calls it.
+     */
+    fun enqueueDebug(
+        payload: ByteArray,
+        label: String,
+        freshUntilWall: Long,
+    ): Boolean = false
+
+    /**
      * Something the kind renders into the plane's face ([BoardKindHooks.statusOf]) moved without a link transition (MeshCore:
      * this phone's consent for the board, which decides whether a Public post may leave): the core republishes its status.
      * Never called under the pacer's or the ledger's monitor.
@@ -508,3 +538,6 @@ internal class BoardPlane(
     val board: BoardLink,
     val hooks: (PlaneCore) -> BoardKindHooks,
 )
+
+/** A replace asked of a board kind that keeps no setup record ([BoardKindHooks.provisionReplacing]). */
+internal const val NO_REPLACE = "this board kind has no setup record to replace"

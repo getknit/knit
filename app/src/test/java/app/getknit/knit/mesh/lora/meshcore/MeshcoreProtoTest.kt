@@ -385,4 +385,43 @@ class MeshcoreProtoTest {
         val release = gradle.substring(gradle.indexOf("release {"))
         assertTrue("the off default sits in the release block", release.contains("\"MESHCORE_PLANE\", ((meshcorePlane ?: false)"))
     }
+
+    /**
+     * Whether the board airs a position (refs #285, ADR 2026-11.gsqu's Stage 7 amendment), pinned on golden `SELF_INFO`
+     * bytes laid out as `companion-v1.18.0` writes them (`MyMesh.cpp:1084-1115`): the code, type, tx power, max power, the
+     * key, lat, lon (little-endian µdeg), `multi_acks`, `advert_loc_policy`, the telemetry byte (`env << 4 | loc << 2 |
+     * base`), `manual_add_contacts`, freq, bw, sf, cr, then the name. Only the policy and the telemetry byte count: a board
+     * with no fix yet (0,0) shares as much as one with a position.
+     */
+    @Test
+    fun selfInfoSaysWhetherTheBoardAirsAPositionAndKeepsNoCoordinates() {
+        val key = "11".repeat(32)
+        val radio = "95440d00" + "90d00300" + "0b" + "05" // 869 525 kHz, 250 kHz, SF11, CR 4/5
+
+        fun frame(
+            latLon: String,
+            policy: String,
+            telemetry: String,
+        ): McFrame.SelfInfo =
+            MeshcoreProto.decode(hex("05011414" + key + latLon + "00" + policy + telemetry + "00" + radio + "78"))
+                as McFrame.SelfInfo
+        val origin = "00000000" + "00000000"
+        val somewhere = "40e3f702" + "00bbccff" // 49.800000, -3.360000
+        assertTrue("policy 1 with no fix yet", frame(origin, "01", "00").sharesPosition)
+        assertTrue("policy 1 at a position", frame(somewhere, "01", "00").sharesPosition)
+        assertTrue("a policy the firmware may add later", frame(origin, "07", "00").sharesPosition)
+        assertTrue("policy 0, location telemetry ALLOW_ALL with base ALLOW_ALL", frame(somewhere, "00", "0a").sharesPosition)
+        assertFalse("policy 0, telemetry DENY", frame(somewhere, "00", "00").sharesPosition)
+        assertFalse("location ALLOW_ALL answers no one with base DENY", frame(somewhere, "00", "08").sharesPosition)
+        assertFalse("base ALLOW_FLAGS: Knit's favourite bit grants no base permission", frame(somewhere, "00", "09").sharesPosition)
+        assertFalse("ALLOW_FLAGS: Knit's favourite bit grants none", frame(somewhere, "00", "05").sharesPosition)
+        assertFalse("environment alone is no position", frame(somewhere, "00", "22").sharesPosition)
+        val parsed = frame(somewhere, "01", "00")
+        assertEquals(869_525L, parsed.freqKhz)
+        assertEquals(11, parsed.sf)
+        assertEquals("x", parsed.name.decodeToString())
+        // The coordinates are on no field of the frame, and its string names nothing.
+        assertEquals("SelfInfo", parsed.toString())
+        assertTrue(McFrame.SelfInfo::class.java.declaredFields.none { it.name.contains("lat", true) || it.name.contains("lon", true) })
+    }
 }

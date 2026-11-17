@@ -204,6 +204,10 @@ class ChatViewModelTest {
     private val meshcoreConsentFlow = MutableStateFlow(false)
     private val loraRoomsFlow = MutableStateFlow<Map<BoardKind, LoraFacts>>(emptyMap())
     private val meshcoreBoardNameFlow = MutableStateFlow<String?>("Knit 1a2b")
+
+    // Whether the MeshCore consent was given with its position line, and whether the board shares where it is (Stage 7).
+    private val meshcorePositionConsentFlow = MutableStateFlow(false)
+    private val meshcoreSharesFlow = MutableStateFlow<Boolean?>(null)
     private val locationConsentFlow = MutableStateFlow(false)
     private val transferConsentFlow = MutableStateFlow(false)
 
@@ -233,6 +237,7 @@ class ChatViewModelTest {
         stubThread(Conversations.MESHCORE_PUBLIC)
         every { groups.observeGroup(Conversations.MESHCORE_PUBLIC) } returns groupFlow
         every { settings.meshcorePostConsented } returns meshcoreConsentFlow
+        every { settings.meshcorePostConsentPosition } returns meshcorePositionConsentFlow
         every { peers.observeDirectory() } returns peersFlow.map { directoryOf(it) }
         every { settings.displayName } returns nameFlow
         // Same trap as the relay flows below: this one is combined with displayName to build the state, so a
@@ -354,6 +359,7 @@ class ChatViewModelTest {
         outsideUris = OutsideUris.of(context),
         loraRooms = loraRooms,
         meshcoreBoardName = meshcoreBoardNameFlow,
+        meshcoreSharesPosition = meshcoreSharesFlow,
     )
 
     // --- Pinned messages (#42, ADR 2026-10.2r7e) ---------------------------------------------------------------------
@@ -1353,6 +1359,93 @@ class ChatViewModelTest {
             assertFalse(vm.state.value.isMeshcoreRoom)
         }
 
+    /**
+     * The MeshCore consent's position line (ADR 2026-11.gsqu's Stage 7 amendment): shown unless the board is known not to share
+     * where it is, recorded with the consent, and asked again once a board that shares it was consented without the line.
+     */
+    @Test
+    fun aMeshcoreBoardThatSharesWhereItIsAsksAgainUntilTheConsentNamedIt() =
+        runTest {
+            meshcoreConsentFlow.value = true
+            meshcoreSharesFlow.value = false
+            val vm = vm(Conversations.MESHCORE_PUBLIC, loraRooms = loraRoomsFlow)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive)
+            advanceUntilIdle()
+            assertFalse("a board that shares nothing: the old consent holds", vm.state.value.needsPublicConsent)
+            assertEquals(false, vm.state.value.meshcoreSharesPosition)
+
+            meshcoreSharesFlow.value = true
+            advanceUntilIdle()
+            assertTrue("now it shares where it is: ask again", vm.state.value.needsPublicConsent)
+            assertEquals(true, vm.state.value.meshcoreSharesPosition)
+
+            vm.send("hello mesh")
+            advanceUntilIdle()
+            assertTrue(vm.showPublicConsent.value)
+            assertTrue(mesh.sentPublicPosts.isEmpty())
+            vm.acceptPublicConsent(positionShown = true)
+            advanceUntilIdle()
+            coVerify(exactly = 1) { settings.acceptMeshcorePostConsent(withPosition = true) }
+
+            meshcorePositionConsentFlow.value = true
+            advanceUntilIdle()
+            assertFalse(vm.state.value.needsPublicConsent)
+        }
+
+    /**
+     * The consent records what the accepted sheet showed, never the state at the tap (security-reviewer, Stage 7b): a sheet drawn
+     * without the position line, accepted after the board turned out to share, is a consent without the line, and the room
+     * asks again. And a board whose policy is not read yet asks again for a consent given without the line.
+     */
+    @Test
+    fun aMeshcoreConsentRecordsTheSheetItWasGivenOnNotTheStateAtTheTap() =
+        runTest {
+            meshcoreSharesFlow.value = false
+            val vm = vm(Conversations.MESHCORE_PUBLIC, loraRooms = loraRoomsFlow)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive)
+            advanceUntilIdle()
+            vm.send("hello mesh")
+            advanceUntilIdle()
+            assertTrue(vm.showPublicConsent.value)
+
+            // The board's policy moves while the sheet drawn without the line is open, and the user accepts that sheet.
+            meshcoreSharesFlow.value = true
+            advanceUntilIdle()
+            vm.acceptPublicConsent(positionShown = false)
+            advanceUntilIdle()
+            coVerify(exactly = 1) { settings.acceptMeshcorePostConsent(withPosition = false) }
+            meshcoreConsentFlow.value = true
+            advanceUntilIdle()
+            assertTrue("a board that shares, consented without the line: ask again", vm.state.value.needsPublicConsent)
+
+            meshcoreSharesFlow.value = null
+            advanceUntilIdle()
+            assertTrue("not read yet: ask again, as the sheet shows the line", vm.state.value.needsPublicConsent)
+
+            meshcoreSharesFlow.value = false
+            advanceUntilIdle()
+            assertFalse("known not to share: the consent holds", vm.state.value.needsPublicConsent)
+        }
+
+    @Test
+    fun aMeshcoreConsentWithoutThePositionLineSaysSo() =
+        runTest {
+            meshcoreSharesFlow.value = false
+            val vm = vm(Conversations.MESHCORE_PUBLIC, loraRooms = loraRoomsFlow)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive)
+            advanceUntilIdle()
+            assertTrue(vm.state.value.needsPublicConsent)
+
+            vm.send("hello mesh")
+            advanceUntilIdle()
+            vm.acceptPublicConsent(positionShown = false)
+            advanceUntilIdle()
+            coVerify(exactly = 1) { settings.acceptMeshcorePostConsent(withPosition = false) }
+        }
+
     @Test
     fun aMeshcorePostAsksItsOwnConsentPostsInItsOwnRoomAndWordsItsOwnRefusals() =
         runTest {
@@ -1371,11 +1464,13 @@ class ChatViewModelTest {
             assertEquals("the sheet names the board", "Knit 1a2b", vm.state.value.meshcoreBoardName)
             assertTrue(mesh.sentPublicPosts.isEmpty())
 
-            vm.acceptPublicConsent()
+            // The board's position policy is not read yet, so the sheet showed its position line, and the consent says so.
+            vm.acceptPublicConsent(positionShown = true)
             advanceUntilIdle()
-            coVerify(exactly = 1) { settings.acceptMeshcorePostConsent() }
+            coVerify(exactly = 1) { settings.acceptMeshcorePostConsent(withPosition = true) }
             coVerify(exactly = 0) { settings.acceptMeshtasticPostConsent() }
             meshcoreConsentFlow.value = true
+            meshcorePositionConsentFlow.value = true
             advanceUntilIdle()
 
             val expected =

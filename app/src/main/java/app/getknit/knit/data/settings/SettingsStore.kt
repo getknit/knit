@@ -407,6 +407,12 @@ class SettingsStore(
     val meshcorePostConsented: Flow<Boolean> = dataStore.data.map { it[KEY_MESHCORE_POST_CONSENTED] ?: false }
 
     /**
+     * Whether [meshcorePostConsented] was given with the sheet's position line shown (ADR 2026-11.gsqu's Stage 7 amendment):
+     * a board that shares where it is (`MeshcoreBoardFace.sharesPosition`) asks again until it was.
+     */
+    val meshcorePostConsentPosition: Flow<Boolean> = dataStore.data.map { it[KEY_MESHCORE_POST_CONSENT_POSITION] ?: false }
+
+    /**
      * Whether the user has read, and accepted, the disclosure behind the composer's "Send location" pin —
      * what leaves the phone (the exact position and its accuracy, as a line in one message), who receives it
      * (that chat, or everyone in radio range in the Nearby room), and when Knit reads it (only between the
@@ -976,6 +982,19 @@ class SettingsStore(
         if (key != null) it[KEY_LORA_KEY] = key else it.remove(KEY_LORA_KEY)
     }
 
+    /**
+     * Forgets the bound MeshCore board at [address] in one edit ([MeshcoreForgetPolicy.forget], ADR 2026-11.gsqu's Stage 7
+     * amendment): its identity and claim, and the plane switched off. A no-op once another board is bound there.
+     */
+    suspend fun forgetMeshcoreBoard(address: String) {
+        dataStore.edit { MeshcoreForgetPolicy.forget(it, address, KEY_LORA_ENABLED) }
+    }
+
+    /** Withdraws the bound MeshCore board's claim in one edit, the binding kept ([MeshcoreForgetPolicy.withdrawClaim]). */
+    suspend fun withdrawMeshcoreClaim(address: String) {
+        dataStore.edit { MeshcoreForgetPolicy.withdrawClaim(it, address) }
+    }
+
     /** Forgets the chosen board (and disables the plane, since it has nothing to bind to). */
     suspend fun clearLoraDevice() =
         dataStore.edit {
@@ -1109,8 +1128,15 @@ class SettingsStore(
     /** Records that the user accepted the disclosure behind [meshtasticPostConsented]. */
     suspend fun acceptMeshtasticPostConsent() = dataStore.edit { it[KEY_MESHTASTIC_POST_CONSENTED] = true }
 
-    /** Records that the user accepted the disclosure behind [meshcorePostConsented]. */
-    suspend fun acceptMeshcorePostConsent() = dataStore.edit { it[KEY_MESHCORE_POST_CONSENTED] = true }
+    /**
+     * Records that the user accepted the disclosure behind [meshcorePostConsented], in one edit with whether its position line
+     * was shown ([meshcorePostConsentPosition]); a consent without the line never clears one given with it.
+     */
+    suspend fun acceptMeshcorePostConsent(withPosition: Boolean = false) =
+        dataStore.edit {
+            it[KEY_MESHCORE_POST_CONSENTED] = true
+            if (withPosition) it[KEY_MESHCORE_POST_CONSENT_POSITION] = true
+        }
 
     /** Records that the user accepted the disclosure behind [locationShareConsented]. */
     suspend fun acceptLocationShareConsent() = dataStore.edit { it[KEY_LOCATION_SHARE_CONSENTED] = true }
@@ -1366,6 +1392,7 @@ class SettingsStore(
         val KEY_LORA_PRIOR_SHORT_NAME = stringPreferencesKey("lora_prior_short_name")
         val KEY_MESHCORE_ROOM_ENABLED = booleanPreferencesKey(SettingsKeys.MESHCORE_ROOM_ENABLED)
         val KEY_MESHCORE_POST_CONSENTED = booleanPreferencesKey(SettingsKeys.MESHCORE_POST_CONSENTED)
+        val KEY_MESHCORE_POST_CONSENT_POSITION = booleanPreferencesKey(SettingsKeys.MESHCORE_POST_CONSENT_POSITION)
         val KEY_RECENT_REACTIONS = stringPreferencesKey("recent_reactions")
     }
 }

@@ -472,8 +472,8 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `MeshManager.onDmAcksInlined`:** READ ADR 2026-11.gsqu's Stage 5c-2b amendment (and its Stage 6 amendment, part 6c, for
   the Public room's lab), then `testing.md`'s MeshCore lab bullet.
   A lab MeshCore node is the production child (no injected pace, the claim through `bindingAddress` under the hooks'
-  `claimMutex`, the setup and its consent through the real `setup()`), never the boards sweep's Meshtastic air, on three
-  clocks (the session monotonic; the plane, hooks and session wall clock `LabClock`; the board's uptime the lab's calendar),
+  `MeshcoreClaimEdits` lock, the setup and its consent through the real `setup()`), never the boards sweep's Meshtastic
+  air, on three clocks (the session monotonic; the plane, hooks and session wall clock `LabClock`; the board's uptime the lab's calendar),
   its air on a lab-owned serial scope. Boot returns at Ready with consent and the claim minted; a pair that are each
   other's direct contacts is taught both ways before `awaitAcquainted` returns. Every wait reads the receiving side's event
   (a plane counter, the board read back, the session's re-pin), never the air's record.
@@ -517,6 +517,35 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `PublicPostKey`) so a heard post and our own meet on one row. A post reaches the MeshCore plane only while a MeshCore board
   is the bound one (`NO_BOARD` otherwise); the ended flow is read lazily, collected from `MeshManager.start`. Regression:
   `LoraPlaneWiringTest`.
+
+- **Before touching the MeshCore board's face, Forget, a different board, the wrong-firmware cause or the raw send —
+  `LoraStatus.meshcore` / `MeshcoreBoardFace`, `BoardSetupState`, `MeshcoreSetupStates`, `MeshcoreBoardOps.setupState` /
+  `MeshcoreSetupView`, `MeshcoreProto.sharesPosition` / `MeshcoreDetail.sharesPosition`, `SetupPreview` /
+  `LoraPlaneStatus.setupPreview`, `MeshcoreForget` / `MeshcoreForgetResult` / `di/meshcoreForget`, `MeshcoreForgetPolicy`
+  (`SettingsStore.forgetMeshcoreBoard` / `withdrawMeshcoreClaim`), `MeshcoreHooks.forgetClaim` / `claimsFenced`,
+  `MeshcoreConsent.seq`, `MeshcoreUnbind.MISMATCH`, `ReplaceToken`, `ProvisionResult.DifferentBoard`,
+  `MeshcoreSetupResult.DifferentBoard`, `provisionReplacing` / `setupReplacing`, `MeshcoreSetupEntry.fingerprint`,
+  `PairingCause`, `SendPurpose.Debug` / `Destination.Debug` / `PlaneCore.enqueueDebug` / `MeshcoreHooks.debugSend` /
+  `MeshcoreRawSend` / `MeshcoreDebugSend`, `meshcoreFaceOf`, or the
+  bridge's `prov preview|forget`, `--ez replace` and `LORATX --es kind meshcore`:** READ ADR 2026-11.gsqu's Stage 7a amendment,
+  then "Stage 7: the radio screen's half" in `lora-bridge.md`. Debug builds only. Facts are counts and booleans; the
+  setup state is never NONE for what was not read; the position is a boolean and the coordinates are read by nothing. The
+  Forget is one function on the app's scope; PENDING keeps the binding and withdraws the claim; every edit is behind the
+  hooks' claim fence, so no grant made before a Forget lands after it. A different board refuses the setup before any write
+  and a replace runs every step under a token for the record as it was. The raw send goes through the pacer, the ledger,
+  the law and the actor, on the Knit slot only, and never echoes its text. Regression: `MeshcoreProtoTest`,
+  `MeshcoreSessionTest`'s Stage 7 block, `MeshcoreHooksTest`'s Stage 7 block, `MeshcoreForgetTest`,
+  `MeshcoreForgetPolicyTest`, `MeshtasticServiceAbsentTest`, `MeshcoreForgetLabTest`.
+
+- **Before touching the radio screen's MeshCore half — `LoraRadioViewModel`'s `meshcore` / `forget` / `meshcorePlane`,
+  `MeshcoreRows` / `MeshcoreSetup` / `MeshcoreErase` / `MeshcoreForgetNotice`, `BoardOption.kind`, `pickBoard` / `forgetBoard`
+  / `keepBoard` / `forgetAnyway` / `replaceBoard`, `LoraRadioUiState.anyKind` / `wrongFirmware`, or the screen's
+  `MeshcoreSetupSection` / `MeshcoreSetupConfirmDialog` / `MeshcoreReplaceDialog` / `MeshcoreForgetPendingDialog`:** READ ADR
+  2026-11.gsqu's Stage 7b amendment, then "Stage 7b: the screen" in `lora-bridge.md`. With the flag off (or the plane or
+  Forget unresolved) the screen reads as a Meshtastic-only build's and reaches no MeshCore row or action. With a MeshCore
+  board bound, a pick or a Forget runs `MeshcoreForget` first and waits on its answer; PENDING asks Keep it or Forget anyway.
+  The confirmation shows the erase line always and the position line unless the board is known not to share. Regression:
+  `LoraRadioViewModelMeshcoreTest`, `LoraRadioMeshcoreScreenTest`.
 
 ## Adding an entry
 

@@ -1568,6 +1568,7 @@
     <string name="backup_restore_confirm_named">Backup of %1$s from %2$s, made with Knit %3$s.</string>
     <string name="backup_restore_confirm_unnamed">Backup from %1$s, made with Knit %2$s.</string>
     <string name="backup_restore_confirm_body">Everything Knit holds on this phone — its identity, contacts, groups and messages — is replaced by the backup, and the app restarts. Your contacts see you as the same person; conversations with them pick up again as their phones reconnect. If the old phone still runs Knit, stop using it there.</string>
+    <string name="backup_restore_confirm_meshcore">A MeshCore board set up on this phone keeps Knit\'s setup and your contacts\' radio keys after a restore, and Knit can\'t undo that then. To put the board back the way it was, undo its setup in LoRa radio settings first.</string>
     <string name="backup_action_restore">Restore and restart</string>
     <string name="backup_restore_failed">The backup wasn\'t restored: %1$s</string>
     <string name="backup_restarting">Restarting Knit…</string>
@@ -1780,12 +1781,15 @@
     <string name="lora_title">LoRa radio</string>
     <string name="settings_lora_title">Use a LoRa radio</string>
     <string name="settings_lora_subtitle">Extend the reach of the Nearby room and your private messages over long-range LoRa by pairing a Meshtastic board over Bluetooth. Groups, typing and photos stay on the phone-to-phone radios.</string>
+    <string name="settings_lora_subtitle_any">Extend the reach of the Nearby room and your private messages over long-range LoRa by pairing a Meshtastic or MeshCore board over Bluetooth. Groups, typing and photos stay on the phone-to-phone radios.</string>
     <string name="lora_off_note">Turning this off closes the board connection. Groups and attachments never travel over LoRa.</string>
     <string name="lora_dm_title">Private messages over LoRa</string>
     <string name="lora_dm_subtitle">Direct messages stay end-to-end encrypted, but who is messaging whom, and when, is visible to any LoRa radio in range — kilometres, not metres. Turn this off to keep private messages on the phone-to-phone radios.</string>
     <string name="lora_board_section">Board</string>
     <string name="lora_board_none">No paired Meshtastic boards found. Pair one in Bluetooth settings first (the board shows a PIN on its screen).</string>
+    <string name="lora_board_none_any">No paired LoRa boards found. Pair a Meshtastic or MeshCore board in Bluetooth settings first, with the PIN its screen shows or the one it was set to.</string>
     <string name="lora_board_none_meshtastic">None of your paired devices looks like a Meshtastic board. Pair one in Bluetooth settings, or show all paired devices.</string>
+    <string name="lora_board_none_supported">None of your paired devices looks like a Meshtastic or MeshCore board. Pair one in Bluetooth settings, or show all paired devices.</string>
     <string name="lora_show_all_boards">Show all paired devices</string>
     <plurals name="lora_boards_hidden">
         <item quantity="one">%d other paired device hidden</item>
@@ -1830,6 +1834,8 @@
     <string name="lora_status_connecting">Connecting…</string>
     <string name="lora_status_reconnecting">Reconnecting…</string>
     <string name="lora_status_needs_pairing">Pairing needed — re-pair the board in Bluetooth settings</string>
+    <string name="lora_status_wrong_firmware">Not running Meshtastic, or reflashed since it was paired. Forget it and pair it again, or pick another board.</string>
+    <string name="lora_status_wrong_firmware_meshcore">Not running MeshCore companion firmware, or reflashed since it was paired. Forget it and pair it again, or pick another board.</string>
     <string name="lora_status_bt_off">Bluetooth off or board unavailable</string>
     <string name="lora_status_off">Not in use</string>
     <string name="lora_signal">Signal: SNR %1$.1f dB · RSSI %2$d dBm</string>
@@ -1856,6 +1862,42 @@
     <!-- The MeshCore room's switch, shown while a MeshCore board is bound (ADR 2026-11.gsqu's Stage 6). -->
     <string name="lora_meshcore_room_title">MeshCore room</string>
     <string name="lora_meshcore_room_subtitle">Show your MeshCore board\'s Public channel as a room in Knit, so you can read and join whatever else is on it. Off, the room is hidden and silent and Knit ignores that channel — your board still carries Knit\'s own messages.</string>
+    <string name="lora_meshcore_kind">MeshCore board</string>
+    <string name="lora_meshcore_radio">Radio %1$s MHz · SF%2$d · BW %3$s kHz · CR 4/%4$d</string>
+    <string name="lora_meshcore_scope_set">Default region scope: set</string>
+    <string name="lora_meshcore_scope_none">Default region scope: none</string>
+    <string name="lora_meshcore_battery">Battery %1$.2f V</string>
+    <plurals name="lora_meshcore_knit_radios">
+        <item quantity="one">%d Knit radio in range</item>
+        <item quantity="other">%d Knit radios in range</item>
+    </plurals>
+    <string name="lora_meshcore_knit_radios_zero" tools:ignore="PluralsCandidate">%d Knit radios in range</string>
+    <string name="lora_meshcore_state_none">Not set up for Knit</string>
+    <string name="lora_meshcore_state_set_up">Set up for Knit</string>
+    <string name="lora_meshcore_state_pending">Knit\'s setup is still on this board. Knit cleans it up when the board next connects.</string>
+    <string name="lora_meshcore_state_unknown">Couldn\'t check whether this board is set up for Knit.</string>
+    <string name="lora_meshcore_setup_body">Setting the board up hands it to Knit: Knit erases its contacts and its other channels, adds its own channel and renames the board. Its Public channel stays.</string>
+    <string name="lora_meshcore_setup_confirm_body">Knit erases every contact and every channel on this board except Public, adds its own channel and renames the board “Knit” followed by a short code. From then on Knit manages the board\'s contacts, so use the board with Knit alone. Your Knit contacts can tell the board is yours.</string>
+    <string name="lora_meshcore_setup_erase">This can\'t be undone, not even by undoing the setup.</string>
+    <plurals name="lora_meshcore_erase_contacts">
+        <item quantity="one">The board holds about %d contact.</item>
+        <item quantity="other">The board holds about %d contacts.</item>
+    </plurals>
+    <plurals name="lora_meshcore_erase_channels">
+        <item quantity="one">It has %d other channel in use.</item>
+        <item quantity="other">It has %d other channels in use.</item>
+    </plurals>
+    <string name="lora_meshcore_position">This board may share where it is: in the adverts it sends, which any radio in range can read, or with contacts who ask for it. Knit doesn\'t change that. Turn location sharing off in your MeshCore app if you don\'t want that known.</string>
+    <string name="lora_meshcore_replace_title">Set this board up again?</string>
+    <string name="lora_meshcore_replace_body">This board was reset or replaced since it was set up for Knit on this phone, so Knit can no longer put back what it changed then.</string>
+    <string name="lora_meshcore_replace_action">Set up anyway</string>
+    <string name="lora_meshcore_forget_pending_title">Knit couldn\'t clean up the board</string>
+    <string name="lora_meshcore_forget_pending_body">The board still carries Knit\'s setup and your contacts\' radio keys. If you keep it, Knit cleans it up the next time the board connects. If you forget it anyway, the board stays that way.</string>
+    <string name="lora_meshcore_forget_keep">Keep it</string>
+    <string name="lora_meshcore_forget_anyway">Forget anyway</string>
+    <string name="lora_meshcore_forget_failed">Couldn\'t forget the board. Try again.</string>
+    <string name="lora_meshcore_forget_mismatch">Board forgotten. It was reset or replaced since Knit set it up, so Knit left it as it is.</string>
+    <string name="lora_meshcore_restored">Board restored to its own name and settings. The contacts and channels the setup erased stay gone. LoRa is switched off until you set a board up again.</string>
     <string name="lora_airtime">Airtime %1$d%% of the current budget</string>
     <string name="lora_radio_config">Radio %1$s</string>
     <string name="lora_public_channel">Primary channel %1$s</string>
@@ -2174,6 +2216,7 @@
     <string name="chat_meshcore_consent_name_body">Every post goes out as “%1$s: …”. That name is the same on every post and identifies your board, so people who have you as a contact, or who know your board, can tell it is you.</string>
     <string name="chat_meshcore_consent_name_body_unknown">Every post goes out under your board\'s name, “Knit” and four characters. That name is the same on every post and identifies your board, so people who have you as a contact, or who know your board, can tell it is you.</string>
     <string name="chat_meshcore_consent_rules">A post can\'t be taken back. Anyone can post under any name, yours included. MeshCore users who message your board directly get no answer: Knit doesn\'t read those messages.</string>
+    <string name="chat_meshcore_consent_position">Your board may also share where it is, in its adverts or with contacts who ask. Turn location sharing off in your MeshCore app if you don\'t want your posts tied to a place.</string>
     <string name="chat_commons_subtitle">Everyone on this relay</string>
     <!-- A commons' details screen: its name, its relay, its members and Leave. -->
     <string name="commons_details_title">Room info</string>

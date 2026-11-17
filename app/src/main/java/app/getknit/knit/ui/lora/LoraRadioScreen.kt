@@ -35,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
@@ -50,6 +51,7 @@ import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.util.countText
 import org.koin.androidx.compose.koinViewModel
+import java.text.NumberFormat
 
 /**
  * LoRa radio settings: the master switch, the bonded-board picker, a channel-index selector, and the live
@@ -82,6 +84,10 @@ fun LoraRadioScreen(onBack: () -> Unit) {
         onDismissSetup = viewModel::dismissSetup,
         onSetUp = viewModel::setUpBoard,
         onRestore = viewModel::restoreBoard,
+        onReplace = viewModel::replaceBoard,
+        onDismissReplace = viewModel::dismissReplace,
+        onKeepBoard = viewModel::keepBoard,
+        onForgetAnyway = viewModel::forgetAnyway,
     )
 }
 
@@ -105,6 +111,11 @@ internal fun LoraRadioScreenContent(
     onDismissSetup: () -> Unit = {},
     onSetUp: () -> Unit = {},
     onRestore: () -> Unit = {},
+    // MeshCore's (ADR 2026-11.gsqu's Stage 7 amendment): set up over another board's record, and the Forget's pending answer.
+    onReplace: () -> Unit = {},
+    onDismissReplace: () -> Unit = {},
+    onKeepBoard: () -> Unit = {},
+    onForgetAnyway: () -> Unit = {},
 ) {
     val context = LocalContext.current
     Scaffold(
@@ -129,7 +140,7 @@ internal fun LoraRadioScreenContent(
                     .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            MasterSwitchRow(enabled = state.enabled, onToggle = onToggle)
+            MasterSwitchRow(enabled = state.enabled, anyKind = state.anyKind, onToggle = onToggle)
             Text(
                 text = stringResource(R.string.lora_off_note),
                 style = MaterialTheme.typography.bodySmall,
@@ -162,7 +173,7 @@ internal fun LoraRadioScreenContent(
                 // the paired devices the board filter is hiding.
                 !state.anyBonded -> {
                     Text(
-                        text = stringResource(R.string.lora_board_none),
+                        text = stringResource(if (state.anyKind) R.string.lora_board_none_any else R.string.lora_board_none),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -170,7 +181,10 @@ internal fun LoraRadioScreenContent(
 
                 else -> {
                     Text(
-                        text = stringResource(R.string.lora_board_none_meshtastic),
+                        text =
+                            stringResource(
+                                if (state.anyKind) R.string.lora_board_none_supported else R.string.lora_board_none_meshtastic,
+                            ),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.testTag("lora_board_none_meshtastic"),
@@ -187,24 +201,63 @@ internal fun LoraRadioScreenContent(
                 Text(stringResource(R.string.lora_open_settings))
             }
             if (state.boardAddress != null) {
-                TextButton(onClick = onForgetBoard) { Text(stringResource(R.string.lora_forget)) }
+                TextButton(
+                    onClick = onForgetBoard,
+                    enabled = !state.forgetting,
+                    modifier = Modifier.testTag("lora_forget"),
+                ) { Text(stringResource(R.string.lora_forget)) }
+            }
+            state.forgetNotice?.let { notice ->
+                OutcomeLine(
+                    message =
+                        when (notice) {
+                            MeshcoreForgetNotice.Failed -> R.string.lora_meshcore_forget_failed
+                            MeshcoreForgetNotice.Mismatch -> R.string.lora_meshcore_forget_mismatch
+                        },
+                    isError = notice == MeshcoreForgetNotice.Failed,
+                    tag = "lora_meshcore_forget_notice",
+                    onDismiss = onDismissProvision,
+                )
             }
 
-            SetupSection(
-                state = state,
-                onAskSetup = onAskSetup,
-                onAskSetupDedicated = onAskSetupDedicated,
-                onSwitchToShared = onSwitchToShared,
-                onSetUp = onSetUp,
-                onRestore = onRestore,
-                onDismissProvision = onDismissProvision,
-            )
+            val meshcore = state.meshcore
+            if (meshcore != null) {
+                MeshcoreSetupSection(
+                    state = state,
+                    meshcore = meshcore,
+                    onAskSetup = onAskSetup,
+                    onRestore = onRestore,
+                    onDismissProvision = onDismissProvision,
+                )
+            } else {
+                SetupSection(
+                    state = state,
+                    onAskSetup = onAskSetup,
+                    onAskSetupDedicated = onAskSetupDedicated,
+                    onSwitchToShared = onSwitchToShared,
+                    onSetUp = onSetUp,
+                    onRestore = onRestore,
+                    onDismissProvision = onDismissProvision,
+                )
+            }
 
             StatusRow(state = state)
 
             if (state.confirmSetup) {
-                SetupConfirmDialog(dedicated = state.confirmDedicated, onConfirm = onSetUp, onDismiss = onDismissSetup)
+                if (meshcore != null) {
+                    MeshcoreSetupConfirmDialog(
+                        erase = state.erase,
+                        eraseLoading = state.eraseLoading,
+                        sharesPosition = meshcore.sharesPosition,
+                        onConfirm = onSetUp,
+                        onDismiss = onDismissSetup,
+                    )
+                } else {
+                    SetupConfirmDialog(dedicated = state.confirmDedicated, onConfirm = onSetUp, onDismiss = onDismissSetup)
+                }
             }
+            if (state.confirmReplace) MeshcoreReplaceDialog(onConfirm = onReplace, onDismiss = onDismissReplace)
+            if (state.forgetPending) MeshcoreForgetPendingDialog(onKeep = onKeepBoard, onForgetAnyway = onForgetAnyway)
         }
     }
 }
@@ -212,6 +265,8 @@ internal fun LoraRadioScreenContent(
 @Composable
 private fun MasterSwitchRow(
     enabled: Boolean,
+    // The build carries a second board kind: the line names both.
+    anyKind: Boolean,
     onToggle: (Boolean) -> Unit,
 ) {
     Row(
@@ -225,7 +280,7 @@ private fun MasterSwitchRow(
         Column(modifier = Modifier.weight(1f)) {
             Text(stringResource(R.string.settings_lora_title), style = MaterialTheme.typography.titleMedium)
             Text(
-                text = stringResource(R.string.settings_lora_subtitle),
+                text = stringResource(if (anyKind) R.string.settings_lora_subtitle_any else R.string.settings_lora_subtitle),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -485,15 +540,97 @@ private fun SetupSection(
         DedicatedSetupAction(state = state, onAskSetupDedicated = onAskSetupDedicated, onSwitchToShared = onSwitchToShared)
         state.provisionOutcome?.let { outcome ->
             val (message, isError) = outcome.messageAndSeverity()
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = stringResource(message),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f).testTag("lora_provision_outcome"),
-                )
-                TextButton(onClick = onDismissProvision) { Text(stringResource(R.string.action_dismiss)) }
+            OutcomeLine(message = message, isError = isError, tag = "lora_provision_outcome", onDismiss = onDismissProvision)
+        }
+    }
+}
+
+/** One dismissible result line: a provisioning tap's outcome or a Forget's notice. */
+@Composable
+private fun OutcomeLine(
+    message: Int,
+    isError: Boolean,
+    tag: String,
+    onDismiss: () -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = stringResource(message),
+            style = MaterialTheme.typography.bodySmall,
+            color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f).testTag(tag),
+        )
+        TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_dismiss)) }
+    }
+}
+
+/**
+ * A bound MeshCore board's setup (ADR 2026-11.gsqu's Stage 7 amendment): whether this phone set it up for Knit, shown while
+ * the board is away too, since it is this phone's record; then, while it is Ready, the one action its state allows. A board
+ * whose cleanup is pending offers nothing: the cleanup runs as it connects.
+ */
+@Composable
+private fun MeshcoreSetupSection(
+    state: LoraRadioUiState,
+    meshcore: MeshcoreRows,
+    onAskSetup: () -> Unit,
+    onRestore: () -> Unit,
+    onDismissProvision: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(stringResource(R.string.lora_setup_title), style = MaterialTheme.typography.titleMedium)
+        Text(
+            text =
+                stringResource(
+                    when (meshcore.setup) {
+                        MeshcoreSetup.None -> R.string.lora_meshcore_state_none
+                        MeshcoreSetup.SetUp -> R.string.lora_meshcore_state_set_up
+                        MeshcoreSetup.Pending -> R.string.lora_meshcore_state_pending
+                        MeshcoreSetup.Unknown -> R.string.lora_meshcore_state_unknown
+                    },
+                ),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.testTag("lora_meshcore_state"),
+        )
+        if (meshcore.setup != MeshcoreSetup.SetUp && meshcore.setup != MeshcoreSetup.Pending) {
+            Text(
+                text = stringResource(R.string.lora_meshcore_setup_body),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("lora_setup_body"),
+            )
+        }
+        if (state.connection == LoraConnState.Ready) {
+            when (meshcore.setup) {
+                MeshcoreSetup.SetUp -> {
+                    OutlinedButton(
+                        onClick = onRestore,
+                        enabled = !state.provisioning,
+                        modifier = Modifier.testTag("lora_restore"),
+                    ) {
+                        Text(stringResource(R.string.lora_setup_restore_button))
+                    }
+                }
+
+                MeshcoreSetup.None, MeshcoreSetup.Unknown -> {
+                    Button(onClick = onAskSetup, enabled = !state.provisioning, modifier = Modifier.testTag("lora_setup")) {
+                        if (state.provisioning) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(12.dp))
+                            Text(stringResource(R.string.lora_provision_running))
+                        } else {
+                            Text(stringResource(R.string.lora_setup_button))
+                        }
+                    }
+                }
+
+                MeshcoreSetup.Pending -> {}
             }
+        }
+        state.provisionOutcome?.let { outcome ->
+            val (message, isError) =
+                if (outcome == LoraProvisionOutcome.Restored) R.string.lora_meshcore_restored to false else outcome.messageAndSeverity()
+            OutcomeLine(message = message, isError = isError, tag = "lora_provision_outcome", onDismiss = onDismissProvision)
         }
     }
 }
@@ -587,6 +724,116 @@ private fun SetupConfirmDialog(
     )
 }
 
+/**
+ * A MeshCore setup's confirmation (ADR 2026-11.gsqu's Stage 7 amendment): what Knit does to the board, that the erase can't
+ * be undone, how much it erases once the board has said, and — unless the board is known not to — that the board may share
+ * where it is, which Knit's setup ties to the user. Scrolls: the lines can outgrow a small screen.
+ */
+@Composable
+private fun MeshcoreSetupConfirmDialog(
+    erase: MeshcoreErase?,
+    eraseLoading: Boolean,
+    sharesPosition: Boolean?,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("lora_setup_dialog"),
+        title = { Text(stringResource(R.string.lora_setup_confirm_title)) },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(stringResource(R.string.lora_meshcore_setup_confirm_body))
+                Text(
+                    text = stringResource(R.string.lora_meshcore_setup_erase),
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.testTag("lora_meshcore_setup_erase"),
+                )
+                erase?.contacts?.takeIf { it > 0 }?.let { contacts ->
+                    val n = contacts.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                    Text(
+                        text = pluralStringResource(R.plurals.lora_meshcore_erase_contacts, n, n),
+                        modifier = Modifier.testTag("lora_meshcore_erase_contacts"),
+                    )
+                }
+                erase?.slots?.takeIf { it > 0 }?.let { slots ->
+                    Text(
+                        text = pluralStringResource(R.plurals.lora_meshcore_erase_channels, slots, slots),
+                        modifier = Modifier.testTag("lora_meshcore_erase_channels"),
+                    )
+                }
+                if (eraseLoading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                if (sharesPosition != false) {
+                    Text(
+                        text = stringResource(R.string.lora_meshcore_position),
+                        modifier = Modifier.testTag("lora_meshcore_position"),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, modifier = Modifier.testTag("lora_setup_confirm")) {
+                Text(stringResource(R.string.lora_setup_confirm_action))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+        },
+    )
+}
+
+/** A MeshCore setup found another board's record at this address (`ProvisionResult.DifferentBoard`): set it up over it? */
+@Composable
+private fun MeshcoreReplaceDialog(
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("lora_meshcore_replace_dialog"),
+        title = { Text(stringResource(R.string.lora_meshcore_replace_title)) },
+        text = { Text(stringResource(R.string.lora_meshcore_replace_body)) },
+        confirmButton = {
+            TextButton(onClick = onConfirm, modifier = Modifier.testTag("lora_meshcore_replace_confirm")) {
+                Text(stringResource(R.string.lora_meshcore_replace_action))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+        },
+    )
+}
+
+/**
+ * The MeshCore Forget could not clean the board now (`MeshcoreForgetResult.PENDING`): keeping it bound lets the next connection
+ * clean it, which is the default; forgetting it anyway leaves the board as it is.
+ */
+@Composable
+private fun MeshcoreForgetPendingDialog(
+    onKeep: () -> Unit,
+    onForgetAnyway: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onKeep,
+        modifier = Modifier.testTag("lora_meshcore_forget_dialog"),
+        title = { Text(stringResource(R.string.lora_meshcore_forget_pending_title)) },
+        text = { Text(stringResource(R.string.lora_meshcore_forget_pending_body)) },
+        confirmButton = {
+            TextButton(onClick = onKeep, modifier = Modifier.testTag("lora_meshcore_forget_keep")) {
+                Text(stringResource(R.string.lora_meshcore_forget_keep))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onForgetAnyway, modifier = Modifier.testTag("lora_meshcore_forget_anyway")) {
+                Text(stringResource(R.string.lora_meshcore_forget_anyway))
+            }
+        },
+    )
+}
+
 private fun LoraProvisionOutcome.messageAndSeverity(): Pair<Int, Boolean> =
     when (this) {
         LoraProvisionOutcome.Provisioned -> R.string.lora_provisioned to false
@@ -603,20 +850,51 @@ private fun LoraProvisionOutcome.messageAndSeverity(): Pair<Int, Boolean> =
 private fun StatusRow(state: LoraRadioUiState) {
     val label =
         when (state.connection) {
-            LoraConnState.Ready -> stringResource(R.string.lora_status_connected)
-            LoraConnState.Connecting -> stringResource(R.string.lora_status_connecting)
-            LoraConnState.Reconnecting -> stringResource(R.string.lora_status_reconnecting)
-            LoraConnState.NeedsPairing -> stringResource(R.string.lora_status_needs_pairing)
-            LoraConnState.Unavailable -> stringResource(R.string.lora_status_bt_off)
-            LoraConnState.Off -> stringResource(R.string.lora_status_off)
+            LoraConnState.Ready -> {
+                stringResource(R.string.lora_status_connected)
+            }
+
+            LoraConnState.Connecting -> {
+                stringResource(R.string.lora_status_connecting)
+            }
+
+            LoraConnState.Reconnecting -> {
+                stringResource(R.string.lora_status_reconnecting)
+            }
+
+            LoraConnState.NeedsPairing -> {
+                when {
+                    !state.wrongFirmware -> stringResource(R.string.lora_status_needs_pairing)
+                    state.meshcore != null -> stringResource(R.string.lora_status_wrong_firmware_meshcore)
+                    else -> stringResource(R.string.lora_status_wrong_firmware)
+                }
+            }
+
+            LoraConnState.Unavailable -> {
+                stringResource(R.string.lora_status_bt_off)
+            }
+
+            LoraConnState.Off -> {
+                stringResource(R.string.lora_status_off)
+            }
         }
     Column(modifier = Modifier.fillMaxWidth().testTag("lora_status")) {
         Text(label, style = MaterialTheme.typography.bodyMedium)
+        val meshcore = state.meshcore
+        if (meshcore != null) {
+            Text(
+                text = stringResource(R.string.lora_meshcore_kind),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("lora_meshcore_kind"),
+            )
+        }
         if (state.connection == LoraConnState.Ready) {
             val detail = MaterialTheme.typography.bodySmall
             val muted = MaterialTheme.colorScheme.onSurfaceVariant
             state.boardNodeNum?.let { Text(it, style = detail, color = muted) }
             state.firmware?.let { Text(stringResource(R.string.lora_firmware, it), style = detail, color = muted) }
+            if (meshcore != null) MeshcoreStatusRows(meshcore = meshcore, boardsHeard = state.boardsHeard)
             state.battery?.let { battery ->
                 Text(
                     text = batteryText(battery),
@@ -637,13 +915,15 @@ private fun StatusRow(state: LoraRadioUiState) {
             // counted from the frames that reached us, which a gateway may have relayed or backfilled on
             // their behalf from kilometres away — so "1 radio, 3 people" is normal, and reporting only the
             // second read as phantom hardware.
-            Text(
-                text = countText(R.plurals.lora_boards_heard, R.string.lora_boards_heard_zero, state.boardsHeard),
-                style = detail,
-                color = muted,
-                modifier = Modifier.testTag("lora_boards_heard"),
-            )
-            if (state.heard > 0 && state.heard != state.boardsHeard) {
+            if (meshcore == null) {
+                Text(
+                    text = countText(R.plurals.lora_boards_heard, R.string.lora_boards_heard_zero, state.boardsHeard),
+                    style = detail,
+                    color = muted,
+                    modifier = Modifier.testTag("lora_boards_heard"),
+                )
+            }
+            if (meshcore == null && state.heard > 0 && state.heard != state.boardsHeard) {
                 Text(
                     text = pluralStringResource(R.plurals.lora_peers_heard, state.heard, state.heard),
                     style = detail,
@@ -674,6 +954,80 @@ private fun StatusRow(state: LoraRadioUiState) {
         }
     }
 }
+
+/**
+ * A Ready MeshCore board's own rows (ADR 2026-11.gsqu's Stage 7 amendment): its radio as the board reports it, whether it
+ * floods under a default region scope, its battery voltage (MeshCore reports no percent), and the Knit radios heard — on
+ * MeshCore, the authors of what reached the board, since a post names no airing radio.
+ */
+@Composable
+private fun MeshcoreStatusRows(
+    meshcore: MeshcoreRows,
+    boardsHeard: Int,
+) {
+    val detail = MaterialTheme.typography.bodySmall
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val locale = LocalConfiguration.current.locales[0]
+    meshcore.radio()?.let { radio ->
+        val number = NumberFormat.getNumberInstance(locale).apply { maximumFractionDigits = KHZ_DIGITS }
+        Text(
+            text =
+                stringResource(
+                    R.string.lora_meshcore_radio,
+                    number.format(radio.freqKhz / KHZ_PER_MHZ),
+                    radio.spreadFactor,
+                    number.format(radio.bandwidthHz / HZ_PER_KHZ),
+                    radio.codingRate,
+                ),
+            style = detail,
+            color = muted,
+            modifier = Modifier.testTag("lora_meshcore_radio"),
+        )
+    }
+    meshcore.defaultScope?.let { scoped ->
+        Text(
+            text = stringResource(if (scoped) R.string.lora_meshcore_scope_set else R.string.lora_meshcore_scope_none),
+            style = detail,
+            color = muted,
+            modifier = Modifier.testTag("lora_meshcore_scope"),
+        )
+    }
+    meshcore.batteryMv?.let { mv ->
+        Text(
+            text = stringResource(R.string.lora_meshcore_battery, mv / MV_PER_V),
+            style = detail,
+            color = muted,
+            modifier = Modifier.testTag("lora_battery"),
+        )
+    }
+    Text(
+        text = countText(R.plurals.lora_meshcore_knit_radios, R.string.lora_meshcore_knit_radios_zero, boardsHeard),
+        style = detail,
+        color = muted,
+        modifier = Modifier.testTag("lora_boards_heard"),
+    )
+}
+
+/** The board's radio line, only once every part of it is known. */
+private class MeshcoreRadio(
+    val freqKhz: Long,
+    val spreadFactor: Int,
+    val bandwidthHz: Int,
+    val codingRate: Int,
+)
+
+private fun MeshcoreRows.radio(): MeshcoreRadio? {
+    val freq = freqKhz ?: return null
+    val sf = spreadFactor ?: return null
+    val bw = bandwidthHz ?: return null
+    val cr = codingRate ?: return null
+    return MeshcoreRadio(freq, sf, bw, cr)
+}
+
+private const val KHZ_DIGITS = 3
+private const val KHZ_PER_MHZ = 1_000.0
+private const val HZ_PER_KHZ = 1_000.0
+private const val MV_PER_V = 1_000f
 
 /**
  * "Battery 78% · 3.92 V" or, on external power (no [BoardBattery.percent]), "Plugged in · 4.10 V"; the

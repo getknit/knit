@@ -70,6 +70,11 @@ internal class MeshtasticBoardLink(
                     } ?: unaddressable()
                 }
 
+                // MeshCore's debug payload (Stage 7): no Meshtastic form, its own bridge (`…debug.LORATX`) is the raw path here.
+                is SendPurpose.Debug -> {
+                    unaddressable()
+                }
+
                 is SendPurpose.Admin -> {
                     direct(purpose.to, ack = false)?.let {
                         link.send(

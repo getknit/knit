@@ -17,6 +17,7 @@ import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.forward.ForwardRepository
+import app.getknit.knit.data.meshcore.MeshcoreSetupStore
 import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.RelayStatusRepository
@@ -34,7 +35,9 @@ import app.getknit.knit.location.LocationSource
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.lora.BoardKind
+import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.LoraStatusRepository
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreForget
 import app.getknit.knit.mesh.power.LowPowerSource
 import app.getknit.knit.transfer.TransferManager
 import app.getknit.knit.translate.ChatTranslation
@@ -64,6 +67,7 @@ import app.getknit.knit.ui.settings.SettingsViewModel
 import app.getknit.knit.ui.share.OutsideUris
 import app.getknit.knit.ui.yourmesh.YourMeshViewModel
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import org.koin.android.ext.koin.androidContext
@@ -113,6 +117,17 @@ val uiModule =
                 // Each bridged room by its own kind's facts, and the MeshCore board's own name (ADR 2026-11.gsqu, Stage 6).
                 loraRooms = get<LoraStatusRepository>().perKind,
                 meshcoreBoardName = get<MeshcoreClaimStore>().boardKey.map(::meshcoreBoardName),
+                // Whether the bound MeshCore board may share where it is, off its plane's status, where the build carries it.
+                meshcoreSharesPosition =
+                    if (BuildConfig.MESHCORE_PLANE) {
+                        getOrNull<LoraPlaneStatus>(loraPlane(BoardKind.MESHCORE))
+                            ?.status
+                            ?.map { it.meshcore?.sharesPosition }
+                            ?.distinctUntilChanged()
+                            ?: flowOf(null)
+                    } else {
+                        flowOf(null)
+                    },
             )
         }
         viewModel {
@@ -207,7 +222,20 @@ val uiModule =
                 awareSwitch = get(),
             )
         }
-        viewModel { BackupViewModel(androidContext(), get(), get()) }
+        viewModel {
+            BackupViewModel(
+                androidContext(),
+                get(),
+                get(),
+                // A restore loses this phone's MeshCore setup records: the dialog warns, where the build carries the plane.
+                meshcoreSetupOnPhone =
+                    if (BuildConfig.MESHCORE_PLANE) {
+                        getOrNull<MeshcoreSetupStore>()?.let { store -> suspend { store.anyRecord() } }
+                    } else {
+                        null
+                    },
+            )
+        }
         // ProfileDetailsViewModel takes the tapped peer's node id as a runtime param.
         viewModel { params ->
             ProfileDetailsViewModel(
@@ -280,8 +308,18 @@ val uiModule =
                 directLinks = DIRECT_LINKS_WIRED,
             )
         }
-        // The radio screen drives the Meshtastic board, the one kind it knows (ADR 2026-11.gsqu, Stage 2).
-        viewModel { LoraRadioViewModel(get(), get(loraPlane(BoardKind.MESHTASTIC)), get(), get()) }
+        // The radio screen drives the bound board: Meshtastic's plane, and MeshCore's with its Forget only where the build
+        // carries that plane (ADR 2026-11.gsqu's Stage 7 amendment); a release build resolves neither and reads as before.
+        viewModel {
+            LoraRadioViewModel(
+                settings = get(),
+                lora = get(loraPlane(BoardKind.MESHTASTIC)),
+                boards = get(),
+                notifier = get(),
+                meshcore = if (BuildConfig.MESHCORE_PLANE) getOrNull<LoraPlaneStatus>(loraPlane(BoardKind.MESHCORE)) else null,
+                forget = if (BuildConfig.MESHCORE_PLANE) getOrNull<MeshcoreForget>() else null,
+            )
+        }
         // What MainActivity opens on a worker before KnitApp composes — exactly what KnitApp's first composition
         // reads (ReviewPrompter → the database, MeshController → the identity keys), so those become cache hits —
         // and the Try again screen when the Keystore refuses (ADR 2026-10.47rw). SEED_DEMO builds skip the

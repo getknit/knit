@@ -263,6 +263,7 @@ private fun RestoreSection(
                     name = phase.manifest.displayName,
                     createdAt = phase.manifest.createdAt,
                     appVersion = phase.manifest.appVersionName,
+                    meshcoreSetup = phase.meshcoreSetup,
                     onConfirm = onConfirm,
                     onDismiss = onCancel,
                 )
@@ -363,6 +364,8 @@ private fun RestoreConfirmDialog(
     name: String?,
     createdAt: Long,
     appVersion: String,
+    // This phone keeps a MeshCore setup the restore loses (ADR 2026-11.gsqu's Stage 7 amendment): say so before it does.
+    meshcoreSetup: Boolean,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -379,6 +382,12 @@ private fun RestoreConfirmDialog(
                     },
                 )
                 Text(stringResource(R.string.backup_restore_confirm_body))
+                if (meshcoreSetup) {
+                    Text(
+                        text = stringResource(R.string.backup_restore_confirm_meshcore),
+                        modifier = Modifier.testTag("restore_confirm_meshcore"),
+                    )
+                }
             }
         },
         confirmButton = {

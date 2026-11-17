@@ -2,6 +2,7 @@ package app.getknit.knit.ui.lora
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.settings.KnitBoardSetup
 import app.getknit.knit.data.settings.SettingsStore
@@ -14,35 +15,80 @@ import app.getknit.knit.mesh.lora.BoardName
 import app.getknit.knit.mesh.lora.BoardOwner
 import app.getknit.knit.mesh.lora.BoardRef
 import app.getknit.knit.mesh.lora.BoardSettings
+import app.getknit.knit.mesh.lora.BoardSetupState
 import app.getknit.knit.mesh.lora.KnitChannel
 import app.getknit.knit.mesh.lora.LinkState
 import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.LoraSlot
+import app.getknit.knit.mesh.lora.LoraStatus
+import app.getknit.knit.mesh.lora.MeshcoreBoardFace
+import app.getknit.knit.mesh.lora.PairingCause
 import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.lora.ProvisionResult
 import app.getknit.knit.mesh.lora.PublicChannelPolicy
+import app.getknit.knit.mesh.lora.ReplaceToken
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreForget
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreForgetResult
 import app.getknit.knit.notifications.Notifier
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
- * A bonded board the user can bind the LoRa plane to. [pickable] is false for a MeshCore board: it is listed, but there
- * is no MeshCore plane to bind it to until ADR 2026-11.gsqu's Stage 5, and binding it as Meshtastic would only dial the
- * wrong firmware.
+ * A bonded board the user can bind the LoRa plane to, of [kind]: the directory's guess, with a device it cannot place offered
+ * as Meshtastic, as before there was a second kind. [pickable] is false for a MeshCore board in a build without the MeshCore
+ * plane (`BuildConfig.MESHCORE_PLANE`, ADR 2026-11.gsqu): listed, but binding it as Meshtastic would only dial the wrong
+ * firmware.
  */
 data class BoardOption(
     val address: String,
     val name: String,
     val selected: Boolean,
     val pickable: Boolean = true,
+    val kind: BoardKind = BoardKind.MESHTASTIC,
 )
+
+/** Whether this phone set the bound MeshCore board up for Knit, as the radio screen words it (`BoardSetupState`). */
+enum class MeshcoreSetup { None, SetUp, Pending, Unknown }
+
+/**
+ * What the radio screen shows of a bound MeshCore board (ADR 2026-11.gsqu's Stage 7 amendment). Every fact but [setup] and
+ * [sharesPosition] is the Ready board's and null while it is away; [setup] is this phone's record, shown away too.
+ */
+data class MeshcoreRows(
+    val firmware: String? = null,
+    val freqKhz: Long? = null,
+    val spreadFactor: Int? = null,
+    val bandwidthHz: Int? = null,
+    /** The coding rate's denominator: 5 for 4/5. */
+    val codingRate: Int? = null,
+    /** Whether the board floods under a default region scope its own app set; Knit never writes one. */
+    val defaultScope: Boolean? = null,
+    val batteryMv: Int? = null,
+    /** Whether the board may put where it is on the air (null: not read yet); the setup confirmation says so unless false. */
+    val sharesPosition: Boolean? = null,
+    val setup: MeshcoreSetup = MeshcoreSetup.Unknown,
+)
+
+/** What a MeshCore setup would erase, read when its confirmation opens: counts, null for one the board did not answer. */
+data class MeshcoreErase(
+    val contacts: Long?,
+    val slots: Int?,
+)
+
+/** A MeshCore Forget's answer worth a line: it failed (ask again), or the board was not the one Knit set up. */
+enum class MeshcoreForgetNotice { Failed, Mismatch }
 
 /**
  * A board on a modem preset other than the one a stock board in its region picks. Two radios on different
@@ -168,6 +214,25 @@ data class LoraRadioUiState(
     val dedicated: Boolean = false,
     /** The open confirmation is the dedicated one, which is a different bargain and says so. */
     val confirmDedicated: Boolean = false,
+    /**
+     * The build carries a second board kind (`BuildConfig.MESHCORE_PLANE`), so the picker's wording names both, never
+     * Meshtastic alone.
+     */
+    val anyKind: Boolean = false,
+    /** The bound MeshCore board's rows, in a build carrying its plane; null otherwise, which hides every MeshCore row. */
+    val meshcore: MeshcoreRows? = null,
+    /** The board twice showed no service of the bound kind: the wrong firmware, or reflashed since it was paired. */
+    val wrongFirmware: Boolean = false,
+    /** What the open MeshCore setup confirmation would erase, once read; [eraseLoading] while it is being read. */
+    val erase: MeshcoreErase? = null,
+    val eraseLoading: Boolean = false,
+    /** A MeshCore setup found another board's record at this address: the screen asks before setting it up over it. */
+    val confirmReplace: Boolean = false,
+    /** A MeshCore Forget could not clean the board now: Keep it (the default) or Forget anyway. */
+    val forgetPending: Boolean = false,
+    /** A MeshCore Forget is running (it may wait on the board's session). */
+    val forgetting: Boolean = false,
+    val forgetNotice: MeshcoreForgetNotice? = null,
 )
 
 /**
@@ -175,14 +240,30 @@ data class LoraRadioUiState(
  * live link status. Mirrors [app.getknit.knit.ui.relay.InternetRelayViewModel]; there is no consent sheet
  * because a LoRa board is the user's own hardware, not a third-party relay.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 internal class LoraRadioViewModel(
     private val settings: SettingsStore,
+    /** The Meshtastic plane. */
     private val lora: LoraPlaneStatus,
     boards: BoardDirectory,
     private val notifier: Notifier,
+    /** The MeshCore plane (ADR 2026-11.gsqu's Stage 7 amendment), only where the build carries it. */
+    private val meshcore: LoraPlaneStatus? = null,
+    /** The one Forget of a bound MeshCore board (`MeshcoreForget`), beside [meshcore]. */
+    private val forget: MeshcoreForget? = null,
+    meshcorePlane: Boolean = BuildConfig.MESHCORE_PLANE,
 ) : ViewModel() {
+    /**
+     * Whether this screen offers MeshCore at all: the flag, its plane and its Forget. Off, the screen reads exactly as a
+     * Meshtastic-only build's: no MeshCore row, no MeshCore pick, no MeshCore action.
+     */
+    private val withMeshcore = meshcorePlane && meshcore != null && forget != null
+
     // Transient, action-driven UI state (the provisioning spinner + its outcome) that isn't in a settings flow.
     private val provisionState = MutableStateFlow(ProvisionState())
+
+    /** The erase preview's read, cancelled when its confirmation closes. */
+    private var previewJob: Job? = null
 
     // Bumped to re-read the bonded list (the screen does so on resume, after the user pairs a board in the
     // system settings); the toggle that reveals the devices the board filter hides.
@@ -199,7 +280,10 @@ internal class LoraRadioViewModel(
         val room: Boolean,
         val meshcoreRoom: Boolean,
         val meshcoreBound: Boolean,
-    )
+    ) {
+        /** A MeshCore board is bound and this screen drives it: the MeshCore rows and actions, never Meshtastic's. */
+        fun meshcoreRows(withMeshcore: Boolean): Boolean = withMeshcore && meshcoreBound
+    }
 
     private val switches =
         combine(
@@ -217,21 +301,37 @@ internal class LoraRadioViewModel(
         val showAll: Boolean,
     )
 
+    /** The bound board's address, whichever kind it is (v1 binds one board at a time); MeshCore's only where it is offered. */
+    private val boundAddress: Flow<String?> =
+        if (withMeshcore) {
+            combine(settings.loraDeviceAddress, settings.meshcoreDeviceAddress) { meshtastic, meshcore -> meshtastic ?: meshcore }
+        } else {
+            settings.loraDeviceAddress
+        }
+
     private val picker =
-        combine(settings.loraDeviceAddress, refresh, showAll) { address, _, all ->
+        combine(boundAddress, refresh, showAll) { address, _, all ->
             Picker(address, runCatching { boards.bonded() }.getOrDefault(emptyList()), all)
         }
+
+    /** The bound kind's plane status: MeshCore's while a MeshCore board is bound and offered, else Meshtastic's. */
+    private val status: Flow<LoraStatus> =
+        meshcore?.takeIf { withMeshcore }?.let { plane ->
+            settings.boundBoardKind.flatMapLatest { kind -> if (kind == BoardKind.MESHCORE) plane.status else lora.status }
+        } ?: lora.status
 
     val state: StateFlow<LoraRadioUiState> =
         combine(
             switches,
             picker,
             settings.loraChannelIndex,
-            lora.status,
+            status,
             provisionState,
         ) { switches, picker, channel, status, provision ->
             val address = picker.address
-            val ready = status.state as? LinkState.Ready
+            val meshcoreRows = switches.meshcoreRows(withMeshcore)
+            // A MeshCore board's link carries none of Meshtastic's channel table, owner or radio config: its rows are its own.
+            val ready = (status.state as? LinkState.Ready)?.takeUnless { meshcoreRows }
             // The name the board gives the bound slot: "Knit" once the setup has written it there.
             val channelName =
                 ready
@@ -255,18 +355,18 @@ internal class LoraRadioViewModel(
                 boardAddress = address,
                 channel = channel,
                 connection = status.state.toConnState(),
-                boardNodeNum = status.boardNodeNum?.let { "!%08x".format(Locale.ROOT, it.toInt()) },
-                snr = status.lastSnr,
-                rssi = status.lastRssi,
+                boardNodeNum = status.boardNodeNum?.takeUnless { meshcoreRows }?.let { "!%08x".format(Locale.ROOT, it.toInt()) },
+                snr = status.lastSnr.takeUnless { meshcoreRows },
+                rssi = status.lastRssi.takeUnless { meshcoreRows },
                 heard = status.heard,
                 boardsHeard = status.boardsHeard,
-                firmware = ready?.board?.firmwareVersion,
+                firmware = if (meshcoreRows) status.meshcore?.firmware else ready?.board?.firmwareVersion,
                 battery = ready?.let { status.battery },
-                airtimePercent = ready?.let { status.airtime?.let(::airtimePercent) },
+                airtimePercent = (status.state as? LinkState.Ready)?.let { status.airtime?.let(::airtimePercent) },
                 radioConfig = ready?.radio?.let { "${it.region} ${it.modemPreset}" },
                 channelName = channelName,
                 publicChannel = ready?.let { PublicChannelPolicy.primaryName(it.channels, it.radio) },
-                boardSetUp = setUp,
+                boardSetUp = if (meshcoreRows) status.meshcore?.setup == BoardSetupState.SET_UP else setUp,
                 meshName = ready?.board?.owner?.longName,
                 knitName = wanted?.longName,
                 // Only a *known* identity asks to be finished: firmware that never sends its own NodeInfo
@@ -280,17 +380,64 @@ internal class LoraRadioViewModel(
                 boards =
                     BoardFilter
                         .visible(picker.bonded, address, picker.showAll)
-                        .map { BoardOption(it.address, it.name, it.address == address, pickable = it.kind != BoardKind.MESHCORE) },
+                        .map {
+                            BoardOption(
+                                address = it.address,
+                                name = it.name,
+                                selected = it.address == address,
+                                pickable = it.kind != BoardKind.MESHCORE || withMeshcore,
+                                kind = it.kind ?: BoardKind.MESHTASTIC,
+                            )
+                        },
                 hiddenBoards = BoardFilter.hidden(picker.bonded, address),
                 showAllBoards = picker.showAll,
                 anyBonded = picker.bonded.isNotEmpty(),
                 provisioning = provision.running,
                 provisionOutcome = provision.outcome,
                 dedicatedSlot = ready?.radio?.let { LoraSlot.forRegion(it.region, it.modemPreset) },
-                dedicated = status.airtime?.dedicated == true,
+                dedicated = !meshcoreRows && status.airtime?.dedicated == true,
                 confirmDedicated = provision.dedicated,
+                anyKind = withMeshcore,
+                meshcore = if (meshcoreRows) (status.meshcore ?: MeshcoreBoardFace()).toRows() else null,
+                wrongFirmware = status.state.wrongFirmware(),
+                erase = provision.erase,
+                eraseLoading = provision.eraseLoading,
+                confirmReplace = provision.replace != null,
+                forgetPending = provision.forgetPending,
+                forgetting = provision.forgetting,
+                forgetNotice = provision.forgetNotice,
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), LoraRadioUiState())
+
+    private fun MeshcoreBoardFace.toRows(): MeshcoreRows =
+        MeshcoreRows(
+            firmware = firmware,
+            freqKhz = freqKhz,
+            spreadFactor = spreadFactor,
+            bandwidthHz = bandwidthHz,
+            codingRate = codingRate,
+            defaultScope = defaultScope,
+            batteryMv = batteryMv,
+            sharesPosition = sharesPosition,
+            setup =
+                when (setup) {
+                    BoardSetupState.NONE -> MeshcoreSetup.None
+                    BoardSetupState.SET_UP -> MeshcoreSetup.SetUp
+                    BoardSetupState.PENDING -> MeshcoreSetup.Pending
+                    BoardSetupState.UNKNOWN -> MeshcoreSetup.Unknown
+                },
+        )
+
+    /** The session ended because the board twice showed no service of the bound kind ([PairingCause.NO_SERVICE]). */
+    private fun LinkState.wrongFirmware(): Boolean =
+        when (this) {
+            is LinkState.NeedsPairing -> cause == PairingCause.NO_SERVICE
+            is LinkState.StaleBond -> cause == PairingCause.NO_SERVICE
+            else -> false
+        }
+
+    /** Whether a MeshCore board is bound now and this screen drives it. */
+    private suspend fun meshcoreBound(): Boolean = withMeshcore && settings.boundBoardKind.first() == BoardKind.MESHCORE
 
     /**
      * Whether the board's primary channel has been renamed away from its preset's default. The firmware hashes
@@ -375,19 +522,107 @@ internal class LoraRadioViewModel(
         }
     }
 
+    /**
+     * Binds [board]. Never a MeshCore board in a build without its plane (ADR 2026-11.gsqu, Stage 3d): the screen greys it
+     * out too. With a MeshCore board bound, it is forgotten first ([MeshcoreForget], ADR 2026-11.gsqu's Stage 7 amendment), so
+     * its cleanup and the withdrawal of its published key run before another board takes its place; a cleanup the board is
+     * away for asks Keep it or Forget anyway, the pick waiting on the answer.
+     */
     fun pickBoard(board: BoardOption) {
-        // Never a MeshCore board onto the Meshtastic session (ADR 2026-11.gsqu, Stage 3d): the screen greys it out too.
-        if (!board.pickable) return
-        viewModelScope.launch { settings.setLoraDevice(board.address, board.name) }
+        if (!board.pickable || board.selected || provisionState.value.forgetting) return
+        viewModelScope.launch {
+            if (meshcoreBound()) forgetThen(anyway = false, pick = board) else bind(board)
+        }
     }
 
+    /** Forgets the bound board: a MeshCore one through its Forget ([pickBoard]'s rules), a Meshtastic one at once. */
     fun forgetBoard() {
-        viewModelScope.launch { settings.clearLoraDevice() }
+        if (provisionState.value.forgetting) return
+        viewModelScope.launch {
+            if (meshcoreBound()) forgetThen(anyway = false, pick = null) else settings.clearLoraDevice()
+        }
     }
 
-    /** Opens the setup confirmation; what it costs the board is spelled out there, not here. */
+    /** "Keep it": the MeshCore board stays bound so its next connection runs the cleanup; a pick waiting on it is dropped. */
+    fun keepBoard() {
+        provisionState.update { it.copy(forgetPending = false, pendingPick = null) }
+    }
+
+    /** "Forget anyway": the binding goes with the cleanup still owed (a later binding of that board runs it), then the pick. */
+    fun forgetAnyway() {
+        val pick = provisionState.value.pendingPick
+        provisionState.update { it.copy(forgetPending = false, pendingPick = null) }
+        viewModelScope.launch { forgetThen(anyway = true, pick = pick) }
+    }
+
+    private suspend fun forgetThen(
+        anyway: Boolean,
+        pick: BoardOption?,
+    ) {
+        val meshcoreForget = forget ?: return
+        if (provisionState.value.forgetting) return
+        provisionState.update { it.copy(forgetting = true, forgetNotice = null, outcome = null) }
+        // The Forget switches the plane off with the board gone; a board picked in its place keeps the switch as it was.
+        val wasOn = settings.loraEnabled.first()
+        val answer =
+            try {
+                meshcoreForget.forget(anyway)
+            } finally {
+                provisionState.update { it.copy(forgetting = false) }
+            }
+        when (answer) {
+            MeshcoreForgetResult.CLEARED, MeshcoreForgetResult.FORGOTTEN_PENDING, MeshcoreForgetResult.NOT_BOUND -> {
+                pick?.let { bind(it, keepOn = wasOn) }
+            }
+
+            MeshcoreForgetResult.MISMATCH -> {
+                provisionState.update { it.copy(forgetNotice = MeshcoreForgetNotice.Mismatch) }
+                pick?.let { bind(it, keepOn = wasOn) }
+            }
+
+            MeshcoreForgetResult.PENDING -> {
+                provisionState.update { it.copy(forgetPending = true, pendingPick = pick) }
+            }
+
+            MeshcoreForgetResult.FAILED -> {
+                provisionState.update { it.copy(forgetNotice = MeshcoreForgetNotice.Failed) }
+            }
+        }
+    }
+
+    private suspend fun bind(
+        board: BoardOption,
+        keepOn: Boolean = false,
+    ) {
+        if (board.kind == BoardKind.MESHCORE) {
+            settings.bindBoard(BoardKind.MESHCORE, board.address, board.name)
+        } else {
+            settings.setLoraDevice(board.address, board.name)
+        }
+        if (keepOn) settings.setLoraEnabled(true)
+    }
+
+    /**
+     * Opens the setup confirmation; what it costs the board is spelled out there, not here. A MeshCore board's also reads
+     * what the setup would erase ([LoraPlaneStatus.setupPreview]), fresh, while it is open.
+     */
     fun askSetup() {
-        provisionState.update { it.copy(confirm = true, dedicated = false, outcome = null) }
+        provisionState.update { it.copy(confirm = true, dedicated = false, outcome = null, erase = null, eraseLoading = false) }
+        previewJob?.cancel()
+        previewJob =
+            viewModelScope.launch {
+                if (!meshcoreBound()) return@launch
+                provisionState.update { it.copy(eraseLoading = true) }
+                try {
+                    val preview =
+                        runCatching { meshcore?.setupPreview() }
+                            .onFailure { if (it is CancellationException) throw it }
+                            .getOrNull()
+                    provisionState.update { it.copy(erase = preview?.let { p -> MeshcoreErase(p.contacts, p.slots) }) }
+                } finally {
+                    provisionState.update { it.copy(eraseLoading = false) }
+                }
+            }
     }
 
     /** Opens the confirmation for the dedicated-frequency setup (ADR 067), which spells out the trade. */
@@ -396,7 +631,25 @@ internal class LoraRadioViewModel(
     }
 
     fun dismissSetup() {
-        provisionState.update { it.copy(confirm = false) }
+        previewJob?.cancel()
+        provisionState.update { it.copy(confirm = false, erase = null, eraseLoading = false) }
+    }
+
+    /**
+     * Sets a MeshCore board up over the other board's record its setup found ([ProvisionResult.DifferentBoard]): refused again
+     * if that record changed since.
+     */
+    fun replaceBoard() {
+        val token = provisionState.value.replace ?: return
+        if (provisionState.value.running) return
+        viewModelScope.launch {
+            provisionState.update { it.copy(running = true, outcome = null, replace = null) }
+            provisionMeshcore(ProvisionMode.Setup, replace = token)
+        }
+    }
+
+    fun dismissReplace() {
+        provisionState.update { it.copy(replace = null) }
     }
 
     /**
@@ -430,29 +683,65 @@ internal class LoraRadioViewModel(
     private fun provision(mode: ProvisionMode) {
         if (provisionState.value.running) return
         viewModelScope.launch {
-            provisionState.update { it.copy(running = true, outcome = null, confirm = false) }
-            val recorded = settings.loraBoardSetup.first()
-            when (val result = lora.provisionKnitChannel(mode, recorded?.toIntervals())) {
-                is ProvisionResult.Provisioned -> {
-                    settings.setLoraChannelIndex(result.index)
-                    settings.rememberSetup(result)
-                    // The board's channel table is unchanged either way, so the result cannot say which
-                    // direction the radio moved; the mode can.
-                    val outcome = if (mode == ProvisionMode.SetupShared) LoraProvisionOutcome.Shared else result.toOutcome()
-                    provisionState.value = ProvisionState(outcome = outcome)
-                }
+            provisionState.update { it.copy(running = true, outcome = null, confirm = false, forgetNotice = null) }
+            if (meshcoreBound()) provisionMeshcore(mode) else provisionMeshtastic(mode)
+        }
+    }
 
-                ProvisionResult.Restored -> {
-                    settings.clearLoraBoardSetup()
-                    settings.setLoraEnabled(false)
-                    provisionState.value = ProvisionState(outcome = LoraProvisionOutcome.Restored)
-                }
+    private suspend fun provisionMeshtastic(mode: ProvisionMode) {
+        val recorded = settings.loraBoardSetup.first()
+        when (val result = lora.provisionKnitChannel(mode, recorded?.toIntervals())) {
+            is ProvisionResult.Provisioned -> {
+                settings.setLoraChannelIndex(result.index)
+                settings.rememberSetup(result)
+                // The board's channel table is unchanged either way, so the result cannot say which
+                // direction the radio moved; the mode can.
+                val outcome = if (mode == ProvisionMode.SetupShared) LoraProvisionOutcome.Shared else result.toOutcome()
+                settled(outcome)
+            }
 
-                else -> {
-                    provisionState.value = ProvisionState(outcome = result.toOutcome())
-                }
+            ProvisionResult.Restored -> {
+                settings.clearLoraBoardSetup()
+                settings.setLoraEnabled(false)
+                settled(LoraProvisionOutcome.Restored)
+            }
+
+            else -> {
+                settled(result.toOutcome())
             }
         }
+    }
+
+    /**
+     * A MeshCore setup or restore (ADR 2026-11.gsqu's Stage 7 amendment): the record is the plane's own (SQLCipher), so nothing
+     * here is written to settings; only a restore switches the plane off, as Meshtastic's does. A setup that finds another
+     * board's record at the address ([ProvisionResult.DifferentBoard]) asks before [replaceBoard] sets it up over it.
+     */
+    private suspend fun provisionMeshcore(
+        mode: ProvisionMode,
+        replace: ReplaceToken? = null,
+    ) {
+        val plane = meshcore ?: return settled(LoraProvisionOutcome.Failed)
+        val result = if (replace != null) plane.provisionReplacing(replace) else plane.provisionKnitChannel(mode)
+        when (result) {
+            is ProvisionResult.DifferentBoard -> {
+                provisionState.update { it.copy(running = false, replace = result.token) }
+            }
+
+            ProvisionResult.Restored -> {
+                settings.setLoraEnabled(false)
+                settled(LoraProvisionOutcome.Restored)
+            }
+
+            else -> {
+                settled(result.toOutcome())
+            }
+        }
+    }
+
+    /** Ends a provisioning tap on [outcome], leaving a Forget's state alone. */
+    private fun settled(outcome: LoraProvisionOutcome) {
+        provisionState.update { it.copy(running = false, outcome = outcome, confirm = false, dedicated = false) }
     }
 
     /**
@@ -490,19 +779,27 @@ internal class LoraRadioViewModel(
             channelNum = channelNum,
         )
 
-    /** Dismisses the last provisioning outcome banner. */
+    /** Dismisses the last provisioning outcome banner, and a Forget's notice. */
     fun dismissProvisionOutcome() {
-        provisionState.update { it.copy(outcome = null) }
+        provisionState.update { it.copy(outcome = null, forgetNotice = null) }
     }
 
     private fun ProvisionResult.toOutcome(): LoraProvisionOutcome =
         when (this) {
             is ProvisionResult.Provisioned -> if (alreadyPresent) LoraProvisionOutcome.AlreadyPresent else LoraProvisionOutcome.Provisioned
+
             ProvisionResult.Restored -> LoraProvisionOutcome.Restored
+
             ProvisionResult.NoFreeSlot -> LoraProvisionOutcome.NoFreeSlot
+
             is ProvisionResult.NoDedicatedSlot -> LoraProvisionOutcome.NoDedicatedSlot
+
             is ProvisionResult.Failed -> LoraProvisionOutcome.Failed
+
             is ProvisionResult.NotReady -> LoraProvisionOutcome.NotReady
+
+            // Handled before this: [provisionMeshcore] asks before a replace.
+            is ProvisionResult.DifferentBoard -> LoraProvisionOutcome.Failed
         }
 
     private fun LinkState.toConnState(): LoraConnState =
@@ -521,6 +818,16 @@ internal class LoraRadioViewModel(
         val confirm: Boolean = false,
         /** The pending confirmation is for the dedicated setup rather than the shared one. */
         val dedicated: Boolean = false,
+        /** What the open MeshCore confirmation would erase, and whether it is being read. */
+        val erase: MeshcoreErase? = null,
+        val eraseLoading: Boolean = false,
+        /** The other board's record a MeshCore setup found, for [replaceBoard]; the replace dialog is open while set. */
+        val replace: ReplaceToken? = null,
+        val forgetting: Boolean = false,
+        val forgetPending: Boolean = false,
+        /** The board picked while the bound MeshCore one's cleanup could not run: bound after "Forget anyway". */
+        val pendingPick: BoardOption? = null,
+        val forgetNotice: MeshcoreForgetNotice? = null,
     )
 
     private companion object {

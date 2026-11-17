@@ -38,4 +38,10 @@ internal class MeshcoreSetupStore(
     override suspend fun markPending(address: String): Boolean = dao.markPending(address) > 0
 
     override suspend fun clear(address: String) = dao.clear(address)
+
+    /**
+     * Whether this phone keeps a setup record for any board (ADR 2026-11.gsqu's Stage 7 amendment): what a restore loses, since
+     * the table is this phone's own and a backup carries it empty (`BackupTables.DEVICE_LOCAL`).
+     */
+    suspend fun anyRecord(): Boolean = dao.any()
 }

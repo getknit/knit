@@ -1,10 +1,17 @@
 package app.getknit.knit.mesh.lora.meshcore
 
+import app.getknit.knit.mesh.lora.BoardSetupState
 import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.LinkState
+import app.getknit.knit.mesh.lora.PairingCause
 import app.getknit.knit.mesh.lora.RefusalClass
+import app.getknit.knit.mesh.lora.ReplaceToken
 import app.getknit.knit.mesh.lora.SendResult
+import app.getknit.knit.mesh.lora.SetupPreview
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
@@ -33,10 +40,13 @@ internal sealed interface MeshcoreLinkState {
 
     data class NeedsPairing(
         val address: String,
+        /** A refused bond, or a board that twice showed no NUS service ([PairingCause.NO_SERVICE], Stage 7). */
+        val cause: PairingCause = PairingCause.AUTH,
     ) : MeshcoreLinkState
 
     data class StaleBond(
         val address: String,
+        val cause: PairingCause = PairingCause.AUTH,
     ) : MeshcoreLinkState
 
     /**
@@ -60,8 +70,8 @@ internal fun meshcoreDownState(detail: Any): LinkState =
         MeshcoreLinkState.Handshaking -> LinkState.Handshaking(null)
         is MeshcoreLinkState.Disconnected -> LinkState.Disconnected(detail.reason, detail.retryAtMs, detail.streak)
         MeshcoreLinkState.Unavailable -> LinkState.Unavailable
-        is MeshcoreLinkState.NeedsPairing -> LinkState.NeedsPairing(detail.address)
-        is MeshcoreLinkState.StaleBond -> LinkState.StaleBond(detail.address)
+        is MeshcoreLinkState.NeedsPairing -> LinkState.NeedsPairing(detail.address, detail.cause)
+        is MeshcoreLinkState.StaleBond -> LinkState.StaleBond(detail.address, detail.cause)
         else -> LinkState.Idle
     }
 
@@ -95,8 +105,23 @@ internal interface MeshcoreBoardOps {
     /** Unbinds the board at an address: its Restore now if it is the connected one, else its record left pending. */
     suspend fun unbind(address: String): MeshcoreUnbind
 
+    /**
+     * [setup] over another board's record at this address (Stage 7): only while that record is still the one [token] was
+     * issued for ([MeshcoreSetupResult.DifferentBoard]); every step of a setup runs as ever.
+     */
+    suspend fun setupReplacing(token: ReplaceToken): MeshcoreSetupResult = MeshcoreSetupResult.NotReady
+
+    /** What a setup would erase on the Ready board, read fresh on the actor (Stage 7); null when it is not Ready. */
+    suspend fun setupPreview(): SetupPreview? = null
+
+    /**
+     * Whether this phone set the bound board up (Stage 7): read off its record at start and moved by the actor's own reads and
+     * writes, so the screen shows it while the board is away too. Null before anything was read.
+     */
+    val setupState: StateFlow<MeshcoreSetupView?> get() = NO_SETUP_VIEW
+
     /** This phone's consent for the board each Ready is on, from its setup record: the actor's alone, in its order. */
-    val consent: kotlinx.coroutines.flow.StateFlow<MeshcoreConsent?>
+    val consent: StateFlow<MeshcoreConsent?>
 
     /** The keys Knit teaches the board, ranked (`MeshcoreContacts`, Stage 5b-2): the only keys sent to or pinned. Any thread. */
     fun setKnitContacts(
@@ -130,6 +155,14 @@ internal data class MeshcoreSlot(
     val empty: Boolean,
     val knit: Boolean,
 )
+
+/** The setup state of the board at [address] as the session last read or wrote its record (Stage 7). */
+internal data class MeshcoreSetupView(
+    val address: String,
+    val state: BoardSetupState,
+)
+
+private val NO_SETUP_VIEW: StateFlow<MeshcoreSetupView?> = MutableStateFlow<MeshcoreSetupView?>(null).asStateFlow()
 
 /** The latest read of the bound Knit slot: whether it still held Knit's channel, and when (the session's clock). */
 internal data class MeshcoreSlotReading(
@@ -175,6 +208,8 @@ internal class MeshcoreDetail(
      * null only in a test's detail.
      */
     val publicSlot: MeshcorePublicSlot? = null,
+    /** Whether the board airs a position (`SELF_INFO`, [MeshcoreProto.sharesPosition], Stage 7): never the position itself. */
+    val sharesPosition: Boolean = false,
 ) {
     private val key = publicKey.copyOf()
 
@@ -315,6 +350,16 @@ internal sealed interface MeshcoreSetupResult {
     ) : MeshcoreSetupResult
 
     data object NotReady : MeshcoreSetupResult
+
+    /**
+     * Refused before any write (Stage 7): this phone keeps a record at the address for another board's key — the same hardware
+     * reset or reflashed, or another board. [token] stands for that record; [MeshcoreBoardOps.setupReplacing] replaces it.
+     */
+    class DifferentBoard(
+        val token: ReplaceToken,
+    ) : MeshcoreSetupResult {
+        override fun toString(): String = "DifferentBoard"
+    }
 }
 
 /** The outcome of [MeshcoreSession.restore]: what was put back, and what was found changed by someone else and left. */
@@ -364,6 +409,13 @@ internal class MeshcoreConsent(
     private val bytes = key?.copyOf()
     private val sigBytes = sig?.takeIf { granted && key != null }?.copyOf()
 
+    /**
+     * The order this consent was made in, across every session of the process (Stage 7): a Forget fences the claim at the
+     * latest one made, so a grant made before it — still on its way through the hooks' collector, or a claim edit retried —
+     * can never publish the key after the Forget returns.
+     */
+    val seq: Long = SEQ.incrementAndGet()
+
     /** The board's key, null for a withdrawal published with the board away (an unbind). */
     val key: ByteArray? get() = bytes?.copyOf()
 
@@ -371,6 +423,13 @@ internal class MeshcoreConsent(
     val sig: ByteArray? get() = sigBytes?.copyOf()
 
     override fun toString(): String = "MeshcoreConsent(granted=$granted, signed=${sigBytes != null})"
+
+    companion object {
+        private val SEQ = AtomicLong()
+
+        /** The seq of the latest consent made so far: what a Forget fences the claim at. */
+        fun latestSeq(): Long = SEQ.get()
+    }
 }
 
 /** What an unbind did with the board's setup record ([MeshcoreBoardOps.unbind]). */
@@ -383,6 +442,12 @@ internal enum class MeshcoreUnbind {
 
     /** No record for that board: nothing to clean up. */
     NOTHING,
+
+    /**
+     * The connected board is not the one the record at its address is for (another key: the hardware reset or reflashed, or
+     * another board; Stage 7): Knit cannot clean it. The record is left pending, and the consent withdrawn.
+     */
+    MISMATCH,
 
     /**
      * The record could not be marked pending (a failed or timed-out write, lora N3): its next connection would read it as
@@ -539,6 +604,9 @@ internal class MeshcoreCounters {
 
     /** Taught keys whose prefix a listed contact of another key shares, kept from sends for the connection (security B3). */
     val prefixContests = AtomicLong()
+
+    /** A setup refused because this phone keeps a record at the address for another board's key (Stage 7). */
+    val differentBoards = AtomicLong()
 
     /** A Restore or cleanup refused: the connected board is not the one its record is for, or not bonded (security S1). */
     val restoreMismatches = AtomicLong()
