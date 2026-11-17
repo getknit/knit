@@ -9,14 +9,12 @@ import app.getknit.knit.mesh.lab.MeshLab
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.robolectric.shadows.ShadowLog
-import java.lang.management.ManagementFactory
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -136,9 +134,13 @@ class MeshSim(
     // Every router counter as the walk began: what booting the nodes did, taken off what the report says moved.
     private var countersAtWalk: Map<String, Long> = emptyMap()
 
+    // The report's headline numbers, put as each part of it is read, and written last ([SimSummary]).
+    private val summary = SimSummary()
+
     /** Boots, walks, gathers and reports. */
     suspend fun play(): SimReport {
         val lines = mutableListOf("mesh sim: park walk, $scenario")
+        summary.putAll(scenario.summaryValues())
         lines += boot().also(progress)
         outingStart = lab.clock.now()
         // Launched once the nodes exist, so they never read them before boot, and sample nothing of the boot.
@@ -195,11 +197,16 @@ class MeshSim(
         val outcomes = outcomes(endedAt)
         lines += "DMs between friends, by how the two stood when it was sent (no gather: the end is the walk's end):"
         lines += deliveryLines(outcomes)
+        summary.putAll(deliverySummary(outcomes))
         lines += roomLine(endedAt)
-        lines += "frames refused since boot: ${drops().ifEmpty { "none" }}"
-        lines += movedCounters(counterTotals(nodes), since = countersAtWalk)
+        lines += "frames refused since boot: ${drops(nodes).ifEmpty { "none" }}"
+        val totals = counterTotals(nodes)
+        lines += movedCounters(totals, since = countersAtWalk)
+        summary.putAll(headlineCounters(totals, since = countersAtWalk))
         lines += custodyLines()
         lines += "oracle: not asked, the outing had no gather"
+        summary["oracle"] = "skipped"
+        lines += summary.lines()
         return SimReport(lines.joinToString("\n"), outcomes.size, unsent.get(), emptyList(), converged = false, checked = false)
     }
 
@@ -209,14 +216,26 @@ class MeshSim(
         custodyLock.withLock {
             takeCustodySample()
             val missing = outcomes(Long.MAX_VALUE, ticks = false).filter { it.latencyMs == null }
+            val neverArrived = missing.mapNotNullTo(HashSet()) { dmIds[it.event] }
+            summary.putAll(custodyPressure.summaryValues(neverArrived))
             custodyPressure.lines(
-                neverArrived = missing.mapNotNullTo(HashSet()) { dmIds[it.event] },
+                neverArrived = neverArrived,
                 untallied = dms.size - dmIds.size,
                 slowestSampleMs = slowestSampleMs.get(),
             )
         }
 
     private suspend fun walkAndReport(lines: MutableList<String>): SimReport {
+        val endedAt = walkLines(lines)
+        progress("the walk is over: ${dms.size} DMs and ${rooms.size} room posts sent, ${unsent.get()} never sent")
+        if (!scenario.gather) return walkOnlyReport(lines, endedAt)
+        val gathering = gatherLine(endedAt)
+        return gatherReport(lines, endedAt, gathering)
+    }
+
+    // The walk itself, then its lines: the field's shape, the frames, the queues, custody and the machine. Returns when
+    // it ended.
+    private suspend fun walkLines(lines: MutableList<String>): Long {
         val before = RouterCounters.of(nodes)
         countersAtWalk = counterTotals(nodes)
         val inboundBefore = nodes.map { it.transport.inboundWaited to it.transport.inboundRefused }
@@ -227,35 +246,63 @@ class MeshSim(
         walkEnded = true
         val cores = (cpuNanos() - cpuBefore).toDouble() / ((endedAt - startedAt) * NANOS_PER_MS)
         lines += contacts.summary()
-        lines += "frames in the run: ${RouterCounters.of(nodes) - before}; room posts moderation refused ${refused.get()}"
-        lines += inboundLine("in the run", since = inboundBefore, peak = heldPeakWalk.get())
+        summary.putAll(contacts.summaryValues())
+        val walked = RouterCounters.of(nodes) - before
+        lines += "frames in the run: $walked; room posts moderation refused ${refused.get()}"
+        summary.putAll(walked.summaryValues(suffix = "walk"))
+        summary["room_refused"] = refused.get()
+        lines += inboundLine("in the run", since = inboundBefore, peak = heldPeakWalk.get(), key = "walk")
         val custody = nodes.map { it.custodyIds().size }
         lines += "custody at the end of the run: mean ${custody.average().toInt()} rows, max ${custody.max()}"
+        summary["custody_rows_walk_end_mean"] = custody.average().toInt()
+        val heapMb = usedHeapMb()
         lines +=
-            "machine: ${"%.2f".format(Locale.ROOT, cores)} cores busy, heap ${usedHeapMb()} MB after the run, " +
+            "machine: ${"%.2f".format(Locale.ROOT, cores)} cores busy, heap $heapMb MB after the run, " +
             "${Thread.activeCount()} threads; the world ran at most ${worldLateMs.get()} ms late, a send at most " +
             "${sendLateMs.get()} ms late, ${unsent.get()} sends fell past the end of the run"
-        progress("the walk is over: ${dms.size} DMs and ${rooms.size} room posts sent, ${unsent.get()} never sent")
-        if (!scenario.gather) return walkOnlyReport(lines, endedAt)
-        val gathering = gatherLine(endedAt)
+        summary.putAll(
+            listOf(
+                "cores_busy_walk" to cores,
+                "heap_mb_walk_end" to heapMb,
+                "world_late_ms" to worldLateMs.get(),
+                "send_late_ms" to sendLateMs.get(),
+                "unsent" to unsent.get(),
+            ),
+        )
+        return endedAt
+    }
+
+    // The gathered outing's report, after the walk's lines: delivery, the gather, the settle, and the oracle's verdict.
+    private suspend fun gatherReport(
+        lines: MutableList<String>,
+        endedAt: Long,
+        gathering: String,
+    ): SimReport {
         val outcomes = outcomes(endedAt)
         lines += "DMs between friends, by how the two stood when it was sent:"
         lines += deliveryLines(outcomes)
+        summary.putAll(deliverySummary(outcomes))
         lines += roomLine(endedAt)
         lines += gathering
         val stranded = outcomes.filter { it.latencyMs == null }.map { it.event.body }
+        summary["gather_dms_missing"] = stranded.size
         val settled = settleLine()
         settled?.let { lines += it.text }
         lines += probeLine(after = if (settled == null) "the gather" else "the settle")
         sampleFollowed()
         lines += lostLines()
-        if (settled != null && stranded.isNotEmpty()) {
-            val still = outcomes(Long.MAX_VALUE, ticks = false).count { it.latencyMs == null }
-            lines += "settle: ${stranded.size - still} of the ${stranded.size} DMs missing after the gather arrived during it"
+        if (settled != null) {
+            val still = if (stranded.isEmpty()) 0 else outcomes(Long.MAX_VALUE, ticks = false).count { it.latencyMs == null }
+            if (stranded.isNotEmpty()) {
+                lines += "settle: ${stranded.size - still} of the ${stranded.size} DMs missing after the gather arrived during it"
+            }
+            summary["settle_dms_still_missing"] = still
         }
-        lines += "frames refused over the whole outing: ${drops().ifEmpty { "none" }}"
-        lines += movedCounters(counterTotals(nodes), since = countersAtWalk)
-        lines += inboundLine("over the whole outing", peak = heldPeak.get(), where = heldPeakWhere)
+        lines += "frames refused over the whole outing: ${drops(nodes).ifEmpty { "none" }}"
+        val totals = counterTotals(nodes)
+        lines += movedCounters(totals, since = countersAtWalk)
+        summary.putAll(headlineCounters(totals, since = countersAtWalk))
+        lines += inboundLine("over the whole outing", peak = heldPeak.get(), where = heldPeakWhere, key = "outing")
         lines += custodyLines()
         // With a DM missing the oracle's verdict is known, and each of its waits would run to its end to say so; so it
         // is with custody the settle watched not converge for at least as long as the oracle would wait. A shorter settle
@@ -268,6 +315,8 @@ class MeshSim(
                 else -> oracle()
             }
         lines += "oracle: " + (failure ?: "every DM thread converged (messages, ticks, custody parity across the field)")
+        summary["oracle"] = oracleWord(failure, stranded = stranded.isNotEmpty(), unsettled = unsettled)
+        lines += summary.lines()
         return SimReport(lines.joinToString("\n"), outcomes.size, unsent.get(), stranded, converged = failure == null)
     }
 
@@ -305,6 +354,8 @@ class MeshSim(
         }
         val perNode = (usedHeapMb() - heapBefore).toDouble() / scenario.walkers
         val heapEach = "%.1f".format(Locale.ROOT, perNode)
+        summary["boot_ms_each"] = bootMs
+        summary["heap_mb_each"] = perNode
         return "boot: ${scenario.walkers} nodes, $bootMs ms each, $heapEach MB of heap each, $heapBefore MB before any"
     }
 
@@ -438,6 +489,9 @@ class MeshSim(
         probesMissing()
         val took = probes.map { p -> p.arrivedAt?.let { (it - p.sentAt) / MS_PER_S } }
         val missing = took.count { it == null }
+        summary["probes_sent"] = probes.size
+        summary["probes_max_s"] = took.filterNotNull().maxOrNull()
+        summary["probes_missing"] = missing
         return "probes: ${probes.size} DMs sent to a friend over a link the gather raised, in as its links came up, " +
             "arrived by " + took.filterNotNull().sorted().joinToString(" ") { "${it}s" } + " (polled)" +
             if (missing > 0) "; $missing not in by the end of $after" else ""
@@ -561,18 +615,6 @@ class MeshSim(
             if (row == null) "is gone" else "pendingKey=${row.pendingKey}, ticked=$ticked"
     }
 
-    // The ordinary messages [holder] has in [conversation], by body; [parked] keeps the ones still waiting for a key.
-    private suspend fun rows(
-        holder: LabNode,
-        conversation: String,
-        parked: Boolean = false,
-    ): Map<String, MessageEntity> =
-        holder.messages
-            .observeNewestMessages(conversation, THREAD_WINDOW)
-            .first()
-            .filter { it.kind == MessageEntity.KIND_NORMAL && (parked || !it.pendingKey) }
-            .associateBy { it.body }
-
     // Where the DMs that never arrived are stuck, as far as the two ends can tell: the first thing a diagnosis asks.
     private suspend fun strandedLine(stranded: List<DmOutcome>): String {
         var parked = 0
@@ -598,11 +640,15 @@ class MeshSim(
         since: List<Pair<Long, Long>> = nodes.map { 0L to 0L },
         peak: Long,
         where: String = "",
+        key: String,
     ): String {
         val slots = scenario.inboundSlots ?: return "inbound queues: no bound, nothing held back $phase"
         val waits = nodes.mapIndexed { i, node -> node.transport.inboundWaited - since[i].first }
         val pages = nodes.indices.sumOf { nodes[it].transport.inboundRefused - since[it].second }
         val most = waits.withIndex().maxBy { it.value }
+        summary["inbound_waits_$key"] = waits.sum()
+        summary["inbound_held_peak_$key"] = peak
+        summary["inbound_pages_dropped_$key"] = pages
         return "inbound queues of $slots: link readers waited for a slot ${waits.sum()} times $phase, on " +
             "${waits.count { it > 0 }} of ${nodes.size} nodes, at most ${most.value} on ${nodes[most.index].name}; at most " +
             "$peak frames held on one node's links at once ${where.ifEmpty { "(sampled)" }}; $pages pages dropped"
@@ -641,7 +687,7 @@ class MeshSim(
         }
         trail[tookS] = gap.missing
         val missingTrail = "rows missing: ${trail.entries.joinToString { "+${it.key}s ${it.value}" }}"
-        val described = described()
+        val described = described(nodes)
         val kinds =
             gap.union
                 .groupingBy { described[it]?.get(1) ?: "?" }
@@ -652,75 +698,17 @@ class MeshSim(
         // leave no trace here.
         val cap = if (gap.held.any { it.size >= ForwardRepository.DEFAULT_MAX_ROWS }) ", stores at custody's cap" else ""
         val held = "the field's ${gap.union.size} ids by type$cap: ${kinds.joinToString { "${it.key} ${it.value}" }}"
+        summary["settle_parity_s"] = if (gap.parity) tookS else null
+        summary["settle_rows_missing_end"] = gap.missing
         if (gap.parity) {
             return Settled("settle: every store held the same ids ${tookS}s after the gather ($missingTrail); $held", true)
         }
         return Settled(
             "settle: no parity ${tookS}s after the gather: ${gap.odd.size} ids odd, ${gap.missing} rows missing on " +
-                "${gap.short} of ${nodes.size} stores ($missingTrail); $held\n" + oddLines(gap, described),
+                "${gap.short} of ${nodes.size} stores ($missingTrail); $held\n" + oddLines(gap, described, nodes),
             false,
         )
     }
-
-    // Every id some store holds, as `[id, type, sender→recipient@…]` (the first store's row that names it).
-    private suspend fun described(): Map<String, List<String>> {
-        val described = HashMap<String, List<String>>()
-        for (node in nodes) {
-            for (row in node.custodyFrames()) {
-                val parts = row.split(':', limit = DESCRIBED_PARTS)
-                described.putIfAbsent(parts[0], parts)
-            }
-        }
-        return described
-    }
-
-    // The odd ids, grouped by type, author and recipient: how many stores hold them, and the author's rows and the whole
-    // store at the ones that lack them.
-    private suspend fun oddLines(
-        gap: CustodyGap,
-        described: Map<String, List<String>>,
-    ): String {
-        val groups = gap.odd.groupBy { id -> described[id]?.let { "${it[1]} ${it[2].substringBefore('@')}" } ?: "?" }
-        val lines = mutableListOf<String>()
-        for ((what, ids) in groups.entries.sortedByDescending { it.value.size }.take(ODD_GROUPS)) {
-            val lacking = gap.held.indices.filter { i -> ids.any { it !in gap.held[i] } }
-            val holders = ids.map { id -> gap.held.count { id in it } }
-            val prefix = described[ids.first()]?.get(2)?.substringBefore('→')
-            val author = prefix?.let { p -> nodes.firstOrNull { it.nodeId.startsWith(p) } }
-            val authorRows = author?.let { a -> lacking.map { nodes[it].custodiedFrom(a.nodeId) } }.orEmpty()
-            val rows = lacking.map { gap.held[it].size }
-            lines += "  ${ids.size} × ${named(what)}: held by ${holders.min()}–${holders.max()} of ${nodes.size}; " +
-                "the ${lacking.size} stores lacking one hold ${span(authorRows)} of ${author?.name ?: "its author"}'s rows, " +
-                "${span(rows)} rows in all"
-        }
-        return lines.joinToString("\n")
-    }
-
-    // `chat abc123→def456` with walker names for the node id prefixes.
-    private fun named(what: String): String = nodes.fold(what) { text, node -> text.replace(node.nodeId.take(NODE_PREFIX), node.name) }
-
-    private fun span(values: List<Int>): String = if (values.isEmpty()) "?" else "${values.min()}–${values.max()}"
-
-    /** Every store's live ids, and how far they are from all holding the same. */
-    private class CustodyGap(
-        val held: List<Set<String>>,
-    ) {
-        val union: Set<String> = held.flatMapTo(HashSet()) { it }
-        val odd: Set<String> = union.filterTo(HashSet()) { id -> held.any { id !in it } }
-        val missing: Int = held.sumOf { union.size - it.size }
-        val short: Int = held.count { it.size < union.size }
-        val parity: Boolean get() = odd.isEmpty()
-    }
-
-    private fun drops(): Map<String, Long> =
-        nodes
-            .flatMap {
-                it.metrics
-                    .frames()
-                    .dropsByReason.entries
-            }.groupBy({ it.key.name }, { it.value })
-            .mapValues { it.value.sum() }
-            .filterValues { it > 0 }
 
     // Every DM sent, read off the recipient's own row (when it arrived) and, with [ticks], the sender's (whether its tick
     // came back: a query per message, which the gather's poll leaves out).
@@ -746,12 +734,6 @@ class MeshSim(
         }
     }
 
-    // The bodies of [from]'s DMs to [to] whose tick has not come back.
-    private suspend fun untickedBodies(
-        from: LabNode,
-        to: LabNode,
-    ): Set<String> = from.missingAcks(from.dmWith(to), listOf(from, to)).keys
-
     // How far a room post got: the share of the other walkers holding it when the run ended, and after the gather.
     private suspend fun roomLine(endedAt: Long): String {
         val held = nodes.map { rows(it, Conversations.NEARBY) }
@@ -765,6 +747,9 @@ class MeshSim(
             }
         }
         val audience = rooms.size * (scenario.walkers - 1)
+        summary["room_sent"] = rooms.size
+        summary["room_in_run_pct"] = share(inRun, audience)
+        summary["room_by_end_pct"] = share(byEnd, audience)
         return "room posts: ${rooms.size} sent, reached ${percent(inRun, audience)} of the other walkers in the run, " +
             "${percent(byEnd, audience)} by the end"
     }
@@ -793,23 +778,10 @@ class MeshSim(
         return null
     }
 
-    private suspend fun usedHeapMb(): Long {
-        repeat(2) {
-            System.gc()
-            delay(GC_PAUSE_MS)
-        }
-        return Runtime.getRuntime().let { (it.totalMemory() - it.freeMemory()) / BYTES_PER_MB }
-    }
-
-    private fun cpuNanos(): Long = (ManagementFactory.getOperatingSystemMXBean() as com.sun.management.OperatingSystemMXBean).processCpuTime
-
     private companion object {
         const val NANOS_PER_MS = 1_000_000L
         const val MS_PER_S = 1_000L
-        const val BYTES_PER_MB = 1_048_576L
-        const val GC_PAUSE_MS = 150L
         const val LOG_CLEAR_MS = 30_000L
-        const val THREAD_WINDOW = 5_000
 
         /** Two rounds of the 60 s re-offer and some: what a frame left in custody needs to cross the gathered field. */
         const val GATHER_MS = 180_000L
@@ -833,12 +805,5 @@ class MeshSim(
         const val SENT_ID = 3
         const val FRAME_ID_CHARS = 8
         const val SECONDS_PER_MINUTE = 60L
-
-        /** `id:type:sender→recipient@…`, as [LabNode.custodyFrames] writes a row. */
-        const val DESCRIBED_PARTS = 3
-        const val ODD_GROUPS = 12
-
-        /** How much of a node id [LabNode.custodyFrames] prints. */
-        const val NODE_PREFIX = 6
     }
 }

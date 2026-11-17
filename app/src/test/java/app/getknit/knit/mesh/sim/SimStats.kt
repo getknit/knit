@@ -81,6 +81,19 @@ class ContactLog(
             "largest component mean ${"%.1f".format(Locale.ROOT, meanLargest)} of $walkers, " +
             "all joined ${percent(joinedTicks, ticks)} of the run"
     }
+
+    /** [summary]'s numbers for [SimSummary]. */
+    fun summaryValues(): List<Pair<String, Any?>> {
+        val ended = contactsMs.sorted()
+        return listOf(
+            "contacts_made" to raised,
+            "contact_p50_s" to tenths(percentile(ended, P50)),
+            "degree_mean" to if (ticks == 0) null else 2.0 * linkTicks / ticks / walkers,
+            "degree_max" to maxDegree,
+            "largest_component_mean" to if (ticks == 0) null else largestSum.toDouble() / ticks,
+            "all_joined_pct" to share(joinedTicks, ticks),
+        )
+    }
 }
 
 /** The size of the biggest set of walkers [links] join into one mesh. */

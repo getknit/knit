@@ -107,6 +107,41 @@ class CustodyPressureTest {
         assertEquals(0, sample.atCap)
     }
 
+    @Test
+    fun theSummaryNamesWhenTheCapCameAndTheDmsCustodyLostForGood() {
+        val walk = listOf(listOf(row("a", RowKind.ROOM)), listOf(row("lost", RowKind.DM_UNDELIVERED)))
+        val undelivered = mapOf("lost" to 1, "late" to 0)
+        pressure.sample(atS = 60, phase = "walk", now = 60_000, stores = walk, undelivered = undelivered)
+        // One store at the cap of 3, the other not; the only copy of "lost" has gone.
+        val oneFull = listOf(listOf(row("a", RowKind.ROOM), row("b", RowKind.ROOM), row("c", RowKind.ROOM)), emptyList())
+        pressure.sample(atS = 120, phase = "walk", now = 120_000, stores = oneFull, undelivered = undelivered)
+        val bothFull = listOf(oneFull[0], listOf(row("d", RowKind.ROOM), row("e", RowKind.ROOM), row("f", RowKind.ROOM)))
+        pressure.sample(atS = 180, phase = "gather", now = 180_000, stores = bothFull, undelivered = undelivered)
+
+        // "late" never arrived either, but no store ever held it: it is no custody loss.
+        val values = pressure.summaryValues(neverArrived = setOf("lost", "late")).toMap()
+        assertEquals(120L, values["custody_first_at_cap_s"])
+        assertEquals(180L, values["custody_all_at_cap_s"])
+        assertEquals(3, values["custody_mean_rows_max"])
+        assertEquals(1, values["custody_dms_copies_evicted"])
+        assertEquals(1, values["custody_dms_sender_evicted"])
+        assertEquals(1, values["custody_dms_unheld"])
+        assertEquals(1, values["custody_dms_lost_for_good"])
+        assertEquals(
+            "one that arrived after all is no loss",
+            0,
+            pressure.summaryValues(neverArrived = setOf("late")).toMap()["custody_dms_lost_for_good"],
+        )
+    }
+
+    @Test
+    fun theSummaryHasNoCapTimeWhileNoStoreIsFull() {
+        pressure.sample(atS = 60, phase = "walk", now = 60_000, stores = listOf(listOf(row("a", RowKind.ROOM))), undelivered = emptyMap())
+        val values = pressure.summaryValues(neverArrived = emptySet()).toMap()
+        assertEquals(null, values["custody_first_at_cap_s"])
+        assertEquals(null, values["custody_all_at_cap_s"])
+    }
+
     private fun row(
         id: String,
         kind: RowKind,

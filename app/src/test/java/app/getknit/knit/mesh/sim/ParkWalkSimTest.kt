@@ -19,7 +19,9 @@ import kotlin.math.sqrt
  *
  * **A measurement, not a check.** It takes the minutes it simulates and prints what the mesh did with them:
  * `-Pknit.meshSim=<seed>` runs it (`knit.meshSimWalkers`, `knit.meshSimMinutes` and `knit.meshSimHeap` size
- * it) and every other run leaves it out. The report goes to `app/build/mesh-sim/`. It asserts that the run
+ * it) and every other run leaves it out. The report goes to `app/build/mesh-sim/`, or to `knit.meshSimOut`, named for
+ * the outing and `knit.meshSimTag`, and never over an earlier report: a second run of the same outing writes `-2`. It
+ * ends in a `summary:` block of `key=value` lines that `scripts/sim-compare.py` lines up across runs. It asserts that the run
  * was a fair one (the machine sent the whole workload on time) and the lab's own invariant: once everyone has
  * gathered, no DM is still missing and the oracle converges. A failure is a finding about the mesh or the
  * machine, with the report in its message.
@@ -57,9 +59,10 @@ class ParkWalkSimTest {
                     gather = System.getProperty(GATHER) != "false",
                 )
             val bound = scenario.inboundSlots?.let { "-q$it" }.orEmpty() + if (scenario.gather) "" else "-walk"
-            val out = File("build/mesh-sim").apply { mkdirs() }.resolve("park-walk-s$seed-w$walkers-m$minutes$bound.txt")
+            val tag = System.getProperty(TAG)?.let { "-$it" }.orEmpty()
+            val dir = File(System.getProperty(OUT) ?: "build/mesh-sim").apply { mkdirs() }
+            val out = freshReport(dir, "park-walk-s$seed-w$walkers-m$minutes$bound$tag")
             // The report's file holds the outing's progress while it runs, and the report once it is over.
-            out.writeText("")
             val report = MeshSim(lab, scenario) { out.appendText("$it\n") }.play()
             println(report.text)
             out.writeText(report.text + "\n")
@@ -84,6 +87,12 @@ class ParkWalkSimTest {
 
         /** `false` ends the outing at the walk: a measurement with no gather, settle or oracle. */
         const val GATHER = "knit.meshSimGather"
+
+        /** The directory the report goes to, in place of `build/mesh-sim` (relative to the app module). */
+        const val OUT = "knit.meshSimOut"
+
+        /** A word the report's file name ends in: the build or the radio a run measured, to tell two runs apart. */
+        const val TAG = "knit.meshSimTag"
         const val DEFAULT_WALKERS = 12
         const val DEFAULT_MINUTES = 4
         const val MS_PER_MINUTE = 60_000L

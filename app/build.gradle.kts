@@ -816,16 +816,21 @@ android {
                 // `knit.meshSimMinutes` size the outing; `knit.meshSimHeap` (say `4g`) lifts the fork's heap for a
                 // crowd the 1 GiB above cannot hold. `knit.meshSimInbound` (`phone` or a count) bounds each router's
                 // inbound queue as a phone's is; `knit.meshSimSettleMinutes` watches custody parity after the gather;
-                // `knit.meshSimGather=false` ends the outing at the walk.
+                // `knit.meshSimGather=false` ends the outing at the walk. `knit.meshSimOut` (an absolute directory) and
+                // `knit.meshSimTag` say where the report goes and what its name ends in. An outing is a measurement, so
+                // it runs every time it is asked: never up to date, never from the cache.
                 val meshSim = providers.gradleProperty("knit.meshSim").orNull
                 if (meshSim == null) {
                     test.filter.excludeTestsMatching("app.getknit.knit.mesh.sim.*SimTest")
                 } else {
                     test.systemProperty("knit.meshSim", meshSim)
                     val sizes = listOf("knit.meshSimWalkers", "knit.meshSimMinutes")
-                    (sizes + listOf("knit.meshSimInbound", "knit.meshSimSettleMinutes", "knit.meshSimGather")).forEach { key ->
+                    val shapes = listOf("knit.meshSimInbound", "knit.meshSimSettleMinutes", "knit.meshSimGather")
+                    (sizes + shapes + listOf("knit.meshSimOut", "knit.meshSimTag")).forEach { key ->
                         providers.gradleProperty(key).orNull?.let { test.systemProperty(key, it) }
                     }
+                    test.outputs.upToDateWhen { false }
+                    test.outputs.cacheIf { false }
                     providers.gradleProperty("knit.meshSimHeap").orNull?.let { test.maxHeapSize = it }
                 }
                 // A build-cache hit (the workstation's local cache, GitLab CI's) restores an earlier run's results and

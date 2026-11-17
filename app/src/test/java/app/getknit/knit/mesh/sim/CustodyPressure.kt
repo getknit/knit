@@ -162,6 +162,22 @@ class CustodyPressure(
         return lines
     }
 
+    /**
+     * [lines]' numbers for [SimSummary]: when a store first reached the cap and when every store had (seconds into the
+     * outing, at the sample that first saw it), the most rows a sample's mean reached, and what custody took from DMs
+     * it was still carrying.
+     */
+    fun summaryValues(neverArrived: Set<String>): List<Pair<String, Any?>> =
+        listOf(
+            "custody_first_at_cap_s" to samples.firstOrNull { it.atCap > 0 }?.atS,
+            "custody_all_at_cap_s" to samples.firstOrNull { it.stores > 0 && it.atCap == it.stores }?.atS,
+            "custody_mean_rows_max" to samples.maxOfOrNull { it.meanRows },
+            "custody_dms_copies_evicted" to copiesEvicted.size,
+            "custody_dms_sender_evicted" to senderEvicted.size,
+            "custody_dms_unheld" to unheld.size,
+            "custody_dms_lost_for_good" to unheld.count { it in neverArrived },
+        )
+
     /** One sample's line of the report. */
     fun line(s: Sample): String {
         val total =

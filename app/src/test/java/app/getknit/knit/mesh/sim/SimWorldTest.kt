@@ -3,11 +3,17 @@ package app.getknit.knit.mesh.sim
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 /** The simulator's pure parts: the walk, the radio, the workload and the arithmetic of the report. */
 class SimWorldTest {
+    @get:Rule
+    val tmp = TemporaryFolder()
+
     private fun walk(seed: Long) =
         RandomWaypoint(
             seed = seed,
@@ -153,7 +159,108 @@ class SimWorldTest {
         assertTrue(lines[3], lines[3].contains("p90 0.2s") && lines[3].contains("max 0.2s"))
     }
 
+    @Test
+    fun theSummaryIsOneKeyValueLinePerNumberInTheOrderFirstPut() {
+        val summary = SimSummary()
+        summary["seed"] = 1
+        summary["degree_mean"] = 2.5
+        summary["probes_max_s"] = null
+        summary["oracle"] = "pass"
+        summary["seed"] = 2
+        assertEquals(listOf("summary:", "  seed=2", "  degree_mean=2.50", "  probes_max_s=none", "  oracle=pass"), summary.lines())
+        assertThrows(IllegalArgumentException::class.java) { summary["Bad Key"] = 1 }
+        assertThrows(IllegalArgumentException::class.java) { summary["oracle"] = "did not converge" }
+    }
+
+    @Test
+    fun theSummaryCountsDeliveryAsTheReportLinesDo() {
+        val dm = SimEvent.Dm(atMs = 1, from = 0, to = 1, body = "x")
+        val outcomes =
+            listOf(
+                DmOutcome(dm, Reach.DIRECT, latencyMs = 200, arrivedInRun = true, acked = true),
+                DmOutcome(dm, Reach.PARTITIONED, latencyMs = 90_000, arrivedInRun = false, acked = false),
+                DmOutcome(dm, Reach.PARTITIONED, latencyMs = null, arrivedInRun = false, acked = false),
+            )
+        val values = deliverySummary(outcomes).toMap()
+        assertEquals(Reach.entries.size.inc() * DELIVERY_KEYS, values.size)
+        assertEquals(1, values["dm_direct_sent"])
+        assertEquals(100, values["dm_direct_in_run_pct"])
+        assertEquals("0.2", values["dm_direct_p50_s"])
+        assertEquals(0, values["dm_path_sent"])
+        assertNull("nothing sent, no share", values["dm_path_in_run_pct"])
+        assertEquals(0, values["dm_partitioned_in_run_pct"])
+        assertEquals(50, values["dm_partitioned_by_end_pct"])
+        // The one that arrived after the run counts towards no latency, as in the report's lines.
+        assertNull(values["dm_partitioned_p50_s"])
+        assertEquals(33, values["dm_all_in_run_pct"])
+        assertEquals("0.2", values["dm_all_p90_s"])
+        // The prose says the same of the same DMs: the two are computed apart, so they are held to each other here.
+        val lines = deliveryLines(outcomes)
+        assertTrue(lines[2], lines[2].contains("arrived in run   0%") && lines[2].contains("arrived by the end 50%"))
+        assertTrue(lines[3], lines[3].contains("arrived in run  33%") && lines[3].contains("p50 0.2s p90 0.2s"))
+    }
+
+    @Test
+    fun theContactSummaryReadsNoneBeforeAnyStepAndCountsTheSteps() {
+        val log = ContactLog(walkers = 3)
+        val before = log.summaryValues().toMap()
+        assertEquals(0, before["contacts_made"])
+        assertNull(before["contact_p50_s"])
+        assertNull(before["degree_mean"])
+        assertNull(before["largest_component_mean"])
+        assertNull(before["all_joined_pct"])
+
+        val ab = Link(0, 1)
+        val bc = Link(1, 2)
+        log.record(atMs = 0, LinkChanges(raised = listOf(ab, bc), dropped = emptyList()), links = setOf(ab, bc))
+        log.record(atMs = 4_000, LinkChanges(raised = emptyList(), dropped = listOf(bc)), links = setOf(ab))
+        val after = log.summaryValues().toMap()
+        assertEquals(2, after["contacts_made"])
+        assertEquals("4.0", after["contact_p50_s"])
+        // Two links then one, over three walkers and two steps: (2·2 + 2·1) / 2 / 3.
+        assertEquals(1.0, after["degree_mean"])
+        assertEquals(2, after["degree_max"])
+        assertEquals(2.5, after["largest_component_mean"])
+        assertEquals(50, after["all_joined_pct"])
+    }
+
+    @Test
+    fun theOracleWordSaysWhyAGatheredOutingNeverAskedIt() {
+        assertEquals("pass", oracleWord(failure = null, stranded = false, unsettled = false))
+        assertEquals("fail", oracleWord(failure = "w1–w2 did not converge", stranded = false, unsettled = false))
+        // A stranded DM decides before an unsettled field: it is the stronger reason.
+        assertEquals("stranded", oracleWord(failure = "not asked", stranded = true, unsettled = true))
+        assertEquals("unsettled", oracleWord(failure = "not asked", stranded = false, unsettled = true))
+    }
+
+    @Test
+    fun aReportNeverOverwritesAnEarlierOne() {
+        val dir = tmp.newFolder()
+        val first = freshReport(dir, "park-walk-s1")
+        first.writeText("seed 1's report")
+        val second = freshReport(dir, "park-walk-s1")
+        val third = freshReport(dir, "park-walk-s1")
+        assertEquals("park-walk-s1.txt", first.name)
+        assertEquals("park-walk-s1-2.txt", second.name)
+        assertEquals("park-walk-s1-3.txt", third.name)
+        assertEquals("seed 1's report", first.readText())
+        assertEquals("", second.readText())
+    }
+
+    @Test
+    fun aHeadlineCounterIsWhatMovedAndAMissingOneIsNoneUnlessItIsAMapEntry() {
+        val since = mapOf("frames.framesOriginated" to 10L, "seals.ctlDmSealedBy[PROFILE_FANOUT]" to 4L)
+        val now = mapOf("frames.framesOriginated" to 25L, "seals.ctlDmSealedBy[PROFILE_FANOUT]" to 4L)
+        val values = headlineCounters(now, since).toMap()
+        assertEquals(15L, values["frames_originated_outing"])
+        assertEquals(0L, values["seals_profile_fanout_outing"])
+        assertEquals("a map entry that never counted", 0L, values["profile_republished_no_row_outing"])
+        assertNull("a plain counter that is gone", values["frames_relayed_outing"])
+    }
+
     private companion object {
+        /** Sent, in-run share, by-end share, p50 and p90, per reach and for all. */
+        const val DELIVERY_KEYS = 5
         const val FIELD_M = 100.0
         const val EPSILON = 1e-6
     }

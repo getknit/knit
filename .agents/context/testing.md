@@ -910,6 +910,13 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   report lands in `app/build/mesh-sim/`: contacts made and how long they lasted, DM delivery and latency by
   how the two ends stood at the send (linked, a path apart, partitioned), room reach, frames per plane of the
   router, custody rows, and what the run cost the machine.
+- **Compare seeds against seeds, with the summary.** Every report ends in a `summary:` block of `key=value` lines
+  (`SimSummary.kt`): the scenario, then the headline numbers of the lines above it. `scripts/sim-compare.py` reads
+  any number of reports or directories (`label=dir` names a variant), groups them by the outing's shape and
+  prints every key as `mean [min..max]` per variant, side by side. `-Pknit.meshSimOut=<absolute dir>` sends the
+  report elsewhere (keep long runs on the data drive), `-Pknit.meshSimTag=<word>` ends its file name, and a run
+  never overwrites an earlier report: the same outing again writes `-2`. An outing is never up to date and never
+  comes from Gradle's cache.
 - **A red run is a finding, not a flake.** It fails when the machine let scheduled sends fall past the end of
   the run (an unfair run), when a DM is still missing once everyone has gathered, or when the lab's oracle
   does not converge after it. The report is in the failure's message.
