@@ -139,6 +139,9 @@ class MeshSim(
     // The report's headline numbers, put as each part of it is read, and written last ([SimSummary]).
     private val summary = SimSummary()
 
+    // What the air links did from the boot's end: taken once the nodes exist ([boot]).
+    private lateinit var airOuting: AirTally
+
     /** Boots, walks, gathers and reports. */
     suspend fun play(): SimReport {
         val lines = mutableListOf("mesh sim: park walk, $scenario")
@@ -146,6 +149,7 @@ class MeshSim(
         summary["radio"] = radio.name
         summary.putAll(radio.summaryValues())
         lines += boot().also(progress)
+        airOuting = AirTally(nodes)
         outingStart = lab.clock.now()
         // Launched once the nodes exist, so they never read them before boot, and sample nothing of the boot.
         return coroutineScope {
@@ -204,6 +208,7 @@ class MeshSim(
         summary.putAll(deliverySummary(outcomes))
         lines += roomLine(endedAt)
         lines += "frames refused since boot: ${drops(nodes).ifEmpty { "none" }}"
+        airLines(lines, airOuting, "over the whole outing", key = "outing")
         val totals = counterTotals(nodes)
         lines += movedCounters(totals, since = countersAtWalk)
         summary.putAll(headlineCounters(totals, since = countersAtWalk))
@@ -243,6 +248,7 @@ class MeshSim(
         val before = RouterCounters.of(nodes)
         countersAtWalk = counterTotals(nodes)
         val inboundBefore = nodes.map { it.transport.inboundWaited to it.transport.inboundRefused }
+        val airWalk = AirTally(nodes)
         val cpuBefore = cpuNanos()
         val startedAt = lab.clock.now()
         walkAndTalk()
@@ -256,6 +262,7 @@ class MeshSim(
         summary.putAll(walked.summaryValues(suffix = "walk"))
         summary["room_refused"] = refused.get()
         lines += inboundLine("in the run", since = inboundBefore, peak = heldPeakWalk.get(), key = "walk")
+        airLines(lines, airWalk, "in the run", key = "walk")
         val custody = nodes.map { it.custodyIds().size }
         lines += "custody at the end of the run: mean ${custody.average().toInt()} rows, max ${custody.max()}"
         summary["custody_rows_walk_end_mean"] = custody.average().toInt()
@@ -307,6 +314,7 @@ class MeshSim(
         lines += movedCounters(totals, since = countersAtWalk)
         summary.putAll(headlineCounters(totals, since = countersAtWalk))
         lines += inboundLine("over the whole outing", peak = heldPeak.get(), where = heldPeakWhere, key = "outing")
+        airLines(lines, airOuting, "over the whole outing", key = "outing")
         lines += custodyLines()
         // With a DM missing the oracle's verdict is known, and each of its waits would run to its end to say so; so it
         // is with custody the settle watched not converge for at least as long as the oracle would wait. A shorter settle
@@ -347,12 +355,12 @@ class MeshSim(
     private suspend fun boot(): String {
         val heapBefore = usedHeapMb()
         val started = System.nanoTime()
-        val limits = LabLimits(inboundSlots = scenario.inboundSlots)
+        val limits = LabLimits(inboundSlots = scenario.inboundSlots, nodeAirBytesPerSecond = radio.nodeAirBytesPerSecond)
         nodes = (0 until scenario.walkers).map { i -> lab.node("w$i", limits).apply { setDisplayName("Walker $i") } }
         val bootMs = (System.nanoTime() - started) / NANOS_PER_MS / scenario.walkers
         for (group in groups) {
             val friends = group.map { nodes[it] }.toTypedArray()
-            lab.linkAll(*pairs(group).map(::ends).toTypedArray())
+            lab.linkAll(*pairs(group).map(::ends).toTypedArray(), air = radio.air)
             lab.awaitAcquainted(*friends)
             lab.befriend(*friends)
         }
@@ -407,7 +415,7 @@ class MeshSim(
         val positions = nodes.indices.map { mobility.position(it, atMs) }
         val changes = radio.step(atMs, positions)
         changes.dropped.map(::ends).forEach { (a, b) -> a.transport.disconnect(b.transport) }
-        changes.raised.map(::ends).forEach { (a, b) -> lab.link(a, b) }
+        changes.raised.map(::ends).forEach { (a, b) -> lab.link(a, b, air = radio.air) }
         contacts.record(atMs, changes, radio.links)
         // Robolectric keeps every log line of the test: a long run would measure that, not the stacks.
         if (atMs % LOG_CLEAR_MS == 0L) {
@@ -450,7 +458,7 @@ class MeshSim(
                 listOf(1, stride, stride * stride).map { (a + it) % scenario.walkers }.filter { it != a }.map { Link.of(a, it) }
             }
         val wanted = (groups.flatMap(::pairs) + ring).toSet() - radio.links
-        lab.linkAll(*wanted.map(::ends).toTypedArray())
+        lab.linkAll(*wanted.map(::ends).toTypedArray(), air = radio.air)
         sendProbes(wanted)
         follow()
         awaitArrivals(GATHER_MS)
@@ -634,6 +642,19 @@ class MeshSim(
         return "gather: ${stranded.size} DMs had not arrived ${GATHER_MS / MS_PER_S} s on " +
             "($parked parked for a key at the sender, $held still in the sender's custody): " +
             stranded.joinToString { "${it.event.body} (${it.reach.name.lowercase()})" }
+    }
+
+    // The air links' line and summary keys for [phase], on a radio whose links have airtime ([Radio.air]).
+    private fun airLines(
+        lines: MutableList<String>,
+        tally: AirTally,
+        phase: String,
+        key: String,
+    ) {
+        if (radio.air == null) return
+        val (line, values) = tally.report(phase, key)
+        lines += line
+        summary.putAll(values)
     }
 
     // What the nodes' full inbound queues held back, [phase], which only a bounded run has: a link's reader waits for a

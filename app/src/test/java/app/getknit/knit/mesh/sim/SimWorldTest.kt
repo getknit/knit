@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import kotlin.math.ln
 
 /** The simulator's pure parts: the walk, the radio, the workload and the arithmetic of the report. */
 class SimWorldTest {
@@ -96,7 +97,7 @@ class SimWorldTest {
     }
 
     @Test
-    fun aScenarioNamesItsRadioAndAnUnknownNameIsRefusedBeforeAnyNodeBoots() {
+    fun aScenarioNamesItsRadioAndAnUnknownNameIsRefused() {
         val scenario =
             SimScenario(seed = 1, walkers = 3, durationMs = 60_000, fieldM = FIELD_M, connectM = 20.0, dropM = 30.0, dialMs = 1_500)
         val radio = Radio.of(scenario, initial = setOf(Link(0, 1)))
@@ -104,6 +105,89 @@ class SimWorldTest {
         assertEquals(setOf(Link(0, 1)), radio.links)
         assertEquals(listOf("connect_m" to 20.0, "drop_m" to 30.0, "dial_ms" to 1_500L), radio.summaryValues())
         assertThrows(IllegalArgumentException::class.java) { Radio.of(scenario.copy(radio = "lora"), initial = emptySet()) }
+    }
+
+    @Test
+    fun aBluetoothDialTakesItsOwnDrawnTimeTheSameForASeed() {
+        val near = listOf(Point(0.0, 0.0), Point(10.0, 0.0))
+        val raisedAt = { seed: Long ->
+            val radio = BleRadio(seed, connectM = 25.0, dropM = 35.0)
+            (0L..BleRadio.DIAL_MAX_MS step STEP_MS).first { radio.step(it, near).raised.isNotEmpty() }
+        }
+        assertEquals("one seed, one dial", raisedAt(7), raisedAt(7))
+        val times = (1L..SEEDS).map(raisedAt)
+        assertTrue(times.toString(), times.all { it in BleRadio.DIAL_MIN_MS - STEP_MS..BleRadio.DIAL_MAX_MS })
+        assertTrue("every seed drew the same dial: $times", times.distinct().size > 1)
+    }
+
+    @Test
+    fun aPairsNextApproachDrawsADialOfItsOwn() {
+        // One pair walks into range and out again, over and over, on each of ten seeds: each approach draws anew, so one
+        // dial says nothing of the next. A redraw from a seed one apart (the first gaussian of `java.util.Random` barely
+        // moves between adjacent seeds) correlated about 0.44 here.
+        val pairs = (1L..SEEDS_FOR_CORRELATION).flatMap { seed -> approachDials(seed).map(::ln).zipWithNext() }
+        val r = pearson(pairs.map { it.first }, pairs.map { it.second })
+        assertTrue("one approach's dial predicts the next: r = $r", r < MAX_REDRAW_CORRELATION)
+    }
+
+    // The dial times of [APPROACHES] approaches of one pair on [seed]'s radio: in range until linked, then far apart.
+    private fun approachDials(seed: Long): List<Double> {
+        val near = listOf(Point(0.0, 0.0), Point(10.0, 0.0))
+        val far = listOf(Point(0.0, 0.0), Point(100.0, 0.0))
+        val radio = BleRadio(seed, connectM = 25.0, dropM = 35.0)
+        var atMs = 0L
+        return (1..APPROACHES).map {
+            val from = atMs
+            while (radio.step(atMs, near).raised.isEmpty()) atMs += STEP_MS
+            val took = atMs - from
+            atMs += STEP_MS
+            radio.step(atMs, far)
+            atMs += STEP_MS
+            took.toDouble().coerceAtLeast(1.0)
+        }
+    }
+
+    private fun pearson(
+        xs: List<Double>,
+        ys: List<Double>,
+    ): Double {
+        val mx = xs.average()
+        val my = ys.average()
+        val cov = xs.indices.sumOf { (xs[it] - mx) * (ys[it] - my) }
+        return cov / kotlin.math.sqrt(xs.sumOf { (it - mx) * (it - mx) } * ys.sumOf { (it - my) * (it - my) })
+    }
+
+    @Test
+    fun aGroupOverTheLinkBudgetIsRefusedAtBootAndOneAtItIsNot() {
+        assertThrows(IllegalArgumentException::class.java) { BleRadio(seed = 1, connectM = 25.0, dropM = 35.0, initial = clique(8)) }
+        // Seven friends give each walker six links: the whole budget, and no more.
+        assertEquals(clique(7), BleRadio(seed = 1, connectM = 25.0, dropM = 35.0, initial = clique(7)).links)
+    }
+
+    private fun clique(size: Int): Set<Link> = (0 until size).flatMap { a -> (a + 1 until size).map { b -> Link(a, b) } }.toSet()
+
+    @Test
+    fun aFullBluetoothNodeTakesNoMoreLinksAndTheNearestComeFirst() {
+        // Walker 0 at the centre, four more on the axes at 21, 18, 20 and 19 m: each in dial range of walker 0 alone.
+        val positions = listOf(Point(0.0, 0.0), Point(21.0, 0.0), Point(0.0, 18.0), Point(-20.0, 0.0), Point(0.0, -19.0))
+        val radio = BleRadio(seed = 1, connectM = 25.0, dropM = 35.0, dialMedianMs = 1, maxLinks = 2)
+        radio.step(0, positions)
+        val raised = radio.step(BleRadio.DIAL_MAX_MS, positions).raised
+        assertEquals("the two nearest, 18 m and 19 m", setOf(Link(0, 2), Link(0, 4)), raised.toSet())
+        // A full node's dial waits: walker 0 holds two, so neither farther walker is raised however long it is in range.
+        assertEquals(emptyList<Link>(), radio.step(2 * BleRadio.DIAL_MAX_MS, positions).raised)
+        assertEquals(setOf(Link(0, 2), Link(0, 4)), radio.links)
+    }
+
+    @Test
+    fun aBluetoothRadioAirsItsLinksAndNamesItsNumbers() {
+        val scenario = SimScenario(seed = 1, walkers = 3, durationMs = 60_000, fieldM = FIELD_M, radio = BleRadio.NAME)
+        val radio = Radio.of(scenario, initial = emptySet())
+        assertEquals(BleRadio.LINK_BYTES_PER_S, radio.air?.bytesPerSecond)
+        assertEquals(BleRadio.NODE_BYTES_PER_S, radio.nodeAirBytesPerSecond)
+        assertEquals(null, Radio.of(scenario.copy(radio = DiscRadio.NAME), initial = emptySet()).air)
+        val keys = radio.summaryValues().map { it.first }
+        assertEquals(listOf("connect_m", "drop_m", "dial_ms", "max_links", "link_bps", "node_bps"), keys)
     }
 
     @Test
@@ -270,6 +354,14 @@ class SimWorldTest {
     }
 
     private companion object {
+        const val STEP_MS = 100L
+        const val SEEDS = 20L
+        const val APPROACHES = 20
+        const val SEEDS_FOR_CORRELATION = 10L
+
+        /** Independent draws measure about 0.07 here, a seed-adjacent redraw about 0.44. */
+        const val MAX_REDRAW_CORRELATION = 0.25
+
         /** Sent, in-run share, by-end share, p50 and p90, per reach and for all. */
         const val DELIVERY_KEYS = 5
         const val FIELD_M = 100.0

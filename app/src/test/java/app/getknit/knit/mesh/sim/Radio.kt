@@ -1,5 +1,7 @@
 package app.getknit.knit.mesh.sim
 
+import app.getknit.knit.mesh.lab.LinkAir
+
 /**
  * What turns where the walkers stand into links: [MeshSim] steps it every tick and applies what it changed to the lab's
  * transports. [DiscRadio] is distance alone; a radio that models a plane's own range, dial and link budget is another
@@ -12,6 +14,12 @@ interface Radio {
     /** The links up after the last [step]: an immutable copy, safe to read from another thread. */
     val links: Set<Link>
 
+    /** The airtime of every link this radio raises ([LinkAir]), or null for links that deliver as they send. */
+    val air: LinkAir? get() = null
+
+    /** Each node's radio, shared by its air links both ways ([app.getknit.knit.mesh.lab.NodeAir]), or null for none. */
+    val nodeAirBytesPerSecond: Long? get() = null
+
     /** Moves the radio to [atMs] with every walker at its place in [positions]. */
     fun step(
         atMs: Long,
@@ -23,7 +31,7 @@ interface Radio {
 
     companion object {
         /** Every radio [of] builds, by name. */
-        val NAMES = listOf(DiscRadio.NAME)
+        val NAMES = listOf(DiscRadio.NAME, BleRadio.NAME)
 
         /** The radio [scenario] names, with [initial] links up before its first step (the groups that arrived together). */
         fun of(
@@ -32,6 +40,7 @@ interface Radio {
         ): Radio =
             when (scenario.radio) {
                 DiscRadio.NAME -> DiscRadio(scenario.connectM, scenario.dropM, scenario.dialMs, initial)
+                BleRadio.NAME -> BleRadio(scenario.seed, scenario.connectM, scenario.dropM, initial)
                 else -> throw IllegalArgumentException("no radio named ${scenario.radio}; there are $NAMES")
             }
     }

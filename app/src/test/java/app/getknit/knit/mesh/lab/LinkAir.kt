@@ -1,0 +1,154 @@
+package app.getknit.knit.mesh.lab
+
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicLongArray
+
+/**
+ * A lab link's airtime: how fast its records cross, as a phone's link has a rate. A pipe given one
+ * ([LabTransport.connect], [MeshLab.link]) queues what it is handed, as `FramedLink.send` does (a send never waits), and a
+ * writer per direction airs the queue in order: a record waits for its bytes at [bytesPerSecond], and for its share of
+ * both ends' radios ([NodeAir]), before the far end has it.
+ *
+ * - **Frames and custody digests are aired; files are not yet.** A file on an air link lands as on any lab link, at once:
+ *   no outing the simulator runs sends one.
+ * - **Nothing is lost on the way.** An L2CAP link is reliable: a weak link is a slow one or a dropped one, and both are the
+ *   radio's to say. A link cut with records still queued loses them, as a torn-down `FramedLink` does
+ *   ([LabTransport.aired] counts them), and a relink re-serves what custody holds.
+ * - **Time is the monotonic clock** (`System.nanoTime`), never the lab's jumpable calendar: airtime schedules a delivery,
+ *   it decides nothing, and a calendar jump must not stretch it.
+ * - **A send no longer means the far end has it.** [LabTransport.awaitInboundDrained] waits out what is on the air toward a
+ *   node, and [LabTransport.awaitAirDrained] what one link had queued; [MeshLab.unlink] and the restarts refuse an air
+ *   link rather than guess whether it drains or is cut.
+ */
+data class LinkAir(
+    val bytesPerSecond: Long,
+    /** What a record costs beyond its bytes: `LinkFraming`'s `[type][len32]` header. A sealed door's tag is not charged. */
+    val recordOverheadBytes: Int = RECORD_HEADER_BYTES,
+) {
+    init {
+        require(bytesPerSecond > 0) { "a link airs at a positive rate: $bytesPerSecond" }
+    }
+
+    companion object {
+        const val RECORD_HEADER_BYTES = 5
+    }
+}
+
+/**
+ * One node's radio, shared by every air link it has, both ways: a record charges its sender's and its receiver's for its
+ * bytes at [bytesPerSecond], as a phone's controller serves every connection, in and out, from one set of connection
+ * events. A node gets one from `LabLimits.nodeAirBytesPerSecond`; without one, only its links' own rates bound it.
+ */
+class NodeAir(
+    val bytesPerSecond: Long,
+) {
+    init {
+        require(bytesPerSecond > 0) { "a radio airs at a positive rate: $bytesPerSecond" }
+    }
+
+    // When this radio is next free, in `System.nanoTime` terms: under [AirLedger]'s lock.
+    internal var nextFreeNanos = Long.MIN_VALUE
+}
+
+/** One direction of an air link's own schedule: when it is next free, and how much airtime it has reserved in all. */
+internal class LinkClock {
+    // Under [AirLedger]'s lock.
+    var nextFreeNanos = Long.MIN_VALUE
+
+    /** The airtime this direction has reserved so far, in nanoseconds: the ledger a test of a shared radio reads. */
+    val reservedNanos = AtomicLong()
+}
+
+/**
+ * Every air reservation in the JVM, under one lock: a few sums, never held while anything waits, so no writer holds it
+ * while another sleeps. A record's slot starts once its link, its sender's radio and its receiver's radio are all free,
+ * and moves each one's next free instant on by the record's bytes at that one's own rate.
+ */
+internal object AirLedger {
+    private val lock = Any()
+
+    /** Reserves [bytes] on [link] at [rate] and on both radios; returns when the link will have aired them. */
+    fun reserve(
+        link: LinkClock,
+        rate: Long,
+        sender: NodeAir?,
+        receiver: NodeAir?,
+        bytes: Long,
+        nowNanos: Long,
+    ): Long =
+        synchronized(lock) {
+            val start = maxOf(nowNanos, link.nextFreeNanos, sender?.nextFreeNanos ?: nowNanos, receiver?.nextFreeNanos ?: nowNanos)
+            val linkNanos = nanosFor(bytes, rate)
+            link.nextFreeNanos = start + linkNanos
+            link.reservedNanos.addAndGet(linkNanos)
+            sender?.let { it.nextFreeNanos = start + nanosFor(bytes, it.bytesPerSecond) }
+            receiver?.let { it.nextFreeNanos = start + nanosFor(bytes, it.bytesPerSecond) }
+            start + linkNanos
+        }
+
+    private fun nanosFor(
+        bytes: Long,
+        rate: Long,
+    ): Long = bytes * NANOS_PER_S / rate
+
+    private const val NANOS_PER_S = 1_000_000_000L
+}
+
+/**
+ * What one node's air links did on the way out: what they aired, what a cut lost with them ([cut], [cutKeys]) and what
+ * they refused because the link was already going down ([refused]), the deepest one link's queue ran ([queuePeak],
+ * [backlogPeakMs]: its queued bytes at its own rate) and how long each record waited from its send to its delivery
+ * ([waitPercentileMs]).
+ */
+class AirStats {
+    val bytes = AtomicLong()
+    val records = AtomicLong()
+    val cut = AtomicLong()
+    val refused = AtomicLong()
+    val queuePeak = AtomicLong()
+    val backlogPeakMs = AtomicLong()
+
+    /** The crossing keys of the frames a cut lost, in the order they were cut: what a relink must re-serve. */
+    val cutKeys = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+    // Each record's wait, by bucket: bucket b holds waits under 2^b ms (bucket 0, under 1 ms).
+    private val waits = AtomicLongArray(WAIT_BUCKETS)
+
+    internal fun recordWait(ms: Long) {
+        waits.incrementAndGet(bucketOf(ms))
+    }
+
+    /** Every record's wait so far, by bucket ([waitPercentileMs] reads them; [merge] sums several nodes'). */
+    fun waitBuckets(): LongArray = LongArray(WAIT_BUCKETS) { waits.get(it) }
+
+    companion object {
+        const val WAIT_BUCKETS = 32
+
+        internal fun bucketOf(ms: Long): Int =
+            (64 - java.lang.Long.numberOfLeadingZeros(ms.coerceAtLeast(0))).coerceAtMost(WAIT_BUCKETS - 1)
+
+        /** Several nodes' [waitBuckets], summed. */
+        fun merge(all: List<LongArray>): LongArray = LongArray(WAIT_BUCKETS) { b -> all.sumOf { it[b] } }
+
+        /**
+         * The [p]th percentile of the waits in [buckets], as the upper bound of the bucket it falls in (a power of two, in
+         * ms), or null with no wait recorded.
+         */
+        fun waitPercentileMs(
+            buckets: LongArray,
+            p: Int,
+        ): Long? {
+            val total = buckets.sum()
+            if (total == 0L) return null
+            val rank = (p * total + PERCENT - 1) / PERCENT
+            var seen = 0L
+            for ((b, n) in buckets.withIndex()) {
+                seen += n
+                if (seen >= rank) return 1L shl b
+            }
+            return 1L shl (WAIT_BUCKETS - 1)
+        }
+
+        private const val PERCENT = 100
+    }
+}

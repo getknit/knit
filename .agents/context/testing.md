@@ -695,6 +695,18 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   the composite's `merge` holds, its channel of 64 and the frame in hand), counted in `LabTransport.inboundRefused` and pinned by
   `InboundBurstLabTest`. The lab has no airtime, so a burst reaches the queue faster than a radio could bring it:
   what a bounded node drops is an upper bound on what a phone would.
+- **An air link has a rate** (`LinkAir`, `lab.link(a, b, air = …)`, `linkAll(…, air = …)`). Without one, the default
+  every scripted scenario keeps, a send hands the frame to the far end before it returns. With one, the pipe queues
+  what it is handed, as `FramedLink.send` does, and a writer per direction airs the queue in order at the link's rate.
+  A node's `NodeAir` (`LabLimits.nodeAirBytesPerSecond`) is one radio shared by all its air links, in and out. Slots are
+  reserved on `System.nanoTime`, never the jumpable lab clock. Frames and custody digests are aired (one pending digest
+  per link, replaced in place); files still land at once. The memo mark and the enqueue are one step under the pipe's
+  air lock, and a cut (`disconnect`, or a `connect` that replaces the pipe) takes that lock before either memo is
+  forgotten. It loses every queued record and the one airing, counted in `LabTransport.aired` (`cut`, `cutKeys`), and
+  nothing is delivered once it returns. `awaitInboundDrained` waits out what is on the air toward a node
+  (`airInboundNow`); `awaitAirDrained(to)` waits for what one link had queued when called. `unlink`, `restart`,
+  `restoreFromBackup` and `pauseMesh` refuse an air link, since whether its queue drains or is cut would be a race:
+  cut it with `transport.disconnect` and say so. Pinned by `LinkAirLabTest`; the simulator's `ble1m` radio uses it.
 - **Restart is real.** `node.restart()` tears the live stack down and rebuilds it over the same identity, DB
   and settings — every in-memory structure (`PendingInbound`, `PendingGroupKeys`, ratchet caches, seen set)
   starts empty.
@@ -971,13 +983,37 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   6,069 originated, 73 lost, 78% arrived. Every store still reaches the cap in 3 to 5 minutes; recipient-addressed
   chat other than the workload's DMs (receipts, intros) is now 52 to 60% of it, and what is lost is that pressure on
   partitioned DMs.
-- **A gather after a long walk does not settle in the lab** (48 walkers, 10 minutes, 2026-11-16). About 12,900 live
-  ids met 1,000 rows per store, the nodes re-served what the receivers then evicted on about ten cores for nine
-  hours, and the settle's own reads starved; the run was killed. Measure long walks with `-Pknit.meshSimGather=false`;
-  the gather has not been re-run since #335's fix.
-- **What it leaves out.** One plane, no path loss, no link budget, none of the transports' own dial policies:
-  `LabTransport` stands in for the whole radio, so the topology is the geometry's, not what Bluetooth or
-  Wi-Fi Aware would have formed.
+- **A gather after a long walk did not settle in the lab before #335's fix** (48 walkers, 10 minutes, 2026-11-16).
+  About 12,900 live ids met 1,000 rows per store, the nodes re-served what the receivers then evicted on about ten
+  cores for nine hours, and the settle's own reads starved; the run was killed. After the fix it settles at once (the
+  baseline below): every store already holds the same 1,000 ids, and what the walk lost stays lost.
+- **The baseline on main `c1dcef23d`** (2026-11-17, 48 walkers, phone inbound queue, seeds 1–3 unless named; reports and
+  `run-baseline.sh` in `/media/walter/data/knit-sim/baseline-c1dcef23d/`, compare with `scripts/sim-compare.py`). Means
+  with [min..max]:
+
+  | Outing | DMs arrived (in run / by end) | DM p50 / p90 | Lost for good | Custody at cap (first / all) | After the walk |
+  | --- | --- | --- | --- | --- | --- |
+  | 10-minute walk, no gather | 82% [78..85] / same | 44 s / 131 s | 67 [53..76] | 180 s / 380 s | – |
+  | Same, unbounded queue (seed 1) | 84% / same | 43 s / 140 s | 54 | 180 s / 360 s | – |
+  | 2-minute walk, gather, 20-min settle | 76% [69..85] / 100% | 0 s / 20 s | 0 | 179 s / 179 s | parity in 50 s [45..60], probes ≤12 s [4..27], oracle passes |
+  | 10-minute walk, gather, 30-min settle | 82% [78..85] / 95% [94..96] | 45 s / 132 s | 67 [50..76] | 180 s / 380 s | parity at once; 68 [52..76] DMs never arrive (red); probes ≤17 s [14..22] |
+
+  The walk originates about 6,000 frames for about 1,475 DMs; the gather's links hold back up to about 7,500 frames on
+  one node (5,100 after a 2-minute walk). The DMs a long gathered outing never delivers are the ones custody evicted
+  from every store during the walk: the same count as the walk alone loses. The seed-1 unbounded run matches the
+  2026-11-17 post-fix walk (5,769 frames originated against 5,760, 54 lost against 52, 84% arrived). The lab still
+  has no airtime here: `-Pknit.meshSimRadio=ble1m` is the comparison.
+- **`-Pknit.meshSimRadio=ble1m` gives the links a Bluetooth 1M radio** (`BleRadio`). The disc's ranges are kept. Each
+  approach draws its own dial time, log-normal around the measured 4.3 s relink median and clamped to 0.3–30 s. A node
+  holds at most six links, nearest pairs first, with no eviction. Every link airs at 9 KB/s (the HCI-snoop drain at the
+  default interval, ADR 2026-10.2da4), and each phone's radio at 36 KB/s for all its links in and out. The boot, the
+  walk and the gather all link with that air. The report gains `air` lines and `air_*` summary keys: records and bytes
+  aired, records a cut lost or a closing link refused, each record's wait from send to delivery (as the upper bound of
+  a power-of-two bucket) and the deepest queue and backlog one link held. `disc`, the default, has no air.
+- **What it leaves out.** One plane, no path loss and none of the transports' own dial policies: `LabTransport` stands
+  in for the whole radio, so the topology is the geometry's (and, under `ble1m`, a nearest-first budget's), not what
+  Bluetooth or Wi-Fi Aware would have formed. `disc` has no link budget; `ble1m`'s is a measured rate, not yet a
+  function of distance, and it airs no files.
 
 ## JVM Room/DAO + migration tests (Robolectric)
 

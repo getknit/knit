@@ -62,9 +62,12 @@ class ParkWalkSimTest {
             val bound = scenario.inboundSlots?.let { "-q$it" }.orEmpty() + if (scenario.gather) "" else "-walk"
             val tag = System.getProperty(TAG)?.let { "-$it" }.orEmpty()
             val dir = File(System.getProperty(OUT) ?: "build/mesh-sim").apply { mkdirs() }
-            val out = freshReport(dir, "park-walk-s$seed-w$walkers-m$minutes$bound$tag")
-            // The report's file holds the outing's progress while it runs, and the report once it is over.
-            val report = MeshSim(lab, scenario) { out.appendText("$it\n") }.play()
+            // The report's file holds the outing's progress while it runs, and the report once it is over. Made once the
+            // outing is built, so a scenario it refuses (a radio with no such name) leaves no empty report behind.
+            var out: File? = null
+            val sim = MeshSim(lab, scenario) { line -> out?.appendText("$line\n") }
+            out = freshReport(dir, "park-walk-s$seed-w$walkers-m$minutes$bound$tag")
+            val report = sim.play()
             println(report.text)
             out.writeText(report.text + "\n")
 

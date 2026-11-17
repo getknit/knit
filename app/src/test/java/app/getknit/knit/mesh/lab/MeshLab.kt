@@ -405,10 +405,12 @@ class MeshLab {
     fun link(
         a: LabNode,
         b: LabNode,
+        // The link's airtime ([LinkAir]): null delivers as it sends, as every lab link did before.
+        air: LinkAir? = null,
         arm: () -> Unit = {},
     ) {
         listOf(a, b).forEach { check(!it.meshPaused) { "${it.name}'s mesh is paused: its radios are down until resumeMesh()" } }
-        a.transport.connect(b.transport, arm = arm)
+        a.transport.connect(b.transport, arm = arm, air = air)
     }
 
     /**
@@ -433,6 +435,10 @@ class MeshLab {
         a: LabNode,
         b: LabNode,
     ) {
+        // An air link's queue would be cut or drained by the order of two threads, which no scenario pinned: say which.
+        check(!a.transport.airLinkTo(b.transport)) {
+            "${a.name}–${b.name} is an air link: cut it with transport.disconnect, or wait with awaitAirDrained first ([LinkAir])"
+        }
         a.transport.disconnect(b.transport)
         a.transport.awaitNeighborsObserved()
         b.transport.awaitNeighborsObserved()
@@ -456,8 +462,12 @@ class MeshLab {
      * miss a node that is not linked yet, and the frame then waits for the 60 s custody re-offer — real-world
      * latency, but a stall in a scenario that only wants the topology to exist.
      */
-    fun linkAll(vararg links: Pair<LabNode, LabNode>) {
-        links.forEach { (a, b) -> a.transport.connect(b.transport, publish = false) }
+    fun linkAll(
+        vararg links: Pair<LabNode, LabNode>,
+        // Every link's airtime ([LinkAir]): null delivers as it sends.
+        air: LinkAir? = null,
+    ) {
+        links.forEach { (a, b) -> a.transport.connect(b.transport, publish = false, air = air) }
         links.flatMap { it.toList() }.distinct().forEach { it.transport.publishNeighbors() }
     }
 
@@ -1421,6 +1431,12 @@ data class LabLimits(
      * profile then withholds too. A node linked by [MeshLab.link] runs no door, whatever this says.
      */
     val linkDoor: LinkDoor = LinkDoor.SEALED,
+    /**
+     * The node's radio for its air links ([NodeAir], [LinkAir]): every record in or out of the node on an air link takes
+     * its bytes at this rate too, as a phone's controller serves all its connections from one set of connection events.
+     * Null, the default, bounds an air link by its own rate alone; a link with no air is never bounded.
+     */
+    val nodeAirBytesPerSecond: Long? = null,
 ) {
     /** These limits with the Internet plane's timed waits cut to [MeshLab.CALENDAR_ROUND_MS] (see [spoolTickMs]). */
     fun calendarRounds(): LabLimits = copy(spoolTickMs = MeshLab.CALENDAR_ROUND_MS, spoolAttachmentRetryMs = MeshLab.CALENDAR_ROUND_MS)
@@ -2148,6 +2164,7 @@ class LabNode internal constructor(
                 clock = now
                 feedStallMs = limits.feedStallMs
                 inboundSlots = limits.inboundSlots
+                nodeAir = limits.nodeAirBytesPerSecond?.let(::NodeAir)
             }
         metrics = MeshMetrics()
         // The Internet plane is opted into through the same two settings the relay editor writes; the
@@ -2778,6 +2795,7 @@ class LabNode internal constructor(
      */
     suspend fun restart(whileDown: suspend LabNode.() -> Unit = {}) {
         check(!meshPaused) { "$name's mesh is paused: resumeMesh() before a restart" }
+        checkNoAirLinks("a restart")
         val peers = shutdownLive()
         awaitPeersSettled(peers)
         whileDown()
@@ -2799,6 +2817,7 @@ class LabNode internal constructor(
      */
     suspend fun pauseMesh() {
         check(!meshPaused) { "$name's mesh is already paused" }
+        checkNoAirLinks("a pause")
         // A bounded node's slots go back only as its router finishes a frame: frames left in the queue for the collector
         // this stop cancels never do, and the resumed session's pipes would wait on slots nobody frees.
         check(transport.inboundSlots == null) { "$name has inboundSlots: a pause would strand its taken slots (ADR 2026-11.43f7)" }
@@ -2866,6 +2885,7 @@ class LabNode internal constructor(
         inFile: suspend LabNode.() -> Unit = {},
     ) {
         check(!meshPaused) { "$name's mesh is paused: resumeMesh() before a restore" }
+        checkNoAirLinks("a restore")
         val peers = shutdownLive()
         awaitPeersSettled(peers)
         db.withWriteTransaction { BackupTables.TRANSIENT.forEach { executeSQL("DELETE FROM $it") } }
@@ -2873,6 +2893,14 @@ class LabNode internal constructor(
         lastGeneration?.let { settings.setPresenceKeyLastGeneration(it) }
         dataStore.edit { it[booleanPreferencesKey(SettingsKeys.RESTORE_PENDING)] = true }
         timedBoot()
+    }
+
+    // [what] takes every link down and waits for its peers ([awaitPeersSettled]): on an air link whether a queued record
+    // drains or is cut would be two threads' race, which no scenario pinned ([LinkAir]).
+    private fun checkNoAirLinks(what: String) {
+        check(!transport.hasAirLinks) {
+            "$name has air links: $what cannot say whether their queues drain or are cut; disconnect them first ([LinkAir])"
+        }
     }
 
     internal fun shutdown() {

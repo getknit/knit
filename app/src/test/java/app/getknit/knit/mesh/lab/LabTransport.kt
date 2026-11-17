@@ -33,6 +33,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -94,7 +95,8 @@ class LabTransport(
     /**
      * The lab's scheduling noise ([LabChaos]), or null. It stretches time at the pipe — the sender descheduled
      * around a delivery, a collector late to the frame it was handed — and never what a pipe means: [send]
-     * still returns after the far end has the frame, and a pipe still delivers in order.
+     * still returns after the far end has the frame (on a link with no airtime: an air link queues it, [LinkAir]), and a
+     * pipe still delivers in order.
      */
     private val chaos: LabChaos? = null,
 ) : MeshTransport {
@@ -268,7 +270,9 @@ class LabTransport(
         target._incomingFiles.emit(received)
     }
 
-    private val _incomingDigests = MutableSharedFlow<ReceivedDigest>(extraBufferCapacity = BUFFER)
+    // Unbounded, as [_inbound] is: an air link's writer hands a digest over without suspending ([deliverAir]), and never a
+    // send waits on the far manager.
+    private val _incomingDigests = MutableSharedFlow<ReceivedDigest>(extraBufferCapacity = Int.MAX_VALUE)
 
     // Digests a peer advertised to this node against digests its collector has answered: [awaitDigestsAnswered].
     private val digestsIn = AtomicLong()
@@ -356,12 +360,47 @@ class LabTransport(
         var inboxClosed = false
         val heldFiles = mutableListOf<HeldFile>()
 
+        // This direction's airtime ([LinkAir]), or null for a link with none, as every lab link had before: then nothing
+        // below is used. Set before the pipe is published, never after.
+        var air: LinkAir? = null
+
+        // Under [airLock]: the queue the writer airs, the record it holds while its bytes air ([inHand], where a cut still
+        // finds it), the one pending custody digest, whether a cut closed the pipe, how many records were queued and how
+        // many aired (in order), and the bytes still queued. One lock with the memo mark at enqueue and with delivery.
+        val airLock = Any()
+        val airQueue = ArrayDeque<AirRecord>()
+        var inHand: AirRecord? = null
+        var pendingDigest: List<String>? = null
+        var airClosed = false
+        var enqueuedSeq = 0L
+        var airedSeq = 0L
+        var queuedBytes = 0L
+
+        // Wakes the writer when a record is queued; closed by a cut.
+        val airWake = Channel<Unit>(Channel.CONFLATED)
+        var writer: Job? = null
+        val airClock = LinkClock()
+
         /** Parks [file] if this pipe is holding files; false means land it. One lock with [releaseFiles]. */
         fun parkFile(file: ReceivedFile): Boolean =
             synchronized(heldFiles) {
                 if (holdingFiles) heldFiles += if (stacking) HeldFile.Stacked(file) else HeldFile.Whole(file)
                 holdingFiles
             }
+    }
+
+    /**
+     * One record on an air pipe ([LinkAir]): a frame, as it was sent ([via]), or the marker of the pipe's pending custody
+     * digest ([wire] null), whose ids and size are read as the writer takes it. [seq] orders the pipe's records.
+     */
+    private class AirRecord(
+        val wire: WireEnvelope?,
+        val via: String,
+        val seq: Long,
+        val queuedAtNanos: Long,
+        var bytes: Long,
+    ) {
+        var ids: List<String> = emptyList()
     }
 
     /**
@@ -591,17 +630,35 @@ class LabTransport(
         // The link door's two directions, this side's toward [other] first ([MeshLab.doorLink], #313): every frame either
         // way then crosses the sockets the handshake registered. Null links with no door, as every lab link did before.
         doors: Pair<LabDoor.Crossing, LabDoor.Crossing>? = null,
+        // Both directions' airtime ([LinkAir]), or null for a link that delivers as it sends, as every lab link did before.
+        air: LinkAir? = null,
     ) {
         if (other.nodeId == nodeId) return
-        pipes
-            .put(
-                other.nodeId,
-                Pipe(other).also {
-                    it.lossy = lossy
-                    it.door = doors?.first
-                },
-            )?.let(::closeInbox)
-        other.pipes.put(nodeId, Pipe(this).also { it.door = doors?.second })?.let(::closeInbox)
+        val mine =
+            Pipe(other).also {
+                it.lossy = lossy
+                it.door = doors?.first
+                it.air = air
+            }
+        val theirs =
+            Pipe(this).also {
+                it.door = doors?.second
+                it.air = air
+            }
+        // A replaced pipe's air is cut before the memos are forgotten below, as [disconnect] cuts it: an enqueue on the old
+        // pipe after this either marked before the forget or finds it closed.
+        pipes.put(other.nodeId, mine)?.let {
+            cutAir(it)
+            closeInbox(it)
+        }
+        other.pipes.put(nodeId, theirs)?.let {
+            other.cutAir(it)
+            closeInbox(it)
+        }
+        if (air != null) {
+            startAirWriter(mine)
+            other.startAirWriter(theirs)
+        }
         // After the puts, as `BluetoothMeshTransport.registerLink` forgets after its `links.put`: a mark an old pipe's
         // reader or a send that picked the old pipe judged before them lands before this, never in the new pipe's memo.
         crossings.forget(other.nodeId)
@@ -626,7 +683,13 @@ class LabTransport(
      * streaming across it either way is cut, and its receiver keeps what came — `FramedLink.close()` (#116).
      */
     fun disconnect(other: LabTransport) {
-        listOfNotNull(pipes.remove(other.nodeId), other.pipes.remove(nodeId)).forEach {
+        val mine = pipes.remove(other.nodeId)
+        val theirs = other.pipes.remove(nodeId)
+        // Both directions' air is cut before either memo is forgotten: a mark either landed before the forget or nothing
+        // was marked ([enqueueAir]), and no writer delivers once this returns ([deliverAir]).
+        mine?.let(::cutAir)
+        theirs?.let(other::cutAir)
+        listOfNotNull(mine, theirs).forEach {
             cutStreams(it)
             it.door?.close()
             closeInbox(it)
@@ -681,16 +744,51 @@ class LabTransport(
      * the next link's digest exchange reads its store. Fails, rather than waits forever, on a collector that never finishes.
      */
     suspend fun awaitInboundDrained() {
+        // On an air link a record still on its way counts too ([airInbound]): it is counted in, by [received], before it
+        // stops counting as on the air, so the two never read empty together while one is in flight.
         val drained =
-            withTimeoutOrNull(MeshLab.AWAIT_MS) { while (framesHandled.get() < framesIn.get()) delay(1) } != null
-        check(drained) { "$nodeId: the router never finished its inbound frames (${framesHandled.get()} of ${framesIn.get()})" }
+            withTimeoutOrNull(MeshLab.AWAIT_MS) {
+                while (framesHandled.get() < framesIn.get() || airInbound.get() > 0) delay(1)
+            } != null
+        check(drained) {
+            "$nodeId: the router never finished its inbound frames (${framesHandled.get()} of ${framesIn.get()}, " +
+                "${airInbound.get()} still on the air)"
+        }
     }
+
+    /**
+     * Suspends until every record this node had queued toward [to] when called has aired ([LinkAir]): what a scenario
+     * waits on before it asserts at the far end, as a send there no longer means the far end has it. Not until the queue
+     * is empty, which a busy link may never be. Fails on a link cut meanwhile: its records never air.
+     */
+    suspend fun awaitAirDrained(
+        to: LabTransport,
+        timeoutMs: Long = MeshLab.AWAIT_MS,
+    ) {
+        val pipe = pipe(to)
+        checkNotNull(pipe.air) { "$nodeId's link to ${to.nodeId} has no air: it delivers as it sends" }
+        val seq = synchronized(pipe.airLock) { pipe.enqueuedSeq }
+        val pending = { synchronized(pipe.airLock) { !pipe.airClosed && pipe.airedSeq < seq } }
+        val aired = withTimeoutOrNull(timeoutMs) { while (pending()) delay(1) } != null
+        val cut = synchronized(pipe.airLock) { pipe.airClosed }
+        check(aired && !cut) {
+            "$nodeId: the link to ${to.nodeId} " + if (cut) "was cut before record #$seq aired" else "never aired record #$seq"
+        }
+    }
+
+    /** Whether any of this node's links has airtime: the scripted helpers that cannot say what a cut does refuse it. */
+    val hasAirLinks: Boolean get() = pipes.values.any { it.air != null }
+
+    /** Whether this node's link to [other] has airtime. */
+    fun airLinkTo(other: LabTransport): Boolean = pipes[other.nodeId]?.air != null
 
     /**
      * Suspends until this node has answered every custody digest a peer advertised to it: each reply's frames are
      * sent, and a send returns once the far end holds the frame, so the far end's [awaitInboundDrained] after this
-     * means the exchange has landed. A digest handed to a node whose manager is not collecting is never answered,
-     * and this fails on it rather than waits forever: not for a node stopped or restarted since it booted.
+     * means the exchange has landed. On an air link a digest still on the air is not counted yet, nor is a reply's frame
+     * delivered when it is sent: [MeshLab.awaitAcquainted]'s loop through [awaitInboundDrained] closes both. A digest
+     * handed to a node whose manager is not collecting is never answered, and this fails on it rather than waits forever:
+     * not for a node stopped or restarted since it booted.
      * [MeshLab.awaitAcquainted] waits here on every node it is given, so a link-up digest's reply is in before it returns.
      */
     suspend fun awaitDigestsAnswered() {
@@ -934,6 +1032,26 @@ class LabTransport(
     // On the scope's threads: each pipe's reader, waiting for a slot.
     private val readers = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    /** This node's radio, shared by its air links both ways ([NodeAir]); [MeshLab] sets it from `LabLimits.nodeAirBytesPerSecond`. */
+    @Volatile
+    var nodeAir: NodeAir? = null
+
+    /** What this node's air links aired, cut and refused on the way out ([LinkAir]). */
+    val aired = AirStats()
+
+    // Records on air links toward this node, queued or airing and not yet delivered or cut: [awaitInboundDrained] waits
+    // them out. Moved only under the sending pipe's air lock.
+    private val airInbound = AtomicLong()
+
+    /** Records on air links toward this node right now, queued or airing. */
+    val airInboundNow: Long get() = airInbound.get()
+
+    /** The ids of every custody digest an air link delivered to this node, in arrival order: one per digest that aired. */
+    val airDigestsIn = CopyOnWriteArrayList<List<String>>()
+
+    // On the scope's threads: each air pipe's writer, ended at [detach].
+    private val airScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     private val refused = AtomicLong()
     private val refusedIds = ConcurrentHashMap<String, Int>()
     private val waited = AtomicLong()
@@ -1059,8 +1177,15 @@ class LabTransport(
     ) {
         // Two held copies of one frame (the flood's and the fast path's) are one write here, as on the phone.
         frames.forEach { held ->
-            if (!doorGone(pipe) && crosses(pipe, FrameKey.ofSigned(held), VIA_LINK)) {
-                throughDoor(pipe, held)?.let { pipe.target.deliver(pipe, this, it, VIA_LINK) }
+            when {
+                // Queued as the release sends it, and judged by the memo there, as a held frame always is.
+                pipe.air != null -> {
+                    enqueueAir(pipe, held, FrameKey.ofSigned(held), VIA_LINK)
+                }
+
+                !doorGone(pipe) && crosses(pipe, FrameKey.ofSigned(held), VIA_LINK) -> {
+                    throughDoor(pipe, held)?.let { pipe.target.deliver(pipe, this, it, VIA_LINK) }
+                }
             }
         }
     }
@@ -1135,7 +1260,8 @@ class LabTransport(
         val targets = if (to == null) pipes.values.toList() else listOfNotNull(pipes[to.nodeId])
         val key = FrameKey.ofSigned(out)
         targets.forEach { pipe -> write(pipe, out, key) }
-        // The far end has the frame; the sender's own bookkeeping after `send` returns may come late.
+        // The far end has the frame (an air link has queued it); the sender's own bookkeeping after `send` returns may come
+        // late.
         chaos?.jitter()
     }
 
@@ -1169,6 +1295,8 @@ class LabTransport(
 
             // A held frame is judged by the memo at [release], not here.
             pipe.park(out) -> Unit
+
+            pipe.air != null -> enqueueAir(pipe, out, key, VIA_LINK)
 
             doorGone(pipe) -> Unit
 
@@ -1258,6 +1386,8 @@ class LabTransport(
 
             // A held frame is judged by the memo at [release], not here.
             pipe.park(wire) -> Unit
+
+            pipe.air != null -> enqueueAir(pipe, wire, key, VIA_FAST)
 
             doorGone(pipe) -> Unit
 
@@ -1396,9 +1526,14 @@ class LabTransport(
     ) {
         chaos?.jitter()
         digestsSent += to.nodeId
-        pipes[to.nodeId]?.target?.let { target ->
-            target.digestsIn.incrementAndGet()
-            target._incomingDigests.emit(ReceivedDigest(nodeId, ids))
+        val pipe = pipes[to.nodeId]
+        if (pipe?.air != null) {
+            enqueueDigest(pipe, ids)
+        } else {
+            pipe?.target?.let { target ->
+                target.digestsIn.incrementAndGet()
+                target._incomingDigests.emit(ReceivedDigest(nodeId, ids))
+            }
         }
         chaos?.jitter()
     }
@@ -1501,6 +1636,185 @@ class LabTransport(
         }
     }
 
+    // Starts [pipe]'s writer, on this node (its sender), before the link is published: nothing is queued on it yet.
+    private fun startAirWriter(pipe: Pipe) {
+        pipe.writer = airScope.launch { airWriter(pipe) }
+    }
+
+    // Whether [pipe] still takes records: not cut, still the pipe this node writes to its target, its door (if any) up.
+    // Under the pipe's air lock.
+    private fun airOpen(pipe: Pipe): Boolean = !pipe.airClosed && pipes[pipe.target.nodeId] === pipe && pipe.door?.broken != true
+
+    /**
+     * [out] onto [pipe]'s air queue, as `FramedLink.send` takes it: never waits. The liveness check, the memo mark and the
+     * enqueue are one step under the pipe's air lock, the lock a cut takes before the memos are forgotten: a mark lands
+     * only on a pipe that will air the frame or have it counted cut.
+     */
+    private fun enqueueAir(
+        pipe: Pipe,
+        out: WireEnvelope,
+        key: String?,
+        via: String,
+    ) {
+        val air = checkNotNull(pipe.air)
+        val bytes = WireCodec.encodeWire(out).size.toLong() + air.recordOverheadBytes
+        synchronized(pipe.airLock) {
+            if (!airOpen(pipe)) {
+                aired.refused.incrementAndGet()
+                return
+            }
+            if (!crosses(pipe, key, via)) return
+            pipe.airQueue.addLast(AirRecord(out, via, ++pipe.enqueuedSeq, System.nanoTime(), bytes))
+            noteQueued(pipe, bytes)
+        }
+        pipe.airWake.trySend(Unit)
+    }
+
+    /**
+     * [ids] as [pipe]'s one pending custody digest, as `FramedLink.sendDigest` keeps one: a digest sent while one waits
+     * replaces its ids in place and queues nothing; the first queues the marker the writer airs it at.
+     */
+    private fun enqueueDigest(
+        pipe: Pipe,
+        ids: List<String>,
+    ) {
+        val queued =
+            synchronized(pipe.airLock) {
+                if (!airOpen(pipe)) {
+                    aired.refused.incrementAndGet()
+                    return
+                }
+                val first = pipe.pendingDigest == null
+                pipe.pendingDigest = ids
+                if (first) {
+                    pipe.airQueue.addLast(AirRecord(null, VIA_DIGEST, ++pipe.enqueuedSeq, System.nanoTime(), bytes = 0))
+                    noteQueued(pipe, bytes = 0)
+                }
+                first
+            }
+        if (queued) pipe.airWake.trySend(Unit)
+    }
+
+    // One record queued on [pipe]: on the air toward its target from here, and the queue's depth noted. Under its air lock.
+    private fun noteQueued(
+        pipe: Pipe,
+        bytes: Long,
+    ) {
+        pipe.target.airInbound.incrementAndGet()
+        pipe.queuedBytes += bytes
+        val depth = pipe.airQueue.size.toLong() + if (pipe.inHand == null) 0 else 1
+        aired.queuePeak.accumulateAndGet(depth, ::maxOf)
+        aired.backlogPeakMs.accumulateAndGet(pipe.queuedBytes * MS_PER_S / checkNotNull(pipe.air).bytesPerSecond, ::maxOf)
+    }
+
+    /**
+     * [pipe]'s writer, as `FramedLink.writeLoop` airs a link's queue: one record at a time, in order, each in its slot
+     * ([AirLedger]) on the monotonic clock, then delivered ([deliverAir]). It takes a record into [Pipe.inHand] under the
+     * air lock, so a cut finds it there while its bytes air; it ends once a cut has closed the pipe.
+     */
+    private suspend fun airWriter(pipe: Pipe) {
+        val air = checkNotNull(pipe.air)
+        while (true) {
+            val record =
+                synchronized(pipe.airLock) {
+                    if (pipe.airClosed) return
+                    pipe.airQueue.removeFirstOrNull()?.also { r ->
+                        pipe.inHand = r
+                        if (r.wire == null) {
+                            // The digest as it stands now: one sent from here on queues a marker of its own.
+                            r.ids = checkNotNull(pipe.pendingDigest)
+                            pipe.pendingDigest = null
+                            r.bytes = r.ids.sumOf { it.length + 1L } + air.recordOverheadBytes
+                        }
+                        pipe.queuedBytes -= if (r.wire == null) 0 else r.bytes
+                    }
+                }
+            if (record == null) {
+                if (pipe.airWake.receiveCatching().isClosed) return
+                continue
+            }
+            val endNanos =
+                AirLedger.reserve(
+                    pipe.airClock,
+                    air.bytesPerSecond,
+                    nodeAir,
+                    pipe.target.nodeAir,
+                    record.bytes,
+                    System.nanoTime(),
+                )
+            val waitMs = (endNanos - System.nanoTime()) / NANOS_PER_MS
+            if (waitMs > 0) delay(waitMs)
+            chaos?.jitter()
+            if (!deliverAir(pipe, record)) return
+        }
+    }
+
+    /**
+     * [record] off [pipe] to its target, under the air lock and with no suspension in it: nothing once a cut took it, so
+     * no delivery lands after [disconnect] returns. A frame crosses the door here, on the air, as a socket write would; a
+     * door that fails under it loses the frame and takes the link down, once the lock is let go. The target counts the
+     * frame in ([received]) before it stops counting as on the air. False when the pipe is done.
+     */
+    private fun deliverAir(
+        pipe: Pipe,
+        record: AirRecord,
+    ): Boolean {
+        val target = pipe.target
+        val doorFailed =
+            synchronized(pipe.airLock) {
+                if (pipe.airClosed || pipe.inHand !== record || pipes[target.nodeId] !== pipe) return false
+                pipe.inHand = null
+                pipe.airedSeq = record.seq
+                val wire = record.wire
+                val door = pipe.door
+                val crossed = if (wire == null || door == null) wire else door.cross(wire)
+                if (wire != null && crossed == null) {
+                    aired.cut.incrementAndGet()
+                    FrameKey.ofSigned(wire)?.let { aired.cutKeys += it }
+                    target.airInbound.decrementAndGet()
+                    return@synchronized true
+                }
+                aired.bytes.addAndGet(record.bytes)
+                aired.records.incrementAndGet()
+                aired.recordWait((System.nanoTime() - record.queuedAtNanos) / NANOS_PER_MS)
+                if (crossed != null) {
+                    target.deliverNow(pipe, this, crossed, record.via)
+                } else {
+                    target.airDigestsIn += record.ids
+                    target.digestsIn.incrementAndGet()
+                    check(target._incomingDigests.tryEmit(ReceivedDigest(nodeId, record.ids))) { "an unbounded flow refused a digest" }
+                }
+                target.airInbound.decrementAndGet()
+                false
+            }
+        if (!doorFailed) return true
+        if (pipes[target.nodeId] === pipe) disconnect(target)
+        return false
+    }
+
+    /**
+     * [pipe] went down or was replaced: it takes no record from here, and every record it still had, queued or airing, is
+     * lost with the link and stops counting as on the air, before [disconnect] returns. The writer, woken, finds the pipe
+     * closed and ends. Under the pipe's air lock, and taken before the memos are forgotten.
+     */
+    private fun cutAir(pipe: Pipe) {
+        if (pipe.air == null) return
+        synchronized(pipe.airLock) {
+            if (pipe.airClosed) return
+            pipe.airClosed = true
+            val lost = pipe.airQueue.toList() + listOfNotNull(pipe.inHand)
+            pipe.airQueue.clear()
+            pipe.inHand = null
+            pipe.pendingDigest = null
+            pipe.queuedBytes = 0
+            lost.mapNotNullTo(aired.cutKeys) { r -> r.wire?.let { FrameKey.ofSigned(it) } }
+            aired.cut.addAndGet(lost.size.toLong())
+            pipe.target.airInbound.addAndGet(-lost.size.toLong())
+        }
+        pipe.airWake.close()
+        pipe.writer?.cancel()
+    }
+
     /** Mirror the real transport: decode the routing envelope on receipt (drop undecodable bytes), and log it on the sender. */
     private fun received(
         wire: WireEnvelope,
@@ -1562,6 +1876,9 @@ class LabTransport(
     /** Leaves the pages, for a node whose live stack is going down ([LabNode.restart] boots a new transport). */
     fun detach() {
         pages?.leave(this)
+        // Every air pipe was cut before this ([disconnectAll]), so no writer can deliver again: this only ends them. The
+        // scope itself lives on, for a paused node resumed on this same transport and linked again ([LabNode.pauseMesh]).
+        airScope.coroutineContext.cancelChildren()
     }
 
     /** Makes `neighbors.value` answer with the pipes as they are now, without waking a collector. */
@@ -1581,6 +1898,11 @@ class LabTransport(
         /** How a frame crossed a pipe, in [sent]: the router's flood / unicast, or the fast path's link copy. */
         const val VIA_LINK = "link"
         const val VIA_FAST = "fast"
+
+        /** An air pipe's custody digest marker ([AirRecord]): never a frame's way, never in [sent]. */
+        const val VIA_DIGEST = "digest"
+        const val NANOS_PER_MS = 1_000_000L
+        const val MS_PER_S = 1_000L
 
         /** One counter across every transport in the JVM, so two nodes' send logs interleave by time. */
         val SEQ =
