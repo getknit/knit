@@ -2,11 +2,17 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.mesh.DmAckCoalescer
+import app.getknit.knit.mesh.lora.AirPurpose
 import app.getknit.knit.mesh.lora.LoraReprobe
+import app.getknit.knit.mesh.lora.RadioParams
+import app.getknit.knit.mesh.lora.SigningFacts
+import app.getknit.knit.mesh.lora.meshcore.Cobs
 import app.getknit.knit.mesh.lora.meshcore.FakeContact
 import app.getknit.knit.mesh.lora.meshcore.FakeForeignClient
 import app.getknit.knit.mesh.lora.meshcore.FakeMeshcoreAir
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreProto
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreSession
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreTraits
 import app.getknit.knit.mesh.lora.meshcore.randomKey
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -21,6 +27,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
 
 /**
@@ -368,6 +375,265 @@ class MeshcoreDirectLabTest {
             air.meshcoreEdit { lossless("alice", "bob") }
             converge(alice, bob, atLeast = 3)
         }
+
+    /**
+     * ADR 2026-11.gsqu §5: a flooded hearing never lifts an Unreachable mark. Alice and Bob are out of each other's zero-hop
+     * range, a repeater in range of both, so alice's DM goes direct to nobody and her board gives up: Bob is marked
+     * unreachable. Bob's room post floods through the repeater and lands at alice one hop on: it feeds his author into her
+     * `reachable` (presentation, the positive control) and its hearing is judged — `loraHearingsJudged`, bumped on every exit
+     * of `hearAuthor`, the event the window's reads wait for. Inside the window — the clock held below the re-probe's next
+     * due time (the mark itself has no lapse) — the mark stands: no `lora direct heard` line, nothing resent or re-probed,
+     * nothing booked on her ledger, no DM aired by her board. Then Bob comes into range and posts again, heard at zero hops:
+     * the mark lifts before the re-probe could, and past the gap the held DM lands once, acked by Bob's board, its ✓✓ back.
+     */
+    @Test
+    @Suppress("LongMethod") // one scenario: the failure, the flooded post's window, then the zero-hop hearing and the oracle
+    fun aFloodedHearingNeverLiftsAnUnreachableMarkButAZeroHopOneDoes() =
+        runBlocking {
+            val air = lab.meshcoreAir()
+            air.meshcoreEdit { repeater("relay", "alice", "bob") }
+            val alice = lab.node("alice", quick, meshcore = air).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", quick, meshcore = air).apply { setDisplayName("Bob") }
+            lab.meetOverMeshcore(alice, bob)
+            val plane = checkNotNull(alice.meshcore)
+            val unreachableBefore = alice.metrics.lora().loraDirectUnreachable
+
+            assertTrue(alice.sendDm(bob, "over the hill"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "over the hill")
+            lab.await((unreachableBefore + 1).toInt()) {
+                alice.metrics
+                    .lora()
+                    .loraDirectUnreachable
+                    .toInt()
+            }
+            // The status is published after the count moves: the mark is awaited, then read only after events.
+            lab.await(1) { unreachable(alice) }
+            assertFalse("nothing of bob's reached alice's plane yet", plane.reachable.value.any { it.nodeId == bob.nodeId })
+            val due = checkNotNull(plane.reprobeSchedule().firstOrNull { it.recipientId == bob.nodeId }) { "no re-probe for bob" }.dueAt
+
+            val judged = alice.metrics.lora().loraHearingsJudged
+            val resent = alice.metrics.lora().loraDirectResent
+            val reprobed = alice.metrics.lora().loraReprobed
+            val used = plane.airtimeUsedMs()
+            val airedBefore = air.snapshot { air.airings.size }
+            assertTrue(bob.sendRoom("from beyond the hill"))
+            lab.await(1) { if (alice.roomPosts()[bob.nodeId]?.contains("from beyond the hill") == true) 1 else 0 }
+            assertTrue(
+                "the flooded post never fed bob's reach: ${alice.loraLog}",
+                lab.tryAwait(1) { if (plane.reachable.value.any { it.nodeId == bob.nodeId }) 1 else 0 },
+            )
+            lab.await((judged + 1).toInt()) {
+                alice.metrics
+                    .lora()
+                    .loraHearingsJudged
+                    .toInt()
+            }
+            assertEquals("one hearing judged: the post's one copy", judged + 1, alice.metrics.lora().loraHearingsJudged)
+            assertTrue("the window ran out before it was read", alice.now() < due)
+            assertEquals("a flooded hearing lifted the mark", 1, unreachable(alice))
+            assertTrue("a flood was a hearing: ${alice.loraLog}", alice.loraLog.none { it == "lora direct heard ${bob.nodeId}" })
+            assertEquals("nothing resent on it", resent, alice.metrics.lora().loraDirectResent)
+            assertEquals("nothing re-probed", reprobed, alice.metrics.lora().loraReprobed)
+            assertEquals("nothing booked on her ledger", used, plane.airtimeUsedMs())
+            val aired = air.snapshot { air.airings.drop(airedBefore).map { "${it.from} ${it.type} hops=${it.hops}" } }
+            assertTrue("alice's board aired a DM: $aired", aired.none { it.startsWith("alice msg") })
+            assertTrue("bob's post went through the repeater: $aired", aired.any { it.startsWith("relay grp_data") })
+
+            air.meshcoreEdit { link("alice", "bob") }
+            val judgedInRange = alice.metrics.lora().loraHearingsJudged
+            assertTrue(bob.sendRoom("now in sight"))
+            assertTrue(
+                "a zero-hop post was no hearing: ${alice.loraLog}",
+                lab.tryAwait(1) { alice.loraLog.count { it == "lora direct heard ${bob.nodeId}" } },
+            )
+            // Judged after its effects, the status published among them: the mark is read past it.
+            lab.await((judgedInRange + 1).toInt()) {
+                alice.metrics
+                    .lora()
+                    .loraHearingsJudged
+                    .toInt()
+            }
+            assertEquals("the hearing lifted the mark", 0, unreachable(alice))
+            assertTrue("inside the window still", alice.now() < due)
+            assertEquals("before any re-probe", reprobed, alice.metrics.lora().loraReprobed)
+
+            lab.clock.advance(LoraReprobe.BASE_MS)
+            lab.await(1) { holds(bob, alice, dm) }
+            assertTrue(
+                "the held DM was re-aired by neither the hearing nor the re-probe: ${alice.loraLog}",
+                lab.tryAwait(1) {
+                    val resend = "lora resend $dm -> ${bob.nodeId}"
+                    if (alice.loraLog.any { it.startsWith(resend) || it == "lora reprobe $dm -> ${bob.nodeId}" }) 1 else 0
+                },
+            )
+            assertTrue(
+                "bob's board never acked it: ${alice.loraLog}",
+                lab.tryAwait(1) { alice.loraLog.count { it == "lora direct acked $dm -> ${bob.nodeId}" } },
+            )
+            assertEquals(DeliveryPlane.LoRa, bob.receivedVia(bob.dmWith(alice), dm))
+            assertEquals("its ✓✓ came back over the board", DeliveryPlane.LoRa, lab.awaitReceipt(alice, dm, bob))
+            assertEquals("it landed once", 1, holds(bob, alice, dm))
+            converge(alice, bob, atLeast = 3)
+        }
+
+    /**
+     * ADR 2026-11.gsqu §2: a doubled attempt draws one ✓✓. Bob's board's ack of alice's attempt 0 is lost (one-shot, that
+     * pair and that attempt alone), so her session sends attempt 1 — new ciphertext, which Bob's board delivers and acks
+     * again. Bob's phone opens both: the second is absorbed (`loraDirectDuplicates`), one row, the id held for the ✓✓
+     * once. Both airings stay booked on alice's ledger (the third refunded on the ack: exactly two DIRECT_DM prices), and
+     * Bob's plane booked its board's ack of each. Bob is on the field's 45-s hold, so nothing of his crosses the window;
+     * past it, over the link, exactly one ✓✓ is sealed for alice.
+     */
+    @Test
+    @Suppress("LongMethod") // one scenario: the lost ack, both copies at bob, the ledgers, then the flush and the oracle
+    fun aDoubledAttemptIsAbsorbedAndDrawsOneTick() =
+        runBlocking {
+            val air = lab.meshcoreAir()
+            val (alice, bob) = pair(air, bobLimits = fieldHold)
+            val plane = checkNotNull(alice.meshcore)
+            val aliceBoard = checkNotNull(alice.meshcoreBoard)
+            val lost = AtomicInteger()
+            air.meshcoreEdit {
+                loseAck = { acker, sender, attempt ->
+                    acker == "bob" && sender == "alice" && attempt == 0 && lost.getAndIncrement() == 0
+                }
+            }
+            val duplicates = bob.metrics.lora().loraDirectDuplicates
+            val acksBooked =
+                bob.meshcoreHooks.counters.acksBooked
+                    .get()
+            val sealed = bob.metrics.receipts().receiptsSealed
+            val used = plane.airtimeUsedMs()
+            val writes = alice.meshcoreWrites().size
+
+            assertTrue(alice.sendDm(bob, "say it twice"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "say it twice")
+            val delivered = "lora direct delivered $dm from ${alice.nodeId}"
+            lab.await(2) { bob.loraLog.count { it == delivered } }
+            air.meshcoreEdit { loseAck = { _, _, _ -> false } }
+            assertEquals("one ack lost, and only one", 1, air.snapshot { lost.get() })
+            lab.await((duplicates + 1).toInt()) {
+                bob.metrics
+                    .lora()
+                    .loraDirectDuplicates
+                    .toInt()
+            }
+            assertEquals("the second copy absorbed", duplicates + 1, bob.metrics.lora().loraDirectDuplicates)
+            assertEquals("one row", 1, holds(bob, alice, dm))
+            // One ✓✓ is read off what Bob seals after the flush (`receiptsSealed`), not off the hold here: the duplicate's
+            // re-ack runs after the counter moves, so a read of the hold now could come before it (mesh-lab-reviewer, Stage 8).
+
+            assertTrue(
+                "bob's board never acked attempt 1: ${alice.loraLog}",
+                lab.tryAwait(1) { alice.loraLog.count { it == "lora direct acked $dm -> ${bob.nodeId}" } },
+            )
+            val sends =
+                alice.meshcoreWrites().drop(writes).filter {
+                    it[0].toInt() == MeshcoreProto.CMD_SEND_TXT_MSG && it.copyOfRange(7, 13).contentEquals(boardPrefix(bob))
+                }
+            assertEquals("two attempts written: ${sends.map { it[2].toInt() }}", listOf(0, 1), sends.map { it[2].toInt() })
+            val seal = checkNotNull(Cobs.decode(sends.first().copyOfRange(13, sends.first().size))) { "a send not in COBS" }.size
+            val airing = air.snapshot { directAirMs(seal, aliceBoard.sf, aliceBoard.bwHz.toInt(), aliceBoard.cr) }
+            assertEquals("both airings booked, the third refunded", 2 * airing, plane.airtimeUsedMs() - used)
+            assertEquals(
+                "bob's plane booked its board's ack of each",
+                acksBooked + 2,
+                bob.meshcoreHooks.counters.acksBooked
+                    .get(),
+            )
+
+            // Bob's ✓✓ is still in the field's hold: past it, over the link, the heal flushes it. Both boards hold the link
+            // first — the composite hands it to the plane on a coroutine of its own — or the flush's compact copy, offered
+            // beside the signed tick, airs before the cover is known (3 of 100 seeds before this wait).
+            lab.link(alice, bob)
+            for ((node, peer) in listOf(alice to bob, bob to alice)) {
+                lab.await(1) { if (peer.nodeId in checkNotNull(node.meshcore).linkIds) 1 else 0 }
+            }
+            lab.clock.advance(46_000L) // past `DmAckCoalescer.HOLD_MS`, 45 s
+            bob.heal()
+            assertTrue(
+                "the ✓✓ came over the link, not the board: ${bob.loraLog}",
+                lab.awaitReceipt(alice, dm, bob) != DeliveryPlane.LoRa,
+            )
+            lab.assertConverged(listOf(alice, bob), atLeast = 3) { it.dmWith(if (it === alice) bob else alice) }
+            assertEquals("one ✓✓ sealed for it", sealed + 1, bob.metrics.receipts().receiptsSealed)
+            assertEquals("one tick at alice", setOf(bob.nodeId), alice.receiptPlanes(dm).keys)
+        }
+
+    /**
+     * ADR 2026-11.gsqu §2 and "what it costs": a receiving board that lacks the sender drops the DM unread and unanswered,
+     * which looks exactly like an absent radio (`Mesh.cpp:147-191`). Alice is taken off Bob's board as another client's
+     * remove would; each of her three attempts is dropped there (the board's `recv matches no peers`, counted by the fake)
+     * and no ack airs: Bob is unreachable at alice. The repair is Bob's own teaching — his restart's Ready reconcile writes
+     * her back — and then her re-probe past its gap: the DM lands once, acked by Bob's board, its ✓✓ back, and his board
+     * drops nothing more.
+     */
+    @Test
+    fun aReceiverMissingTheContactLandsTheDmAfterItsOwnTeach() =
+        runBlocking {
+            val air = lab.meshcoreAir()
+            val (alice, bob) = pair(air)
+            val aliceKey = checkNotNull(alice.meshcoreBoard).key
+            val bobBoard = checkNotNull(bob.meshcoreBoard)
+            air.meshcoreEdit { bobBoard.contacts.removeIf { it.key.contentEquals(aliceKey) } }
+            val unreachableBefore = alice.metrics.lora().loraDirectUnreachable
+            val dropped = air.snapshot { bobBoard.noPeerDrops }
+            val acks = air.snapshot { bobBoard.acksAired.size }
+
+            assertTrue(alice.sendDm(bob, "do you know me"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "do you know me")
+            lab.await((unreachableBefore + 1).toInt()) {
+                alice.metrics
+                    .lora()
+                    .loraDirectUnreachable
+                    .toInt()
+            }
+            lab.await(1) { unreachable(alice) }
+            assertEquals(
+                "every attempt dropped at bob's board for want of the contact",
+                dropped + MeshcoreSession.ATTEMPTS,
+                air.snapshot { bobBoard.noPeerDrops },
+            )
+            assertEquals("and no ack aired", acks, air.snapshot { bobBoard.acksAired.size })
+            assertEquals(0, holds(bob, alice, dm))
+
+            bob.restart()
+            lab.awaitTaught(bob, alice)
+            val droppedAfterTeach = air.snapshot { bobBoard.noPeerDrops }
+            lab.clock.advance(LoraReprobe.BASE_MS)
+            lab.await(1) { holds(bob, alice, dm) }
+            assertTrue(
+                "the DM was re-aired by neither a resend nor the re-probe: ${alice.loraLog}",
+                lab.tryAwait(1) {
+                    val resend = "lora resend $dm -> ${bob.nodeId}"
+                    if (alice.loraLog.any { it.startsWith(resend) || it == "lora reprobe $dm -> ${bob.nodeId}" }) 1 else 0
+                },
+            )
+            assertTrue(
+                "bob's board never acked it: ${alice.loraLog}",
+                lab.tryAwait(1) { alice.loraLog.count { it == "lora direct acked $dm -> ${bob.nodeId}" } },
+            )
+            assertEquals("the taught board dropped nothing more", droppedAfterTeach, air.snapshot { bobBoard.noPeerDrops })
+            assertEquals(DeliveryPlane.LoRa, bob.receivedVia(bob.dmWith(alice), dm))
+            assertEquals("its ✓✓ came back over the board", DeliveryPlane.LoRa, lab.awaitReceipt(alice, dm, bob))
+            assertEquals("it landed once", 1, holds(bob, alice, dm))
+            converge(alice, bob, atLeast = 3)
+        }
+
+    /** The 6-byte prefix of [node]'s board key, as a `SEND_TXT_MSG` names its recipient. */
+    private fun boardPrefix(node: LabNode): ByteArray = checkNotNull(node.meshcoreBoard).key.copyOf(MeshcoreProto.PREFIX_BYTES)
+
+    /** One compact DM airing of [seal] bytes at the board's preset, as the plane prices it (`AirPurpose.DIRECT_DM`). */
+    private fun directAirMs(
+        seal: Int,
+        sf: Int,
+        bwHz: Int,
+        cr: Int,
+    ): Long =
+        MeshcoreTraits.airMs(
+            MeshcoreTraits.phyBytes(seal, MeshcoreTraits.price(AirPurpose.DIRECT_DM, SigningFacts(), false, false)),
+            RadioParams(sf, bwHz, cr),
+        )
 
     /** The `GET_CONTACT_BY_KEY` reads [node]'s session made of [key]'s record this boot. */
     private suspend fun readsOf(

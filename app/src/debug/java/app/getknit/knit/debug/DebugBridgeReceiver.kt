@@ -1971,6 +1971,10 @@ class DebugBridgeReceiver :
             .put("loraDirectPeerLacksOurKey", snap.lora.loraDirectPeerLacksOurKey)
             .put("loraDirectBoardKeyConflict", snap.lora.loraDirectBoardKeyConflict)
             .put("loraDirectDelivered", snap.lora.loraDirectDelivered)
+            // A second copy of a compact DM this sender's row or mark already held: absorbed, re-acked (gsqu §2's retries).
+            .put("loraDirectDuplicates", snap.lora.loraDirectDuplicates)
+            // A room post's author hearing judged on any exit, MeshCore only (gsqu §5): a diagnostic, not a hearing count.
+            .put("loraHearingsJudged", snap.lora.loraHearingsJudged)
             .put("loraDirectStranger", snap.lora.loraDirectStranger)
             .put("loraDirectAuthFailed", snap.lora.loraDirectAuthFailed)
             .put("loraDirectClockRefused", snap.lora.loraDirectClockRefused)

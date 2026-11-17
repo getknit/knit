@@ -2210,3 +2210,75 @@ Board trials owed: the screen through every 7a trial (a GPS board's position lin
 Forget with the board away answering Keep it and Forget anyway; a reflashed board's replace dialog); a pick from a bound
 MeshCore board onto a Meshtastic one, the first board cleaned and the plane back on; a restore from a backup on a phone with
 a set-up board, the dialog's line shown.
+
+## Amendment 2026-11-16 — Stage 8 (lab): the four MeshCore scenarios the plan still owed (draft)
+
+Status: Draft (2026-11-16)
+
+**Context:** Stage 8's lab list had four claims no scenario proved: a flooded hearing never lifts an Unreachable mark
+(§5), a doubled attempt draws one ✓✓ (§2), a receiver missing the contact lands the DM after its own teach ("what it
+costs"), and the two fleets stay split (§1, §7). Built to the design pass of lora- and mesh-lab-reviewer (2026-11-16):
+every wait reads an event past a value captured before the step, never a state and never `air.airings`; no phone link
+between the pair while a DM under test is held; topology changes through `meshcoreEdit`; the plain lab job.
+
+**Decision:**
+
+- **Two production diagnostics, no behaviour change.** `MeshMetrics`' `loraHearingsJudged` (the lora group): bumped by
+  `LoraMeshTransport.hearAuthor` on every exit — the synchronous refusal (not live, not zero-hop, not fresh) and the end
+  of the launched author check on each branch, after its effects. `loraDirectDuplicates`: a compact DM copy whose id this
+  sender's row or `lora_direct_seen` mark already held, counted in `InboundPipeline`'s re-ack branch. Both in the
+  `…debug.LORA` dump. And one lab seam, `LoraMeshTransport.airtimeUsedMs` (the ledger's total, read by the doubled-attempt
+  scenario).
+- **The fake.** `FakeMeshcoreAir.loseAck` is keyed `(acker, sender, attempt)`, so a scenario loses exactly one flight's ack
+  (a one-shot guard), where the old `(attempt)` knob lost every attempt-0 ack both ways; `FakeMeshcoreBoard.noPeerDrops`
+  counts a contact DM that matched none of the board's contacts and was dropped unread (`recv matches no peers`,
+  `Mesh.cpp:186`).
+- **The scenarios.** `MeshcoreDirectLabTest`:
+  - *A flooded hearing never lifts the mark.* Alice and Bob out of each other's zero-hop range, a repeater beside both:
+    her DM goes direct to nobody and Bob is marked unreachable. His post floods through the repeater and lands one hop
+    on; it feeds his author into her `reachable` (the positive control), and once its hearing is judged — inside the
+    window, the clock below the re-probe's due time — the mark stands, no `lora direct heard` line, nothing resent,
+    re-probed, booked or aired by her board. Bob comes into range and posts again: heard at zero hops, the mark lifts
+    before the re-probe could, and past the gap the held DM lands once, acked by his board, ✓✓ back.
+  - *A doubled attempt draws one ✓✓.* Bob on the field's 45-s hold; the ack of alice's attempt 0 lost once. Bob's phone
+    opens both copies (two `lora direct delivered` lines), absorbs the second (`loraDirectDuplicates` +1), holds one row
+    and the id once; alice's ledger keeps exactly two DIRECT_DM airings (the third refunded on the ack), Bob's plane
+    booked its board's ack of each; past the hold, over the link, one ✓✓ is sealed.
+  - *A receiver missing the contact.* Alice removed from Bob's board as another client's remove would; her three attempts
+    each dropped there for want of the contact, no ack aired, Bob unreachable. Bob's restart's Ready reconcile teaches
+    her back; past the re-probe's gap the DM lands once, acked by his board, ✓✓ back, and his board drops nothing more.
+  - `MeshcoreMixedFleetLabTest`: Alice and Bob on Meshtastic boards, Carol and Dave on MeshCore boards, two airs. Each
+    fleet's room post crosses its own board; Alice's DM to Carol stays in her custody with no tick, lands once over a link
+    with its ✓✓; once the four converge, per peer of the other fleet neither plane holds a board, keeps a re-probe
+    schedule or logs a send, neither profile names the other kind's board, and neither Alice's nor Carol's board airs
+    anything after its own post. The full-frame fan-out carries own room posts only (`LoraFramePolicy.eligible`), so the
+    sealed DM frame cannot ride either air: "never airs on either plane" holds as stated. Last, Carol and Dave meet as
+    contacts (a MeshCore key goes to direct contacts only), so the absences are read off MeshCore planes that do hold a
+    board; after the four converge, because the claim each then mints is sealed to its contact alone and the others rightly
+    keep the version before it (Stage 5b-1), which a convergence across the fleets would read as a split.
+
+- **The sweep's find, a lab ordering gap (no production change).** The doubled-attempt scenario's first 100-run sweep
+  failed 3 seeds on "the ✓✓ came over the link": `lab.link` returns before the composite has handed the link to each
+  MeshCore plane, so the heal's flush offered the ✓✓'s compact copy beside the signed tick while Bob's plane still read
+  Alice as unlinked, and it aired. The scenario now waits for each plane's `linkIds` to hold the other before the jump;
+  the same 100 seeds then passed. Production is as designed: a compact copy is gated on the plane's own link set, which a
+  real link-up hands over the same way.
+
+**The review round (lora-, security-, mesh-lab- and unit-test-reviewer, 2026-11-16): nothing blocking left.** mesh-lab's one
+blocking finding was the mixed fleet's profile oracle across a sealed-only mint, closed by the order above. Applied too: a
+MeshCore-side positive control (lora); a failure message that said the opposite of its assertion (lora); no read of the ✓✓
+hold before the duplicate's re-ack (mesh-lab); `MeshcoreHearingTest.aHearingIsJudgedOnlyOnceItsEffectsLanded`, which holds
+the hearing's own author check (the second call, after the decode's) to pin that the count moves only after the lift
+(unit-test). Known cost: three Direct scenarios take about 12 s a run, waiting out the session's attempt timeouts on its
+monotonic clock.
+
+**Consequences / limits:** the airs' split is the harness's (two `FakeMeshcoreAir` / `FakeMeshtasticAir` never meet),
+faithful to two sync words; what the mixed scenario proves is that production keys every board-bound decision by kind.
+The quick air has no time on air and no channel: the scenarios prove what two nodes exchange, never a rate. Regression:
+`MeshcoreHearingTest.everyExitOfAPostsHearingIsJudgedOnce` / `aHearingIsJudgedOnlyOnceItsEffectsLanded`, `InboundPipelineTest`'s compact-DM replay case (the duplicate
+counted), `MeshcoreSessionTest` (the re-keyed `loseAck`).
+
+Board trials owed: scenario 3 on two boards, a stock client deleting the contact on the receiver's board, then that
+phone's restart and the sender's re-probe (`lora reprobe <id> -> <peer>`, then `lora direct acked`); scenario 1 at range
+with a MeshCore repeater between two boards out of each other's direct range (`loraHearingsJudged` moving with no
+`lora direct heard` line until the boards meet).

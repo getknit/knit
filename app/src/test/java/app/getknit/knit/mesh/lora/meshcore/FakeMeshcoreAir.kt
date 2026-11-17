@@ -90,8 +90,12 @@ internal class FakeMeshcoreAir(
     /** Drops a DM attempt on the air before anyone hears it ([attempt] 0..3). */
     var loseDm: (attempt: Int) -> Boolean = { false }
 
-    /** Drops the ack of a delivered DM on its way back. */
-    var loseAck: (attempt: Int) -> Boolean = { false }
+    /**
+     * Drops the ack [acker]'s board sends for [sender]'s DM [attempt] on its way back: keyed by both ends, so a scenario can
+     * lose exactly one flight's ack (a one-shot guard in the lambda) and leave every other pair's alone. Read on the air's
+     * serial context, once per ack.
+     */
+    var loseAck: (acker: String, sender: String, attempt: Int) -> Boolean = { _, _, _ -> false }
 
     private val lossy = HashMap<Pair<String, String>, (Airing) -> Boolean>()
 
@@ -795,6 +799,12 @@ internal class FakeMeshcoreBoard(
     /** Commands this board answered, by code (the firmware has no such count; the tests read it). */
     val commands = mutableListOf<Int>()
 
+    /**
+     * Contact DMs addressed to this board that matched none of its contacts and were dropped unread, unanswered — the
+     * firmware's `recv matches no peers` (`Mesh.cpp:186`); the firmware has no such count, the tests read it.
+     */
+    var noPeerDrops = 0
+
     /** DMs its app was handed, as the receive frames' text. */
     val acksAired = mutableListOf<Boolean>()
 
@@ -1258,7 +1268,11 @@ internal class FakeMeshcoreBoard(
         hops: Int,
     ) {
         rxAirSecs++
-        val sender = contact(from.key) ?: return
+        val sender =
+            contact(from.key) ?: run {
+                noPeerDrops++
+                return
+            }
         val hash = "msg:${from.name}:$ts:$attempt:${text.toList()}"
         if (!heard.add(hash)) return
         val head =
@@ -1269,7 +1283,7 @@ internal class FakeMeshcoreBoard(
             }
         val frame = head + from.key.copyOf(6) + byteArrayOf((if (flood) hops else 0xFF).toByte(), 0) + u32(ts) + text
         queue(frame)
-        if (air.loseAck(attempt)) return
+        if (air.loseAck(name, from.name, attempt)) return
         val code = MeshcoreProto.expectedAck(ts, attempt, text, from.key)
         if (flood) {
             // The PATH return carries the ack, and both ends learn the route (Q13): 0x81 on both boards.
@@ -1414,7 +1428,15 @@ internal class FakeMeshcoreBoard(
                 name,
                 if (flood) radio.floods++ else radio.directs++,
                 AirBody.Ack(code),
-                lost = air.loseAck(attempt),
+                lost =
+                    air.loseAck(
+                        name,
+                        air.boards.values
+                            .firstOrNull { it.key.contentEquals(to.key) }
+                            ?.name
+                            .orEmpty(),
+                        attempt,
+                    ),
                 transportCodes = flood && scoped,
             )
         air.originate(radio, packet, MeshcoreChannel.ACK_DELAY_MS, if (flood) 1 else 0)
@@ -1454,7 +1476,12 @@ internal class FakeMeshcoreBoard(
         p: AirPacket,
         b: AirBody.Msg,
     ): Boolean {
-        val sender = contact(b.from.key) ?: return false // no contact matches the source hash: nothing decrypts it
+        // No contact matches the source hash: nothing decrypts it.
+        val sender =
+            contact(b.from.key) ?: run {
+                noPeerDrops++
+                return false
+            }
         val head =
             if (appTargetVersion >= 3) {
                 byteArrayOf(MeshcoreProto.RESP_CONTACT_MSG_RECV_V3.toByte(), 32, 0, 0)

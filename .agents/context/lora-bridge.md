@@ -1149,7 +1149,9 @@ Debug builds only (`MESHCORE_PLANE`): `di/LoraWiring.loraPlaneOf` builds each ki
   counted by author (`AuthorRadio`), and a board holder marked unreachable gets `onBoardHeard`. An opened DM hears its board only at zero hops and fresh (the same window), and since Stage 5c-2a it only lifts a mark: it never counts a radio, since a DM a repeater forwarded lands `0xFF` too. **The accepted cost:** two MeshCore users who only DM each other read "0 other radios in range" (`LoraRadioScreen`), because `boardsHeardAt` is fed by verified zero-hop room posts alone; a DM could count once a zero-hop proof exists (Stage 5d or later). So on MeshCore `heard` (fresh-frame authors,
   any hop count, unverified) and `boardsHeard` (verified pinned zero-hop authors) read differently from Meshtastic: when the
   airtime row reads 100 %, compare `boardsHeard` with the dump's `meshcoreZeroHopKnitPosts` (live zero-hop Knit **packets**,
-  unverified: a two-part post counts 2 since Stage 5c-1) rather than with `heard`.
+  unverified: a two-part post counts 2 since Stage 5c-1) rather than with `heard`. Every room post's hearing, refused or
+  not, ends in `loraHearingsJudged` (Stage 8): a dump where it climbs while `meshcoreZeroHopKnitPosts` stands is Knit posts
+  refused as hearings at once — through a repeater, out of the offline queue, or stale.
 - **The law.** Before Ready is published the session tells the hooks (`MeshcoreSessionObserver.beforeReady`), which put the
   board's radio and its band's duty into the ledger (`LoraAirtime.onRadio`), or `forgetRadio` with no sane radio — never the
   last board's. Every poll's CORE uptime and RADIO `tx_air` feed `MeshcoreDutyLaw`; while its verdict holds, the pacer holds

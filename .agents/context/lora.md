@@ -478,6 +478,17 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   other's direct contacts is taught both ways before `awaitAcquainted` returns. Every wait reads the receiving side's event
   (a plane counter, the board read back, the session's re-pin), never the air's record.
 
+- **Before touching `MeshMetrics`' `loraHearingsJudged` / `loraDirectDuplicates`, `LoraMeshTransport.hearAuthor`'s exits,
+  `LoraMeshTransport.airtimeUsedMs`, `FakeMeshcoreAir.loseAck`, `FakeMeshcoreBoard.noPeerDrops` or
+  `MeshcoreMixedFleetLabTest`:** READ ADR 2026-11.gsqu's Stage 8 (lab) amendment, then `testing.md`'s MeshCore lab bullet.
+  `loraHearingsJudged` is bumped on **every** exit of `hearAuthor` — the synchronous refusal and the end of the author
+  check, after its effects — and is a diagnostic, never a hearing count: a scenario waits past it before reading that a
+  flooded post lifted nothing. `loraDirectDuplicates` counts a compact DM copy this sender's row or mark already held
+  (`InboundPipeline`'s re-ack branch): a MeshCore retry after a lost board ack is new ciphertext. `airtimeUsedMs` is the
+  ledger's total for the lab, no seam for production. The fake's `loseAck` is keyed by `(acker, sender, attempt)` — lose
+  one flight's ack with a one-shot guard, never every attempt-0 ack both ways — and `noPeerDrops` is the firmware's
+  `recv matches no peers` (`Mesh.cpp:186`). Both counters are in the `…debug.LORA` dump.
+
 - **Before touching `LoraMeshTransport.onOutcome` / `launchFlight`, `LoraDirectPolicy.arrive` / `launchClaiming` /
   `EARLY_OUTCOME_TTL_MS` / `MAX_EARLY_OUTCOMES`, or the `onRadioReached` contract:** READ ADR 2026-11.gsqu's Stage 5c-2b
   amendment (round 2, B). The outcomes collector and the pacer run concurrently, so an answer can outrun its send's

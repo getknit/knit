@@ -761,7 +761,9 @@ class MeshMetrics {
     private val loraDirectAuthFailed = AtomicLong()
     private val loraDirectClockRefused = AtomicLong()
     private val loraDirectDelivered = AtomicLong()
+    private val loraDirectDuplicates = AtomicLong()
     private val loraDirectResent = AtomicLong()
+    private val loraHearingsJudged = AtomicLong()
 
     // Firmware 2.8 PKI-encrypts every compact DM (ADR 2026-10.aajj): what a missing key on either board cost.
     private val loraDirectNoKey = AtomicLong()
@@ -1937,6 +1939,24 @@ class MeshMetrics {
         loraDirectDelivered.incrementAndGet()
     }
 
+    /**
+     * A compact DM copy whose id this sender's row or `lora_direct_seen` mark already held: absorbed, re-acked and never a
+     * second row (ADR 2026-11.gsqu §2: a MeshCore retry after a lost board ack is new ciphertext and reaches the phone
+     * again). The event a doubled-attempt scenario waits on.
+     */
+    fun onLoraDirectDuplicate() {
+        loraDirectDuplicates.incrementAndGet()
+    }
+
+    /**
+     * A room post's author hearing judged (`LoraMeshTransport.hearAuthor`, ADR 2026-11.gsqu §5), on every exit: refused at
+     * once (not live, not zero-hop, not fresh) or at the end of its author check, whichever way that went. A diagnostic —
+     * the event a scenario waits on before it reads that a flooded post lifted no mark — never a count of hearings.
+     */
+    fun onLoraHearingJudged() {
+        loraHearingsJudged.incrementAndGet()
+    }
+
     /** Our own board refused a compact DM before it aired: it holds no key for the destination's board (`39`). */
     fun onLoraDirectNoKey() {
         loraDirectNoKey.incrementAndGet()
@@ -2401,7 +2421,9 @@ class MeshMetrics {
             loraDirectAuthFailed = loraDirectAuthFailed.get(),
             loraDirectClockRefused = loraDirectClockRefused.get(),
             loraDirectDelivered = loraDirectDelivered.get(),
+            loraDirectDuplicates = loraDirectDuplicates.get(),
             loraDirectResent = loraDirectResent.get(),
+            loraHearingsJudged = loraHearingsJudged.get(),
             loraDirectNoKey = loraDirectNoKey.get(),
             loraDirectContactAdded = loraDirectContactAdded.get(),
             loraDirectPeerLacksOurKey = loraDirectPeerLacksOurKey.get(),
@@ -2764,7 +2786,9 @@ class MeshMetrics {
             val loraDirectAuthFailed: Long = 0,
             val loraDirectClockRefused: Long = 0,
             val loraDirectDelivered: Long = 0,
+            val loraDirectDuplicates: Long = 0,
             val loraDirectResent: Long = 0,
+            val loraHearingsJudged: Long = 0,
             val loraDirectNoKey: Long = 0,
             val loraDirectContactAdded: Long = 0,
             val loraDirectPeerLacksOurKey: Long = 0,

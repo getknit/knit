@@ -8558,13 +8558,16 @@ class InboundPipelineTest {
             assertEquals("the ✓✓ waits for the board's coalesced tick (ADR 054)", listOf(id), rig.dmAcks.pending(alice.nodeId))
             coVerify(exactly = 1) { rig.notifier.notify(any(), any(), any(), any(), any()) }
             assertEquals(1L, rig.metrics.lora().loraTickDeferred)
+            assertEquals("the first copy is no duplicate", 0L, rig.metrics.lora().loraDirectDuplicates)
 
             // The packet replayed (a resend, a re-probe, a captured copy): refused before anything is written, acked again
-            // — a second deferral into the same pending id (the coalescer's set holds it once either way).
+            // — a second deferral into the same pending id (the coalescer's set holds it once either way) — and counted
+            // absorbed, the event a doubled MeshCore attempt's scenario waits on (ADR 2026-11.gsqu's Stage 8 amendment).
             rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "over the air, again")))
             assertEquals("over the air", rig.msgMap[id]?.body)
             coVerify(exactly = 1) { rig.notifier.notify(any(), any(), any(), any(), any()) }
             assertEquals("acked again", 2L, rig.metrics.lora().loraTickDeferred)
+            assertEquals("absorbed", 1L, rig.metrics.lora().loraDirectDuplicates)
             assertEquals(listOf(id), rig.dmAcks.pending(alice.nodeId))
         }
 

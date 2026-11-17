@@ -506,7 +506,7 @@ class MeshcoreSessionTest {
         runTest {
             val r = rig()
             up(r)
-            r.air.loseAck = { true }
+            r.air.loseAck = { _, _, _ -> true }
             r.ch.writeResult = { f ->
                 // Between our pin and our send, another client resets the route: the board floods this attempt.
                 if (f[0].toInt() == MeshcoreProto.CMD_SEND_TXT_MSG) r.alice.driftPath(r.bob)
@@ -534,7 +534,7 @@ class MeshcoreSessionTest {
         runTest {
             val r = rig()
             up(r)
-            r.air.loseAck = { it == 0 }
+            r.air.loseAck = { _, _, attempt -> attempt == 0 }
             assertTrue(r.dm() is SendResult.Queued)
             r.alice.driftPath(r.bob)
             r.ch.inject(byteArrayOf(0x81.toByte()) + r.bob.key)
@@ -575,7 +575,7 @@ class MeshcoreSessionTest {
         runTest {
             val r = rig()
             up(r)
-            r.air.loseAck = { true }
+            r.air.loseAck = { _, _, _ -> true }
             val result = r.dm() as SendResult.Queued
             advanceTimeBy(30_000)
             runCurrent()
@@ -592,7 +592,7 @@ class MeshcoreSessionTest {
         runTest {
             val r = rig()
             up(r)
-            r.air.loseAck = { true }
+            r.air.loseAck = { _, _, _ -> true }
             val result = r.dm() as SendResult.Queued
             advanceTimeBy(30_000)
             runCurrent()
@@ -630,7 +630,7 @@ class MeshcoreSessionTest {
             // retry waits on every tick, and none of those ticks reads the record again.
             val r = rig()
             up(r)
-            r.air.loseAck = { true }
+            r.air.loseAck = { _, _, _ -> true }
             val reads = {
                 r.ch.writes.count {
                     it[0].toInt() == MeshcoreProto.CMD_GET_CONTACT_BY_KEY &&
@@ -664,7 +664,7 @@ class MeshcoreSessionTest {
             val r = rig()
             up(r)
             val app = FakeForeignClient(r.alice)
-            r.air.loseAck = { true } // before the sends: no confirmation ever frees a slot
+            r.air.loseAck = { _, _, _ -> true } // before the sends: no confirmation ever frees a slot
             repeat(
                 8,
             ) { app.send(requireNotNull(MeshcoreProto.sendText(r.bob.key.copyOf(6), 0, 1_790_000_700L + it, "x$it".encodeToByteArray()))) }
@@ -677,7 +677,7 @@ class MeshcoreSessionTest {
         runTest {
             val r = rig()
             up(r)
-            r.air.loseAck = { true }
+            r.air.loseAck = { _, _, _ -> true }
             val result = r.dm() as SendResult.Queued
             val sent = r.sendTexts().single()
             val code = MeshcoreProto.expectedAck(MeshcoreProto.u32(sent, 3), 0, sent.copyOfRange(13, sent.size), r.alice.key)
@@ -1026,7 +1026,7 @@ class MeshcoreSessionTest {
         runTest {
             val r = rig()
             up(r)
-            r.air.loseAck = { true }
+            r.air.loseAck = { _, _, _ -> true }
             val result = r.dm() as SendResult.Queued
             r.ch.disconnect()
             runCurrent()
@@ -1191,7 +1191,7 @@ class MeshcoreSessionTest {
             up(r)
             r.ch.latencyMs = 20
             r.air.airMs = 1 // bob's pool never holds the flood back
-            r.air.loseAck = { true }
+            r.air.loseAck = { _, _, _ -> true }
             val bobApp = FakeForeignClient(r.bob)
             // Public posts land faster than one SYNC round trip drains them: the drain alone would never end.
             val flood =

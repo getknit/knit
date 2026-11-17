@@ -1463,6 +1463,8 @@ class InboundPipeline(
         // sender's own row or mark draws the re-ack (the compact ✓✓'s retry); another sender's is not this frame's.
         val holder = messages.senderOf(env.id) ?: loraSeen.find(env.id)?.peerId
         if (holder == env.senderId) {
+            // A second copy — a MeshCore retry after a lost board ack is new ciphertext (ADR 2026-11.gsqu §2) — absorbed.
+            metrics.onLoraDirectDuplicate()
             acknowledge(env, me, plane)
             return
         }

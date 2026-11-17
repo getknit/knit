@@ -300,8 +300,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   jump moves the plane's decisions (the re-probe gap, the fragment window, a hold) and never the session's waits. Wait on
   the receiving side's event — `loraBoundPartsTaken` at the receiver's plane, `meshcoreRepinsDone`, a counter or the board
   read back (`meshcoreCommands`, `meshcoreWrites`) — never on `air.airings`, which is written before the receiver's board,
-  session or plane has run. `MeshcoreRoomLabTest`, `MeshcoreDirectLabTest`, `MeshcoreProfileLabTest` and
-  `MeshcorePublicLabTest` are the set. The last is the Public room (ADR 2026-11.gsqu's Stage 6 amendment, part 6c): the node
+  session or plane has run. `MeshcoreRoomLabTest`, `MeshcoreDirectLabTest`, `MeshcoreProfileLabTest`,
+  `MeshcorePublicLabTest` and `MeshcoreMixedFleetLabTest` (a Meshtastic and a MeshCore fleet on two airs, Stage 8) are the
+  set. Lose one flight's board ack with `FakeMeshcoreAir.loseAck`'s `(acker, sender, attempt)` key and a one-shot guard;
+  wait for a post's hearing to be judged on `loraHearingsJudged` before reading that it lifted nothing. The last is the Public room (ADR 2026-11.gsqu's Stage 6 amendment, part 6c): the node
   wires the room's hooks as `di/MeshModule` does, `LabNode.postPublic` posts as the composer does, and a
   `StockMeshcoreNode` posts plain `name: text` on slot 0 under any name (it waits for a free packet: a burst past the
   board's pool is refused and never airs). Await a heard post at `LabNode.meshcorePostsHandled` (the pipeline returned),

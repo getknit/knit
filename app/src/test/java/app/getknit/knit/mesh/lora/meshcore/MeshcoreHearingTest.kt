@@ -35,6 +35,7 @@ import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -215,15 +216,18 @@ class MeshcoreHearingTest {
         val board: FakeBoard,
         val hooks: () -> MeshcoreHooks,
         val logs: MutableList<String>,
+        val metrics: MeshMetrics,
     )
 
     private fun TestScope.node(
         ops: Ops = Ops(),
         hooksScope: CoroutineScope = backgroundScope,
         start: Boolean = true,
+        authorCheck: LoraAuthorCheck = LoraAuthorCheck { wire, _ -> wire.sig[0] == HONEST },
     ): Node {
         val board = FakeBoard()
         val logs = mutableListOf<String>()
+        val metrics = MeshMetrics()
         var made: MeshcoreHooks? = null
         val transport =
             LoraMeshTransport(
@@ -258,18 +262,18 @@ class MeshcoreHearingTest {
                         ),
                     ),
                 scope = backgroundScope,
-                metrics = MeshMetrics(),
+                metrics = metrics,
                 clock = { testScheduler.currentTime },
                 wallClock = { WALL + testScheduler.currentTime },
                 processStartWall = WALL,
                 log = { logs += it },
-                authorCheck = LoraAuthorCheck { wire, _ -> wire.sig[0] == HONEST },
+                authorCheck = authorCheck,
             )
         // The session's observer runs before Ready: the ledger at the board's 10 % band.
         requireNotNull(ops.observer).beforeReady(board.ready)
         if (start) transport.start()
         runCurrent()
-        return Node(transport, board, { requireNotNull(made) }, logs)
+        return Node(transport, board, { requireNotNull(made) }, logs, metrics)
     }
 
     /**
@@ -385,6 +389,76 @@ class MeshcoreHearingTest {
             assertTrue(n.heard())
             assertEquals(0, n.transport.status.value.direct.unreachable)
             assertEquals("a radio, counted by author", 1, n.transport.status.value.boardsHeard)
+        }
+
+    private fun Node.judged(): Long = metrics.lora().loraHearingsJudged
+
+    /**
+     * Stage 8 (the lab's design pass): every exit of the post's hearing is counted once — the refusals at
+     * once (a flood with hops, a stale post, a replay of the offline queue) and the author check's end either way — so a
+     * scenario can wait for the judgement before it reads that nothing was lifted. A Public text never reaches it.
+     */
+    @Test
+    fun everyExitOfAPostsHearingIsJudgedOnce() =
+        runTest {
+            val n = node()
+            markBobUnreachable(n)
+            val now = WALL + testScheduler.currentTime
+            hear(n, channelPacket(post(sentAt = now + 1), pathLen = 2))
+            assertEquals("a flood with hops", 1L, n.judged())
+            hear(n, channelPacket(post(sentAt = now - LoraFramePolicy.FRESH_MS - 60_000)))
+            assertEquals("a stale post", 2L, n.judged())
+            hear(n, channelPacket(post(sentAt = now + 2), live = false))
+            assertEquals("a replay of the offline queue", 3L, n.judged())
+            hear(n, channelPacket(post(sentAt = now + 3, sig0 = 9)))
+            assertEquals("a post whose author check failed", 4L, n.judged())
+            assertFalse("nothing so far was a hearing", n.heard())
+            assertEquals(1, n.transport.status.value.direct.unreachable)
+
+            hear(n, channelPacket(post(sentAt = WALL + testScheduler.currentTime)))
+            assertEquals("the hearing itself", 5L, n.judged())
+            assertTrue("and it lifted the mark", n.heard())
+            assertEquals(0, n.transport.status.value.direct.unreachable)
+            hear(n, channelPacket(post(sentAt = WALL + testScheduler.currentTime + 1)))
+            assertEquals("a verified post with no mark left to lift", 6L, n.judged())
+            assertEquals("every post reached the router", 6, n.postsDecoded())
+        }
+
+    /**
+     * The judgement comes after the hearing's own effects (unit-test-reviewer, Stage 8): while the author check is still
+     * running, nothing is counted and nothing is lifted; once it ends, both land together. A scenario waiting on the counter
+     * therefore never reads the mark before a lift that was coming.
+     */
+    @Test
+    fun aHearingIsJudgedOnlyOnceItsEffectsLanded() =
+        runTest {
+            val gate = CompletableDeferred<Unit>()
+            var calls = 0
+            // The decode (`readVerified`) checks the post's author first; the hearing's own check is the second call, and the
+            // one held here, so the gate proves the order inside the hearing rather than holding the decode.
+            val n =
+                node(
+                    authorCheck =
+                        LoraAuthorCheck { wire, _ ->
+                            if (++calls == 2) gate.await()
+                            wire.sig[0] == HONEST
+                        },
+                )
+            markBobUnreachable(n)
+            val before = n.judged()
+            n.board.inbound.tryEmit(channelPacket(post(sentAt = WALL + testScheduler.currentTime)))
+            runCurrent()
+            assertEquals("the decode's check, then the hearing's, held", 2, calls)
+            assertEquals("the post is decoded", 1, n.postsDecoded())
+            assertEquals("not judged while its author check runs", before, n.judged())
+            assertFalse("nor lifted", n.heard())
+            assertEquals(1, n.transport.status.value.direct.unreachable)
+
+            gate.complete(Unit)
+            runCurrent()
+            assertEquals("judged once it ended", before + 1, n.judged())
+            assertTrue("and lifted with it", n.heard())
+            assertEquals(0, n.transport.status.value.direct.unreachable)
         }
 
     @Test

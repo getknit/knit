@@ -398,6 +398,9 @@ internal class LoraMeshTransport(
     /** The re-probe's schedules, soonest first: for the JVM tests, which read what a round decided. */
     internal fun reprobeSchedule(): List<LoraReprobe.Entry> = reprobe.stamps()
 
+    /** What the airtime ledger has spent this window: for the `mesh/lab` harness, which reads what a flight booked and refunded. */
+    internal fun airtimeUsedMs(): Long = pace.airtime.usedMs(clock())
+
     /** Poked when a direct send starts waiting, so the deadline loop re-reads the soonest deadline. */
     private val flightWake = Channel<Unit>(Channel.CONFLATED)
 
@@ -2732,27 +2735,36 @@ internal class LoraMeshTransport(
      * - its signature verifies against its author's pinned key ([authorCheck]), so nobody on the public Knit key can
      *   write a hearing for someone else.
      *
-     * The frame itself goes to the router whatever this says.
+     * The frame itself goes to the router whatever this says. Every exit is counted (`loraHearingsJudged`): the event a
+     * scenario waits on before it reads that a flooded post lifted nothing (ADR 2026-11.gsqu's Stage 8 amendment).
      */
     private fun hearAuthor(
         packet: BoardPacket,
         wire: WireEnvelope,
         env: RelayEnvelope,
     ) {
-        if (!traits.heardLive(packet, wallClock()) || !isFresh(env.sentAt)) return
+        if (!traits.heardLive(packet, wallClock()) || !isFresh(env.sentAt)) {
+            metrics.onLoraHearingJudged()
+            return
+        }
         val author = env.senderId
         scope.launch {
-            val verified =
-                runCatching { authorCheck.verified(wire, env) }.getOrElse { e ->
-                    if (e is CancellationException) throw e
-                    log("lora author check failed: ${e.javaClass.simpleName}")
-                    false
-                }
-            if (!verified) return@launch
-            noteAuthorRadio(author, packet)
-            if (boardHolders?.get(author) == null) return@launch
-            if (direct.reachOf(author, clock()) != LoraDirectPolicy.Reach.UNREACHABLE) return@launch
-            onBoardHeard(author)
+            try {
+                val verified =
+                    runCatching { authorCheck.verified(wire, env) }.getOrElse { e ->
+                        if (e is CancellationException) throw e
+                        log("lora author check failed: ${e.javaClass.simpleName}")
+                        false
+                    }
+                if (!verified) return@launch
+                noteAuthorRadio(author, packet)
+                if (boardHolders?.get(author) == null) return@launch
+                if (direct.reachOf(author, clock()) != LoraDirectPolicy.Reach.UNREACHABLE) return@launch
+                onBoardHeard(author)
+            } finally {
+                // After the hearing's own effects (the radio counted, the mark lifted, the catch-up asked): never ahead of them.
+                metrics.onLoraHearingJudged()
+            }
         }
     }
 
