@@ -1101,8 +1101,8 @@ internal class LoraMeshTransport(
     /**
      * The re-probe round (ADR 2026-10.rp3s, re-keyed by ADR 2026-10.x9fa, [LoraReprobe]): for each peer whose schedule is
      * due, re-air the newest of our DMs to them still without its ✓✓ — whatever their board said, since its ack never
-     * meant the phone read it. Run on the linger sweep, so only with a board configured, and only once the last
-     * process's limiters and our own id are back.
+     * meant the phone read it — and the older ones no board took after its ack (#343). Run on the linger sweep, so only
+     * with a board configured, and only once the last process's limiters and our own id are back.
      */
     private suspend fun reprobeDue() {
         if (!restored.value || !mayTransmit() || currentConfig?.dms != true) return
@@ -1158,14 +1158,23 @@ internal class LoraMeshTransport(
             stateWake.trySend(Unit)
             return
         }
-        if (!enqueueResend(peerId, newest, flushAfter = emptyList())) {
+        // The older ones no board took ride behind the probe's ack, read by catch-up's rule (#343, ADR 2026-10.x9fa's
+        // 2026-11-17 amendment): without them, each waited another doubled gap. One a board took waits on its phone,
+        // which the probe already asks, and `flush` would drop it anyway.
+        val backlog =
+            source
+                .unackedTo(peerId, RESEND_LIMIT, untakenOnly = true)
+                .filter { it.frameId != newest.frameId && !it.boardTook && !copyWaiting(it.frameId) }
+                .take(RESEND_LIMIT - 1)
+        if (!enqueueResend(peerId, newest, flushAfter = backlog.map { it.frameId })) {
             reprobe.defer(peerId, now)
             return
         }
         reprobe.onReprobed(peerId, newest.frameId, lastAcked = lastAcked(peerId, newest.frameId), now)
         metrics.onLoraReprobed()
         stateWake.trySend(Unit)
-        log("lora reprobe ${newest.frameId} -> $peerId")
+        val behind = if (backlog.isEmpty()) "" else " (+${backlog.size} after its ack)"
+        log("lora reprobe ${newest.frameId} -> $peerId$behind")
     }
 
     /**
@@ -1602,8 +1611,9 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * The older unacked DMs a catch-up promised to follow once its destination acked the newest. Read untaken, as the
-     * catch-up chose them: the resend just acked is taken now, and counted against the limit it would hide the oldest.
+     * The older unacked DMs a catch-up or a re-probe promised to follow once its destination acked the newest. Read
+     * untaken, as they were chosen: the resend just acked is taken now, and counted against the limit it would hide the
+     * oldest.
      */
     private suspend fun flush(
         peerId: String,
@@ -2725,8 +2735,8 @@ internal class LoraMeshTransport(
         const val STATE_REPROBE_CAP = 64
 
         /**
-         * How many of our unacked DMs a hearing re-airs (ADR 2026-10.x9fa): the newest at once, the older two only after
-         * the destination acks it — a board heard is not a phone that reads.
+         * How many of our unacked DMs a catch-up or a re-probe re-airs (ADR 2026-10.x9fa, #343): the newest at once, the
+         * older two only after the destination acks it — a board heard is not a phone that reads.
          */
         const val RESEND_LIMIT = 3
 

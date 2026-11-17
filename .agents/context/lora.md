@@ -58,7 +58,8 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `Reachable` (45-min linger) and never feeds `reachable`; an implicit ACK only counts; `Unreachable` or no outcome by
   the deadline holds offers until a live hearing of that board (RSSI, not MQTT, not our board, fresh `rx_time`) or the
   re-probe; a destination's refusal holds until their profile changes or 4 h pass. Every send ends at its deadline. The re-probe
-  keys on our DMs with no ✓✓, whatever the board said. A catch-up (x9fa's 2026-11-04 amendment, #294) re-airs the
+  keys on our DMs with no ✓✓, whatever the board said, and on its board ack the ≤ 2 older DMs no board took follow in
+  the same round (#343, x9fa's 2026-11-17 amendment). A catch-up (x9fa's 2026-11-04 amendment, #294) re-airs the
   newest DM **no board took** (`DirectDm.boardTook`) on a fact — a hearing after a failure, a relay cover lapsed or
   lifted, the board acking a fresh DM — never a board-taken one (that is the re-probe's), inside the re-probe's gap
   since the last failure and booked on its schedule; no timer, nothing persisted. A board-map source that has not reported reads "not now"; a

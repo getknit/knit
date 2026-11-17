@@ -486,3 +486,38 @@ costs are ADR 2026-10.8hn6's 2026-11-06 amendment, and three things change here.
 
 An id a reply carries inline (`DmAckCoalescer.take`) has no ledger entry, so its signed copy can still seal a receipt.
 Regression: `DmTickOnceLabTest`.
+
+### Amendment (2026-11-17, #343, draft): a re-probe carries the stranded backlog behind its ack
+
+**What was observed.** In the MeshCore strand trial (P9 → P7, V4 boards on companion v1.18.0), DM1 went unreachable and
+DM2 was held. P7's board was heard seven minutes after the failure, inside the gap, so nothing resent
+(`LoraReprobe.onHeard` pulled the round forward instead). That round re-aired only DM2: `reprobeNewest` read one DM
+and enqueued it with no `flushAfter`, and its board ack brought nothing behind it, since `after ack` runs only on a
+fresh send. The round had doubled the gap to 30 min, and `onAcked(fresh = false)` kept it, so DM1 waited for the next
+round, 30.5 min after DM2's board ack and 29.7 min after its ✓✓. The core is board-neutral, so Meshtastic does the same.
+
+**What changed.** A re-probe carries the backlog the way a catch-up does. `reprobeNewest` still probes with the newest
+DM without its ✓✓, whether a board took it or not, and that one DM is still the question the round asks. It now also
+hands `enqueueResend` the older DMs no board took, read by catch-up's rule (`unackedTo(untakenOnly = true)`, minus the
+probe and any DM with a copy waiting, at most `RESEND_LIMIT - 1`), as `flushAfter`. They air once the destination's
+board acks the probe, in the same round. `flush` reads them again from the source and each asks
+`LoraDirectSource.isUnacked` again at send, so a ✓✓ that landed meanwhile drops it. A DM a board took stays out: it
+waits on its phone, which the probe is already asking. The log keeps its prefix: `lora reprobe <id> -> <peer>`, with
+` (+<n> after its ack)` only when a backlog rides. `LoraReprobe`, its booking, persistence and `LoraPlaneState`'s keys
+are unchanged.
+
+**What it costs.** At most two more DMs' airings per round per peer, and only after a destination ack, booked like any
+compact DM under the same ceiling. More than three stranded DMs still clear three a round. Each flushed resend's ack
+moves the next round one earned gap on and never resets or doubles it, and an acked DM is board-taken from then on, so
+it leaves every later backlog. `DirectDm.boardTook` is in memory only, as #294 says, so after a restart the first
+restored round per peer may air up to two DMs the far board took before the restart, behind its probe's ack. Their
+new acks mark them and stop it. A late ack, after the deadline's no-outcome, carries no flush, the same as a
+catch-up's: the backlog waits for the next round.
+
+Tests: `LoraDirectTransportTest` (the re-probe's backlog: a hearing inside the gap, then the pulled-forward round airs
+both; a ✓✓ before the flush; a board-taken older DM leaves the probe alone),
+`MeshcoreDirectLabTest.aBoardThatWasOffIsHeardAgainAndTheHeldDmLands` and
+`LoraDirectLabTest.aBoardThatWasOffIsHeardAgainAndTheHeldDmLands` (both stranded DMs land over LoRa within one gap).
+Device trial owed: the strand recipe in `.agents/context/lora-bridge.md` on MeshCore and on Meshtastic boards: the
+older DM lands within a minute of `lora reprobe … (+1 after its ack)`, `loraDirectResent` climbs by two, and nothing
+re-airs at the next round. A phone-away control (board on, Knit force-stopped) logs the probe with no suffix.
