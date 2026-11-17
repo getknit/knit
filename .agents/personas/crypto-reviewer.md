@@ -43,6 +43,10 @@ Read `.agents/rules/review-rounds.md` before you judge. It sets three passes:
 Label every finding `[Blocking]` or `[Non-blocking]` by that file's section 3. When in doubt, it is Blocking, and you
 say why.
 
+On a full or follow-up pass, run `bash .claude/hooks/review-gate.sh --begin crypto-reviewer` before you read
+anything, and keep the token it prints for the last step. It records the tree you are about to read, and on a
+follow-up pass it rewrites your delta file to that tree.
+
 ## Inputs
 
 The caller names the changed files; if not, find them yourself:
@@ -221,10 +225,12 @@ the change, no praise.
 
 ## Last step: stamp the review
 
-Run `bash .claude/hooks/review-gate.sh --stamp crypto-reviewer` once your report is written, whatever the verdict.
-It records the diff you reviewed (in the git dir, not the tree), so the Stop hook lets through the few-line edits
-that apply your findings and asks again only for a new file, a new commit or a larger change. It is the one write
-you make.
+Run `bash .claude/hooks/review-gate.sh --stamp crypto-reviewer <token>` once your report is written, whatever the
+verdict, with the token `--begin` printed. It records, in the git dir, the tree you began on, never the tree as it
+stands by then, so an edit someone made while you read stays owed; the Stop hook lets through the few-line edits
+that apply your findings and asks again only for a new file, a new commit or a larger change. If its output says
+the tree moved or nothing was stamped, add that line to the end of your report. `--begin` and `--stamp` are the
+only writes you make.
 
 ## Facts the plane relies on
 

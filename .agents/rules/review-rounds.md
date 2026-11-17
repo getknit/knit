@@ -37,6 +37,10 @@ findings unrelated to the last round kept arriving, and the test reviewers tight
   (owed, or asked for and not yet stamped), so the test reviewers never review tests written for a design the
   subsystem reviewer is about to reject.
 - Reviewers in one stage run in parallel, spawned in one message.
+- Each reviewer runs `review-gate.sh --begin <name>` before it reads, and its last step, `--stamp <name> <token>`,
+  stamps the tree that recorded. An edit made while it reads (by the main session, an owner or the IDE) is never
+  stamped: it stays owed, and past the follow-up slack it costs another pass. Leave a reviewer's paths alone until
+  it reports.
 
 ## 3. Every finding is Blocking or Non-blocking
 

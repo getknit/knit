@@ -12,8 +12,8 @@
 # (.agents/rules/review-rounds.md: the subsystem reviewers first, the test reviewers once none of those is pending).
 #
 # no uncommitted change under a reviewer's paths                                      -> not pending.
-# same HEAD and files as its last stamp, and within its follow-up lines of that diff  -> not pending: the caller
-#                                                                                       is applying its findings.
+# no commit to its paths and no new file since its stamp, and within its follow-up    -> not pending: the caller
+# lines of the stamped tree                                                              is applying its findings.
 # anything else                                                                       -> pending; owed unless
 #                                                                                       this same state was asked
 #                                                                                       for already.
@@ -24,10 +24,15 @@
 # nothing owed -> exit 0, Claude stops normally; else exit 2 with the instruction on stderr, which Claude
 # Code feeds back.
 #
-# `--stamp <name>` records what a review approved: each reviewer runs it as its last step, so the few-line
-# edits that apply its findings don't ask for a review of the review. The state lives in the git dir, so each
-# worktree keeps its own. Honors `stop_hook_active`, so the enforced round can always end, except after a stop the
-# checks blocked: that stop's continuation comes back to ask for the reviewers.
+# `--begin <name>` and `--stamp <name> <token>` record what a review approved. A reviewer runs `--begin` before it reads
+# anything: it records HEAD and the working tree, prints a token, and on a follow-up pass rewrites the delta to that
+# tree. `--stamp`, its last step, stamps the tree it began on, never the tree as it stands then, so an edit made while
+# the review ran (by the caller, an owner, the IDE) is not stamped: it reads as diff past the stamp, and past the
+# follow-up slack it is owed a pass. The stamp lets the few-line edits that apply its findings through without a review
+# of the review. Every state is a git tree (worktree_tree), compared and diffed only through a reviewer's pathspecs; a
+# stamp's tree is pinned by `refs/worktree/claude-review/<name>` so `git gc` keeps it. The state lives in the git dir,
+# so each worktree keeps its own. Honors `stop_hook_active`, so the enforced round can always end, except after a stop
+# the checks blocked: that stop's continuation comes back to ask for the reviewers.
 
 set -uo pipefail
 
@@ -39,43 +44,63 @@ state="$(git rev-parse --git-dir)/claude-review"
 
 reviewers() { grep -v -e '^#' -e '^[[:space:]]*$' "$conf"; }
 
-# What a reviewer reads: the tracked diff plus every untracked file's bytes.
-snapshot() {
-  git diff HEAD -- "$@"
-  git ls-files --others --exclude-standard -- "$@" | sort | while read -r f; do
-    printf '%s\n' "$f"
-    cat "$f"
-  done
+# The conf line for reviewer <name>, or a complaint on stderr.
+reviewer_line() {
+  local line
+  line=$(reviewers | awk -F'\t' -v n="$1" '$1 == n')
+  if [ -z "$line" ]; then
+    echo "review-gate: no reviewer named '$1' in $conf" >&2
+    return 1
+  fi
+  printf '%s\n' "$line"
 }
 
-# The working state of the paths as a git tree, written through a throwaway index so the real one is untouched: the
-# stamp keeps it, and a follow-up pass's delta is a plain `git diff` between two of them.
+# The working state as a git tree, written through a throwaway copy of the index so the real one is untouched: the
+# named paths as they are on disk, untracked files that aren't ignored included, everything else as the index has it,
+# so two trees are compared only through a pathspec. A stamp keeps one, and a follow-up pass's delta is a plain
+# `git diff` between two of them. It fails rather than answer the index's tree: one pathspec that matches nothing makes
+# `git add` refuse them all.
 worktree_tree() {
-  local idx
+  local idx err status
   idx=$(mktemp)
-  cp "$(git rev-parse --git-dir)/index" "$idx" 2>/dev/null || : >"$idx"
-  GIT_INDEX_FILE="$idx" git add -A -- "$@" >/dev/null 2>&1
+  cp "$(git rev-parse --git-dir)/index" "$idx" 2>/dev/null || rm -f "$idx"
+  if ! err=$(GIT_INDEX_FILE="$idx" git add -A -- "$@" 2>&1 >/dev/null); then
+    rm -f "$idx"
+    printf 'review-gate: could not snapshot the working tree: %s\n' "$err" >&2
+    return 1
+  fi
   GIT_INDEX_FILE="$idx" git write-tree
+  status=$?
   rm -f "$idx"
+  return "$status"
 }
 
-# Whether a commit since <name>'s stamp left its paths alone: HEAD is the stamped one, or the commits between the two
-# touch none of those paths (a docs or hook commit), so the stamped diff still reads against HEAD.
+# Whether a state recorded on commit <head> still reads against HEAD for the paths: HEAD is that commit, or the commits
+# between the two touch none of the paths (a docs or hook commit).
 same_base() {
-  local name=$1 head
+  local head=$1
   shift
-  head=$(cat "$state/$name.head" 2>/dev/null) || return 1
   [ "$head" = "$(git rev-parse HEAD)" ] && return 0
   git cat-file -e "$head^{commit}" 2>/dev/null && git diff --quiet "$head" HEAD -- "$@"
 }
 
-changed_files() { git status --porcelain --untracked-files=all -- "$@" | awk '{print $NF}' | sort; }
+# The files under the paths that differ between two trees (or commits): deletions and both sides of a rename included.
+changed_in() {
+  local from=$1 to=$2
+  shift 2
+  git diff --no-renames --name-only "$from" "$to" -- "$@" | sort
+}
 
-fingerprint() { printf '%s\n' "$1" | sha256sum | cut -d' ' -f1; }
+# The lines under the paths that differ between two trees, added plus removed. A binary file counts as <cap> + 1, more
+# than any follow-up slack. Fails when git does (a tree gone), so the caller never reads its 0 as "nothing moved".
+lines_between() {
+  local from=$1 to=$2 cap=$3
+  shift 3
+  git diff --no-renames --numstat "$from" "$to" -- "$@" |
+    awk -v big="$((cap + 1))" '{ n += ($1 == "-") ? big : $1 + $2 } END { print n + 0 }'
+}
 
-# Content lines only: a follow-up edit shifts the line numbers in every later hunk header and the blob ids in
-# each `index` line, which would otherwise count as changes of their own.
-content() { grep -v -e '^index ' -e '^@@ '; }
+is_tree() { [ -n "$1" ] && git cat-file -e "$1^{tree}" 2>/dev/null; }
 
 # The code checks: every static check whose fix moves code a reviewer reads (ktlint, detekt, Android lint, lintorama),
 # never the tests, which the reviewers run themselves. Each check runs once per tree it reads and records a pass in the
@@ -89,14 +114,15 @@ gradle_tree() {
 }
 
 # run_checks [gradle]: lintorama always, the Gradle checks only when asked. Prints the findings; returns 0 clean, 1 on a
-# finding, 75 when Gradle's turn stayed busy past GRADLE_TURN_WAIT (the checks are unknown, not failed).
+# finding, 75 when Gradle's turn stayed busy past GRADLE_TURN_WAIT (the checks are unknown, not failed). A tree that
+# could not be read records no pass.
 run_checks() {
   local out="" status=0 tree lint_out gradle_out gradle_status
   mkdir -p "$state"
-  tree=$(worktree_tree .)
-  if [ "$(cat "$state/lintorama.pass" 2>/dev/null)" != "$tree" ]; then
+  tree=$(worktree_tree .) || tree=""
+  if [ -z "$tree" ] || [ "$(cat "$state/lintorama.pass" 2>/dev/null)" != "$tree" ]; then
     if lint_out=$(printf '{}' | bash "$project_dir/.claude/hooks/lintorama-stop.sh" 2>&1); then
-      printf '%s\n' "$tree" >"$state/lintorama.pass"
+      [ -z "$tree" ] || printf '%s\n' "$tree" >"$state/lintorama.pass"
     else
       out+="$lint_out"$'\n'
       status=1
@@ -106,13 +132,13 @@ run_checks() {
     printf '%s' "$out"
     return "$status"
   }
-  tree=$(gradle_tree)
-  if [ "$(cat "$state/gradle-checks.pass" 2>/dev/null)" != "$tree" ]; then
+  tree=$(gradle_tree) || tree=""
+  if [ -z "$tree" ] || [ "$(cat "$state/gradle-checks.pass" 2>/dev/null)" != "$tree" ]; then
     gradle_out=$(GRADLE_TURN_WAIT="${GRADLE_TURN_WAIT:-600}" "$project_dir/scripts/gradle-turn.sh" \
       ./gradlew ktlintCheck detekt lint --continue --console=plain 2>&1)
     gradle_status=$?
     if [ "$gradle_status" -eq 0 ]; then
-      printf '%s\n' "$tree" >"$state/gradle-checks.pass"
+      [ -z "$tree" ] || printf '%s\n' "$tree" >"$state/gradle-checks.pass"
     elif [ "$gradle_status" -eq 75 ]; then
       out+="The Gradle checks did not run: other Gradle runs held the worktree or every machine slot past the"
       out+=" wait."$'\n'
@@ -157,24 +183,81 @@ if [ "${1:-}" = "--owed" ]; then
   exit 0
 fi
 
-if [ "${1:-}" = "--stamp" ]; then
-  name="${2:?usage: review-gate.sh --stamp <reviewer>}"
-  line=$(reviewers | awk -F'\t' -v n="$name" '$1 == n')
-  if [ -z "$line" ]; then
-    echo "review-gate: no reviewer named '$name' in $conf" >&2
-    exit 1
-  fi
+# A reviewer's stamp, as `s_head s_tree s_begun`: the commit and tree it reviewed and when it began. Fails when there is
+# none, or its tree is gone, which reads as no stamp: a full review.
+read_stamp() {
+  s_head="" s_tree="" s_begun=""
+  [ -f "$state/$1.stamp" ] && read -r s_head s_tree s_begun <"$state/$1.stamp" && is_tree "$s_tree"
+}
+
+# `--begin <name>` is a reviewer's first step: it records the tree the review is about to read under a token for
+# `--stamp`. On a follow-up pass it rewrites the delta to that tree, so the delta the reviewer reads is the one it stamps.
+if [ "${1:-}" = "--begin" ]; then
+  name="${2:?usage: review-gate.sh --begin <reviewer>}"
+  line=$(reviewer_line "$name") || exit 1
   IFS=$'\t' read -r _ _ _ paths _ <<<"$line"
   read -ra specs <<<"$paths"
-  current=$(snapshot "${specs[@]}")
+  tree=$(worktree_tree .) || exit 1
+  head=$(git rev-parse HEAD)
+  mkdir -p "$state/begin"
+  find "$state/begin" -type f -mtime +7 -delete 2>/dev/null
+  token=$(printf '%s %s %s %s %s\n' "$name" "$head" "$tree" "$$" "$(date +%s%N)" | sha256sum | cut -c1-8)
+  printf '%s %s %s %s\n' "$name" "$head" "$tree" "$(date +%s)" >"$state/begin/$token"
+  echo "$name: review begun; its last step is \`bash .claude/hooks/review-gate.sh --stamp $name $token\`"
+  if read_stamp "$name" && same_base "$s_head" "${specs[@]}"; then
+    git diff "$s_tree" "$tree" -- "${specs[@]}" >"$state/$name.delta"
+    echo "follow-up delta since its last stamp: $state/$name.delta ($(wc -l <"$state/$name.delta") lines)"
+  fi
+  exit 0
+fi
+
+# `--stamp <name> <token>` stamps the tree `--begin` recorded under <token>, and says how far the paths have moved since.
+if [ "${1:-}" = "--stamp" ]; then
+  name="${2:?usage: review-gate.sh --stamp <reviewer> <token from --begin>}"
+  token="${3:-}"
+  line=$(reviewer_line "$name") || exit 1
+  IFS=$'\t' read -r _ _ _ paths _ <<<"$line"
+  read -ra specs <<<"$paths"
+  now=$(worktree_tree .) || exit 1
+  begun="$state/begin/$token"
+  if [ -z "$token" ] || [ ! -f "$begun" ]; then
+    if [ -z "$(changed_in HEAD "$now" "${specs[@]}")" ]; then
+      echo "$name: nothing under its paths to stamp"
+      exit 0
+    fi
+    {
+      echo "review-gate: no review begun under token '$token', so nothing was stamped: a stamp of the tree as it is"
+      echo "now would cover edits made while the review ran. The Stop hook will ask for this review again. Say so in"
+      echo "your report, and next time run \`bash .claude/hooks/review-gate.sh --begin $name\` before reading."
+    } >&2
+    exit 1
+  fi
+  read -r b_name b_head b_tree b_begun <"$begun"
+  if [ "$b_name" != "$name" ]; then
+    echo "review-gate: token '$token' began a $b_name review, not a $name one; nothing was stamped" >&2
+    exit 1
+  fi
+  if ! is_tree "$b_tree"; then
+    echo "review-gate: the tree token '$token' recorded is gone from the object store; nothing was stamped" >&2
+    exit 1
+  fi
+  rm -f "$begun"
+  if read_stamp "$name" && [ "${s_begun:-0}" -gt "${b_begun:-0}" ]; then
+    echo "$name: a review that began later has stamped already; this one's older tree was not stamped"
+    exit 0
+  fi
   mkdir -p "$state"
-  printf '%s\n' "$current" >"$state/$name.snapshot"
-  changed_files "${specs[@]}" >"$state/$name.files"
-  git rev-parse HEAD >"$state/$name.head"
-  worktree_tree "${specs[@]}" >"$state/$name.tree"
-  rm -f "$state/$name.delta"
-  fingerprint "$current" >"$state/$name.asked"
-  echo "$name: review stamped ($(wc -l <"$state/$name.snapshot") lines of diff)"
+  printf '%s %s %s\n' "$b_head" "$b_tree" "$b_begun" >"$state/$name.stamp"
+  git update-ref "refs/worktree/claude-review/$name" "$b_tree"
+  # The pre-tree stamp's files, and the delta the stamp has just answered.
+  rm -f "$state/$name.delta" "$state/$name.snapshot" "$state/$name.files" "$state/$name.head" "$state/$name.tree"
+  echo "$name: review stamped ($(lines_between "$b_head" "$b_tree" 0 "${specs[@]}") lines changed under its paths)"
+  if ! same_base "$b_head" "${specs[@]}"; then
+    echo "A commit to its paths landed while the review ran: the next review is a full one."
+  elif ! git diff --quiet "$b_tree" "$now" -- "${specs[@]}"; then
+    moved=$(lines_between "$b_tree" "$now" 0 "${specs[@]}")
+    echo "The tree moved $moved lines under its paths while the review ran: those edits are not stamped and stay owed."
+  fi
   exit 0
 fi
 
@@ -187,20 +270,25 @@ else
   rm -f "$state/checks.blocked"
 fi
 
+# One snapshot of the working tree serves every reviewer below.
+if ! cur=$(worktree_tree .); then
+  echo "review-gate: no review state was read or written; fix the snapshot above, then stop again." >&2
+  exit 2
+fi
+
 # Pass 1: which reviewers have a review pending, and the earliest stage among them.
 pending=()
 first_stage=""
 while IFS=$'\t' read -r name stage follow_up paths relay <&3; do
   read -ra specs <<<"$paths"
-  changed=$(changed_files "${specs[@]}")
+  changed=$(changed_in HEAD "$cur" "${specs[@]}")
   [ -n "$changed" ] || continue
 
-  current=$(snapshot "${specs[@]}")
   same_round=""
-  if [ -f "$state/$name.snapshot" ] && same_base "$name" "${specs[@]}"; then
+  if read_stamp "$name" && same_base "$s_head" "${specs[@]}"; then
     same_round=1
-    if [ -z "$(comm -23 <(printf '%s\n' "$changed") "$state/$name.files" 2>/dev/null)" ]; then
-      delta=$(diff <(content <"$state/$name.snapshot") <(printf '%s\n' "$current" | content) | grep -c '^[<>]')
+    if [ -z "$(comm -23 <(printf '%s\n' "$changed") <(changed_in "$s_head" "$s_tree" "${specs[@]}"))" ]; then
+      delta=$(lines_between "$s_tree" "$cur" "$follow_up" "${specs[@]}") || delta=$((follow_up + 1))
       [ "$delta" -le "$follow_up" ] && continue
     fi
   fi
@@ -219,10 +307,12 @@ for entry in "${pending[@]}"; do
     continue
   fi
   read -ra specs <<<"$paths"
-  print=$(fingerprint "$(snapshot "${specs[@]}")")
-  [ "$(cat "$state/$name.asked" 2>/dev/null)" = "$print" ] && continue
-  # The fingerprint goes first: `read` folds an empty same_round's tab into the next field.
-  to_ask+=("$print"$'\t'"$entry")
+  a_head="" a_tree=""
+  [ -f "$state/$name.asked" ] && read -r a_head a_tree <"$state/$name.asked"
+  if same_base "$a_head" "${specs[@]}" && is_tree "$a_tree" && git diff --quiet "$a_tree" "$cur" -- "${specs[@]}"; then
+    continue
+  fi
+  to_ask+=("$entry")
 done
 
 # Pass 3: the code checks, before any reviewer reads the code and one after another, never beside the review. A
@@ -234,7 +324,7 @@ done
 CHECK_ROUNDS=3
 mkdir -p "$state"
 checks_note=""
-tree=$(worktree_tree .)
+tree=$cur
 rounds=$(sed -n 1p "$state/checks.blocked" 2>/dev/null)
 rounds=${rounds:-0}
 if [ "$(sed -n 2p "$state/checks.blocked" 2>/dev/null)" = "$tree" ] || [ "$rounds" -ge "$CHECK_ROUNDS" ]; then
@@ -256,7 +346,7 @@ else
       printf '%s\n' "$out"
       if [ ${#to_ask[@]} -gt 0 ]; then
         echo "Owed a review once the checks pass (a fix after a review moves the lines it read and forces another"
-        echo "round):$(for e in "${to_ask[@]}"; do printf ' %s' "$(cut -f2 <<<"$e")"; done)."
+        echo "round):$(for e in "${to_ask[@]}"; do printf ' %s' "$(cut -f1 <<<"$e")"; done)."
       fi
       echo "Rerun them with \`.claude/hooks/review-gate.sh --checks\`: it records the pass, so this hook won't run them again."
     } >&2
@@ -268,23 +358,24 @@ rm -f "$state/checks.blocked" "$state/checks.out"
 
 [ ${#to_ask[@]} -gt 0 ] || exit 0
 
+head=$(git rev-parse HEAD)
 owed=""
 relays=""
 followups=""
 for entry in "${to_ask[@]}"; do
-  IFS=$'\t' read -r print name stage paths relay same_round <<<"$entry"
+  IFS=$'\t' read -r name stage paths relay same_round <<<"$entry"
   read -ra specs <<<"$paths"
-  printf '%s\n' "$print" >"$state/$name.asked"
+  printf '%s %s\n' "$head" "$cur" >"$state/$name.asked"
 
   label="$name:"
-  if [ -n "$same_round" ] && [ -s "$state/$name.tree" ]; then
-    git diff "$(cat "$state/$name.tree")" "$(worktree_tree "${specs[@]}")" -- "${specs[@]}" >"$state/$name.delta"
+  if [ -n "$same_round" ] && read_stamp "$name"; then
+    git diff "$s_tree" "$cur" -- "${specs[@]}" >"$state/$name.delta"
     label="$name (follow-up pass, its delta: $state/$name.delta, $(wc -l <"$state/$name.delta") lines):"
     followups+=" $name"
   else
     rm -f "$state/$name.delta"
   fi
-  owed+="  $label"$'\n'"$(changed_files "${specs[@]}" | sed 's/^/    /')"$'\n'
+  owed+="  $label"$'\n'"$(changed_in HEAD "$cur" "${specs[@]}" | sed 's/^/    /')"$'\n'
   relays+="  $name: $relay"$'\n'
 done
 
@@ -294,8 +385,10 @@ done
   printf '%s' "$owed"
   echo
   echo "Spawn each reviewer named above (Agent tool, subagent_type = its name) on its files, all in one message so"
-  echo "they run in parallel. Each reads the change against its catalogue (.agents/personas/<name>.md), runs its"
-  echo "checks, and stamps what it reviewed (.agents/rules/review-rounds.md sets the pass and the labels)."
+  echo "they run in parallel. Each begins (\`--begin\`) before it reads, reads the change against its catalogue"
+  echo "(.agents/personas/<name>.md), runs its checks, and stamps the tree it began on (.agents/rules/review-rounds.md"
+  echo "sets the pass and the labels). Leave their paths alone while they run: an edit made then is not stamped, and"
+  echo "past the follow-up slack it is owed another pass."
   if [ -n "$followups" ]; then
     echo "On a follow-up pass (${followups# }), hand the reviewer its delta file and its previous findings: it checks"
     echo "each finding closed and reviews the delta; a new finding outside it counts only if it is Blocking."

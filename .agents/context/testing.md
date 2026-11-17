@@ -743,9 +743,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   write or touch; the `mesh-lab-reviewer` agent (`.agents/personas/`) runs it as part of its review, and a
   Claude Code Stop hook (`.claude/hooks/review-gate.sh`) asks for that review whenever the lab's uncommitted
   diff moves more than 40 lines past what the last review stamped, touches a file it did not see, or sits on a
-  newer commit (`--stamp`, the reviewer's last step) — so applying its findings asks nothing. It asks for the test
-  reviewers only after the subsystem reviewers have stamped, and a re-review with no commit since the stamp is a
-  follow-up pass over the delta it writes (`.agents/rules/review-rounds.md`).
+  newer commit (`--stamp`, the reviewer's last step, stamps the tree its `--begin` recorded) — so applying its
+  findings asks nothing. It asks for the test reviewers only after the subsystem reviewers have stamped, and a
+  re-review with no commit since the stamp is a follow-up pass over the delta it writes
+  (`.agents/rules/review-rounds.md`).
 - **What the first chaos sweep taught** (2026-09-24, nine failures, triage in `.agents/memory/roadmap.md`):
   a frame sent into a link that is going down reaches the far side only through the relaunch's digest exchange,
   which leaves it to the 60 s timer if it runs before the frame exists — `restart()` and
