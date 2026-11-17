@@ -61,13 +61,18 @@ internal class LinkClock {
 
 /**
  * Every air reservation in the JVM, under one lock: a few sums, never held while anything waits, so no writer holds it
- * while another sleeps. A record's slot starts once its link, its sender's radio and its receiver's radio are all free,
- * and moves each one's next free instant on by the record's bytes at that one's own rate.
+ * while another sleeps. The link and each radio a record uses are each a queue of their own at their own rate: the record
+ * takes its bytes from each one after what that one already holds, and is through once all of them have served it.
+ *
+ * A radio is never held idle for a neighbour's busy one. A phone's controller interleaves its connections' events far
+ * finer than a record, and `nodeAirBytesPerSecond` is already what one radio serves across all of them. A slot booked
+ * jointly instead, once the link and both radios are free together and only ever forward, drags every radio in a dense
+ * group out to the busiest one's horizon: a 48-node gather with 6 links each aired at a third of its radios' rate.
  */
 internal object AirLedger {
     private val lock = Any()
 
-    /** Reserves [bytes] on [link] at [rate] and on both radios; returns when the link will have aired them. */
+    /** Reserves [bytes] on [link] at [rate] and on both radios; returns when all of them will have aired them. */
     fun reserve(
         link: LinkClock,
         rate: Long,
@@ -77,13 +82,15 @@ internal object AirLedger {
         nowNanos: Long,
     ): Long =
         synchronized(lock) {
-            val start = maxOf(nowNanos, link.nextFreeNanos, sender?.nextFreeNanos ?: nowNanos, receiver?.nextFreeNanos ?: nowNanos)
             val linkNanos = nanosFor(bytes, rate)
-            link.nextFreeNanos = start + linkNanos
+            link.nextFreeNanos = maxOf(nowNanos, link.nextFreeNanos) + linkNanos
             link.reservedNanos.addAndGet(linkNanos)
-            sender?.let { it.nextFreeNanos = start + nanosFor(bytes, it.bytesPerSecond) }
-            receiver?.let { it.nextFreeNanos = start + nanosFor(bytes, it.bytesPerSecond) }
-            start + linkNanos
+            var end = link.nextFreeNanos
+            for (radio in listOfNotNull(sender, receiver)) {
+                radio.nextFreeNanos = maxOf(nowNanos, radio.nextFreeNanos) + nanosFor(bytes, radio.bytesPerSecond)
+                end = maxOf(end, radio.nextFreeNanos)
+            }
+            end
         }
 
     private fun nanosFor(

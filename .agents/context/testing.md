@@ -698,8 +698,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
 - **An air link has a rate** (`LinkAir`, `lab.link(a, b, air = …)`, `linkAll(…, air = …)`). Without one, the default
   every scripted scenario keeps, a send hands the frame to the far end before it returns. With one, the pipe queues
   what it is handed, as `FramedLink.send` does, and a writer per direction airs the queue in order at the link's rate.
-  A node's `NodeAir` (`LabLimits.nodeAirBytesPerSecond`) is one radio shared by all its air links, in and out. Slots are
-  reserved on `System.nanoTime`, never the jumpable lab clock. Frames and custody digests are aired (one pending digest
+  A node's `NodeAir` (`LabLimits.nodeAirBytesPerSecond`) is one radio shared by all its air links, in and out. The link
+  and each radio are queues of their own (`AirLedger`): a record is through once all of them have served it, so a radio
+  is never held idle for a neighbour's busy one (a slot booked jointly dragged a dense gather to a third of its rate;
+  `AirLedgerTest`). Slots are reserved on `System.nanoTime`, never the jumpable lab clock. Frames and custody digests are aired (one pending digest
   per link, replaced in place); files still land at once. The memo mark and the enqueue are one step under the pipe's
   air lock, and a cut (`disconnect`, or a `connect` that replaces the pipe) takes that lock before either memo is
   forgotten. It loses every queued record and the one airing, counted in `LabTransport.aired` (`cut`, `cutKeys`), and
