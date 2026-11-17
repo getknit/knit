@@ -576,6 +576,121 @@ class LoraDirectTransportTest {
             assertEquals(listOf("f1"), b.delivered.map { it.frameId })
         }
 
+    /** f1 given up on, f2 held behind its mark, then bob's board heard inside the re-probe's gap: the 11-17 strand. */
+    private fun TestScope.strandTwoThenHear(
+        air: FakeMeshtasticAir,
+        a: Node,
+    ): Node {
+        up(a)
+        a.dm("bob", "f1")
+        settle(air.untilGiveUp())
+        a.dm("bob", "f2")
+        settle()
+        assertEquals(1L, a.lora.loraDirectUnreachable)
+        assertEquals(1L, a.lora.loraDirectHeld)
+        val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)))
+        up(b)
+        b.link.deliverNothingButAir(air, from = 2u, to = 1u)
+        settle()
+        assertEquals("cleared, but no resend inside the gap", 1, a.link.sent.size)
+        return b
+    }
+
+    @Test
+    fun aReprobePulledForwardByAHearingBringsTheOlderStrandedDmBehindItsAck() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val logs = mutableListOf<String>()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)), log = { logs += it })
+            val b = strandTwoThenHear(air, a)
+
+            // The pulled-forward round asks with f2, and its board ack brings f1 in the same round (#343): before, f1
+            // waited another, doubled gap.
+            settle(LoraReprobe.BASE_MS + LoraMeshTransport.LINGER_SWEEP_MS)
+            assertEquals(listOf("f2", "f1"), b.delivered.map { it.frameId })
+            assertEquals(1L, a.lora.loraReprobed)
+            assertEquals(2L, a.lora.loraDirectResent)
+            assertTrue(logs.contains("lora reprobe f2 -> bob (+1 after its ack)"))
+            assertEquals(
+                "the round earned its doubled gap, and the flushed resend's ack neither resets nor doubles it",
+                listOf(2 * LoraReprobe.BASE_MS),
+                a.transport.reprobeSchedule().map { it.gapMs },
+            )
+        }
+
+    @Test
+    fun aReprobesFlushReadsTheSourceAgainSoAnOlderDmWhoseTickLandedFirstStaysUnsent() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            lateinit var a: Node
+            // f1's ✓✓ lands the moment the re-probe is queued, before its board ack: `flush` reads the source then.
+            a =
+                node(air, 1u, "alice", mapOf("bob" to holder(2u)), log = {
+                    if (it.startsWith("lora reprobe f2")) a.source.ack("f1")
+                })
+            val b = strandTwoThenHear(air, a)
+
+            settle(LoraReprobe.BASE_MS + LoraMeshTransport.LINGER_SWEEP_MS)
+            settle(10_000)
+            assertEquals("f1 aired only the once it gave up on", listOf("f1", "f2"), sentIds(a))
+            assertEquals(listOf("f2"), b.delivered.map { it.frameId })
+            assertEquals(1L, a.lora.loraDirectResent)
+            assertEquals(
+                "dropped at the flush's read, never queued for the send-time gate",
+                emptyMap<String, Long>(),
+                a.lora.loraStaleAtSendByReason,
+            )
+        }
+
+    @Test
+    fun aFlushedResendWhoseTickLandsWhileItWaitsIsDroppedAtSend() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            lateinit var a: Node
+            // The board fills the moment it acks the re-probe: the flush queues f1, and f1 waits in the pacer.
+            a =
+                node(air, 1u, "alice", mapOf("bob" to holder(2u)), log = {
+                    if (it == "lora direct acked f2 -> bob") a.link.free = 0
+                })
+            val b = strandTwoThenHear(air, a)
+
+            settle(LoraReprobe.BASE_MS + LoraMeshTransport.LINGER_SWEEP_MS)
+            assertEquals(listOf("f1", "f2"), sentIds(a))
+            a.source.ack("f1") // bob's ✓✓ for f1 lands while it waits
+            a.link.updateHeadroom(16)
+            settle(10_000)
+            assertEquals("asked again at send, so it never airs", listOf("f1", "f2"), sentIds(a))
+            assertEquals(listOf("f2"), b.delivered.map { it.frameId })
+            assertEquals(mapOf(StaleAtSend.ACKED.name to 1L), a.lora.loraStaleAtSendByReason)
+        }
+
+    @Test
+    fun aReprobeNeverPromisesAnOlderDmItsBoardTook() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val logs = mutableListOf<String>()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)), log = { logs += it })
+            val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)))
+            up(a, b)
+            a.dm("bob", "f1")
+            settle()
+            assertEquals("f1's board took it; its ✓✓ never came", 1L, a.lora.loraDirectAcked)
+            air.lossy = { from, _ -> from == 1u } // bob's board stops hearing alice's
+            a.dm("bob", "f2")
+            settle(air.untilGiveUp())
+            assertEquals(1L, a.lora.loraDirectUnreachable)
+            air.lossy = { _, _ -> false }
+            b.link.deliverNothingButAir(air, from = 2u, to = 1u)
+            settle()
+
+            settle(LoraReprobe.BASE_MS + LoraMeshTransport.LINGER_SWEEP_MS)
+            // f1 waits on bob's phone, which the probe already asks: nothing rides behind it.
+            assertTrue(logs.contains("lora reprobe f2 -> bob"))
+            assertTrue(logs.none { it.startsWith("lora reprobe f2 -> bob (+") })
+            assertEquals(1L, a.lora.loraReprobed)
+            assertEquals(1L, a.lora.loraDirectResent)
+        }
+
     @Test
     fun noOutcomeAtAllEndsAtTheDeadlineAsUnreachableAndBooksEveryRetry() =
         runTest {

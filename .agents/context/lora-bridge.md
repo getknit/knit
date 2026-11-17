@@ -504,7 +504,9 @@ the DM off PKI, was wrong, and the 2.8 board trial that "confirmed it" passed th
   took before it: a DM the board took waits on its phone, the re-probe's question, so ordinary chat never re-airs (the
   coalescer holds a ✓✓ up to 45 s). The newest goes, ≤ 2 older after its ack.
 - **The re-probe** (`LoraReprobe`, `lora reprobe <id> -> <peer>`, `loraReprobed`) keys on our DMs still without their
-  ✓✓, whatever the radio said: the phone may be away from a board that acks everything. 15 min after the first DM,
+  ✓✓, whatever the radio said: the phone may be away from a board that acks everything. The probe is that one DM;
+  the ≤ 2 older ones no board took ride as its `flushAfter` and air once the destination's board acks it, in the same
+  round (`lora reprobe <id> -> <peer> (+<n> after its ack)`, #343, x9fa's 2026-11-17 amendment). 15 min after the first DM,
   doubling to 4 h; a destination's ack of a fresh DM resets the gap and asks again one base gap on, an ack of a re-aired one keeps the earned gap (15, 30, 60 min while the phone stays away); a ✓✓ on the last re-aired DM
   resets it; no unacked DM left forgets the peer. Deferred while covered, refused, a send is queued or awaiting its
   answer, or the map has not reported; a restored schedule for a peer without the capability is forgotten on its first
@@ -1449,7 +1451,7 @@ where no other Knit board is listening. Set the Meshtastic app's device to **Non
   → one airing and its four retries (`airtime.usedMs` rises by five airings at once; `meshtastic --listen` near A shows five transmissions, the give-up about a minute later), `lora direct unreachable`,
   `loraDirectUnreachable 1`, the second `lora direct held`; power B's board on and let it air anything →
   `lora direct heard <B>`, then `lora resend` once the gap since the failure has passed (else the next
-  `lora reprobe`), and both land. The relay strand (#294), A and B on one relay and both boards, no link: A sends a DM
+  `lora reprobe … (+1 after its ack)`), and both land: the older within a minute of the newest, never a gap later (#343). The relay strand (#294), A and B on one relay and both boards, no link: A sends a DM
   and switches its relays off within a second → `lora resend <id> -> <B> (cover lapsed` on A within seconds (or
   `(after ack` behind A's next DM); B logs `lora cover lifted <A>` on the first compact frame, its `internetCovered`
   drops by one and `loraDirectSent` climbs while `loraSkippedInternet` stays flat; every ✓✓ is home in a minute or

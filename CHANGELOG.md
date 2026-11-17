@@ -73,6 +73,9 @@ document:
 - At a busy gathering, a message waiting for other phones to carry it could be lost before it arrived, when
   repeated copies of profiles nobody had changed filled their storage. Knit now sends a new copy of your
   profile only after you edit it (#335).
+- When you can only reach someone over LoRa and their radio comes back after missing several of your
+  messages, the older ones now arrive right behind the newest. Before, each one waited another half hour or
+  more (#343).
 
 ## [2.11.1](https://github.com/getknit/knit/releases/tag/v2.11.1) — 2026-11-11T07:27:26Z
 

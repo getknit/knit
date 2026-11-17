@@ -36,6 +36,7 @@ import kotlin.random.Random
  * profile that names the board and claims the door — then part, and only the air is left.
  */
 @RunWith(RobolectricTestRunner::class)
+@Suppress("LargeClass") // one rig, the plane's every direct scenario
 class LoraDirectLabTest {
     private lateinit var lab: MeshLab
 
@@ -198,7 +199,8 @@ class LoraDirectLabTest {
      * next DM is held, not aired. The board comes back and airs a room post; alice's board hears it, and once the re-probe's
      * gap since the failure has run the held DM is re-aired and lands, its ✓✓ following. Which of the two re-airs it is
      * left open on purpose: the hearing's resend when the gap had run by the time a packet of bob's was heard, else the
-     * re-probe round once the clock passes it. Either is the plane working; the scenario asserts one of them aired it.
+     * re-probe round once the clock passes it. Either is the plane working; the scenario asserts one of them aired it,
+     * and that the first DM followed behind its board ack in the same round (#343).
      */
     @Test
     fun aBoardThatWasOffIsHeardAgainAndTheHeldDmLands() =
@@ -241,15 +243,28 @@ class LoraDirectLabTest {
             val newest = alice.ownMessageId(alice.dmWith(bob), "still there?")
             lab.await(1) { holds(bob, alice, newest) }
             // Each line is logged after the enqueue that wakes the pacer, so it can trail the landing: awaited, not read.
+            val resent = "lora resend $newest -> ${bob.nodeId}"
+            val reprobed = "lora reprobe $newest -> ${bob.nodeId}"
             assertTrue(
                 "the held DM was re-aired by neither the hearing nor the re-probe: ${alice.loraLog}",
                 lab.tryAwait(1) {
-                    val resent = "lora resend $newest -> ${bob.nodeId}"
-                    if (alice.loraLog.any { it.startsWith(resent) || it == "lora reprobe $newest -> ${bob.nodeId}" }) 1 else 0
+                    if (alice.loraLog.any { it.startsWith(resent) || it.startsWith(reprobed) }) 1 else 0
                 },
+            )
+            // On the re-probe's branch, the one #343 changed, the probe names the older DM it carries behind its ack.
+            assertTrue(
+                "the re-probe carried no backlog: ${alice.loraLog}",
+                alice.loraLog.none { it.startsWith(reprobed) } ||
+                    alice.loraLog.any { it == "$reprobed (+1 after its ack)" },
             )
             assertEquals(DeliveryPlane.LoRa, bob.receivedVia(bob.dmWith(alice), newest))
             assertEquals(DeliveryPlane.LoRa, lab.awaitReceipt(alice, newest, bob))
+            // The older one rides behind the newest's board ack in the same round, whichever re-air it was (#343): no
+            // second, doubled gap, so the clock stays where it is.
+            val older = alice.ownMessageId(alice.dmWith(bob), "are you there")
+            lab.await(1) { holds(bob, alice, older) }
+            assertEquals(DeliveryPlane.LoRa, bob.receivedVia(bob.dmWith(alice), older))
+            assertEquals(DeliveryPlane.LoRa, lab.awaitReceipt(alice, older, bob))
 
             lab.link(alice, bob)
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
@@ -451,6 +466,7 @@ class LoraDirectLabTest {
             bobBoard.readyProvisioned(knitIndex = MeshLab.KNIT_SLOT)
             lab.clock.advance(LoraReprobe.BASE_MS)
             // The re-probe round re-aired it: the board's ack ended no schedule, and nothing of bob's was missed to hear.
+            // Exact: bob is sent one DM, so nothing rides behind the probe and a suffix would be a stray unacked DM.
             lab.await(1) { alice.loraLog.count { it == "lora reprobe $dm -> ${bob.nodeId}" } }
             lab.await(1) { holds(bob, alice, dm) }
             assertEquals(DeliveryPlane.LoRa, lab.awaitReceipt(alice, dm, bob))

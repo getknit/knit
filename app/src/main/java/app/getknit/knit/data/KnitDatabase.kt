@@ -365,6 +365,7 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun dmScopeAnchorDao(): DmScopeAnchorDao
 
     abstract fun readMarkDao(): ReadMarkDao
+
     abstract fun meshcoreSetupDao(): MeshcoreSetupDao
 
     companion object {

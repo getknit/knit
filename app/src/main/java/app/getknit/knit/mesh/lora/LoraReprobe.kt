@@ -8,8 +8,9 @@ package app.getknit.knit.mesh.lora
  * the board, the plane switched off, the app refusing the packet or its window. So the schedule keys on what the app
  * says, our own DMs with no ✓✓, whatever the radio said: per peer with own DMs unacked, the newest is re-aired one
  * [baseMs] after it went out, then at a gap that doubles to [capMs], until it is acked or none is left (the transport
- * [forget]s them). A quiet board may never be heard at all — `BoardQuiet` stretches its NodeInfo and telemetry to
- * hours — and this is what still asks it.
+ * [forget]s them), and a round's board ack brings up to two older ones no board took behind it (#343). A quiet
+ * board may never be heard at all — `BoardQuiet` stretches its NodeInfo and telemetry to hours — and this is what
+ * still asks it.
  *
  * Two events move it besides a round. A destination's ack of a fresh DM ([onAcked]) resets the gap to [baseMs], so a
  * board that just took a DM is asked again one base gap later if its phone does not answer; an ack of a re-aired one
@@ -181,7 +182,8 @@ internal class LoraReprobe(
          * one has long since sent its ✓✓ (the coalescer holds it 45 s at most). Not the way back for a DM no board took:
          * the transport's catch-up re-airs that on a fact — a hearing after a failure, a relay cover lapsed or lifted,
          * the board acking a fresh DM (#294) — inside this schedule's gap since the last failure and booked on it. What
-         * waits the full gap is a DM the board took whose phone has not answered.
+         * waits the full gap is a DM the board took whose phone has not answered; a round's board ack brings the
+         * untaken backlog behind it, so a pulled-forward round clears it with no second gap (#343).
          */
         const val BASE_MS = 15 * 60_000L
 
