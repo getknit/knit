@@ -1,6 +1,7 @@
 package app.getknit.knit.data.backup
 
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.byteArrayPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.preferencesOf
@@ -120,6 +121,28 @@ class SettingsSnapshotTest {
             val restored = SettingsSnapshot.forRestore(ByteArrayInputStream(out.toByteArray()))
             assertTrue(restored[booleanPreferencesKey("calls_relay_all")]!!)
             assertNull(restored[stringPreferencesKey("call_tombs")])
+        }
+
+    /**
+     * The profile frame this phone signed last is its own (#335): a restored phone mints a fresh stamp before it reads one.
+     * The capabilities key beside it rides, so the transient prefix must not reach it.
+     */
+    @Test
+    fun dropsTheKeptProfileFrameAndCarriesTheProfileCapabilities() =
+        runTest {
+            val prefs =
+                preferencesOf(
+                    byteArrayPreferencesKey("own_profile_frame_sig") to byteArrayOf(1, 2),
+                    byteArrayPreferencesKey("own_profile_frame_signed") to byteArrayOf(3, 4),
+                    longPreferencesKey("own_profile_capabilities") to 5L,
+                )
+            val out = ByteArrayOutputStream()
+            SettingsSnapshot.export(prefs, out)
+            val restored = SettingsSnapshot.forRestore(ByteArrayInputStream(out.toByteArray()))
+            assertEquals(5L, restored[longPreferencesKey("own_profile_capabilities")])
+            for (dropped in listOf("own_profile_frame_sig", "own_profile_frame_signed")) {
+                assertFalse(dropped, restored.asMap().keys.any { it.name == dropped })
+            }
         }
 
     @Test

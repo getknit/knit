@@ -68,6 +68,9 @@ document:
   blocked as profanity, and hidden when you received one. They now go through.
 - If a message reached your relay while your phone was checking it, your phone could miss it until it next
   reconnected, sometimes hours later. It now checks again straight away.
+- At a busy gathering, a message waiting for other phones to carry it could be lost before it arrived, when
+  repeated copies of profiles nobody had changed filled their storage. Knit now sends a new copy of your
+  profile only after you edit it (#335).
 
 ## [2.11.1](https://github.com/getknit/knit/releases/tag/v2.11.1) — 2026-11-11T07:27:26Z
 

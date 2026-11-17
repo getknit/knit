@@ -2506,7 +2506,7 @@ class LabNode internal constructor(
 
     /**
      * Whether custody holds this node's profile frame under [stamp] and it presents the profile settings as they
-     * stand: the fields an edit here writes, compared as the frame carries them (`MeshManager.custodyPresentsOtherThan`).
+     * stand: the fields an edit here writes, compared as the frame carries them (`MeshManager.publishedPresentsOtherThan`).
      */
     private suspend fun custodyPresentsSettings(stamp: Long): Boolean {
         val row = forwardStore.frame(FrameId.profileId(nodeId, stamp), now()) ?: return false

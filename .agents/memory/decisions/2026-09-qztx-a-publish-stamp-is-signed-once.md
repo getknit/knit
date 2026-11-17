@@ -23,6 +23,11 @@ keyed custody read and a payload decode, and publishes nothing unless the settin
 by `MeshManagerTest.editsQueuedBehindAPublishAreCarriedByItsFrameAndNotFloodedAgain` and
 `aRevertWrittenWhileAPublishSignsTheEditIsPublishedToo`.
 
+**Amended 2026-11-17 (ADR 2026-11.khhj, #335):** the watcher judges the frame we published, kept byte for byte in
+settings, not custody's row, and a stamp whose row custody's quota evicted is re-stored from those bytes rather than
+re-signed. A missing row had counted as a change, so every settings write after an eviction minted a version and sealed
+it to every confirmed session. The "Not covered" residual below is closed by the same change.
+
 ## What was observed
 
 Three mesh-in-a-box failures in two days, on both CI runners, that read as three different flakes:

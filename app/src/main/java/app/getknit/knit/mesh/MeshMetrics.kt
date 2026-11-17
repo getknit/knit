@@ -41,10 +41,14 @@ enum class CtlDmPurpose {
  * session.
  */
 enum class ProfileRepublishCause {
-    /** Our own custody held no profile frame for the current stamp: evicted by a quota, swept, or never written. */
+    /**
+     * Neither the frame kept in settings nor our own custody held a profile frame for the current stamp, or it did not
+     * decode. Since #335 an eviction alone no longer counts here: the start's seed keeps a frame before the watcher judges
+     * its first value, so this is a fallback that should read 0. The name is the sweep's, kept so its figures compare.
+     */
     NO_CUSTODY_ROW,
 
-    /** The held frame presents a field other than the settings now: an edit, or a capability bit that moved. */
+    /** The published frame presents a field other than the settings now: an edit, or a capability bit that moved. */
     PRESENTATION_CHANGED,
 }
 

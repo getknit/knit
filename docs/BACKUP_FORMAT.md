@@ -140,7 +140,8 @@ deadline (`mesh_pause_until` — a backup taken mid-pause must not pause the oth
 and the Wi-Fi Aware switch (`low_power_mode`, `wifi_aware_enabled` and its move's journal — a restored phone starts
 with Wi-Fi Aware on), and the paired LoRa
 board's address, names, pre-setup values and airtime ledger (the Bluetooth bond is per phone; pairing the
-board again brings them back). The board's node number and key stay — they ride the profile. Relay URLs are carried
+board again brings them back), and the profile frame this phone signed last (`own_profile_frame_…`, #335: the restored
+phone's first start mints a fresh stamp before it reads one). The board's node number and key stay — they ride the profile. Relay URLs are carried
 *with* their bearer tokens: they are the user's, and the file is sealed.
 
 Two keys are written **at restore time**, not at backup time: `onboarding_seen = true` (or the name page

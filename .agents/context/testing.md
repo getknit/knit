@@ -901,14 +901,22 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   1,400 DMs, recipient-addressed chat other than the workload's DMs filled 85% of every store, and 150 to 234 DMs
   left every store, often their sender's own first, and never arrived. The counters named the flood: of 96,016
   v3 seals, 90,517 were the sealed profile fan-out, after 3,919 republishes, every one because our own custody no
-  longer held our profile frame (`MeshManager.custodyPresentsOtherThan` reads a missing row as a change, so the next
-  settings write to any key mints a version and seals it to every confirmed session). Signed DM ✓✓ re-seals were
+  longer held our profile frame (the profile watcher then read a missing custody row as a change, so the next
+  settings write to any key minted a version and sealed it to every confirmed session; it judges the frame kept in
+  settings since ADR 2026-11.khhj). Signed DM ✓✓ re-seals were
   95, all because our last receipt had left custody. The counters behind it: `seals.ctlDmSealedBy`,
   `seals.profileRepublishedBy`, `receipts.receiptsDmSealedBy`, `receipts.receiptsReSealedBy`.
+- **With the kept profile frame, an eviction mints nothing** (walk-only, 48 walkers, 10 minutes, 2026-11-17, ADR
+  2026-11.khhj). On one tree, seed 1 before and after the fix: `profileRepublishedBy[NO_CUSTODY_ROW]` 3,514 → 0,
+  `ctlDmSealedBy[PROFILE_FANOUT]` 80,465 → 0 (no heal ran in the walk), frames originated 81,187 → 5,760, DMs that
+  left every store and never arrived 151 → 52, DMs arrived by the walk's end 56% → 84%. Seed 2 after the fix: 0 and 0,
+  6,069 originated, 73 lost, 78% arrived. Every store still reaches the cap in 3 to 5 minutes; recipient-addressed
+  chat other than the workload's DMs (receipts, intros) is now 52 to 60% of it, and what is lost is that pressure on
+  partitioned DMs.
 - **A gather after a long walk does not settle in the lab** (48 walkers, 10 minutes, 2026-11-16). About 12,900 live
   ids met 1,000 rows per store, the nodes re-served what the receivers then evicted on about ten cores for nine
-  hours, and the settle's own reads starved; the run was killed. Measure long walks with `-Pknit.meshSimGather=false`
-  until #335 is fixed.
+  hours, and the settle's own reads starved; the run was killed. Measure long walks with `-Pknit.meshSimGather=false`;
+  the gather has not been re-run since #335's fix.
 - **What it leaves out.** One plane, no path loss, no link budget, none of the transports' own dial policies:
   `LabTransport` stands in for the whole radio, so the topology is the geometry's, not what Bluetooth or
   Wi-Fi Aware would have formed.

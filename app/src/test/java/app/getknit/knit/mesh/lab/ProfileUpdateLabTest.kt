@@ -2,7 +2,11 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.mesh.ProfileRepublishCause
+import app.getknit.knit.mesh.SeenSet
+import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -195,5 +199,71 @@ class ProfileUpdateLabTest {
             // trip Bob starts when the row lands, still in flight when the row is first readable.
             assertTrue("bob never pulled the avatar bytes", lab.tryAwait(1) { if (bob.blobs.exists(hash)) 1 else 0 })
             assertTrue(picture.contentEquals(bob.blobs.bytes(hash)))
+        }
+
+    /**
+     * #335: custody's cap takes the largest sender's oldest frame on every node alike (ADR 2026-10.7mqm), so Alice's
+     * posts evict her own profile everywhere. A settings write after that is not an edit: her version and stamp stay,
+     * and nothing is republished or sealed. Before the fix it minted a version, flooded it and sealed it to Bob, and in a
+     * crowd those copies filled every store. A re-link past the routers' seen window re-serves her profile from the frame
+     * she kept, the same bytes under the same id, and the stores still agree; a rename then publishes once.
+     */
+    @Test
+    fun anEvictedOwnProfileIsNotRepublishedByASettingsWrite() =
+        runBlocking {
+            val limits = LabLimits(custodyMaxRows = 20)
+            val alice = lab.node("alice", limits).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", limits).apply { setDisplayName("Bob") }
+            val carol = lab.node("carol", limits).apply { setDisplayName("Carol") }
+            val three = listOf(alice, bob, carol)
+            lab.linkAll(alice to bob, bob to carol, alice to carol)
+            lab.awaitAcquainted(alice, bob, carol)
+            // A session for the sealed fan-out to reach: the copy an eviction used to cost.
+            assertTrue(alice.sendDm(bob, "hi bob"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+
+            val version = alice.settings.profileVersion.first()
+            val stamp = alice.settings.profilePublishedAt.first()
+            val profileId = FrameId.profileId(alice.nodeId, stamp)
+            // Setting the name at the start was an edit, counted as one: what is counted after it is the case's.
+            val republished = alice.metrics.seals().profileRepublishedBy
+
+            fun changedSince() =
+                (alice.metrics.seals().profileRepublishedBy[ProfileRepublishCause.PRESENTATION_CHANGED] ?: 0L) -
+                    (republished[ProfileRepublishCause.PRESENTATION_CHANGED] ?: 0L)
+
+            // Twenty posts into a 20-row store: Alice's bucket is the largest everywhere, and her profile its oldest frame.
+            (1..20).forEach { assertTrue(alice.sendRoom("alice $it")) }
+            lab.assertConverged(three, atLeast = 20) { Conversations.NEARBY }
+            three.forEach { assertTrue("${it.name} still holds alice's profile", profileId !in it.custodyIds()) }
+
+            alice.settings.setThemeMode(ThemeMode.Dark) // a write to a key the profile does not carry
+            // An early read only: a watcher that judged the write late still fails the version check after the re-link.
+            lab.settle() // lab-lint: allow sleep-as-sync — a pause before checking no version, stamp or republish followed the write
+            assertEquals("an eviction is not an edit: no new version", version, alice.settings.profileVersion.first())
+            assertEquals("and no new stamp", stamp, alice.settings.profilePublishedAt.first())
+            assertEquals("and nothing republished", republished, alice.metrics.seals().profileRepublishedBy)
+
+            // Past the seen window, the re-link's push re-serves the kept frame and Bob takes it in again: every store
+            // trims it as the oldest of the largest bucket, alike, and Bob still holds Alice at the version she shows.
+            // The push is held on the way, so what it carries is read: the bytes signed at the stamp, not a re-signing.
+            val kept = checkNotNull(alice.settings.ownProfileFrame.first()) { "alice kept no profile frame" }
+            lab.unlink(alice, bob)
+            lab.clock.advance(SeenSet.DEFAULT_TTL_MS + 60_000L)
+            lab.link(alice, bob, arm = { alice.transport.hold(bob.transport) })
+            lab.await(1) { alice.transport.held(bob.transport).count { it.isProfileFrom(alice.nodeId) } }
+            val pushed = alice.transport.held(bob.transport).first { it.isProfileFrom(alice.nodeId) }
+            assertEquals(profileId, WireCodec.decodeEnvelope(pushed.signed)?.id)
+            assertTrue("the push re-signed alice's profile", pushed.signed.contentEquals(kept.signed) && pushed.sig.contentEquals(kept.sig))
+            alice.transport.release(bob.transport)
+            lab.assertConverged(three, atLeast = 20) { Conversations.NEARBY }
+            assertEquals(version, alice.settings.profileVersion.first())
+
+            alice.setDisplayName("Alice the Second")
+            lab.assertConverged(three, atLeast = 20) { Conversations.NEARBY }
+            assertEquals("Alice the Second", bob.peer(alice)?.name)
+            assertEquals("Alice the Second", carol.peer(alice)?.name)
+            assertEquals("the rename published once", 1L, changedSince())
+            assertEquals(null, alice.metrics.seals().profileRepublishedBy[ProfileRepublishCause.NO_CUSTODY_ROW])
         }
 }

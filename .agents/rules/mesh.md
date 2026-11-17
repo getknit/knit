@@ -206,10 +206,15 @@ free). Two invariants that are easy to break:
   fresh stamp on every launch), while distinct itself compared values as emitted, so an edit and its revert
   written during a publish folded into an equal value and were dropped, leaving the profile on the edit. Every
   value, the first after the seed, is judged as the settings stand when the watcher reaches it
-  (`currentPresentation()`) against the custodied frame of the current stamp (`custodyPresentsOtherThan`), and
-  mints only when they differ. That publishes an edit made while the mesh was stopped, and a burst of edits queued
-  behind the seed or a publish mints one frame, not one per write. The read never signs a missing row: a frame
-  signed there from edited settings would reuse the id peers already hold, so a missing row counts as a change.
+  (`currentPresentation()`) against the frame we published under the current stamp (`publishedPresentsOtherThan`),
+  and mints only when they differ. That publishes an edit made while the mesh was stopped, and a burst of edits queued
+  behind the seed or a publish mints one frame, not one per write. The frame judged is the one kept byte for byte in
+  settings (`SettingsStore.ownProfileFrame`, ADR 2026-11.khhj), **never** custody's row alone: custody's quotas evict
+  our own frames like anyone's, and judging the row made every settings write after an eviction mint a version and
+  seal it to every confirmed session (#335). `signOwnProfileLocked` keeps every frame it signs, and after an eviction
+  re-stores the kept bytes rather than re-signing the stamp from settings that may have moved. The read never signs a
+  missing frame: one signed there from edited settings would reuse the id peers already hold, so a stamp neither the
+  kept frame nor custody holds counts as a change.
 - **A blob is served only to a fresh ask, and never asked for while it is arriving** (`BlobExchange`, ADR
   2026-09.4tx5, superseding 2026-09.ywzn). Nothing is pushed to a peer that did not just ask: a neighbour
   that asked while we lacked the bytes is served on its next ask (its own 60 s tick), because the serving

@@ -160,5 +160,8 @@ object SettingsKeys {
             "wifi_aware_",
             // Direct links are a per-phone choice (ADR 2026-10.a5yj): a restored phone starts with them off.
             "direct_links_",
+            // The profile frame this phone signed last (#335): its own bytes, and a restored phone's first start mints a
+            // fresh stamp before it reads them. Never shortened to "own_profile": the capabilities key beside it rides.
+            "own_profile_frame",
         )
 }

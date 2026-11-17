@@ -5198,10 +5198,11 @@ class MeshManager(
             ) { name, status, avatarAt, openToChat, lora ->
                 OwnPresentation(name, status, avatarAt, openToChat, lora)
             }
-                // No distinctUntilChanged: every value is judged against custody below, which is what tells a change
-                // from none. Every one of the five flows is a projection of the one DataStore, which re-emits on a
-                // write to ANY key (the seed's own stamp write, the ledger flush, a read-state stamp), and each of
-                // those costs one keyed custody read and publishes nothing. A distinct here compared values as they
+                // No distinctUntilChanged: every value is judged against the frame we published below, which is what
+                // tells a change from none. Every one of the five flows is a projection of the one DataStore, which
+                // re-emits on a write to ANY key (the seed's own stamp write, the ledger flush, a read-state stamp), and
+                // each of those costs one read of the kept frame and publishes nothing — whether or not custody still
+                // holds our profile (#335). A distinct here compared values as they
                 // were emitted, not as anything was published: an edit and its revert, written while a publish was
                 // signing the edit, fold into one value equal to the last, which distinct dropped, leaving custody on
                 // the edit and the settings on the revert until the next edit (a bind then an unbind, MeshManagerTest
@@ -5224,7 +5225,7 @@ class MeshManager(
                     // queued one value per write, and `broadcastProfile` signs the settings of its own moment, so
                     // each queued value minted the newest frame again: a board bound at start, then a rename, cost
                     // three versions of one profile, each a flood and a sealed update to every contact.
-                    val cause = custodyPresentsOtherThan(currentPresentation()) ?: return@collect
+                    val cause = publishedPresentsOtherThan(currentPresentation()) ?: return@collect
                     metrics.onProfileRepublished(cause)
                     broadcastProfile()
                     broadcastSealedProfile()
@@ -5243,21 +5244,24 @@ class MeshManager(
         )
 
     /**
-     * Why the profile frame custody holds for the current stamp presents something other than [live] — the
+     * Why the profile frame we published under the current stamp presents something other than [live] — the
      * fields the frame carries, compared as the frame carries them (the avatar by its hash, the name and status
-     * normalized and capped) — or null when it presents the same. No row is "other": the read never signs one, because
-     * a frame signed here from the edited settings would carry the current stamp's id, which peers already hold for the
-     * frame before the edit, and they would drop the edit as a duplicate. The cause is for the metrics alone: either
-     * one publishes.
+     * normalized and capped) — or null when it presents the same. The frame is the one kept in settings
+     * ([SettingsStore.ownProfileFrame]), or custody's row before a build that keeps it has signed or seeded one: never
+     * custody alone, whose quotas evict our own frames like anyone's, so a settings write to any key after an eviction
+     * minted a version and sealed it to every confirmed session (#335). No frame at all is "other": the read never signs
+     * one, because a frame signed here from the edited settings would carry the current stamp's id, which peers already
+     * hold for the frame before the edit, and they would drop the edit as a duplicate. The cause is for the metrics alone:
+     * either one publishes.
      */
-    private suspend fun custodyPresentsOtherThan(live: OwnPresentation): ProfileRepublishCause? {
-        // Under the lock, so the stamp and its row are read as one publish left them, never between its two writes.
-        val row =
+    private suspend fun publishedPresentsOtherThan(live: OwnPresentation): ProfileRepublishCause? {
+        // Under the lock, so the stamp and its frame are read as one publish left them, never between its writes.
+        val published =
             profileLock.withLock {
-                val stamp = settings.profilePublishedAt.first()
-                forwardStore.frame(FrameId.profileId(identity.nodeId(), stamp), clock())
+                val id = FrameId.profileId(identity.nodeId(), settings.profilePublishedAt.first())
+                keptOwnProfile(id)?.second ?: forwardStore.frame(id, clock())?.envelope
             } ?: return ProfileRepublishCause.NO_CUSTODY_ROW
-        val held = WireCodec.decodePayload<ProfileContent>(row.envelope.payload) ?: return ProfileRepublishCause.NO_CUSTODY_ROW
+        val held = WireCodec.decodePayload<ProfileContent>(published.payload) ?: return ProfileRepublishCause.NO_CUSTODY_ROW
         val differs =
             held.name != normalizeSingleLine(live.name).clampToUtf16(TextLimits.DISPLAY_NAME) ||
                 held.status != normalizeSingleLine(live.status).clampToUtf16(TextLimits.STATUS) ||
@@ -5344,8 +5348,8 @@ class MeshManager(
     private suspend fun pushProfileTo(peer: Peer) {
         // Custody our own profile (ORIGIN_SELF), exactly as a peer that receives it carries it (ORIGIN_RELAY).
         // Without this our store is permanently missing our own profile while every peer holds it, so the
-        // store-and-forward digests never converge and the mesh churns NDPs forever. Idempotent on the (now
-        // persisted, restart-stable) version, so repeated connects don't re-store it.
+        // store-and-forward digests never converge and the mesh churns NDPs forever. Idempotent while custody holds
+        // the current stamp's row; after the quota evicted it, the kept frame goes back byte for byte (#335).
         val (wire, env) = ownProfile()
         router.sendOwn(wire, env.id, peer)
         sendAvatarIfNeeded(peer)
@@ -6301,10 +6305,28 @@ class MeshManager(
     /**
      * [ownProfile]'s body — the one place a profile frame is signed. Caller holds [profileLock]. [edited]: the caller
      * has just bumped the version and the stamp ([broadcastProfile]), so a change of capabilities is already an edit's.
+     *
+     * The current stamp's frame comes from custody when custody holds it, else from the frame kept in settings
+     * ([SettingsStore.ownProfileFrame], #335), and is signed only when neither holds it. Custody's quotas evict our own
+     * frames as they evict anyone's (ADR 006, 2026-10.7mqm), and a re-signing after an eviction read the settings as they
+     * stand now: an edit still waiting for [watchProfileChanges], or a prekey the envelope reads, made a second set of
+     * bytes under an id peers already hold (ADR 2026-09.y5f3). The kept frame is re-custodied byte for byte instead.
      */
     private suspend fun signOwnProfileLocked(edited: Boolean = false): Pair<WireEnvelope, RelayEnvelope> {
         var env = currentProfileEnvelope()
-        forwardStore.frame(env.id, clock())?.let { held -> return WireEnvelope(sig = held.sig, signed = held.signed) to held.envelope }
+        forwardStore.frame(env.id, clock())?.let { held ->
+            val wire = WireEnvelope(sig = held.sig, signed = held.signed)
+            // The row is what every plane has been serving: keep it as the frame we published (a build's first start, or
+            // a row whose bytes the kept frame does not match).
+            keepOwnProfile(wire)
+            return wire to held.envelope
+        }
+        keptOwnProfile(env.id)?.let { (wire, kept) ->
+            // Evicted from our own custody, not edited: the same bytes go back, under the same quotas as any re-served
+            // frame, and nothing is minted or sealed.
+            forwardSync.onSeen(wire, kept, ForwardStore.ORIGIN_SELF)
+            return wire to kept
+        }
         val caps = WireCodec.decodePayload<ProfileContent>(env.payload)?.capabilities
         // Every fresh signing whose capabilities differ from the last one's is an edit, whoever asks for it first (ADR
         // 2026-11.264w): a link-up's push or the stale republish can outrun the start-time check, and a profile carrying a
@@ -6318,7 +6340,22 @@ class MeshManager(
         forwardSync.onSeen(wire, env, ForwardStore.ORIGIN_SELF)
         // What this signing carried, for the next comparison.
         caps?.let { settings.setOwnProfileCapabilities(it) }
+        settings.setOwnProfileFrame(wire)
         return wire to env
+    }
+
+    /** The kept frame ([SettingsStore.ownProfileFrame]) when it is the one under [id], decoded, else null. */
+    private suspend fun keptOwnProfile(id: String): Pair<WireEnvelope, RelayEnvelope>? {
+        val kept = settings.ownProfileFrame.first() ?: return null
+        val env = WireCodec.decodeEnvelope(kept.signed)?.takeIf { it.id == id } ?: return null
+        return kept to env
+    }
+
+    /** Keeps [wire] as the frame we published, written only when its bytes differ: every settings write re-emits the watcher. */
+    private suspend fun keepOwnProfile(wire: WireEnvelope) {
+        val kept = settings.ownProfileFrame.first()
+        if (kept != null && kept.sig.contentEquals(wire.sig) && kept.signed.contentEquals(wire.signed)) return
+        settings.setOwnProfileFrame(wire)
     }
 
     /**

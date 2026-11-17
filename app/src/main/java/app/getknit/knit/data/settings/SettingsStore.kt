@@ -3,6 +3,7 @@ package app.getknit.knit.data.settings
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.byteArrayPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
@@ -12,6 +13,7 @@ import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.emoji.RecentReactions
 import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.bluetooth.PromotionConfig
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.spool.SpoolTicketJournal
 import app.getknit.knit.mesh.spool.StoredSpoolTicket
 import app.getknit.knit.ui.theme.ThemeMode
@@ -62,6 +64,19 @@ class SettingsStore(
      * stored capabilities on the profile version, and an equal version would let a custodied older frame take a bit back.
      */
     val ownProfileCapabilities: Flow<Long?> = dataStore.data.map { it[KEY_OWN_PROFILE_CAPABILITIES] }
+
+    /**
+     * The profile frame this phone signed last, byte for byte (#335): what `MeshManager` judges an edit against and
+     * re-custodies when custody's quota has evicted the row for the current stamp, so one id keeps one set of bytes and
+     * an eviction is never mistaken for an edit. Null until a build that keeps it signs or seeds one. Never carried by a
+     * backup (`SettingsKeys.TRANSIENT_PREFIXES`): the restored phone's first start mints a fresh stamp.
+     */
+    val ownProfileFrame: Flow<WireEnvelope?> =
+        dataStore.data.map { prefs ->
+            val sig = prefs[KEY_OWN_PROFILE_FRAME_SIG] ?: return@map null
+            val signed = prefs[KEY_OWN_PROFILE_FRAME_SIGNED] ?: return@map null
+            WireEnvelope(sig = sig, signed = signed)
+        }
 
     /**
      * Content hash of the device's own avatar, or null if none is set. The avatar bytes live in the
@@ -653,6 +668,13 @@ class SettingsStore(
 
     suspend fun setOwnProfileCapabilities(value: Long) = dataStore.edit { it[KEY_OWN_PROFILE_CAPABILITIES] = value }
 
+    /** Keeps [wire] as [ownProfileFrame], its signature and bytes in one edit. */
+    suspend fun setOwnProfileFrame(wire: WireEnvelope) =
+        dataStore.edit {
+            it[KEY_OWN_PROFILE_FRAME_SIG] = wire.sig
+            it[KEY_OWN_PROFILE_FRAME_SIGNED] = wire.signed
+        }
+
     suspend fun setOwnAvatarHash(value: String) = dataStore.edit { it[KEY_OWN_AVATAR_HASH] = value }
 
     /** Removes the stored own-avatar hash so [ownAvatarHash] emits null again (the user cleared their photo). */
@@ -1187,6 +1209,11 @@ class SettingsStore(
         val KEY_PROFILE_VERSION = longPreferencesKey("profile_version")
         val KEY_PROFILE_PUBLISHED_AT = longPreferencesKey("profile_published_at")
         val KEY_OWN_PROFILE_CAPABILITIES = longPreferencesKey("own_profile_capabilities")
+
+        // "own_profile_frame" is a backup-transient prefix; it must never shorten to "own_profile", which the carried
+        // capabilities key above starts with.
+        val KEY_OWN_PROFILE_FRAME_SIG = byteArrayPreferencesKey("own_profile_frame_sig")
+        val KEY_OWN_PROFILE_FRAME_SIGNED = byteArrayPreferencesKey("own_profile_frame_signed")
         val KEY_OWN_AVATAR_HASH = stringPreferencesKey("own_avatar_hash")
         val KEY_BLOCKED = stringSetPreferencesKey("blocked_node_ids")
         val KEY_BLOCKED_TAGS = stringSetPreferencesKey("blocked_device_tags")

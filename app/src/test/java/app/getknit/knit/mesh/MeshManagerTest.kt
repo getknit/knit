@@ -725,6 +725,9 @@ class MeshManagerTest {
         // The capabilities the last signed profile carried, as [stubProfileState] wires them (ADR 2026-11.264w).
         val ownProfileCapabilities = MutableStateFlow<Long?>(Protocol.LOCAL_CAPABILITIES)
 
+        // The profile frame signed last, as [stubProfileState] wires it (#335): null until the start's seed keeps one.
+        val ownProfileFrame = MutableStateFlow<WireEnvelope?>(null)
+
         /**
          * Wires the settings/identity reads [MeshManager.currentProfileEnvelope] and
          * [MeshManager.watchProfileChanges] make, with [displayName] and [publishedAt] as *live* state
@@ -751,6 +754,11 @@ class MeshManagerTest {
             coEvery { settings.ownProfileCapabilities } returns ownProfileCapabilities
             coEvery { settings.setOwnProfileCapabilities(any()) } answers {
                 ownProfileCapabilities.value = firstArg()
+                mockk(relaxed = true)
+            }
+            coEvery { settings.ownProfileFrame } returns ownProfileFrame
+            coEvery { settings.setOwnProfileFrame(any()) } answers {
+                ownProfileFrame.value = firstArg()
                 mockk(relaxed = true)
             }
             // start() also runs the group-root mint and the local-storage sweep before it seeds the
@@ -6790,38 +6798,153 @@ class MeshManagerTest {
         }
 
     /**
-     * Why the profile watcher republished, counted (measurement only, the custody-pressure sweep): a settings write that
-     * changes nothing republishes once our own custody no longer holds the profile frame for the current stamp, as its
-     * quota evicts it under load, and an edit counts as a change of presentation.
+     * #335: custody's quota evicts our own profile frame like anyone's, and a settings write to any key after that is no
+     * edit. It used to count as one — a fresh version, a flood, and a sealed copy to every confirmed session, each of which
+     * custody kept everywhere — so in a crowd the stores filled with an unchanged profile and DMs left them undelivered. The
+     * watcher judges the frame we published, kept beside its stamp; a real edit still publishes once.
      */
     @Test
-    fun aSettingsWriteWithOurProfileGoneFromCustodyRepublishesAndCountsWhy() =
+    fun aSettingsWriteWithOurProfileGoneFromCustodyMintsNothing() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
-            val publishedAt = MutableStateFlow(0L)
-            rig.stubProfileState(publishedAt)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+            val version = MutableStateFlow(3L)
+            coEvery { rig.settings.profileVersion } returns version
+            coEvery { rig.settings.setProfileVersion(any()) } answers {
+                version.value = firstArg()
+                mockk(relaxed = true)
+            }
+            rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            rig.answered(rig.bob)
+
+            fun fanouts() = (rig.metrics.seals().ctlDmSealedBy[CtlDmPurpose.PROFILE_FANOUT] ?: 0L).toInt()
 
             rig.manager.start()
             rig.await(1) { rig.custodiedProfiles().size } // the startup custody seed
             rig.awaitProfileWatcher()
             // The whole seeding pass, not just its first row: one still running would write the row back after the remove.
             rig.await(1) { if (rig.manager.profileSeedDone) 1 else 0 }
-            assertEquals(emptyMap<ProfileRepublishCause, Long>(), rig.metrics.seals().profileRepublishedBy)
+            // The start's own sealed copy: the per-version dedupe is in memory, so the first heal owes bob this version.
+            rig.healAndAwait()
+            rig.await(1) { fanouts() }
+            val versionBefore = version.value
+            val floodedBefore = rig.floodedProfiles().size
 
             // As custody's quota would evict it: the frame for the current stamp is gone from our own store.
             rig.custodiedProfiles().forEach { rig.forwardStore.remove(it.id) }
             rig.clockNow = rig.now + 26_000
-            rig.status.emit("")
-            rig.await(1) { rig.floodedProfiles().size }
-            assertEquals(mapOf(ProfileRepublishCause.NO_CUSTODY_ROW to 1L), rig.metrics.seals().profileRepublishedBy)
+            rig.status.emit("") // a write that changes nothing the profile carries
+            withContext(Dispatchers.Default) { delay(300) }
+            assertEquals("an eviction is not an edit: no new version", versionBefore, version.value)
+            assertEquals("and nothing floods", floodedBefore, rig.floodedProfiles().size)
+            rig.healAndAwait()
+            assertEquals("and nothing is sealed to the session again", 1, fanouts())
 
+            // A real edit still publishes, once, and is the only republish counted.
+            rig.clockNow = rig.now + 52_000
+            rig.status.emit("out walking")
+            rig.await(floodedBefore + 1) { rig.floodedProfiles().size }
+            assertEquals("out walking", WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().last().payload)?.status)
+            assertEquals(mapOf(ProfileRepublishCause.PRESENTATION_CHANGED to 1L), rig.metrics.seals().profileRepublishedBy)
+            rig.manager.stop()
+        }
+
+    /**
+     * After an eviction our profile goes back into custody, and onto the air, as the bytes peers already hold under its id
+     * (ADR 2026-09.y5f3, #335), never re-signed from what the envelope reads now: here a prekey that moved under the same
+     * stamp, which a re-signing would carry as a second set of bytes under one id — a spool scope that never converges.
+     */
+    @Test
+    fun anEvictedProfileGoesBackByteForByteThoughThePrekeyMoved() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size } // the startup custody seed
+            rig.await(1) { if (rig.manager.profileSeedDone) 1 else 0 }
+            val seeded = rig.forwardStore.frames().single { it.envelope.type == FrameType.PROFILE }
+            val id = seeded.envelope.id
+
+            rig.forwardStore.remove(id)
+            coEvery { rig.identity.currentPrekey(any()) } returns SignedPrekey(2, ByteArray(32) { 7 }, ByteArray(64) { 7 }, rig.now)
+            rig.transport.sighted.value = setOf(Peer(rig.bob.nodeId)) // first sighting: the bootstrap flood reads ownProfile()
+            rig.await(1) { rig.profileCopiesOnWire(id) }
+
+            val flooded =
+                rig.transport.sent
+                    .first { (wire, to) -> to == null && WireCodec.decodeEnvelope(wire.signed)?.id == id }
+                    .first
+            assertArrayEquals("the flood carries the bytes signed at the seed", seeded.signed, flooded.signed)
+            assertArrayEquals(seeded.sig, flooded.sig)
+            val held = rig.forwardStore.frames().single { it.envelope.id == id }
+            assertArrayEquals("and custody holds them again", seeded.signed, held.signed)
+            assertArrayEquals(seeded.sig, held.sig)
+            rig.manager.stop()
+        }
+
+    /**
+     * A re-store after an eviction is not a fresh signing, so the check that makes a fresh signing with other capabilities
+     * an edit (ADR 2026-11.264w) does not run on it: the frame goes back under its own id, and no version or stamp moves.
+     */
+    @Test
+    fun anEvictedProfileGoesBackUnderItsOwnStampThoughTheRecordedCapabilitiesMoved() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val publishedAt = MutableStateFlow(0L)
+            rig.stubProfileState(publishedAt)
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size } // the startup custody seed
+            rig.await(1) { if (rig.manager.profileSeedDone) 1 else 0 }
+            val id = rig.custodiedProfiles().single().id
+            val stamp = publishedAt.value
+
+            rig.forwardStore.remove(id)
+            rig.ownProfileCapabilities.value = (rig.ownProfileCapabilities.value ?: 0L) xor Protocol.CAP_LORA_DIRECT
+            rig.transport.sighted.value = setOf(Peer(rig.bob.nodeId))
+            rig.await(1) { rig.floodedProfiles().size }
+
+            assertEquals("the reflood carries the evicted frame's id", listOf(id), rig.floodedProfiles().map { it.id })
+            assertEquals("and the stamp did not move: nothing was minted", stamp, publishedAt.value)
+            rig.manager.stop()
+        }
+
+    /**
+     * The first start of a build that keeps the frame: custody's row for the current stamp is what every plane has been
+     * serving, so it becomes the kept frame, and an eviction after that mints nothing.
+     */
+    @Test
+    fun aCustodiedRowBecomesTheKeptFrameAndItsEvictionMintsNothing() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size } // the startup custody seed
+            rig.awaitProfileWatcher()
+            rig.await(1) { if (rig.manager.profileSeedDone) 1 else 0 }
+            val row = rig.forwardStore.frames().single { it.envelope.type == FrameType.PROFILE }
+
+            rig.ownProfileFrame.value = null // as a build before #335 left it
+            rig.transport.sighted.value = setOf(Peer(rig.bob.nodeId)) // the reflood reads ownProfile(): the row, kept
+            rig.await(1) { rig.profileCopiesOnWire(row.envelope.id) } // keeps before it returns the bytes it floods
+            val kept = rig.ownProfileFrame.value
+            assertNotNull("the row became the kept frame", kept)
+            assertArrayEquals(row.signed, kept!!.signed)
+            assertArrayEquals(row.sig, kept.sig)
+
+            rig.forwardStore.remove(row.envelope.id)
+            rig.clockNow = rig.now + 26_000
+            rig.status.emit("")
+            withContext(Dispatchers.Default) { delay(300) }
+            assertEquals("one frame, the seed's", listOf(row.envelope.id), rig.floodedProfiles().map { it.id })
+
+            // A real edit, awaited: the watcher judges one value at a time, so a republish the eviction caused, however
+            // late, is counted before this one and fails the exact map below.
             rig.clockNow = rig.now + 52_000
             rig.status.emit("out walking")
             rig.await(2) { rig.floodedProfiles().size }
-            assertEquals(
-                mapOf(ProfileRepublishCause.NO_CUSTODY_ROW to 1L, ProfileRepublishCause.PRESENTATION_CHANGED to 1L),
-                rig.metrics.seals().profileRepublishedBy,
-            )
+            assertEquals(mapOf(ProfileRepublishCause.PRESENTATION_CHANGED to 1L), rig.metrics.seals().profileRepublishedBy)
+            rig.manager.stop()
         }
 
     /**
