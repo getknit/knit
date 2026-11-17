@@ -87,6 +87,7 @@ class AppUsbControlApiTest : RoomDbTest() {
             every { ownAvatarHash } returns flowOf(null)
             every { contentFilteringEnabled } returns flowOf(true)
             every { typingIndicatorsEnabled } returns typingOn
+            every { readReceiptsEnabled } returns flowOf(true)
             every { this@mockk.status } returns this@AppUsbControlApiTest.status
             coEvery { setStatus(any()) } answers {
                 this@AppUsbControlApiTest.status.value = firstArg()
@@ -149,6 +150,7 @@ class AppUsbControlApiTest : RoomDbTest() {
                     single { blobs }
                     single { attachments }
                     single { db.blobVerdictDao() }
+                    single { db.messageReceiptDao() }
                     single { mockk<RelayStatusRepository> { every { facts } returns relayFacts } }
                 },
             )

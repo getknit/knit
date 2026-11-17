@@ -6,8 +6,8 @@
 > compatibility promise yet. Changes stay additive where they can: a client ignores fields and events it does not know.
 
 A workstation drives Knit on a phone plugged in over USB, with no adb: it reads chats, contacts and threads, saves
-attachments and photos, sends text and pictures, reacts, marks read, handles message requests and shows typing both
-ways, and follows what changes through an event feed. This document is
+attachments and photos, sends text and pictures, reacts, marks read (telling the authors, as the chat does) and sees who
+has read ours, handles message requests and shows typing both ways, and follows what changes through an event feed. This document is
 the contract a desktop client is written against. The phone's side is `app/src/debug/java/app/getknit/knit/usbcontrol/`;
 `vectors/usb-control-v1.json` pins the pairing and the seal byte for byte.
 
@@ -195,7 +195,12 @@ paging always moves past it.
   it off. The reply says `changed`. Not in the Meshtastic room.
 - **`read {conv, upTo?}`** moves the thread's read watermark to the `sentAt` `upTo` (default: its newest message),
   never back and never past the newest message, and clears the phone's notification for it. The reply carries the
-  watermark as `lastReadAt`.
+  watermark as `lastReadAt`. It is the person saying they read the thread at the computer, so what the watermark
+  passed counts as read, as the notification's Mark read counts it: the newest 64 of somebody else's ordinary messages
+  in it, from nobody blocked. In a DM or a private group, while Settings › Chats › Read receipts is on and the thread
+  is accepted, the phone tells each author whose build reads them, by the same read receipts the chat sends once a
+  message has been on screen. A client asks only for what the person has seen: a `read` sent in the background tells
+  the authors something untrue.
 - **`delete {messageId}`** deletes a message from this phone only, as the chat's own delete does.
 - **`accept {conv}`** / **`decline {conv}`** accept or delete a message request.
 - **`block {node}`** / **`unblock {node}`**.
@@ -254,9 +259,12 @@ refused chunk.
 **Message**: `id`, `conv`, `kind` (`text`, or a notice: `member_left`, `peer_renamed`, `peer_avatar`,
 `group_renamed`, `group_photo`, `group_created`, `key_pin_refused`, `file_transfer`, `member_rejoined`, `call`, or
 `notice_<n>` for one this build does not know), `from` (node id; a notice's subject), `fromLabel`, `mine`, `body`,
-`sentAt` (the author's clock), `arrivedAt` (ours; null for our own), `received` (✓✓ on ours), `via` (the plane it
+`sentAt` (the author's clock), `arrivedAt` (ours; null for our own), `received` (✓✓ on ours), `read` (the read tick on
+ours: a DM's peer has read it, or every current member of a group has), `via` (the plane it
 arrived on), `pending` (ours, waiting for the peer's key), `flagged` (the content filter flagged the text: hide it
-behind a reveal), and when present `styles`, `mentions` (`[{node, name}]`), `replyTo` (`{id, authorId, author,
+behind a reveal), and when present `readBy` (on ours in a DM or a group, each reader whose read has reached the phone,
+in order of arrival: `[{node, at}]`, `at` on the phone's clock; a group lists its current members only; a message
+nobody has read has none), `styles`, `mentions` (`[{node, name}]`), `replyTo` (`{id, authorId, author,
 snippet, hasAttachment, check: "unchecked" | "verified" | "mismatch", flagged}`), `reactions` (one entry per emoji,
 most reactors first: `{emoji, count, mine, nodes}`, at most 32 emoji and 16 `nodes` each, with `reactionsTruncated`
 when it had to cut; `count` and `mine` are always whole), `attachment` (`{hash, mime, name, size, held, flagged}`:
@@ -265,6 +273,9 @@ filtering is on and the filter flagged the picture or a video's poster, so hide 
 through `attachment`) and `origin` (`{node,
 name}`, a heard Meshtastic post).
 `fromLabel` and `replyTo.author` are names as of the read: render names from `contacts` by node id where it matters.
+`read` and `readBy` show what the chat shows: nothing while Read receipts is off on the phone (the switch is
+reciprocal, so the reads others send stay on the phone, unshown, until it is turned back on), and a group's roster as
+of the read.
 
 **Chat**: `conv`, `kind` (`nearby`, `meshtastic`, `commons`, `group`, `dm`), `title`, `discriminator`, `avatarHash`,
 `members` (groups), `state`, `unread`, `lastReadAt`, `last` (a message, its body trimmed to a preview with
@@ -301,6 +312,9 @@ Every event holds the object's state at the moment it was written, never a delta
 **Attachments.** Bytes landing or going, or a filter verdict, move `attachment.held` or `attachment.flagged`: the
 client gets a `message` event for each message naming them, or `gap` past 64 of them. Turning content filtering on
 or off sends `gap`.
+
+**Reads.** A read reaching the phone sends a `message` event for the message it names, with `read` and `readBy` as
+they now stand. Turning Read receipts on or off sends `gap`.
 
 **Typing.** The phone keeps a cue showing for about 12 s after the last one, and a message from its sender clears it,
 so a client simply shows what the latest `typing` event says, with no clock of its own, and nobody while its link is

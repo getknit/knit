@@ -50,7 +50,10 @@ internal interface UsbControlApi {
         emoji: String?,
     ): JsonObject
 
-    /** Moves the thread's read watermark to [upTo] (its newest message when null), never back, and clears its notifications. */
+    /**
+     * Moves the thread's read watermark to [upTo] (its newest message when null), never back, and clears its notifications.
+     * What the move passed counts as read, as the notification's Mark read counts it: the mesh tells the authors who read it.
+     */
     suspend fun markRead(
         conversation: String,
         upTo: Long?,

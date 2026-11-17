@@ -79,6 +79,22 @@ class ControlJsonTest {
     }
 
     @Test
+    fun whoReadItIsListedInOrderOfArrivalAndNobodyIsNoList() {
+        val unread = ControlJson.message(row(sender = ME), speakers)
+        assertFalse(unread.getValue("read").jsonPrimitive.boolean)
+        assertFalse("nobody read it: no list", "readBy" in unread)
+
+        val some = ControlJson.message(row(sender = ME), speakers, reads = MessageReads(read = false, listOf(BOB to 30L, "cy" to 20L)))
+        assertFalse("one member of two is not the read tick", some.getValue("read").jsonPrimitive.boolean)
+        val readers = some.getValue("readBy").jsonArray.map { it.jsonObject }
+        assertEquals("the order given is the order listed", listOf(BOB, "cy"), readers.map { it.str("node") })
+        assertEquals(listOf("30", "20"), readers.map { it.str("at") })
+
+        val all = ControlJson.message(row(sender = ME), speakers, reads = MessageReads(read = true, listOf(BOB to 30L)))
+        assertTrue(all.getValue("read").jsonPrimitive.boolean)
+    }
+
+    @Test
     fun stylesMentionsAndAQuoteComeOutAsTheirOwnObjects() {
         val styled =
             row(body = "hi @Bob (Kai)").copy(

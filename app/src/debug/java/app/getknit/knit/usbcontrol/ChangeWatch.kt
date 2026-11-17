@@ -13,8 +13,8 @@ import kotlinx.coroutines.launch
 
 /**
  * The changes no repository reports, because they live in settings rather than the database: a thread read or
- * accepted, the blocked set, our own name and photo, a commons joined, left or renamed, content filtering switched,
- * and the filter's verdicts ([flaggedHashes], written by the screening service rather than a repository). Each flow's
+ * accepted, the blocked set, our own name and photo, a commons joined, left or renamed, content filtering or read
+ * receipts switched, and the filter's verdicts ([flaggedHashes], written by the screening service rather than a repository). Each flow's
  * first value is the baseline; after it, what moved is recorded in the [ChangeLog] like a repository write.
  */
 internal object ChangeWatch {
@@ -41,6 +41,12 @@ internal object ChangeWatch {
                 settings.contentFilteringEnabled
                     .diffs { old, new -> if (old == new) emptySet() else setOf(Unit) }
                     .collect { log.record(ChangeKey.Resync("content filtering switched")) }
+            }
+            // So does every one of our messages' `read` and `readBy`: off, nobody's read is shown (ADR 2026-11.z6jw).
+            launch {
+                settings.readReceiptsEnabled
+                    .diffs { old, new -> if (old == new) emptySet() else setOf(Unit) }
+                    .collect { log.record(ChangeKey.Resync("read receipts switched")) }
             }
             launch {
                 flaggedHashes

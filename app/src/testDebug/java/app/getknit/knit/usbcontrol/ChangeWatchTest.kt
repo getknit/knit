@@ -14,6 +14,7 @@ import org.junit.Test
 
 class ChangeWatchTest {
     private val filtering = MutableStateFlow(true)
+    private val receipts = MutableStateFlow(true)
     private val status = MutableStateFlow("")
     private val settings =
         mockk<SettingsStore>(relaxed = true) {
@@ -24,6 +25,7 @@ class ChangeWatchTest {
             every { this@mockk.status } returns this@ChangeWatchTest.status
             every { ownAvatarHash } returns MutableStateFlow(null)
             every { contentFilteringEnabled } returns filtering
+            every { readReceiptsEnabled } returns receipts
         }
     private val commons = mockk<CommonsRepository> { every { observeAll() } returns flowOf(emptyList()) }
 
@@ -44,6 +46,21 @@ class ChangeWatchTest {
             filtering.value = false
             runCurrent()
             assertEquals(listOf(ChangeKey.Resync("content filtering switched")), log.after(beforeSwitch)?.map { it.second })
+        }
+
+    @OptIn(ExperimentalCoroutinesApi::class) // runCurrent: the watcher's collectors run on the test's scheduler
+    @Test
+    fun aReadReceiptsSwitchEitherWayIsAResync() =
+        runTest {
+            val log = ChangeLog { "e1" }.apply { setRecording(true) }
+            ChangeWatch.launch(backgroundScope, settings, commons, MutableStateFlow(emptyList()), log)
+            runCurrent()
+            val start = log.latest()
+            receipts.value = false
+            runCurrent()
+            receipts.value = true
+            runCurrent()
+            assertEquals(List(2) { ChangeKey.Resync("read receipts switched") }, log.after(start)?.map { it.second })
         }
 
     @OptIn(ExperimentalCoroutinesApi::class) // runCurrent: the watcher's collectors run on the test's scheduler

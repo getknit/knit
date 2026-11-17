@@ -44,6 +44,16 @@ internal class AttachmentFacts(
     }
 }
 
+/**
+ * Who has read one of our messages, as the chat shows it (ADR 2026-11.z6jw): [readers] by node with when each read reached
+ * this phone (our clock), in order of arrival, and whether the bubble's tick is the read tick ([read]: the DM's peer has
+ * read it, or every current member of the group has).
+ */
+internal class MessageReads(
+    val read: Boolean,
+    val readers: List<Pair<String, Long>>,
+)
+
 /** The protocol's objects, built from the app's rows: pure, so the session and the feed share one shape. */
 internal object ControlJson {
     /** How much of a body a chat summary's `last` carries; the thread itself carries the whole of it. */
@@ -56,7 +66,8 @@ internal object ControlJson {
     /**
      * A message: the row, its live reactions ([reactions], tombstones left out), and its speaker named for this
      * reader. [preview] trims the body for a chat summary and says so (`bodyTruncated`), so a client never stores a
-     * summary's copy as the message. [attachments] says whether the attachment is held and to be blurred.
+     * summary's copy as the message. [attachments] says whether the attachment is held and to be blurred. [reads] is who
+     * has read it, given only for our own message in a DM or a group while the read receipts switch is on.
      */
     fun message(
         row: MessageEntity,
@@ -64,6 +75,7 @@ internal object ControlJson {
         reactions: List<ReactionEntity> = emptyList(),
         preview: Boolean = false,
         attachments: AttachmentFacts = AttachmentFacts.NONE,
+        reads: MessageReads? = null,
     ): JsonObject =
         buildJsonObject {
             put("id", row.id)
@@ -78,6 +90,19 @@ internal object ControlJson {
             put("sentAt", row.sentAt)
             put("arrivedAt", row.arrivedAt)
             put("received", row.received)
+            put("read", reads?.read == true)
+            reads?.readers?.takeIf { it.isNotEmpty() }?.let { readers ->
+                putJsonArray("readBy") {
+                    readers.forEach { (node, at) ->
+                        add(
+                            buildJsonObject {
+                                put("node", node)
+                                put("at", at)
+                            },
+                        )
+                    }
+                }
+            }
             put("via", row.receivedPlane.name)
             put("pending", row.pendingKey)
             put("flagged", row.moderation == MessageEntity.MODERATION_TEXT_FLAGGED)

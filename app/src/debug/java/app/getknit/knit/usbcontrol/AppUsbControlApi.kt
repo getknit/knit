@@ -24,6 +24,8 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.quoteHasAttachment
 import app.getknit.knit.data.message.quoteSnippet
+import app.getknit.knit.data.message.writtenBy
+import app.getknit.knit.data.receipt.MessageReceiptDao
 import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.data.relay.photoFitBytes
@@ -100,6 +102,7 @@ internal class AppUsbControlApi :
     private val attachments: AttachmentStore by inject()
     private val relays: RelayStatusRepository by inject()
     private val verdicts: BlobVerdictDao by inject()
+    private val receipts: MessageReceiptDao by inject()
 
     override suspend fun identity(): JsonObject {
         val me = identity.nodeId()
@@ -170,9 +173,10 @@ internal class AppUsbControlApi :
         val reacted = reactions.observeReactionsIn(conversation, identity.nodeId()).first().groupBy { it.messageId }
         val readable = considered.filter { it.senderId !in blocked }
         val facts = attachmentFacts(readable)
+        val reads = readsOf(readable)
         val items =
             readable.map {
-                ControlJson.message(it, speakers, reacted[it.id].orEmpty(), attachments = facts) to
+                ControlJson.message(it, speakers, reacted[it.id].orEmpty(), attachments = facts, reads = reads[it.id]) to
                     HistoryCursor(it.sentAt, it.id)
             }
         return HistoryPage(items, considered.lastOrNull()?.let { HistoryCursor(it.sentAt, it.id) }, exhausted = raw.size <= limit)
@@ -186,8 +190,16 @@ internal class AppUsbControlApi :
         val me = identity.nodeId()
         val rows = ids.distinct().mapNotNull { id -> messages.find(id)?.takeIf { it.senderId !in blocked } }
         val facts = attachmentFacts(rows)
+        val reads = readsOf(rows)
         return rows.associate { row ->
-            row.id to ControlJson.message(row, speakers, reactions.observeReactionsFor(row.id, me).first(), attachments = facts)
+            row.id to
+                ControlJson.message(
+                    row,
+                    speakers,
+                    reactions.observeReactionsFor(row.id, me).first(),
+                    attachments = facts,
+                    reads = reads[row.id],
+                )
         }
     }
 
@@ -336,10 +348,79 @@ internal class AppUsbControlApi :
         val target = maxOf(current, minOf(upTo ?: ceiling, ceiling))
         if (target != current) settings.setLastReadAt(conversation, target)
         notifier.clearConversation(conversation)
+        if (target > current) reportRead(conversation, since = current, upTo = target)
         return buildJsonObject {
             put("conv", conversation)
             put("lastReadAt", target)
         }
+    }
+
+    /**
+     * `read` is the person saying they read the thread at the computer, so what the watermark passed counts as read, as
+     * the notification's Mark read counts it (`NotificationActionReceiver.reportRead`, ADR 2026-11.z6jw): the newest
+     * [MARK_READ_MAX] rows in ([since], [upTo]] that are somebody else's words, from nobody blocked. The mesh decides whom
+     * it tells (a DM or a private group, with the setting on, an accepted thread, an author whose build reads it).
+     */
+    private suspend fun reportRead(
+        conversation: String,
+        since: Long,
+        upTo: Long,
+    ) {
+        val kind = Conversations.kindFor(conversation)
+        if (kind != ConversationKind.DM && kind != ConversationKind.GROUP) return
+        val me = identity.nodeId()
+        val blocked = blocked()
+        // Every row at or before upTo: the cursor (upTo + 1, "") sorts after each of them and before every later row. A
+        // sentAt at the very top (an author's clock says what it likes) has no next value, and every row is at or before it.
+        val after = if (upTo == Long.MAX_VALUE) null else upTo + 1
+        val read =
+            messages
+                .page(conversation, beforeSentAt = after, beforeId = after?.let { "" }, limit = MARK_READ_MAX)
+                .filter { it.sentAt > since && it.kind == MessageEntity.KIND_NORMAL && !it.writtenBy(me) && it.senderId !in blocked }
+                .map { it.id }
+        if (read.isNotEmpty()) mesh.onMessagesRead(read)
+    }
+
+    /**
+     * Who has read each of [rows] that is ours in a DM or a group, as the chat shows it (ADR 2026-11.z6jw): nothing at all
+     * while Settings › Chats › Read receipts is off (the switch is reciprocal); a DM's peer; a group's current members, the
+     * read tick once every one of them has. A message nobody has read is absent.
+     */
+    private suspend fun readsOf(rows: Collection<MessageEntity>): Map<String, MessageReads> {
+        if (!settings.readReceiptsEnabled.first()) return emptyMap()
+        val me = identity.nodeId()
+        val ours =
+            rows.filter {
+                val kind = Conversations.kindFor(it.conversationId)
+                it.writtenBy(me) && (kind == ConversationKind.DM || kind == ConversationKind.GROUP)
+            }
+        if (ours.isEmpty()) return emptyMap()
+        val readersByMessage =
+            ours
+                .map { it.id }
+                .chunked(QUERY_IDS_MAX)
+                .flatMap { receipts.forMessages(it) }
+                .filter { it.readAt != null }
+                .groupBy { it.messageId }
+        if (readersByMessage.isEmpty()) return emptyMap()
+        // We never ack our own message, so we are never among the members a read is waited on.
+        val rosters = HashMap<String, Set<String>>()
+        return ours
+            .mapNotNull { row ->
+                val reads = readersByMessage[row.id] ?: return@mapNotNull null
+                val audience =
+                    if (Conversations.kindFor(row.conversationId) == ConversationKind.DM) {
+                        setOf(row.conversationId)
+                    } else {
+                        rosters.getOrPut(row.conversationId) {
+                            groups.find(row.conversationId)?.let { GroupMembersStore.decode(it.members).toSet() - me }.orEmpty()
+                        }
+                    }
+                val readers = reads.filter { it.ackerNodeId in audience }.sortedBy { it.readAt }
+                if (readers.isEmpty()) return@mapNotNull null
+                val read = audience.all { node -> readers.any { it.ackerNodeId == node } }
+                row.id to MessageReads(read, readers.map { it.ackerNodeId to checkNotNull(it.readAt) })
+            }.toMap()
     }
 
     override suspend fun delete(id: String): JsonObject {
@@ -640,6 +721,7 @@ internal class AppUsbControlApi :
             lastRead = settings.lastReadAll.first(),
             entries = visible.map { it to STATE_ACCEPTED } + requests.map { it to STATE_REQUEST },
             attachments = attachmentFacts(table.heads.values),
+            reads = readsOf(table.heads.values),
         )
     }
 
@@ -664,7 +746,12 @@ internal class AppUsbControlApi :
             put("state", state)
             put("unread", unread)
             put("lastReadAt", lastRead)
-            put("last", head?.let { ControlJson.message(it, list.speakers, preview = true, attachments = list.attachments) } ?: JsonNull)
+            put(
+                "last",
+                head?.let {
+                    ControlJson.message(it, list.speakers, preview = true, attachments = list.attachments, reads = list.reads[it.id])
+                } ?: JsonNull,
+            )
             put("lastActivity", head?.sentAt ?: title.group?.createdAt)
         }
     }
@@ -715,6 +802,7 @@ internal class AppUsbControlApi :
         val lastRead: Map<String, Long>,
         val entries: List<Pair<ConversationTitle, String>>,
         val attachments: AttachmentFacts,
+        val reads: Map<String, MessageReads>,
     )
 
     private companion object {
@@ -723,6 +811,12 @@ internal class AppUsbControlApi :
         const val STATE_ACCEPTED = "accepted"
         const val STATE_REQUEST = "request"
         const val STATUS_DEBOUNCE_MS = 1_000L
+
+        /** The most messages one `read` reports as read, as the notification's Mark read caps it. */
+        const val MARK_READ_MAX = 64
+
+        // SQLite's bound-parameter limit is 999 on older builds: one IN list stays well under it.
+        const val QUERY_IDS_MAX = 500
     }
 }
 
