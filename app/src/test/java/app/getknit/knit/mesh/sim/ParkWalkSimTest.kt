@@ -57,6 +57,7 @@ class ParkWalkSimTest {
                     inboundSlots = System.getProperty(INBOUND)?.let { if (it == "phone") MeshLab.PHONE_INBOUND_SLOTS else it.toInt() },
                     settleMs = (System.getProperty(SETTLE)?.toLong() ?: 0L) * MS_PER_MINUTE,
                     gather = System.getProperty(GATHER) != "false",
+                    radio = System.getProperty(RADIO) ?: DiscRadio.NAME,
                 )
             val bound = scenario.inboundSlots?.let { "-q$it" }.orEmpty() + if (scenario.gather) "" else "-walk"
             val tag = System.getProperty(TAG)?.let { "-$it" }.orEmpty()
@@ -87,6 +88,9 @@ class ParkWalkSimTest {
 
         /** `false` ends the outing at the walk: a measurement with no gather, settle or oracle. */
         const val GATHER = "knit.meshSimGather"
+
+        /** Which [Radio] makes the links ([Radio.NAMES]); `disc` when unset. */
+        const val RADIO = "knit.meshSimRadio"
 
         /** The directory the report goes to, in place of `build/mesh-sim` (relative to the app module). */
         const val OUT = "knit.meshSimOut"

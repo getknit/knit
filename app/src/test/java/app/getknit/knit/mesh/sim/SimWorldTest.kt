@@ -96,6 +96,17 @@ class SimWorldTest {
     }
 
     @Test
+    fun aScenarioNamesItsRadioAndAnUnknownNameIsRefusedBeforeAnyNodeBoots() {
+        val scenario =
+            SimScenario(seed = 1, walkers = 3, durationMs = 60_000, fieldM = FIELD_M, connectM = 20.0, dropM = 30.0, dialMs = 1_500)
+        val radio = Radio.of(scenario, initial = setOf(Link(0, 1)))
+        assertEquals(DiscRadio.NAME, radio.name)
+        assertEquals(setOf(Link(0, 1)), radio.links)
+        assertEquals(listOf("connect_m" to 20.0, "drop_m" to 30.0, "dial_ms" to 1_500L), radio.summaryValues())
+        assertThrows(IllegalArgumentException::class.java) { Radio.of(scenario.copy(radio = "lora"), initial = emptySet()) }
+    }
+
+    @Test
     fun hopsCountsLinksAlongTheShortestPath() {
         val line = setOf(Link(0, 1), Link(1, 2), Link(2, 3), Link(0, 3))
         assertEquals(0, hops(line, 2, 2))

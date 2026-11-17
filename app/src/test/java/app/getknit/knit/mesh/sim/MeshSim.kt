@@ -34,6 +34,8 @@ data class SimScenario(
     val groupSize: Int = 3,
     /** How long a group stands together at its gate before its walkers set off. */
     val departMs: Long = 10_000,
+    /** Which [Radio] turns places into links ([Radio.of]); the three numbers after it are [DiscRadio]'s. */
+    val radio: String = DiscRadio.NAME,
     val connectM: Double = 25.0,
     val dropM: Double = 35.0,
     val dialMs: Long = 2_000,
@@ -68,7 +70,7 @@ class SimReport(
 
 /**
  * A crowd of real Knit stacks ([MeshLab] nodes) whose links are made and cut by where the walkers are, not by a
- * script: [Mobility] moves them, [DiscRadio] turns distance into links, and each step's changes are applied to
+ * script: [Mobility] moves them, a [Radio] turns where they stand into links, and each step's changes are applied to
  * the lab's transports as a radio would apply them: at once, with no settling. A scripted scenario waits for the
  * mesh between its steps; here nothing waits, which is the point.
  *
@@ -96,7 +98,7 @@ class MeshSim(
             starts = gates(),
             departMs = scenario.departMs,
         )
-    private val radio = DiscRadio(scenario.connectM, scenario.dropM, scenario.dialMs, initial = groups.flatMap(::pairs).toSet())
+    private val radio = Radio.of(scenario, initial = groups.flatMap(::pairs).toSet())
     private val contacts = ContactLog(scenario.walkers)
     private val events = Workload.schedule(scenario.seed, groups, scenario.durationMs, scenario.dmMeanMs, scenario.roomMeanMs)
 
@@ -141,6 +143,8 @@ class MeshSim(
     suspend fun play(): SimReport {
         val lines = mutableListOf("mesh sim: park walk, $scenario")
         summary.putAll(scenario.summaryValues())
+        summary["radio"] = radio.name
+        summary.putAll(radio.summaryValues())
         lines += boot().also(progress)
         outingStart = lab.clock.now()
         // Launched once the nodes exist, so they never read them before boot, and sample nothing of the boot.

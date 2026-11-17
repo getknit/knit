@@ -67,7 +67,7 @@ internal fun freshReport(
         .map { n -> dir.resolve(if (n == 1) "$name.txt" else "$name-$n.txt") }
         .first { it.createNewFile() }
 
-/** What the outing was, as a summary's first keys: two runs line up by everything here but the seed. */
+/** What the outing was, as a summary's first keys (its radio's follow): two runs line up by everything here but the seed. */
 fun SimScenario.summaryValues(): List<Pair<String, Any?>> =
     listOf(
         "seed" to seed,
@@ -77,10 +77,6 @@ fun SimScenario.summaryValues(): List<Pair<String, Any?>> =
         "inbound_slots" to inboundSlots,
         "gather" to gather,
         "settle_minutes" to settleMs / MS_PER_MINUTE,
-        "radio" to "disc",
-        "connect_m" to connectM,
-        "drop_m" to dropM,
-        "dial_ms" to dialMs,
     )
 
 /**

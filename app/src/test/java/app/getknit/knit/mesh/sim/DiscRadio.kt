@@ -17,7 +17,7 @@ data class Link(
     }
 }
 
-/** What one [DiscRadio.step] changed: the links that came up and the ones that went down. */
+/** What one [Radio.step] changed: the links that came up and the ones that went down. */
 data class LinkChanges(
     val raised: List<Link>,
     val dropped: List<Link>,
@@ -42,7 +42,9 @@ class DiscRadio(
     private val dropM: Double,
     private val dialMs: Long,
     initial: Set<Link> = emptySet(),
-) {
+) : Radio {
+    override val name = NAME
+
     init {
         require(dropM >= connectM) { "a link must hold at least as far as it is dialled: $dropM < $connectM" }
     }
@@ -50,13 +52,13 @@ class DiscRadio(
     private val inRangeSince = HashMap<Link, Long>()
     private val up = initial.toMutableSet()
 
-    /** The links up after the last [step]: an immutable copy, safe to read from another thread. */
     @Volatile
-    var links: Set<Link> = up.toSet()
+    override var links: Set<Link> = up.toSet()
         private set
 
-    /** Moves the radio to [atMs] with every walker at its place in [positions]. */
-    fun step(
+    override fun summaryValues(): List<Pair<String, Any?>> = listOf("connect_m" to connectM, "drop_m" to dropM, "dial_ms" to dialMs)
+
+    override fun step(
         atMs: Long,
         positions: List<Point>,
     ): LinkChanges {
@@ -78,6 +80,10 @@ class DiscRadio(
         inRangeSince.keys.removeAll(raised.toSet())
         links = up.toSet()
         return LinkChanges(raised, dropped)
+    }
+
+    companion object {
+        const val NAME = "disc"
     }
 }
 
