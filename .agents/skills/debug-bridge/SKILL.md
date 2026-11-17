@@ -98,7 +98,7 @@ Extras and reply fields: the action's bullet in `.agents/context/debug-bridge.md
 
 - **Messaging:** `SEND`, `SENDIMG` (stage the file into app storage with `run-as` first; `--ez file true` for a
   non-image), `SAVEATT` (Save into app storage, to pick it again), `REACT`,
-  `TYPING`, `MKGROUP`, `LEAVE`, `DELETE` (the long-press Delete: rows gone from the chat, custody kept), `PURGE` (clean
+  `TYPING`, `READ` (mark read as the chat screen does; the author's `STATE` `readBy` is the oracle), `MKGROUP`, `LEAVE`, `DELETE` (the long-press Delete: rows gone from the chat, custody kept), `PURGE` (clean
   soak traffic off every phone, custody too), `RESETDB` (empty the database, keep
   the identity, profile and settings; pause first).
 - **Mesh state:** `STATE`, `STORE`, `HEAL`, `PAUSE`, `RESUME`, `BLECAP`, `NANOFF` (Wi-Fi Aware off, Bluetooth

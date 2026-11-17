@@ -71,6 +71,8 @@ import app.getknit.knit.data.message.quoteSnippet
 import app.getknit.knit.data.message.receivedPlane
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.presencekey.PresenceKeyRepository
+import app.getknit.knit.data.receipt.MessageReceiptDao
+import app.getknit.knit.data.receipt.ReadMarkRepository
 import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.photoFitBytes
 import app.getknit.knit.data.settings.AwareSwitch
@@ -238,6 +240,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * - [ACTION_REACT] — `--es id <messageId> --es emoji <emoji>` toggles a reaction.
  * - [ACTION_TYPING] — `--es conv <id>` (or `--es to <peerNodeId>`; default the broadcast room) fires one
  *   best-effort "now typing" cue; poll a receiver's [ACTION_STATE] `typing` map to confirm it landed.
+ * - [ACTION_READ] — `--es conv <id>` marks someone else's newest messages there read, or `--es ids a,b` exactly those,
+ *   as the chat screen does once their rows have been on screen; the author's [ACTION_STATE] `readBy` is the oracle.
+ *   `--ez receipts <bool>` sets the Settings › Chats › Read receipts switch instead.
  * - [ACTION_SHARE_APK] — runs the offline "Share Knit app" prepare step (merging split installs into one
  *   re-signed APK) headlessly and reports the staged `cacheDir/apk` files, so the result can be pulled +
  *   verified without the share sheet.
@@ -451,6 +456,8 @@ class DebugBridgeReceiver :
     private val mesh: MeshController by inject()
     private val attachments: AttachmentStore by inject()
     private val messages: MessageRepository by inject()
+    private val receiptRows: MessageReceiptDao by inject()
+    private val readMarks: ReadMarkRepository by inject()
     private val reactions: ReactionRepository by inject()
     private val localDelete: LocalMessageDelete by inject()
     private val forward: ForwardStore by inject()
@@ -529,6 +536,10 @@ class DebugBridgeReceiver :
 
                         ACTION_REACT -> {
                             handleReact(intent)
+                        }
+
+                        ACTION_READ -> {
+                            handleRead(intent)
                         }
 
                         ACTION_TYPING -> {
@@ -1209,6 +1220,45 @@ class DebugBridgeReceiver :
             .put("indicators", settings.typingIndicatorsEnabled.first())
     }
 
+    /**
+     * Marks messages read exactly as the chat screen does once their rows have been on screen (ADR 2026-11.z6jw):
+     * `MeshController.onMessagesRead` over `--es ids a,b,…`, or else over every message someone else sent among the newest
+     * `--ei limit` of `--es conv <id>`. The mesh applies the UI's own filters (the setting on, a DM or a private group, an
+     * accepted and unblocked author whose profile reads the mask), so `marked` lists the ids that now hold a read mark, owed
+     * or told; the author's [ACTION_STATE] `readBy` says when it landed. `--ez receipts <bool>` sets Settings › Chats ›
+     * Read receipts instead and marks nothing; every reply names the switch as `receipts`.
+     */
+    private suspend fun handleRead(intent: Intent): JSONObject {
+        if (intent.hasExtra(EXTRA_RECEIPTS)) {
+            val on = intent.getBooleanExtra(EXTRA_RECEIPTS, true)
+            settings.setReadReceiptsEnabled(on)
+            return reply("ok", "read receipts ${if (on) "on" else "off"}").put("receipts", on)
+        }
+        val conv = intent.getStringExtra(EXTRA_CONV)
+        val listed =
+            intent
+                .getStringExtra(EXTRA_IDS)
+                ?.split(',')
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+        val ids =
+            listed ?: conv?.let { c ->
+                val me = identity.nodeId()
+                messages
+                    .observeNewestMessages(c, intent.getIntExtra(EXTRA_LIMIT, DEFAULT_MESSAGE_LIMIT))
+                    .first()
+                    .filter { it.senderId != me }
+                    .map { it.id }
+            } ?: return reply("error", "missing 'conv' or 'ids' extra")
+        mesh.onMessagesRead(ids)
+        val marked = readMarks.readAmong(ids)
+        return reply("ok", "read ${ids.size}, marked ${marked.size}")
+            .put("conversation", conv ?: JSONObject.NULL)
+            .put("ids", JSONArray(ids))
+            .put("marked", JSONArray(ids.filter { it in marked }))
+            .put("receipts", settings.readReceiptsEnabled.first())
+    }
+
     private suspend fun handleState(intent: Intent): JSONObject {
         val selfId = identity.nodeId()
         val selfName = settings.displayName.first()
@@ -1323,6 +1373,12 @@ class DebugBridgeReceiver :
         // APPLIED on the receiving device — the chips render on screen but don't surface any text to
         // `uiautomator dump`, and the sealed forms otherwise have no machine-checkable landing signal.
         val reactionsByMessage = reactions.observeReactions().first().groupBy { it.messageId }
+        // Who has read each of our own messages and when (ADR 2026-11.z6jw): `readAt` on our clock, at the read's arrival.
+        val readByMessage =
+            receiptRows
+                .forMessages(rows.filter { it.senderId == selfId }.map { it.id })
+                .filter { it.readAt != null }
+                .groupBy { it.messageId }
         val arr = JSONArray()
         rows.forEach { m ->
             val from = if (m.senderId == selfId) selfName else nameByNode[m.senderId].orEmpty()
@@ -1340,6 +1396,16 @@ class DebugBridgeReceiver :
                     .put("styles", m.styles ?: JSONObject.NULL)
                     .put("sentAt", m.sentAt)
                     .put("received", m.received)
+                    // Our own message's readers as they reached us, `[{node, at}]` in order of arrival; empty for anyone
+                    // else's message, and for ours until a read lands.
+                    .put(
+                        "readBy",
+                        JSONArray(
+                            readByMessage[m.id].orEmpty().sortedBy { it.readAt }.map {
+                                JSONObject().put("node", it.ackerNodeId).put("at", it.readAt)
+                            },
+                        ),
+                    )
                     // The plane it arrived over, or that our own message's delivery tick did (`receivedVia`):
                     // `DirectLink` is a contact's direct Internet link (ADR 2026-10.a5yj).
                     .put("via", m.receivedPlane.name)
@@ -4788,6 +4854,7 @@ class DebugBridgeReceiver :
         const val ACTION_STORE = "app.getknit.knit.debug.STORE"
         const val ACTION_REACT = "app.getknit.knit.debug.REACT"
         const val ACTION_TYPING = "app.getknit.knit.debug.TYPING"
+        const val ACTION_READ = "app.getknit.knit.debug.READ"
         const val ACTION_SHARE_APK = "app.getknit.knit.debug.SHAREAPK"
         const val ACTION_WEBPPROBE = "app.getknit.knit.debug.WEBPPROBE"
         const val ACTION_WEBPCONV = "app.getknit.knit.debug.WEBPCONV"
@@ -4849,6 +4916,8 @@ class DebugBridgeReceiver :
         const val EXTRA_CONV = "conv"
         const val EXTRA_TO = "to"
         const val EXTRA_INDICATORS = "indicators"
+        const val EXTRA_RECEIPTS = "receipts"
+        const val EXTRA_IDS = "ids"
         const val EXTRA_REPLY_TO = "replyTo"
         const val EXTRA_STYLES = "styles"
         const val EXTRA_DECLARE = "declare"

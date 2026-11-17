@@ -76,7 +76,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   highest frame's), and `videoPosterFlagged` the verdict on a video's inline poster, judged on arrival (ADR
   2026-10.hmfe). Each row
   also carries `received`, which on the sender's own row (`mine: true`) is the ✓✓ — the delivery tick
-  coming home — plus its `reactions`; the top-level `typing` map shows a cue that landed. A reply carries
+  coming home — and `readBy`, which on that row lists each reader as `{node, at}` in order of arrival (`at` is this
+  phone's clock when the read landed, ADR 2026-11.z6jw; empty until one does) — plus its `reactions`; the top-level
+  `typing` map shows a cue that landed. A reply carries
   `replyToId` / `replyToAuthor` / `replyToSnippet` and the receiver's verdict on the quote (ADR 2026-10.gpa3):
   `replyCheck` (0 unchecked — the original is not here, 1 verified and rebuilt from it, 2 mismatch) and
   `replyToFlagged` (the quoted words are flagged on this phone, which hides the reply under content filtering).
@@ -1018,6 +1020,14 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   so confirm on the receiver through `…debug.STATE`'s `typing` map. A DM's or group's cue also goes up as a spool sig
   (spec §7.8). `--ez indicators false|true` sets the Settings › Chats › Typing indicators switch instead and sends nothing;
   every reply carries the switch's state as `indicators`.
+- `…debug.READ` — marks messages **read** exactly as the chat screen does once their rows have been on screen
+  (`MeshController.onMessagesRead`, ADR 2026-11.z6jw): `--es ids a,b,…`, or every message someone else sent among the
+  newest `--ei limit` (default 20) of `--es conv <id>`. The mesh applies the UI's filters (the setting on, a DM or a
+  private group, an accepted and unblocked author whose profile reads the mask), so `marked` lists the ids that now hold
+  a read mark. The oracle is the author's `…debug.STATE --es conv <id>`: its own row's `readBy`, and the reader's
+  `metrics.readsQuick` / `readsSpooled` / `readsCustodied` / `readsRidden` for the route the read took. `--ez receipts
+  false|true` sets Settings › Chats › Read receipts instead and marks nothing; every reply carries the switch as
+  `receipts`. Negative control: with the switch off, `marked` is empty and no `readBy` appears.
 - `…debug.SHAREAPK` — runs the offline **Share Knit app** prepare step with no share sheet (`prepareKnitApk`). For a
   Play App Bundle install it merges the on-disk splits into one re-signed APK; `splitInstall` says which path ran, and
   `files` lists what was staged under `cacheDir/apk`. Pull one with `adb shell run-as app.getknit.knit cat
