@@ -558,6 +558,63 @@ class ReadSyncTest {
         }
 
     @Test
+    fun `a spool-covered author gets the push a second after the read, told, with no custody`() =
+        runTest {
+            val rig = Rig(wake = backgroundScope)
+            rig.spoolCovers += ALICE
+            rig.read("m1", "m2")
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS - 1)
+            runCurrent()
+            assertTrue(rig.pushed.isEmpty())
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(listOf(ALICE to listOf("m1", "m2")), rig.pushed)
+            assertEquals(emptySet<String>(), rig.marks.owed())
+            assertEquals(ROOT, rig.marks.toldRoot("m1"))
+            val r = rig.metrics.receipts()
+            assertEquals(1L, r.readsSpooled)
+            assertEquals(0L, r.readsQuick)
+            // Told: the deadline has nothing left to send, by the spool or by custody.
+            rig.now += ReadSync.ABSENT_BASE_MS
+            rig.sync.flushDue()
+            assertEquals(1, rig.pushed.size)
+            assertTrue(rig.originated.isEmpty())
+        }
+
+    @Test
+    fun `a quick push no spool took leaves the reads to the deadline, which may fall to custody`() =
+        runTest {
+            val rig = Rig(wake = backgroundScope)
+            rig.spoolCovers += ALICE
+            rig.spoolAnswer = ReadSync.Sent.NotPushed
+            rig.read("m1")
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+            assertEquals(1, rig.pushed.size)
+            assertEquals(setOf("m1"), rig.marks.owed())
+            // Nothing custodied from the wake: the budget is the deadline's alone.
+            assertTrue(rig.originated.isEmpty())
+            rig.now += ReadSync.ABSENT_BASE_MS
+            rig.sync.flushDue()
+            assertEquals(listOf(ALICE to listOf("m1")), rig.originated)
+        }
+
+    @Test
+    fun `a near author a spool also covers gets both the copy and the push`() =
+        runTest {
+            val rig = Rig(wake = backgroundScope)
+            rig.near += ALICE
+            rig.spoolCovers += ALICE
+            rig.read("m1")
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+            // The link copy first (best effort, the fastest), then the push that tells.
+            assertEquals(listOf(ALICE to listOf("m1")), rig.quicked)
+            assertEquals(listOf(ALICE to listOf("m1")), rig.pushed)
+            assertEquals(emptySet<String>(), rig.marks.owed())
+        }
+
+    @Test
     fun `an author blocked inside the window gets no quick copy, and a later read arms again`() =
         runTest {
             val rig = Rig(wake = backgroundScope)

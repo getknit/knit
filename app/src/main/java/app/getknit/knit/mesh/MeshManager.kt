@@ -3649,12 +3649,19 @@ class MeshManager(
         authorId: String,
         ids: List<String>,
     ): ReadSync.Sent {
-        val sealed = sealTick(authorId, ids, answer = true)
+        // The quick wake pushes here a second after the read, so a block that landed meanwhile is read again, as
+        // [quickReads] does: the drop of the owed marks runs on its own collector.
+        if (authorId in settings.blockedNodeIds.first()) return ReadSync.Sent.CannotSeal
+        // A held ✓✓ for these ids is answered only by a push a spool took: one no spool took carries nothing (crypto review,
+        // 2026-11-16, made frequent by the quick wake).
+        val sealed = sealTick(authorId, ids, answer = true, releasesHeld = false)
         val tick =
             (sealed as? TickSeal.Sealed)?.tick
                 ?: return if (sealed == TickSeal.Declined) ReadSync.Sent.Declined else ReadSync.Sent.CannotSeal
         val pushed = scopeSync?.pushDirect(authorId, tick.env, sign(tick.env, relay = false)) == true
-        return if (pushed) ReadSync.Sent.Told(tick.rootTag) else ReadSync.Sent.NotPushed
+        if (!pushed) return ReadSync.Sent.NotPushed
+        releaseHeldTicks(authorId, ids)
+        return ReadSync.Sent.Told(tick.rootTag)
     }
 
     /** What [originateDeliveryTick] did with a tick. */

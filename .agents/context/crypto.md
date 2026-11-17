@@ -213,7 +213,8 @@ LoRa plane (2026-09.ggq4).
   at a width set by the list's length alone (`ReadMask`); toward any other, absent and byte-identical. "Told" is only a `relay = true` originate or a
   `pushed` spool push, never a seal, a live-link send, a compact bit or an owed entry; a refusal is never re-sealed.
   The quick copy to a near author (`ReadSync.QUICK_DELAY_MS`, `quickReads`, the 2026-11-16 amendment) is one of those
-  live-link sends: best effort, it tells nothing and moves no deadline.
+  live-link sends: best effort, it tells nothing and moves no deadline. The same wake's spool push to a covered author
+  (`quickSpool` → `spoolReads`) is the deadline's push made early, and tells only when a spool took it.
   Reads never claim or record in `DmReAckLedger` (8hn6's qualification), and the standalone frame is an answer-only
   seal that never mints an init. Regression: `ReadMaskTest`, `ReadSyncTest`, `InboundPipelineTest`'s read cases,
   `MeshManagerTest`'s compact-mask cases, `GoldenVectorTest`, `ReadReceiptLabTest`.

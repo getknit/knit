@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.mesh.ReadSync
 import app.getknit.knit.mesh.lora.FakeMeshtasticAir
+import app.getknit.knit.mesh.spool.FakeSpool
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -473,6 +474,46 @@ class ReadReceiptLabTest {
                     .toInt()
             }
             lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
+     * 9. An author reachable only through the relay sees the read in seconds (the maintainer, 2026-11-16): the quick wake
+     * pushes it into the DM scope a second after the read, told with no custody row, where the absent deadline (thirty lab
+     * minutes here, fifteen in the field) would otherwise have held it.
+     */
+    @Test
+    fun aRelayOnlyAuthorSeesTheReadBeforeTheAbsentDeadline() =
+        runBlocking {
+            val spool = FakeSpool()
+            val quick = READS.copy(readQuickDelayMs = ReadSync.QUICK_DELAY_MS)
+            val alice = lab.node("alice", quick, spool = spool).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", quick, spool = spool).apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            // Accepted, not message requests: a request's reads are never told.
+            lab.befriend(alice, bob)
+            // A DM scope is derived from a session the pair holds: one exchange over the radio first.
+            val warm = dmLands(alice, bob, "warm up")
+            lab.awaitReceipt(alice, warm, bob)
+            lab.unlink(alice, bob)
+            lab.awaitDmScope(alice, bob)
+            lab.awaitDmScope(bob, alice)
+
+            assertTrue(alice.sendDm(bob, "across the relay"))
+            val id = alice.ownMessageId(alice.dmWith(bob), "across the relay")
+            lab.await(1, MeshLab.SPOOL_AWAIT_MS) { bob.decrypted(bob.dmWith(alice)).count { it.first == id } }
+            // Its ✓✓ with alice first, so the read cannot ride it.
+            lab.awaitReceipt(alice, id, bob)
+            val spooled = bob.metrics.receipts().readsSpooled
+            bob.reads(id)
+            // No clock jump: only the quick wake's push can carry it before ABSENT_MS.
+            lab.await(1, MeshLab.SPOOL_AWAIT_MS) { (bob.metrics.receipts().readsSpooled - spooled).toInt() }
+            awaitRead(alice, id, bob, MeshLab.SPOOL_AWAIT_MS)
+            assertEquals("no read frame in custody", 0L, bob.metrics.receipts().readsCustodied)
+            // Alice custodies the push she pulled; bob, who never custodied it, holds it only once a link re-serves it:
+            // y5f3's spool form, as `RoomTickPlanesLabTest`'s spooled room tick shows. A re-link settles that.
+            lab.link(alice, bob)
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
         }
 
     /** The ✓✓ for [author]'s DM [id] is held after the row commits: end the hold only once it is in it. */

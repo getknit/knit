@@ -305,6 +305,9 @@ told). `ReadSync` then:
   never releases a held ✓✓, and it re-reads the block list before sealing. What it costs is cover: a read near its
   author no longer hides in the next ✓✓, so anyone in radio range who can read the envelope sees a receipt for
   already-acked ids about a second after the read (timing, out of scope per §7);
+- toward an author a connected spool covers, the same wake also makes the deadline's spool push now: claimed, and told
+  once a spool took it, with no custody row, budget or doubling. A push no spool took leaves the reads to the
+  deadline. The spool operator sees that push a second after the read instead of 15 min later;
 - marks a read **told** only after a `relay = true` frame carrying it is originated, or the spool push returns
   `pushed`. A seal, a live-link send, a compact LoRa bit, an owed entry, a decline and every cleartext fallback leave
   it owed. A refusal is never re-sealed;

@@ -197,7 +197,11 @@ interface ReadMarkStore {
  * toward an author [nearby] (a live link or a short-range fast plane), the owed reads not yet sent this way go once more
  * in the same sealed form, `relay = false`, over [quick]: one hop, no flood, no custody row, no spool, never LoRa. Best
  * effort, so it tells nothing: the marks stay owed and the standalone form still runs on its deadline unless a ride tells
- * them first, and a duplicate lands on the author's fill-null-only `readAt`.
+ * them first, and a duplicate lands on the author's fill-null-only `readAt`. Toward an author a connected spool covers
+ * ([spoolPresent]) the same wake also pushes the owed reads there ([spoolPush]): the push the deadline would make anyway,
+ * made now, so an author reachable only through the Internet sees the read in seconds rather than 15 min (the maintainer,
+ * 2026-11-16). It tells as the deadline's push does, and a push no spool took leaves the marks to the deadline, which
+ * may then fall to custody as before. Never custody from this wake: no budget is spent and no doubling moves.
  *
  * **Eras.** A root change toward an author owes again every read of the last 24 h told under another root
  * ([ReadMarkStore.reOweNotUnder]): a reset or a restore leaves the author unable to open what told it.
@@ -511,7 +515,7 @@ class ReadSync(
      * session stopped inside the delay (or before the wake ever ran) must not leave the author armed for the process's life.
      */
     private fun armQuick(authorId: String) {
-        if (!nearby(authorId)) return
+        if (!nearby(authorId) && !spoolPresent(authorId)) return
         val scope = wakeScope() ?: return
         val token = Any()
         if (!synchronized(this) { quickArmed.putIfAbsent(authorId, token) == null }) return
@@ -524,12 +528,18 @@ class ReadSync(
             }.invokeOnCompletion { disarm() }
     }
 
+    /** The quick wake's work: the best-effort copy toward a near author, then the spool push toward a covered one. */
+    private suspend fun quickFlush(authorId: String) {
+        if (!enabled()) return
+        if (nearby(authorId)) quickCopy(authorId)
+        if (spoolPresent(authorId)) quickSpool(authorId)
+    }
+
     /**
      * Owed reads toward [authorId] not yet sent quick, up to [ReadMask.MAX_IDS], sent once over [quick]. Nothing is claimed
      * and nothing is told: a ride or the standalone form carrying the same ids meanwhile costs one duplicate read.
      */
-    private suspend fun quickFlush(authorId: String) {
-        if (!enabled() || !nearby(authorId)) return
+    private suspend fun quickCopy(authorId: String) {
         val seen = synchronized(this) { quickSent.size }
         val owed = marks.owedFor(authorId, ReadMask.MAX_IDS + seen)
         val ids = synchronized(this) { owed.filter { it !in quickSent }.take(ReadMask.MAX_IDS) }
@@ -539,6 +549,24 @@ class ReadSync(
             while (quickSent.size > QUICK_SENT_CAP) quickSent.remove(quickSent.first())
         }
         metrics.onReadsQuick()
+    }
+
+    /**
+     * The owed reads toward [authorId], claimed as [flush] claims them, pushed into the author's spool scope now: told
+     * when a spool took them ([settle], no custody, so no doubling). Anything else leaves them owed for the deadline.
+     */
+    private suspend fun quickSpool(authorId: String) {
+        val ids = takeOwed(authorId)
+        if (ids.isEmpty()) return
+        try {
+            val pushed = spoolPush(authorId, ids)
+            if (pushed is Sent.Told) {
+                metrics.onReadsSpooled()
+                settle(authorId, ids, pushed, viaCustody = false)
+            }
+        } finally {
+            giveBack(ids)
+        }
     }
 
     /**

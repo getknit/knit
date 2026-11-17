@@ -103,4 +103,14 @@ already acked and with nothing from the author in between. Anyone in radio range
 sees "this person is reading that thread now", inside the spec's out-of-scope timing posture (§7). It never releases
 a held ✓✓ (`sealTick(releasesHeld = false)`: a lost copy must not take the ✓✓'s only carrier with it), and it reads the
 block list again before it seals, since the block's drop of owed marks runs on its own collector. Counted as
-`readsQuick`. Regression: `ReadSyncTest`'s quick cases, `ReadReceiptLabTest.aNearAuthorSeesTheReadBeforeTheDeadline`.
+`readsQuick`.
+
+The same day the maintainer extended it to the Internet: an author a connected spool covers (`spoolPresent`, heard
+there within `SPOOL_COVER_MS`) waited the absent schedule, 15 min, for a push that costs the mesh nothing. The quick wake
+now also makes that push (`ReadSync.quickSpool`, through `spoolReads`), claiming the owed reads as the deadline
+does: told once a spool took it, never custody from the wake, no budget spent and no doubling moved; a push no spool
+took leaves the reads to the deadline, which may then fall to custody as before. A near author a spool also covers gets
+both, the link copy first. `spoolReads` now releases a held ✓✓ only once a spool took the push, and reads the block
+list again too. The cost is the same cover as nearby, now to the spool operator, who sees a push into the DM scope a
+second after the read rather than 15 min later. Regression: `ReadSyncTest`'s quick and spool cases,
+`ReadReceiptLabTest.aNearAuthorSeesTheReadBeforeTheDeadline` and `aRelayOnlyAuthorSeesTheReadBeforeTheAbsentDeadline`.
