@@ -12227,6 +12227,36 @@ class InboundPipelineTest {
         }
 
     /**
+     * A flush's id the ledger held for an author who no longer reads a sealed receipt (the ratchet bit gone from the
+     * pin): the claim's read stops at the author before the era, and a record counts it as such. Ahead of NOT_LIVE and
+     * the ledger's own causes: the receipt here is still live and inside its floor. MeshManager's own flush seals
+     * nothing for that author and records nothing, so this count needs the bit back between claim and seal
+     * (`MeshManagerTest.aFlushToAnAuthorThatLostTheRatchetBitSendsCleartextAndCountsNoReSeal`).
+     */
+    @Test
+    fun aFlushCountsAnAuthorThatCannotReadASealedReceiptAsAuthorCannotSeal() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-count-unpinned", "held")
+            rig.deliver(alice, dm, kind = TransportKind.Bluetooth)
+            val tag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
+            assertNotNull(rig.dmReAcks.entry(alice.nodeId, "v2-count-unpinned"))
+            val pinned = checkNotNull(rig.peerMap[alice.nodeId])
+            rig.peerMap[alice.nodeId] = pinned.copy(capabilities = pinned.capabilities!! and Protocol.CAP_RATCHET.inv())
+            val ids = listOf("v2-count-unpinned")
+
+            assertEquals(ids, rig.pipeline.claimUnansweredDmAcks(alice.nodeId, ids))
+            assertEquals("counted at the record, not the read", emptyMap<DmReSealCause, Long>(), rig.reSealedBy())
+            rig.pipeline.recordDmReceipts(alice.nodeId, ids, tag, "tick-unpinned", rig.nowMs)
+            rig.pipeline.releaseDmAcks(alice.nodeId, ids)
+
+            assertEquals(mapOf(DmReSealCause.AUTHOR_CANNOT_SEAL to 1L), rig.reSealedBy())
+            assertEquals("never skipped as answered", 0L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /**
      * Our own reset, still unanswered (ADR 2026-10.8hn6 meets x9fa's answer gate): the new era's receipt would ride our
      * reset's init unflagged, which the author's incidental floor refuses (#90), so the re-delivery seals nothing, falls
      * back to nothing cleartext, and hands the ✓✓ to MeshManager's hold, sealed once the root moves or on a heal. The

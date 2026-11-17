@@ -86,6 +86,7 @@ import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.ReactionPayload
+import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleSpan
@@ -1601,6 +1602,85 @@ class MeshManagerTest {
             assertFalse("nothing to seal to", rig.manager.sendCallSignal("nobody", payload))
         }
 
+    // --- sealed ctl DMs counted by purpose (measurement only, #335) ---
+
+    /** A transfer signal counts as TRANSFER and nothing else; a refused one counts nothing. */
+    @Test
+    fun aSealedTransferSignalCountsAsTransfer() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.pinCryptoV3(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            val payload = TransferPayload(id = "t1", phase = TransferPayload.PHASE_OFFER, name = "clip.mp4", size = 5L, mime = "video/mp4")
+
+            assertTrue(rig.manager.sendTransferSignal(rig.bob.nodeId, payload))
+            assertFalse(rig.manager.sendTransferSignal("nobody", payload))
+            advanceUntilIdle()
+
+            assertEquals(mapOf(CtlDmPurpose.TRANSFER to 1L), rig.metrics.seals().ctlDmSealedBy)
+        }
+
+    /** A call signal counts as CALL and nothing else; a refused one counts nothing. */
+    @Test
+    fun aSealedCallSignalCountsAsCall() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.pinCryptoV3(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            val payload = CallPayload(id = "c1", ph = CallPayload.PHASE_OFFER, sdp = "v=0")
+
+            assertTrue(rig.manager.sendCallSignal(rig.bob.nodeId, payload))
+            assertFalse(rig.manager.sendCallSignal("nobody", payload))
+            advanceUntilIdle()
+
+            assertEquals(mapOf(CtlDmPurpose.CALL to 1L), rig.metrics.seals().ctlDmSealedBy)
+        }
+
+    /** A card import's intro, sealed off the pinned prekey with no session yet, counts as INTRO. */
+    @Test
+    fun aSealedContactCardIntroCountsAsIntro() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+            rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+
+            rig.manager.importContact(rig.bob.nodeId)
+            advanceUntilIdle()
+
+            assertEquals(1L, rig.metrics.keys().introsSent)
+            assertEquals(1, rig.sentChatFrames().size)
+            assertEquals(mapOf(CtlDmPurpose.INTRO to 1L), rig.metrics.seals().ctlDmSealedBy)
+        }
+
+    /**
+     * The fan-out GitLab #335's figure rests on: a profile version above 0 and one confirmed session seal one sealed
+     * profile to that peer, counted as PROFILE_FANOUT, and the per-version dedupe keeps a second heal from counting again.
+     */
+    @Test
+    fun aSealedProfileFanOutToAConfirmedSessionCountsAsProfileFanout() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+            coEvery { rig.settings.profileVersion } returns MutableStateFlow(3L)
+            rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            rig.answered(rig.bob)
+
+            rig.manager.start()
+            rig.healAndAwait()
+            rig.await(1) {
+                rig.metrics
+                    .seals()
+                    .ctlDmSealedBy.values
+                    .sum()
+                    .toInt()
+            }
+            assertEquals(mapOf(CtlDmPurpose.PROFILE_FANOUT to 1L), rig.metrics.seals().ctlDmSealedBy)
+
+            rig.healAndAwait()
+            assertEquals(mapOf(CtlDmPurpose.PROFILE_FANOUT to 1L), rig.metrics.seals().ctlDmSealedBy)
+            rig.manager.stop()
+        }
+
     // --- the compact LoRa copy (ADR 2026-10.x9fa) ---
 
     /** Pins [p] as a peer whose profile claims the compact door: every bit of this build plus [Protocol.CAP_LORA_DIRECT]. */
@@ -1990,6 +2070,35 @@ class MeshManagerTest {
                 rig.metrics.receipts().receiptsDmSealedBy,
             )
             assertEquals(mapOf(DmReSealCause.FLOOR_ELAPSED to 1L), rig.metrics.receipts().receiptsReSealedBy)
+        }
+
+    /**
+     * What a flush does with AUTHOR_CANNOT_SEAL today (measurement only): the claim's read names the cause, but the
+     * seal asks the same pin and the same bit, so the tick cannot seal, the ✓✓ goes cleartext, nothing is recorded and
+     * the cause is dropped with the claim. A sequential flush never counts it; only an author re-pinned with the bit
+     * between the claim and the seal would.
+     */
+    @Test
+    fun aFlushToAnAuthorThatLostTheRatchetBitSendsCleartextAndCountsNoReSeal() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val id = FrameId.new()
+            rig.coalesce(id)
+            advanceUntilIdle()
+            assertEquals(mapOf(DmReceiptPath.COALESCER_FLUSH to 1L), rig.metrics.receipts().receiptsDmSealedBy)
+
+            rig.pinWithCaps(rig.bob, RatchetCrypto.generateKeyPair().pub, Protocol.LOCAL_CAPABILITIES and Protocol.CAP_RATCHET.inv())
+            rig.manager.holdDeclinedTicks(rig.bob.nodeId, listOf(id))
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+
+            val cleartext = rig.sentFrames().filter { it.type == FrameType.RECEIPT }
+            assertEquals(listOf(id), cleartext.map { WireCodec.decodePayload<ReceiptContent>(it.payload)?.ackId })
+            assertEquals(mapOf(DmReceiptPath.COALESCER_FLUSH to 1L), rig.metrics.receipts().receiptsDmSealedBy)
+            assertEquals(emptyMap<DmReSealCause, Long>(), rig.metrics.receipts().receiptsReSealedBy)
         }
 
     /**

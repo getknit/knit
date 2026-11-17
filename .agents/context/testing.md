@@ -846,7 +846,16 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   back at once (sampled every 250 ms) and the pages dropped; a `probes:` line times eight fresh DMs sent over
   links the gather raised, the wait behind the backlog (#331). A DM still missing at the
   end gets a `lost:` line: how many stores held it over time, how often it crossed to its recipient and how many
-  page copies a full queue dropped, and how many writes toward it were skipped as already crossed. The
+  page copies a full queue dropped, and how many writes toward it were skipped as already crossed.
+  `-Pknit.meshSimGather=false` ends the outing at the walk: no gather, settle or oracle, so it measures and is never
+  red, and every link goes down before the report reads (file suffix `-walk`). Every outing reads every store once a
+  minute (`CustodyPressure`): rows by kind (workload DMs pending and delivered, other recipient-addressed chat, room
+  posts, profiles), the age of each store's oldest row, and what left since the last sample. A `custody pressure`
+  line per sample goes into the progress file as it is taken, so a run cut short keeps it. The summary counts the
+  undelivered DMs that lost copies (at least, sampled a minute apart), their sender's own copy among them, and the ones
+  custody had held that no store held at a sample. `counters that moved since the walk began` sums every counter of
+  the routers' `frames`, `keys`, `seals` and `receipts` metrics over the field by reflection (`RouterCounters.kt`),
+  so a new counter in those groups shows up unasked. The
   report lands in `app/build/mesh-sim/`: contacts made and how long they lasted, DM delivery and latency by
   how the two ends stood at the send (linked, a path apart, partitioned), room reach, frames per plane of the
   router, custody rows, and what the run cost the machine.
@@ -886,6 +895,20 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   the gather raised: seven were in by 2 to 4 s, one by 23 s, read on the settle's 15 s poll. The lab holds that backlog in the
   receiver's pipe inboxes; on a phone it sits in the senders' queues and the stack, if Android's credits push
   back, which only a device trial can tell.
+- **Custody fills in minutes, and our own profile's eviction floods it** (walk-only, 10 minutes, 2026-11-16, #335).
+  Every store reached custody's 1,000-row cap within 6 to 9 minutes, after which a store held about the last 6
+  minutes of traffic. At 24 walkers that cost one DM. At 48 the walk originated about 108,000 frames for about
+  1,400 DMs, recipient-addressed chat other than the workload's DMs filled 85% of every store, and 150 to 234 DMs
+  left every store, often their sender's own first, and never arrived. The counters named the flood: of 96,016
+  v3 seals, 90,517 were the sealed profile fan-out, after 3,919 republishes, every one because our own custody no
+  longer held our profile frame (`MeshManager.custodyPresentsOtherThan` reads a missing row as a change, so the next
+  settings write to any key mints a version and seals it to every confirmed session). Signed DM ✓✓ re-seals were
+  95, all because our last receipt had left custody. The counters behind it: `seals.ctlDmSealedBy`,
+  `seals.profileRepublishedBy`, `receipts.receiptsDmSealedBy`, `receipts.receiptsReSealedBy`.
+- **A gather after a long walk does not settle in the lab** (48 walkers, 10 minutes, 2026-11-16). About 12,900 live
+  ids met 1,000 rows per store, the nodes re-served what the receivers then evicted on about ten cores for nine
+  hours, and the settle's own reads starved; the run was killed. Measure long walks with `-Pknit.meshSimGather=false`
+  until #335 is fixed.
 - **What it leaves out.** One plane, no path loss, no link budget, none of the transports' own dial policies:
   `LabTransport` stands in for the whole radio, so the topology is the geometry's, not what Bluetooth or
   Wi-Fi Aware would have formed.
