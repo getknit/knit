@@ -19,6 +19,7 @@ import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -26,6 +27,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -41,6 +43,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.CoroutineContext
 
 /**
  * [LinkInbound] behind a real [FramedLink] (#331, ADR 2026-11.43f7): a link whose router is behind waits for room
@@ -95,18 +98,30 @@ class LinkInboundTest {
                 onWaited = { waits += it },
             )
 
-        // How many frames this link's reader is inside a hand-off with (0 or 1), and how many it has come out of: a reader
-        // inside one with the queue full is waiting, and the stepped router reads both to know the links have settled.
+        // How many frames this link's reader is inside a hand-off with (0 or 1), and how many it has come out of. The
+        // hand-off runs on [handing], which counts the work it has been given and not finished, so the stepped router can
+        // tell a reader parked in the queue's wait from one still on its way there (#345).
         val inHand = AtomicInteger()
         val out = AtomicInteger()
+        private val handing = Counting()
+
+        /**
+         * This reader is suspended inside a hand-off: in `emit`'s wait, in the queue's line of waiters, the only suspension
+         * [LinkInbound.hand] has. Being inside a hand-off is not enough: a reader that has entered it but not yet reached
+         * `emit` is not in the line, and a step taken then lets the other reader queue ahead of it. [inHand] is read first:
+         * it is set only on [handing], so once it reads 1 an idle [handing] means suspended, never not yet started.
+         */
+        fun parked() = inHand.get() == 1 && handing.idle()
 
         override suspend fun onInbound(frame: InboundFrame) {
-            inHand.incrementAndGet()
-            try {
-                handOff.hand(frame)
-            } finally {
-                inHand.decrementAndGet()
-                out.incrementAndGet()
+            withContext(handing) {
+                inHand.incrementAndGet()
+                try {
+                    handOff.hand(frame)
+                } finally {
+                    inHand.decrementAndGet()
+                    out.incrementAndGet()
+                }
             }
         }
 
@@ -343,15 +358,17 @@ class LinkInboundTest {
         val planes = listOf(flood to FLOOD, honest to HONEST)
 
         // Settled: every frame out of a hand-off is the router's or fills the queue, and each reader with frames left is
-        // inside its next hand-off, waiting.
+        // parked in its next hand-off's wait. Only inside the hand-off is not enough (#345): a reader on its way to the
+        // wait when the step lands joins the line behind the other one.
         fun settled(sent: List<Pair<Plane, Int>>) =
             sent.sumOf { (p, _) -> p.out.get() } == handled.size + SLOTS &&
-                sent.all { (p, n) -> p.inHand.get() == 1 || p.out.get() == n }
+                sent.all { (p, n) -> p.parked() || p.out.get() == n }
         send(floodOut, *Array(FLOOD) { "f$it" }, from = "flood001")
-        await("the flood never settled waiting") { settled(listOf(flood to FLOOD)) && flood.inHand.get() == 1 }
+        // The router holding f0 too: before it takes f0, f0 and f1 fill the queue and f2 waits, which settles as well.
+        await("the flood never settled waiting") { handled.size == 1 && settled(listOf(flood to FLOOD)) && flood.parked() }
         val mine = Array(HONEST) { "h$it" }
         send(honestOut, *mine, from = "honest01")
-        await("the honest link never settled waiting") { settled(planes) && honest.inHand.get() == 1 }
+        await("the honest link never settled waiting") { settled(planes) && honest.parked() }
         while (mine.last() !in handled) {
             val read = handled.size
             permits.trySend(Unit)
@@ -361,6 +378,31 @@ class LinkInboundTest {
         val at = mine.map { got.indexOf(it) }
         // Between two honest frames, the one flood frame ahead of it in the waiters' line: the flood gets its share only.
         at.zipWithNext().forEach { (a, b) -> assertEquals("the flood took more than its share: $got", 2, b - a) }
+    }
+
+    /**
+     * [Dispatchers.Default], counting each block from its dispatch to its end. The count rises in [dispatch], on the
+     * thread that resumes the coroutine, so a reader the router resumes reads busy before it runs: idle only while
+     * nothing it was given is queued or running.
+     */
+    private class Counting : CoroutineDispatcher() {
+        private val busy = AtomicInteger()
+
+        fun idle() = busy.get() == 0
+
+        override fun dispatch(
+            context: CoroutineContext,
+            block: Runnable,
+        ) {
+            busy.incrementAndGet()
+            Dispatchers.Default.dispatch(context) {
+                try {
+                    block.run()
+                } finally {
+                    busy.decrementAndGet()
+                }
+            }
+        }
     }
 
     private fun pageFrame(id: String): InboundFrame {
