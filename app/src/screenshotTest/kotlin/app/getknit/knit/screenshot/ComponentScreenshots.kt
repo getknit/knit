@@ -30,6 +30,7 @@ import app.getknit.knit.ui.components.KnitStitchIndicatorPreview
 import app.getknit.knit.ui.components.NameBadgeStylesPreview
 import app.getknit.knit.ui.components.PeerNameTextPlainPreview
 import app.getknit.knit.ui.components.PeerNameTextPreview
+import app.getknit.knit.ui.components.RoomAvatarBridgedPreview
 import app.getknit.knit.ui.components.RoomAvatarPreview
 import com.android.tools.screenshot.PreviewTest
 
@@ -184,3 +185,8 @@ fun PeerNameTextPlain() = PeerNameTextPlainPreview()
 @ComponentShots
 @Composable
 fun RoomAvatar() = RoomAvatarPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun RoomAvatarBridged() = RoomAvatarBridgedPreview()

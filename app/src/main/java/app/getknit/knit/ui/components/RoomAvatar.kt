@@ -18,13 +18,20 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
+import app.getknit.knit.ui.icons.KnitIcons
 import app.getknit.knit.ui.preview.KnitPreview
 
 /**
- * The Nearby broadcast room's circular avatar: the Knit mesh mark ([R.drawable.ic_knit_room]) on a
- * neutral tinted disc, mirroring [GroupAvatar]/[Avatar]. Shared by the chat-list room row and the Nearby
- * chat header so both render the room identically. The mark fills the circle edge-to-edge — the drawable
- * is a full disc with the "K" punched out as holes that reveal the [secondaryContainer] behind it.
+ * A room's circular avatar, on a neutral tinted disc, mirroring [GroupAvatar]/[Avatar]. Shared by the chat-list room
+ * row, the chat header and search so each room renders identically everywhere.
+ *
+ * - **Knit's own rooms** (Nearby, a commons): the Knit mesh mark ([R.drawable.ic_knit_room]) fills the circle
+ *   edge-to-edge. The drawable is a full disc with the "K" punched out as holes that reveal the [secondaryContainer]
+ *   behind it.
+ * - **A radio room** ([bridged]: the Meshtastic or the MeshCore room, a board's channel bridged into Knit): the radio
+ *   glyph ([KnitIcons.RadioRoom]) at [GLYPH_FRACTION] of the disc, as a photo-less group wears its people glyph. The K
+ *   beside a public channel's name read as one of Knit's own channels; `NotificationAvatars.bridgedRoomAvatar` is its
+ *   twin in the shade.
  *
  * The room has nothing to open (no profile / details), so unlike [Avatar]/[GroupAvatar] it's never
  * clickable. Accessibility: pass [contentDescription] only where the circle stands alone; leave it null
@@ -35,6 +42,7 @@ fun RoomAvatar(
     size: Dp,
     modifier: Modifier = Modifier,
     contentDescription: String? = null,
+    bridged: Boolean = false,
 ) {
     Box(
         modifier =
@@ -51,18 +59,38 @@ fun RoomAvatar(
                 ),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            painter = painterResource(R.drawable.ic_knit_room),
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-            modifier = Modifier.fillMaxSize(),
-        )
+        if (bridged) {
+            Icon(
+                KnitIcons.RadioRoom,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.size(size * GLYPH_FRACTION),
+            )
+        } else {
+            Icon(
+                painter = painterResource(R.drawable.ic_knit_room),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
     }
 }
+
+/** The radio glyph's side as a fraction of the disc: [GroupAvatar]'s, and `NotificationAvatars`' `GLYPH_FRACTION`. */
+private const val GLYPH_FRACTION = 0.6f
 
 @Preview(showBackground = true)
 @Composable
 fun RoomAvatarPreview() =
     KnitPreview {
         RoomAvatar(size = 96.dp)
+    }
+
+/** A radio room's avatar: the radio glyph in place of the Knit mesh mark. */
+@Preview(showBackground = true)
+@Composable
+fun RoomAvatarBridgedPreview() =
+    KnitPreview {
+        RoomAvatar(size = 96.dp, bridged = true)
     }

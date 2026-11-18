@@ -132,6 +132,7 @@ import app.getknit.knit.translate.TranslateTarget
 import app.getknit.knit.ui.meshcoreAuthorLine
 import app.getknit.knit.ui.meshcoreNameClashes
 import app.getknit.knit.ui.meshcoreRoomClashKeys
+import app.getknit.knit.ui.radioRoomTitle
 import app.getknit.knit.ui.share.OutsideUris
 import app.getknit.knit.ui.share.OwnFile
 import app.getknit.knit.ui.translate.LanguageNames
@@ -1905,18 +1906,21 @@ class ChatViewModel(
                             context.getString(R.string.nearby_title)
                         }
 
-                        // The MeshCore room's: slot 0's name as the board holds it now (a post names no channel), else the
-                        // generic one — the chat list's rule (`conversationTitle`).
+                        // The MeshCore room's: the network, then slot 0's name as the board holds it now (a post names
+                        // no channel) — the chat list's rule (`radioRoomTitle`).
                         isMeshcoreRoom -> {
-                            mesh.lora.room.primaryChannel ?: context.getString(R.string.meshcore_title)
+                            radioRoomTitle(context, R.string.meshcore_title, mesh.lora.room.primaryChannel)
                         }
 
-                        // The live board's primary channel (`LongFast`, `MediumFast`, or a name the user
-                        // gave it), else the newest post's, else the generic label — one rule with the
-                        // chat list (`meshRoomChannel`), so the two agree.
+                        // The network, then the live board's primary channel (`LongFast`, `MediumFast`, or a name the
+                        // user gave it), else the newest post's — one rule with the chat list (`meshRoomChannel`,
+                        // `radioRoomTitle`), so the two agree.
                         isBridged -> {
-                            meshRoomChannel(mesh.lora.room.primaryChannel, newestOriginChannel(msgs))
-                                ?: context.getString(R.string.meshtastic_title)
+                            radioRoomTitle(
+                                context,
+                                R.string.meshtastic_title,
+                                meshRoomChannel(mesh.lora.room.primaryChannel, newestOriginChannel(msgs)),
+                            )
                         }
 
                         // The relay's advertised name, one rule with the chat list (`conversationTitle`).

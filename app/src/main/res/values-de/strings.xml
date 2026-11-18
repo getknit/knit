@@ -698,6 +698,7 @@
     <string name="nearby_title">In der Nähe</string>
     <string name="meshtastic_title">Meshtastic</string>
     <string name="meshcore_title">MeshCore</string>
+    <string name="radio_room_title">%1$s (%2$s)</string>
     <string name="commons_title">Gemeinschaftsraum</string>
     <string name="chat_list_empty_preview">Noch keine Nachrichten</string>
     <string name="chat_list_draft_preview">Entwurf: %1$s</string>

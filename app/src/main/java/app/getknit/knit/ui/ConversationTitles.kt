@@ -1,7 +1,9 @@
 package app.getknit.knit.ui
 
 import android.content.Context
+import androidx.annotation.StringRes
 import app.getknit.knit.R
+import app.getknit.knit.TextLimits
 import app.getknit.knit.data.PeerDirectory
 import app.getknit.knit.data.commons.CommonsEntity
 import app.getknit.knit.data.group.GroupEntity
@@ -73,8 +75,8 @@ internal data class MeshRoomInputs(
 }
 
 /**
- * The title of [conversationId]: the Nearby room's fixed name; the Meshtastic room's channel
- * ([meshRoomChannel], else the generic name); a group's stored name, else one generated from the other
+ * The title of [conversationId]: the Nearby room's fixed name; a radio room's network and channel
+ * ([radioRoomTitle] over [meshRoomChannel]); a group's stored name, else one generated from the other
  * members' labels ([groupTitle]); a DM peer's label with its discriminator. [group] is the group's row when
  * there is one (an unknown group id still titles, as unnamed).
  */
@@ -94,12 +96,12 @@ internal fun conversationTitle(
         }
 
         ConversationKind.MESHTASTIC -> {
-            ConversationTitle(conversationId, kind, meshRoomChannel ?: context.getString(R.string.meshtastic_title), null, null)
+            ConversationTitle(conversationId, kind, radioRoomTitle(context, R.string.meshtastic_title, meshRoomChannel), null, null)
         }
 
-        // The board's slot 0 as it is named now (whatever it holds, never a constant `Public`), else the generic name.
+        // The board's slot 0 as it is named now (whatever it holds, never a constant `Public`), after the network's name.
         ConversationKind.MESHCORE -> {
-            ConversationTitle(conversationId, kind, meshRoomChannel ?: context.getString(R.string.meshcore_title), null, null)
+            ConversationTitle(conversationId, kind, radioRoomTitle(context, R.string.meshcore_title, meshRoomChannel), null, null)
         }
 
         ConversationKind.COMMONS -> {
@@ -150,6 +152,31 @@ internal fun ConversationTable.isPending(
 ): Boolean =
     conversationId !in blocked &&
         !Conversations.isAccepted(conversationId, accepted, verified, authored, groupSenders[conversationId].orEmpty())
+
+/**
+ * A radio room's title: its network ([network]: [R.string.meshtastic_title] or [R.string.meshcore_title]) and, while one
+ * is known, the channel its board names ([channel], `meshRoomChannel`): "Meshtastic (LongFast)", "MeshCore (Public)".
+ * The network leads, so the title starts the same with the board away (the network alone), and a channel's own name
+ * beside a room glyph (a bare "Public") never reads as one of Knit's channels. A channel named for the network itself is
+ * not repeated. One rule for the chat list, search, the shade and the thread header (`ChatViewModel`).
+ *
+ * The channel is cleaned for one line here ([TextLimits.cleanReceived]): Meshtastic's slot-0 name reaches this raw from
+ * the board's channel table, which a shared channel URL or QR code sets, and a bidi override in it could reorder or hide
+ * the network prefix (security-reviewer, 2026-11-18). MeshCore's is cleaned already; cleaning is idempotent.
+ */
+internal fun radioRoomTitle(
+    context: Context,
+    @StringRes network: Int,
+    channel: String?,
+): String {
+    val name = context.getString(network)
+    val shown =
+        channel
+            ?.let { TextLimits.cleanReceived(it, TextLimits.DISPLAY_NAME) }
+            ?.takeIf { it.isNotEmpty() && !it.equals(name, ignoreCase = true) }
+            ?: return name
+    return context.getString(R.string.radio_room_title, name, shown)
+}
 
 /**
  * Every thread a list surface shows, titled, in the list's own order before its sort: the Nearby room

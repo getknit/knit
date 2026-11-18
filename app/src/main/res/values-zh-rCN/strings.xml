@@ -685,6 +685,7 @@
     <string name="nearby_title">附近</string>
     <string name="meshtastic_title">Meshtastic</string>
     <string name="meshcore_title">MeshCore</string>
+    <string name="radio_room_title">%1$s（%2$s）</string>
     <string name="commons_title">公共聊天室</string>
     <string name="chat_list_empty_preview">还没有消息</string>
     <string name="chat_list_draft_preview">草稿：%1$s</string>

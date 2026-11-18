@@ -1026,12 +1026,12 @@ class ChatViewModelTest {
             assertFalse("nothing on the device can screen a file, and this channel is cleartext", state.canSendFile)
             assertFalse("never a verified badge — nothing here is verified", state.verified)
             assertNull("and no alias suffix: this id is not a peer", state.titleDiscriminator)
-            assertEquals("with no board connected the newest post names the channel", "LongTurbo", state.title)
+            assertEquals("with no board connected the newest post names the channel", "Meshtastic (LongTurbo)", state.title)
 
-            // A connected board names it — whatever the user set slot 0 to, preset or their own word.
+            // A connected board names it — whatever the user set slot 0 to, preset or their own word — after the network.
             loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, primaryChannel = "MediumFast", canPost = true)
             advanceUntilIdle()
-            assertEquals("MediumFast", vm.state.value.title)
+            assertEquals("Meshtastic (MediumFast)", vm.state.value.title)
 
             loraFactsFlow.value = LoraFacts()
             messagesFlow.value = emptyList()
@@ -1335,7 +1335,7 @@ class ChatViewModelTest {
             loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive)
             advanceUntilIdle()
             assertEquals(PublicPostGate.Open, vm.state.value.publicPostGate)
-            assertEquals("slot 0's own name", "Public", vm.state.value.title)
+            assertEquals("slot 0's own name, after the network's", "MeshCore (Public)", vm.state.value.title)
             assertEquals("the flood ceiling's own budget, never Meshtastic's signing cliff", 64, vm.state.value.publicPostBudget)
 
             loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive.copy(canPost = false))

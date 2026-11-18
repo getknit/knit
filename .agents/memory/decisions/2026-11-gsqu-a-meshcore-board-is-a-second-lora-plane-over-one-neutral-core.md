@@ -1911,7 +1911,8 @@ design pass. Nothing in `mesh/lora/` changed.
   text-only rules, `MeshManager.sendTyping`, the notifier's missing reply action and the action receiver's backstop, which
   asks the predicate ahead of every route. The Meshtastic-only sites got MeshCore twins: its own notification channel
   (`NotificationChannels.MESHCORE`, `knit_msg_meshcore_public`, `IMPORTANCE_LOW`, registered only where
-  `BuildConfig.MESHCORE_PLANE`), title (slot 0's name, else "MeshCore"), shortcut title, face and avatar.
+  `BuildConfig.MESHCORE_PLANE`), title ("MeshCore (<slot 0's name>)", else "MeshCore": ADR 2026-09.26q3's
+  2026-11-18 amendment, which also gives both rooms the radio glyph), shortcut title, face and avatar.
 - **Delivery** (`InboundPipeline.deliverMeshcorePost`, over `MeshPostSink.onMeshcorePostHeard` and the seam value
   `MeshcorePost`; the plane's `MeshcorePublicPost` crosses in `di/LoraWiring.meshcoreHeard`). A local-only envelope into
   `MESHCORE_PUBLIC` on LoRa, `ack = false`, `sentAt` this phone's clock (security N4): the sender's stamp is read only inside

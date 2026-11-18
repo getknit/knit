@@ -74,10 +74,11 @@ internal class NotificationAvatars(
     }
 
     /**
-     * The photoless avatar for a conversation, each the twin of what the chat list draws: a public room gets
-     * the Knit mesh mark (the room glyph), a group its members' [clusterAvatar] — or, under two [faces], the
-     * people glyph on a disc tinted by the group id ([groupGlyphAvatar]) — and a DM a [letterAvatar] on its
-     * title initial, colored by the conversation [key]. ADR 2026-09.zapp.
+     * The photoless avatar for a conversation, each the twin of what the chat list draws: a Knit room gets
+     * the Knit mesh mark (the room glyph), a radio room the radio glyph ([bridgedRoomAvatar]), a group its
+     * members' [clusterAvatar] — or, under two [faces], the people glyph on a disc tinted by the group id
+     * ([groupGlyphAvatar]) — and a DM a [letterAvatar] on its title initial, colored by the conversation [key].
+     * ADR 2026-09.zapp.
      */
     fun fallbackAvatar(
         kind: ConversationKind,
@@ -86,7 +87,8 @@ internal class NotificationAvatars(
         faces: List<NotifFace>,
     ): Bitmap =
         when (kind) {
-            ConversationKind.NEARBY, ConversationKind.MESHTASTIC, ConversationKind.MESHCORE, ConversationKind.COMMONS -> roomAvatar()
+            ConversationKind.NEARBY, ConversationKind.COMMONS -> roomAvatar()
+            ConversationKind.MESHTASTIC, ConversationKind.MESHCORE -> bridgedRoomAvatar()
             ConversationKind.GROUP -> if (faces.size >= GROUP_FACES_MIN) clusterAvatar(faces) else groupGlyphAvatar(key)
             ConversationKind.DM -> letterAvatar(title, key)
         }
@@ -109,6 +111,28 @@ internal class NotificationAvatars(
         ContextCompat.getDrawable(context, R.drawable.ic_knit_room)?.mutate()?.apply {
             setTint(logoTint)
             setBounds(0, 0, AVATAR_PX, AVATAR_PX)
+            draw(canvas)
+        }
+        return bitmap
+    }
+
+    /**
+     * A radio room's icon (the Meshtastic or the MeshCore room): the radio glyph ([R.drawable.ic_radio_room_glyph]) at
+     * [GLYPH_FRACTION] of [roomAvatar]'s disc, in [roomAvatar]'s fixed light pair — the twin of the in-app `RoomAvatar`
+     * with `bridged`, so a radio channel's post never wears the Knit mark in the shade either.
+     */
+    fun bridgedRoomAvatar(): Bitmap {
+        // CoralSecondaryContainerLight / CoralOnSecondaryContainerLight, as roomAvatar.
+        val background = 0xFFE0E0EC.toInt()
+        val glyphTint = 0xFF181824.toInt()
+        val bitmap = createBitmap(AVATAR_PX, AVATAR_PX)
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(background)
+        val side = (AVATAR_PX * GLYPH_FRACTION).toInt()
+        val inset = (AVATAR_PX - side) / 2
+        ContextCompat.getDrawable(context, R.drawable.ic_radio_room_glyph)?.mutate()?.apply {
+            setTint(glyphTint)
+            setBounds(inset, inset, inset + side, inset + side)
             draw(canvas)
         }
         return bitmap
@@ -259,7 +283,7 @@ internal class NotificationAvatars(
         // The initial's height as a fraction of its disc or cell — the in-app Avatar's rule.
         private const val INITIAL_FRACTION = 0.5f
 
-        // The people glyph's side as a fraction of the disc; GroupAvatar's GLYPH_FRACTION.
+        // The people and radio glyphs' side as a fraction of the disc; GroupAvatar's and RoomAvatar's GLYPH_FRACTION.
         private const val GLYPH_FRACTION = 0.6f
 
         // The cluster's seam in bitmap pixels: about the in-app 1.5dp once the 256² icon shows at the shade's ~48dp.

@@ -917,7 +917,9 @@ each hear the channel for themselves.
   (`.private/scripts/meshtastic-fromradio-capture.py`) is the serial-side oracle when a non-phone board is
   free.
 - **UI.** `LoraFacts.primaryChannel` / `canPost` (only while Live) title the room and the chat-list row
-  (`meshRoomChannel`: live board → newest post's channel → "Meshtastic"), the row exists while a board is
+  (`radioRoomTitle` over `meshRoomChannel`: "Meshtastic (<live board's slot 0, else the newest post's channel>)",
+  else "Meshtastic"; the MeshCore room alike), both rooms wear the radio glyph (`RoomAvatar(bridged = true)`, never the
+  Knit mark; ADR 2026-09.26q3's 2026-11-18 amendment), the row exists while a board is
   bound or history remains, and `PublicPostGate` swaps the composer for a footer with no radio bound (or a
   Knit-at-0 board) and only changes the hint while the link is down, so the keyboard survives a BLE flap.
   Notifications key on the resolved contact (or the `!hex` id, never `me`), stay `IMPORTANCE_LOW`, and carry

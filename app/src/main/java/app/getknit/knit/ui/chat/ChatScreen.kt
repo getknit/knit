@@ -1389,11 +1389,11 @@ internal fun ChatScreenContent(
                             }
 
                             state.isBridged -> {
-                                // The Meshtastic room: the same room glyph, its channel name as the title, and a
-                                // subtitle saying whose channel it is. No ConnectionStatusRow — the composer's
-                                // gate carries the radio's state, and Knit's own radios say nothing about it.
+                                // A radio room (Meshtastic's or MeshCore's): the radio glyph, the network and its channel
+                                // as the title, and a subtitle saying whose channel it is. No ConnectionStatusRow — the
+                                // composer's gate carries the radio's state, and Knit's own radios say nothing about it.
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    RoomAvatar(size = 36.dp)
+                                    RoomAvatar(size = 36.dp, bridged = true)
                                     Spacer(Modifier.width(10.dp))
                                     Column(modifier = Modifier.weight(1f, fill = false)) {
                                         Text(

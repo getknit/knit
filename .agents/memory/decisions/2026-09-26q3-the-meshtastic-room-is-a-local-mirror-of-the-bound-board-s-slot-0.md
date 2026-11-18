@@ -100,3 +100,23 @@ stamped there, out of the order the board handed it over. `MeshtasticHooks` now 
 post the full queue refuses is counted (`meshPostRefused` under `ROOM_BACKLOG`) and logged. Under `heardPostLock`
 each heard post is stamped strictly after the last (`InboundPipeline.heardStamp`), since the room breaks a `sentAt` tie
 on the id, a hash. Pinned by `LoraMeshTransportTest.heardPostsReachTheRoomInTheOrderTheBoardHandedThemOver`.
+
+## Amendment 2026-11-18 — a radio room's title leads with its network, and the room wears the radio glyph
+
+The room was titled by slot 0's name alone and wore the Knit mesh mark. On the lab phones the MeshCore room read
+"Public" beside the "K", which looks like an official Knit channel, and "MeshCore" whenever its board was away, so the
+same room changed its name with the link. The Meshtastic room had the same shape ("LongFast" beside the "K").
+
+- **Title** (`radioRoomTitle`): the network, then the channel the board names while one is known (`meshRoomChannel`,
+  unchanged): "Meshtastic (LongFast)", "MeshCore (Public)"; the network alone without one. A channel named for the
+  network itself is not repeated. The chat list, search, shortcuts and the thread header all read this one rule
+  (`R.string.radio_room_title`, `%1$s (%2$s)`, translated). The shade's fallback (`ConversationShortcuts.titleOf`) was
+  already the network alone.
+- **Glyph** (`RoomAvatar(bridged = true)`, `NotificationAvatars.bridgedRoomAvatar`, `KnitIcons.RadioRoom`): Material's
+  "cell tower" (Apache-2.0) on the room's tinted disc, at the group glyph's 0.6 of it, in place of the Knit mark; Nearby
+  and a commons keep the mark. Neither network's logo: MeshCore's name and logo are in a trademark dispute with no
+  published use policy, and a lookalike of a contested mark is worse. The glyph claims neither brand, and the title
+  names the network.
+
+Pinned by `RadioRoomTitleTest`, the room-title assertions in `ChatListViewModelTest` and `ChatViewModelTest`, and the
+`RoomAvatarBridged` screenshot.

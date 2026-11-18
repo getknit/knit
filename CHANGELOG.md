@@ -52,6 +52,8 @@ document:
   chat header too. In contacts and group members the dot moved from the end of the row onto the photo.
 - The field log now saves as a `.log` file, so you can attach it to a GitHub bug report without renaming it
   first.
+- The Meshtastic room is now titled with the network and its channel, such as "Meshtastic (LongFast)", and
+  shows a radio tower instead of Knit's logo, so it no longer looks like one of Knit's own rooms.
 
 ### Fixed
 

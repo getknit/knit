@@ -857,8 +857,8 @@ internal fun ConversationListItem(
 }
 
 /**
- * The circular leading glyph: the knit logo for the room, a [GroupAvatar] (the photo, else the members'
- * cluster) for a group, an [Avatar] for a DM, with its presence dot while [online].
+ * The circular leading glyph: the knit logo for a Knit room, the radio glyph for a radio room, a [GroupAvatar]
+ * (the photo, else the members' cluster) for a group, an [Avatar] for a DM, with its presence dot while [online].
  */
 @Composable
 private fun LeadingVisual(
@@ -868,7 +868,7 @@ private fun LeadingVisual(
     val size = 52.dp
     when {
         row.isRoom -> {
-            RoomAvatar(size = size)
+            RoomAvatar(size = size, bridged = row.isBridged)
         }
 
         row.isGroup -> {

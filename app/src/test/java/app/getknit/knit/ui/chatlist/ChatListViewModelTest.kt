@@ -477,13 +477,13 @@ class ChatListViewModelTest {
                     .first { it.id == Conversations.MESHTASTIC }
             assertTrue("it draws the room glyph", row.isRoom)
             assertTrue("but it can be cleared, unlike Nearby", row.isBridged)
-            assertEquals("with no board connected the newest post names the channel", "LongFast", row.title)
+            assertEquals("with no board connected the newest post names the channel", "Meshtastic (LongFast)", row.title)
 
-            // A connected board names it — its own slot 0, whatever that is set to.
+            // A connected board names it — its own slot 0, whatever that is set to, after the network's name.
             loraFlow.value = LoraFacts(plane = LoraPlane.Live, primaryChannel = "MediumFast")
             advanceUntilIdle()
             assertEquals(
-                "MediumFast",
+                "Meshtastic (MediumFast)",
                 vm.state.value.conversations
                     .first { it.id == Conversations.MESHTASTIC }
                     .title,

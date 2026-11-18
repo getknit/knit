@@ -871,6 +871,9 @@
     <string name="meshtastic_title">Meshtastic</string>
     <!-- The MeshCore room's title while its board does not say what its slot 0 is called. -->
     <string name="meshcore_title">MeshCore</string>
+    <!-- A radio room's title: the network (%1$s: Meshtastic or MeshCore, a product name) and the channel its board is on
+         (%2$s: the board's own name for it, such as LongFast or Public). "Meshtastic (LongFast)", "MeshCore (Public)". -->
+    <string name="radio_room_title">%1$s (%2$s)</string>
     <!-- A commons: a relay's shared room for everyone on it (its operator can name it; this is the fallback). -->
     <string name="commons_title">Commons</string>
     <string name="chat_list_empty_preview">No messages yet</string>

@@ -40,6 +40,15 @@ object KnitIcons {
         get() = ImageVector.vectorResource(R.drawable.ic_group_glyph)
 
     /**
+     * A radio room (the Meshtastic or the MeshCore room, a board's own channel bridged into Knit): Material's "cell
+     * tower" glyph, as a resource for the same two worlds as [Group]. It replaces the Knit mesh mark there, because that
+     * mark beside a public channel's name read as one of Knit's own rooms, and it is neither network's logo.
+     */
+    val RadioRoom: ImageVector
+        @Composable
+        get() = ImageVector.vectorResource(R.drawable.ic_radio_room_glyph)
+
+    /**
      * The read tick: Material's ✓✓ knocked out of a filled disc (ADR 2026-11.z6jw). It differs from the
      * delivered ✓✓ in shape as well as colour — a disc where there was none — so it reads without colour vision, and as
      * one even-odd path it takes a single tint like every other tick, the checks showing the bubble through.
