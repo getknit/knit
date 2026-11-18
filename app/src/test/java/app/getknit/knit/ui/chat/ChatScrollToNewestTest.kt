@@ -22,9 +22,10 @@ import org.robolectric.annotation.GraphicsMode
 /**
  * The way back to the newest message for a reader scrolled up into history. The thread is bottom-anchored
  * (`reverseLayout`), so index 0 is the newest row and "scrolled up" is a growing first visible index;
- * the button latches open past [ChatWindow.AWAY_FROM_NEWEST] and closes at the same `<= 1` gate the
- * auto-follow effects use. Robolectric's 320x470 screen fits about five rows, so index 20 of a sixty-row
- * thread is well past the threshold and well off the composed window.
+ * the button latches open past [ChatWindow.AWAY_FROM_NEWEST] and closes at the same `<= 1` gate the typing
+ * reveal uses. A new message is followed from as far up as the previous newest's index, which a date header
+ * opening a new day pushes past 1. Robolectric's 320x470 screen fits about five rows, so index 20 of a
+ * sixty-row thread is well past the threshold and well off the composed window.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -33,20 +34,26 @@ class ChatScrollToNewestTest {
     @get:Rule
     val compose = createComposeRule()
 
+    private fun row(
+        i: Int,
+        sentAt: Long = 1_700_000_000_000L + i,
+    ) = ChatRow(
+        id = "m$i",
+        body = "message $i",
+        mine = false,
+        senderName = "Bob",
+        senderNodeId = "bob",
+        avatarHash = null,
+        sentAt = sentAt,
+        received = false,
+    )
+
     /** A thread of [count] rows, newest last, in the oldest-first shape the ViewModel emits. */
-    private fun rows(count: Int) =
-        (1..count).map { i ->
-            ChatRow(
-                id = "m$i",
-                body = "message $i",
-                mine = false,
-                senderName = "Bob",
-                senderNodeId = "bob",
-                avatarHash = null,
-                sentAt = 1_700_000_000_000L + i,
-                received = false,
-            )
-        }
+    private fun rows(count: Int) = (1..count).map { row(it) }
+
+    /** The thread with somebody else's next message, sent a day after the rest: the first of a new day. */
+    private fun ChatUiState.withTomorrowsMessage() =
+        copy(rows = rows + row(rows.size + 1, sentAt = rows.last().sentAt + 24 * 60 * 60 * 1000L))
 
     /** Read inside the composition, so a test can swap the state under a running screen. */
     private fun render(state: () -> ChatUiState) {
@@ -117,6 +124,38 @@ class ChatScrollToNewestTest {
 
         compose.onNodeWithText("message 60").assertIsDisplayed()
         compose.onNodeWithTag("chat_scroll_to_bottom").assertDoesNotExist()
+    }
+
+    /**
+     * A reader resting on the newest message follows the next one down, even when it opens a new day: its date header
+     * lands between it and the old newest, which then sits two items up rather than one.
+     */
+    @Test
+    fun aMessageOpeningANewDayIsFollowedByAReaderAtTheBottom() {
+        var live by mutableStateOf(sixtyRows())
+        render { live }
+        compose.waitForIdle()
+        compose.onNodeWithText("message 60").assertIsDisplayed()
+
+        live = live.withTomorrowsMessage()
+        compose.waitForIdle()
+
+        compose.onNodeWithText("message 61").assertIsDisplayed()
+    }
+
+    /** ...while a reader up in history is left where they are, the way back still offered. */
+    @Test
+    fun aMessageOpeningANewDayLeavesAReaderInHistoryWhereTheyAre() {
+        var live by mutableStateOf(sixtyRows())
+        render { live }
+        compose.onNodeWithTag("chat_thread").performScrollToIndex(20)
+        compose.waitForIdle()
+
+        live = live.withTomorrowsMessage()
+        compose.waitForIdle()
+
+        compose.onNodeWithText("message 61").assertDoesNotExist()
+        compose.onNodeWithTag("chat_scroll_to_bottom").assertIsDisplayed()
     }
 
     /** The button belongs to the loaded thread: it leaves with it and never floats over the skeleton. */

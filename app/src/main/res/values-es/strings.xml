@@ -571,6 +571,8 @@
     <string name="chat_status_lora_radio_reached">Llegó a su radio LoRa</string>
     <string name="chat_status_pending_key">Aún no enviado: esperando su clave</string>
     <string name="chat_time_just_now">Ahora mismo</string>
+    <string name="chat_day_today">Hoy</string>
+    <string name="chat_day_yesterday">Ayer</string>
     <string name="chat_action_copy">Copiar texto</string>
     <string name="chat_action_reply">Responder</string>
     <string name="chat_reply_photo">📷 Foto</string>

@@ -693,6 +693,9 @@
     <string name="chat_status_lora_radio_reached">Reached their LoRa radio</string>
     <string name="chat_status_pending_key">Not sent yet — waiting for their key</string>
     <string name="chat_time_just_now">Just now</string>
+    <!-- The header above the first message of a day in a chat thread; older days show their weekday or date -->
+    <string name="chat_day_today">Today</string>
+    <string name="chat_day_yesterday">Yesterday</string>
     <string name="chat_action_copy">Copy text</string>
     <string name="chat_action_reply">Reply</string>
     <string name="chat_reply_photo">📷 Photo</string>

@@ -186,6 +186,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsPropertyReceiver
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.maxTextLength
 import androidx.compose.ui.semantics.onClick
@@ -317,6 +318,8 @@ import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 import org.koin.core.parameter.parametersOf
+import java.time.Instant
+import java.time.ZoneId
 
 // Grace period before the send button shows a spinner, so a fast send never flashes one; it surfaces
 // only for a genuinely slow send (chiefly the first after a cold start — the one-time model load).
@@ -1175,17 +1178,40 @@ internal fun ChatScreenContent(
             gif = stringResource(R.string.chat_list_preview_gif),
         )
 
+    // The thread's items, newest first, with a date header above each day's first message (see threadItems). The zone
+    // is read on every pass — `now` recomposes this screen every 30 s — so a reader who crosses a time zone sees the
+    // days regroup, and the date `now` falls on is what "Today" means in the headers.
+    val zone = ZoneId.systemDefault()
+    val thread = remember(state.rows, zone) { threadItems(state.rows, zone) }
+    val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+
+    // Where a loaded message sits in the LazyColumn below, or null when it is outside the window. The rows are not the
+    // list's only items: the typing indicator is emitted before them, so a row's index in the reversed rows is one
+    // short of its list index while somebody types, and a jump to it rested the next newer row on the bottom edge
+    // instead (#53); the date headers between days shift it further. Every item emitted before and among the rows is
+    // counted here, the one place every jump and the follow-the-newest effect read.
+    fun listIndexOf(messageId: String): Int? {
+        val item = thread.indexOfFirst { it.key == messageId }
+        if (item < 0) return null
+        return item + if (state.typingPeers.isNotEmpty()) 1 else 0
+    }
+
     // The thread is rendered bottom-anchored (the LazyColumn below uses reverseLayout), so it opens
     // already resting on the newest message — no initial scroll, no visible glide through history — and
     // the newest bubble stays glued to the bottom as the soft keyboard slides in and as late-loading
     // images change earlier bubbles' heights. When a new trailing message arrives, follow it to the
     // bottom if it's our own or the user is already parked there; if they've scrolled up to read
     // history, leave their position untouched. After a prepend, reverseLayout shifts the bottom anchor
-    // from index 0 to 1, so treat <= 1 as "was at the bottom".
+    // from index 0 to 1 — or further, when the new message opens a new day and its date header lands
+    // between the two — so "was at the bottom" is the previous newest's index or less, never below 1.
     val newest = state.rows.lastOrNull()
+    var previousNewestId by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(newest?.id) {
         val row = newest ?: return@LaunchedEffect
-        if (row.mine || listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
+        val previous = previousNewestId
+        previousNewestId = row.id
+        val bottomSlack = maxOf(1, previous?.let(::listIndexOf) ?: 1)
+        if (row.mine || listState.firstVisibleItemIndex <= bottomSlack) listState.animateScrollToItem(0)
     }
 
     // Read another page of history as the reader approaches the oldest loaded message. Under reverseLayout
@@ -1229,16 +1255,6 @@ internal fun ChatScreenContent(
             delay(READ_DWELL_MS)
             onRowsSeen(seen)
         }
-    }
-
-    // Where a loaded message sits in the LazyColumn below, or null when it is outside the window. The rows are not the
-    // list's first items: the typing indicator is emitted before them, so a row's index in the reversed rows is one
-    // short of its list index while somebody types, and a jump to it rested the next newer row on the bottom edge
-    // instead (#53). Every item emitted before the rows is counted here, the one place both jumps read.
-    fun listIndexOf(messageId: String): Int? {
-        val row = state.rows.asReversed().indexOfFirst { it.id == messageId }
-        if (row < 0) return null
-        return row + if (state.typingPeers.isNotEmpty()) 1 else 0
     }
 
     // A tapped quote whose original is older than the window: ask for it, then scroll once it lands. Held
@@ -1303,6 +1319,7 @@ internal fun ChatScreenContent(
     // Reveal the typing indicator when it appears: it's inserted at the visual bottom, where scroll
     // anchoring would otherwise leave it clipped below the viewport (the effect above only fires for a
     // new message). Same parked-at-bottom gate; a user scrolled up into history is never yanked down.
+    // A date header never moves this gate: it sits above its day's first message, never beneath the newest.
     val typing = state.typingPeers.isNotEmpty()
     LaunchedEffect(typing) {
         if (typing && listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
@@ -1310,7 +1327,7 @@ internal fun ChatScreenContent(
 
     // Whether the reader is far enough up the thread to be offered a way back down. A latch rather than a
     // derived comparison: it opens past AWAY_FROM_NEWEST rows and closes only at the same `<= 1` gate the
-    // auto-follow effects use, so scrolling back down does not drop the button with a screenful still to
+    // typing reveal uses, so scrolling back down does not drop the button with a screenful still to
     // go. snapshotFlow, like the paging effect above, because a latch needs its previous value and a
     // derivedStateOf cannot keep one. Saveable so a rotation restores it beside the list's restored index.
     var showScrollToNewest by rememberSaveable { mutableStateOf(false) }
@@ -1842,21 +1859,26 @@ internal fun ChatScreenContent(
                                         )
                                     }
                                 }
+                                // The rows and, above each day's first message, its date header (threadItems).
+                                // Every item here shifts the index of those older than it: listIndexOf above counts
+                                // them by key.
                                 items(
-                                    state.rows.asReversed(),
-                                    key = { it.id },
+                                    thread,
+                                    key = { it.key },
                                     // A centred status notice and a chat bubble are different enough shapes that
                                     // sharing one subcomposition slot costs more than it saves. Keyed on plain
                                     // data — statusNoticeText is @Composable and cannot be called from here.
-                                    contentType = { row ->
+                                    contentType = { item ->
+                                        val row = (item as? MessageItem)?.row
                                         when {
+                                            row == null -> "day_separator"
                                             row.transfer != null -> "transfer"
                                             row.call != null -> "call"
                                             row.kind == MessageEntity.KIND_NORMAL -> "bubble"
                                             else -> "notice"
                                         }
                                     },
-                                ) { row ->
+                                ) { item ->
                                     // Fade only, no placement animation (`placementSpec = null`): the three
                                     // LaunchedEffects above already drive animateScrollToItem(0) when a message or a
                                     // typing peer arrives, and a placement animation would be sliding rows in one
@@ -1868,6 +1890,17 @@ internal fun ChatScreenContent(
                                             fadeInSpec = KnitMotion.fastEffects(),
                                             fadeOutSpec = KnitMotion.fastEffects(),
                                         )
+                                    val row =
+                                        when (item) {
+                                            is MessageItem -> {
+                                                item.row
+                                            }
+
+                                            is DaySeparator -> {
+                                                DaySeparatorRow(label = dayLabel(item.day, today, zone), modifier = itemMotion)
+                                                return@items
+                                            }
+                                        }
                                     val notice = statusNoticeText(row, state.memberTitle)
                                     val transfer = row.transfer
                                     val call = row.call
@@ -3353,7 +3386,7 @@ internal fun MessageBubble(
                             horizontalArrangement = Arrangement.spacedBy(3.dp),
                         ) {
                             Text(
-                                text = timeLabel(row, now, stringResource(R.string.chat_time_just_now)),
+                                text = bubbleTime(row.sentAt, now),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -4314,12 +4347,6 @@ private fun FullscreenImageViewer(
     }
 }
 
-private fun timeLabel(
-    row: ChatRow,
-    now: Long,
-    justNow: String,
-): String = relativeTime(row.sentAt, now, justNow)
-
 private fun relativeTime(
     sentAt: Long,
     now: Long,
@@ -4618,6 +4645,34 @@ private fun statusNoticeText(
             null
         }
     }
+
+/**
+ * The date above the first message of a day ([DaySeparator]), Signal-style: centred in a quiet pill so it reads apart
+ * from a [SystemNotice], which is bare centred text. A heading to accessibility services, so TalkBack's heading
+ * navigation steps through the thread a day at a time.
+ */
+@Composable
+private fun DaySeparatorRow(
+    label: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier.fillMaxWidth().padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            Text(
+                text = label,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp).semantics { heading() },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
 
 /** A centered, muted status line in the thread (e.g. "Alice left the chat"); not a sender bubble. */
 @Composable
@@ -6615,6 +6670,21 @@ private fun previewDmRows(): List<ChatRow> =
                 ),
         ),
     )
+
+// The date headers the thread draws above each day's first message, one of each kind: today, yesterday, a weekday,
+// earlier this year, and a year ago.
+@Preview(showBackground = true)
+@Composable
+fun ChatDaySeparatorsPreview() =
+    KnitPreview {
+        val zone = ZoneId.systemDefault()
+        val today = Instant.ofEpochMilli(PREVIEW_NOW).atZone(zone).toLocalDate()
+        Column {
+            listOf(0L, 1L, 3L, 40L, 400L).forEach { daysAgo ->
+                DaySeparatorRow(label = dayLabel(today.minusDays(daysAgo), today, zone))
+            }
+        }
+    }
 
 @Preview(showBackground = true)
 @Composable

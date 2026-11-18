@@ -561,6 +561,8 @@
     <string name="chat_status_lora_radio_reached">Beim LoRa-Funkgerät angekommen</string>
     <string name="chat_status_pending_key">Noch nicht gesendet – wartet auf den Schlüssel der anderen Person</string>
     <string name="chat_time_just_now">Gerade eben</string>
+    <string name="chat_day_today">Heute</string>
+    <string name="chat_day_yesterday">Gestern</string>
     <string name="chat_action_copy">Text kopieren</string>
     <string name="chat_action_reply">Antworten</string>
     <string name="chat_reply_photo">📷 Foto</string>

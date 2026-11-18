@@ -551,6 +551,8 @@
     <string name="chat_status_lora_radio_reached">已到达对方的 LoRa 电台</string>
     <string name="chat_status_pending_key">尚未发送：正在等待对方的密钥</string>
     <string name="chat_time_just_now">刚刚</string>
+    <string name="chat_day_today">今天</string>
+    <string name="chat_day_yesterday">昨天</string>
     <string name="chat_action_copy">复制文字</string>
     <string name="chat_action_reply">回复</string>
     <string name="chat_reply_photo">📷 照片</string>

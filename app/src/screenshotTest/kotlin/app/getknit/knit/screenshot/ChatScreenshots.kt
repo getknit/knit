@@ -4,6 +4,7 @@ import android.content.res.Configuration
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 import app.getknit.knit.ui.chat.CallNoticePreview
+import app.getknit.knit.ui.chat.ChatDaySeparatorsPreview
 import app.getknit.knit.ui.chat.ChatFullscreenImageViewerPreview
 import app.getknit.knit.ui.chat.ChatScreenDmPreview
 import app.getknit.knit.ui.chat.ChatScreenGroupTypingPreview
@@ -183,6 +184,11 @@ fun MessageBubbleFormatting() = MessageBubbleFormattingPreview()
 @ScreenShots
 @Composable
 fun ChatFullscreenImageViewer() = ChatFullscreenImageViewerPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun ChatDaySeparators() = ChatDaySeparatorsPreview()
 
 @PreviewTest
 @ScreenShots

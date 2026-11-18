@@ -581,6 +581,8 @@
     <string name="chat_status_lora_radio_reached">Дійшло до радіо LoRa співрозмовника</string>
     <string name="chat_status_pending_key">Ще не надіслано — очікуємо на ключ співрозмовника</string>
     <string name="chat_time_just_now">Щойно</string>
+    <string name="chat_day_today">Сьогодні</string>
+    <string name="chat_day_yesterday">Учора</string>
     <string name="chat_action_copy">Копіювати текст</string>
     <string name="chat_action_reply">Відповісти</string>
     <string name="chat_reply_photo">📷 Фото</string>

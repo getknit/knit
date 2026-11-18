@@ -36,6 +36,8 @@ document:
   showing reads. Only people on this version send them.
 - The chat list and your chats show a thin scroll bar at the side while you scroll, so you can tell where you
   are in a long list or conversation. It fades a moment after you stop.
+- A chat now marks where each day starts, with a header such as Today, Yesterday or Mon, Nov 10 above that
+  day's first message. Messages older than an hour show the time they were sent rather than how long ago.
 - With Content filtering on, someone whose name or status uses slurs or profanity now shows under their alias,
   and a group whose name has a slur shows its members' names instead. Knit won't let you set such a name or
   status for yourself either.

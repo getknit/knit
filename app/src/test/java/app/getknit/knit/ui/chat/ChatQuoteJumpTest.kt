@@ -35,6 +35,7 @@ class ChatQuoteJumpTest {
         id: String,
         body: String,
         quote: QuoteView? = null,
+        daysAgo: Int = 0,
     ) = ChatRow(
         id = id,
         body = body,
@@ -42,7 +43,7 @@ class ChatQuoteJumpTest {
         senderName = "Bob",
         senderNodeId = "bob",
         avatarHash = null,
-        sentAt = 1_700_000_000_000L + at,
+        sentAt = 1_700_000_000_000L + at - daysAgo * DAY_MS,
         received = false,
         quote = quote,
     )
@@ -54,24 +55,30 @@ class ChatQuoteJumpTest {
      * quoting the original. A tall row on each side of the original makes a jump that lands one item short (#53) or
      * one too far rest that row on the bottom edge, with the original off screen above or below it. The tall row
      * beneath the original also keeps it off screen until something scrolls to it, which the tap tests assert.
+     *
+     * With [acrossDays] the original is two days old, the newer tall row yesterday's and the reply today's, so a date
+     * header sits under each of the two newer rows' days: a jump that counted rows rather than list items would land
+     * two short, on the newer tall row, with the original off screen above it.
      */
-    private fun thread(typing: Boolean) =
-        ChatUiState(
-            isRoom = true,
-            myNodeId = "me",
-            rows =
-                (1..10).map { row(it, "m$it", "history $it") } +
-                    row(11, "older-tall", tall("older")) +
-                    row(12, "original", "the quoted message") +
-                    row(13, "newer-tall", tall("newer")) +
-                    row(
-                        14,
-                        "reply",
-                        "a reply",
-                        QuoteView("original", "Bob", "its snippet", hasAttachment = false, state = QuoteState.Verified),
-                    ),
-            typingPeers = if (typing) listOf(TypingPeer(nodeId = "carol", name = "Carol", avatarHash = null)) else emptyList(),
-        )
+    private fun thread(
+        typing: Boolean,
+        acrossDays: Boolean = false,
+    ) = ChatUiState(
+        isRoom = true,
+        myNodeId = "me",
+        rows =
+            (1..10).map { row(it, "m$it", "history $it", daysAgo = if (acrossDays) 2 else 0) } +
+                row(11, "older-tall", tall("older"), daysAgo = if (acrossDays) 2 else 0) +
+                row(12, "original", "the quoted message", daysAgo = if (acrossDays) 2 else 0) +
+                row(13, "newer-tall", tall("newer"), daysAgo = if (acrossDays) 1 else 0) +
+                row(
+                    14,
+                    "reply",
+                    "a reply",
+                    QuoteView("original", "Bob", "its snippet", hasAttachment = false, state = QuoteState.Verified),
+                ),
+        typingPeers = if (typing) listOf(TypingPeer(nodeId = "carol", name = "Carol", avatarHash = null)) else emptyList(),
+    )
 
     private fun render(
         state: ChatUiState,
@@ -119,8 +126,11 @@ class ChatQuoteJumpTest {
         assertTrue("$original not inside $thread", original.top >= thread.top && original.bottom <= thread.bottom)
     }
 
-    private fun tapTheQuoteAndExpectTheOriginal(typing: Boolean) {
-        render(thread(typing))
+    private fun tapTheQuoteAndExpectTheOriginal(
+        typing: Boolean,
+        acrossDays: Boolean = false,
+    ) {
+        render(thread(typing, acrossDays))
         compose.waitForIdle()
         // The newer tall row sits between the reply and the original, so the original starts off screen.
         compose.onNodeWithText("the quoted message").assertDoesNotExist()
@@ -137,6 +147,12 @@ class ChatQuoteJumpTest {
     @Test
     fun aTappedQuoteLandsOnItsOriginalWhileSomebodyTypes() = tapTheQuoteAndExpectTheOriginal(typing = true)
 
+    @Test
+    fun aTappedQuoteLandsOnItsOriginalAcrossDays() = tapTheQuoteAndExpectTheOriginal(typing = false, acrossDays = true)
+
+    @Test
+    fun aTappedQuoteLandsOnItsOriginalAcrossDaysWhileSomebodyTypes() = tapTheQuoteAndExpectTheOriginal(typing = true, acrossDays = true)
+
     /** A search hit rides the `pendingQuoteTarget` path, the one a quote older than the window takes too. */
     @Test
     fun aSearchHitLandsOnItsMessageWhileSomebodyTypes() {
@@ -144,5 +160,9 @@ class ChatQuoteJumpTest {
         compose.waitForIdle()
 
         assertTheOriginalIsInView()
+    }
+
+    private companion object {
+        const val DAY_MS = 24 * 60 * 60 * 1000L
     }
 }
