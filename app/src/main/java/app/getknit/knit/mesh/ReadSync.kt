@@ -252,8 +252,14 @@ class ReadSync(
 
     // Everything below is guarded by `synchronized(this)` and never held across a suspension.
 
-    // Ids a seal in flight holds: never handed to a second caller until told or given back.
-    private val claimed = HashSet<String>()
+    // Ids a seal in flight holds, each with its author: never handed to a second caller until told or given back.
+    private val claimed = HashMap<String, String>()
+
+    // Authors whose due batch found every owed read held by another caller: sent when that caller lets go (#336).
+    private val deferred = HashSet<String>()
+
+    // Bumped by every [schedule]: a batch that read nothing owed drops the deadline only if no read was owed since.
+    private var schedules = 0L
 
     // Author → when its oldest still-owed read became owed here (our clock): the deadline counts from it.
     private val owedSince = HashMap<String, Long>()
@@ -300,7 +306,7 @@ class ReadSync(
                 owed
                     .filter { it !in skip && it !in claimed }
                     .take(limit)
-                    .also { claimed += it }
+                    .onEach { claimed[it] = authorId }
             }
         return stillOwed(taken)
     }
@@ -343,8 +349,20 @@ class ReadSync(
         if (riders > 0) metrics.onReadsRidden(riders)
     }
 
+    /**
+     * Releases [ids]. An author whose due batch found them held ([deferred]) gets that batch now, on the wake scope: what
+     * the holder did not tell is still owed and already past its deadline. Without a wake scope it waits for the next due
+     * pass, its deadline kept.
+     */
     override fun giveBack(ids: Collection<String>) {
-        synchronized(this) { claimed -= ids.toSet() }
+        val due =
+            synchronized(this) {
+                val authors = ids.mapNotNullTo(HashSet()) { claimed.remove(it) }
+                authors.filter { deferred.remove(it) }
+            }
+        if (due.isEmpty()) return
+        val scope = wakeScope() ?: return
+        due.forEach { author -> scope.launch { flush(author) } }
     }
 
     /**
@@ -418,6 +436,7 @@ class ReadSync(
             owedSince.clear()
             steps.clear()
             declined.clear()
+            deferred.clear()
             armedAt.clear()
             quickSent.clear()
         }
@@ -434,6 +453,7 @@ class ReadSync(
             owedSince.remove(authorId)
             steps.remove(authorId)
             declined.remove(authorId)
+            deferred.remove(authorId)
             armedAt.remove(authorId)
             quickArmed.remove(authorId)
         }
@@ -470,6 +490,7 @@ class ReadSync(
     private fun schedule(authorId: String) {
         val since =
             synchronized(this) {
+                schedules++
                 owedSince.getOrPut(authorId) { now() }
             }
         arm(authorId, since + deadlineMs(authorId))
@@ -571,15 +592,17 @@ class ReadSync(
 
     /**
      * One standalone batch toward [authorId]: up to [ReadMask.MAX_IDS] owed ids nobody else holds, to the spool when it
-     * covers the author, else custody inside the budget. A batch that told leaves the rest (if any) due at once.
+     * covers the author, else custody inside the budget. A batch that told leaves the rest (if any) due at once. A batch
+     * that took nothing is not nothing owed ([tookNothing], #336).
      */
     private suspend fun flush(authorId: String) {
         if (!enabled()) return
         val ids = takeOwed(authorId)
         if (ids.isEmpty()) {
-            synchronized(this) { owedSince.remove(authorId) }
+            tookNothing(authorId)
             return
         }
+        synchronized(this) { deferred.remove(authorId) }
         try {
             val (outcome, viaCustody) = route(authorId, ids)
             settle(authorId, ids, outcome, viaCustody)
@@ -631,13 +654,20 @@ class ReadSync(
                 if (marks.owedFor(authorId, 1).isNotEmpty()) schedule(authorId)
             }
 
+            // Not told: a batch deferred to this one's release would only try again at once, so it waits as this one does.
             Sent.Declined -> {
-                synchronized(this) { declined += authorId }
+                synchronized(this) {
+                    declined += authorId
+                    deferred.remove(authorId)
+                }
             }
 
             // The budget held it, or no seal is possible: owed until a ride, a link or the next due pass.
             Sent.CannotSeal, Sent.NotPushed, null -> {
-                synchronized(this) { owedSince[authorId] = now() }
+                synchronized(this) {
+                    owedSince[authorId] = now()
+                    deferred.remove(authorId)
+                }
             }
         }
     }
@@ -645,8 +675,41 @@ class ReadSync(
     private suspend fun takeOwed(authorId: String): List<String> {
         val held = synchronized(this) { claimed.size }
         val owed = marks.owedFor(authorId, ReadMask.MAX_IDS + held)
-        val taken = synchronized(this) { owed.filter { it !in claimed }.take(ReadMask.MAX_IDS).also { claimed += it } }
+        val taken = synchronized(this) { owed.filter { it !in claimed }.take(ReadMask.MAX_IDS).onEach { claimed[it] = authorId } }
         return stillOwed(taken)
+    }
+
+    /**
+     * A due batch toward [authorId] that took nothing, decided from what is owed **after** the claim (what it listed may
+     * have been told since, beside a read another caller still holds). Nothing owed: the deadline goes. A read another
+     * caller holds (a batch still settling, a seal carrying it as a rider): the batch is [deferred] to that caller's
+     * release, under the lock the release takes, so the release always sees it. A read owed and free by now (its holder
+     * let go meanwhile): the deadline stays, past, and a wake sends it.
+     */
+    private suspend fun tookNothing(authorId: String) {
+        val (held, seen) = synchronized(this) { claimed.size to schedules }
+        val owed = marks.owedFor(authorId, ReadMask.MAX_IDS + held)
+        val free =
+            synchronized(this) {
+                when {
+                    owed.isEmpty() -> {
+                        deferred.remove(authorId)
+                        // A read owed again since the store was read (a root move) keeps the deadline it scheduled.
+                        if (schedules == seen) owedSince.remove(authorId)
+                        false
+                    }
+
+                    owed.any { it in claimed } -> {
+                        deferred += authorId
+                        false
+                    }
+
+                    else -> {
+                        true
+                    }
+                }
+            }
+        if (free) schedule(authorId)
     }
 
     private fun takeBudget(): Boolean =

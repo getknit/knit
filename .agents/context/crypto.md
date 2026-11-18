@@ -237,7 +237,9 @@ LoRa plane (2026-09.ggq4).
   live-link sends: best effort, it tells nothing and moves no deadline. The same wake's spool push to a covered author
   (`quickSpool` → `spoolReads`) is the deadline's push made early, and tells only when a spool took it.
   Reads never claim or record in `DmReAckLedger` (8hn6's qualification), and the standalone frame is an answer-only
-  seal that never mints an init. Regression: `ReadMaskTest`, `ReadSyncTest`, `InboundPipelineTest`'s read cases,
+  seal that never mints an init. A due batch whose every owed read another caller holds (a batch still settling, a
+  seal's riders) waits for that caller's release and keeps its deadline; it never reads as nothing owed (#336).
+  Regression: `ReadMaskTest`, `ReadSyncTest`, `InboundPipelineTest`'s read cases,
   `MeshManagerTest`'s compact-mask cases, `GoldenVectorTest`, `ReadReceiptLabTest`.
 - **When touching `MeshcoreBind` (`message`, `verifies`, `provenKey`, `sigBytesOrNull`), `ProfilePayload.meshcoreSig` /
   `ProfileV2` label 10, `MessageContent.normalized`'s `strictMeshcoreSig`, `MeshcoreClaimRule` / `MeshcoreBoardClaim` /

@@ -25,6 +25,12 @@ class ReadSyncTest {
     private class FakeMarks : ReadMarkStore {
         val rows = LinkedHashMap<String, ReadMarkEntity>()
 
+        /** Holds an [owedFor] after its list was read, until completed: a store read that resumes late. One-shot. */
+        var owedForGate: CompletableDeferred<Unit>? = null
+
+        /** How many [owedFor] calls pass before [owedForGate] holds one. */
+        var owedForSkip = 0
+
         override suspend fun mark(marks: List<ReadMarkEntity>) = marks.forEach { rows.putIfAbsent(it.messageId, it) }
 
         override suspend fun readAmong(ids: Collection<String>) = ids.filterTo(HashSet()) { it in rows }
@@ -35,11 +41,23 @@ class ReadSyncTest {
         override suspend fun owedFor(
             authorId: String,
             limit: Int,
-        ) = rows.values
-            .filter { it.authorId == authorId && it.toldAt == null }
-            .sortedBy { it.readAt }
-            .take(limit)
-            .map { it.messageId }
+        ): List<String> {
+            val owed =
+                rows.values
+                    .filter { it.authorId == authorId && it.toldAt == null }
+                    .sortedBy { it.readAt }
+                    .take(limit)
+                    .map { it.messageId }
+            owedForGate?.let { gate ->
+                if (owedForSkip > 0) {
+                    owedForSkip--
+                } else {
+                    owedForGate = null
+                    gate.await()
+                }
+            }
+            return owed
+        }
 
         override suspend fun owedAuthors() = rows.values.filter { it.toldAt == null }.mapTo(HashSet()) { it.authorId }
 
@@ -110,6 +128,9 @@ class ReadSyncTest {
         /** The root the author's session holds now, as `RatchetSessions.rootTagFor` would answer. */
         var liveRoot: Long? = ROOT
 
+        /** Holds every root read after it was taken until completed: a read that resumes late. Null = returns at once. */
+        var liveRootGate: CompletableDeferred<Unit>? = null
+
         val sync =
             ReadSync(
                 marks = marks,
@@ -132,7 +153,11 @@ class ReadSyncTest {
                     quicked += author to ids
                     quickAnswer
                 },
-                liveRoot = { liveRoot },
+                liveRoot = {
+                    val root = liveRoot
+                    liveRootGate?.await()
+                    root
+                },
                 wakeScope = { wake },
                 metrics = metrics,
                 budget = budget,
@@ -223,6 +248,126 @@ class ReadSyncTest {
             // Listed as owed, then told by another frame before the claim's re-read: nothing to carry.
             rig.marks.markTold(listOf("m1"), rig.now, ROOT)
             assertTrue(rig.sync.takeRiders(ALICE, CAPS, limit = 12, exclude = emptyList()).isEmpty())
+        }
+
+    @Test
+    fun `a batch due while another flush holds the read goes once that flush lets go`() =
+        runTest {
+            val rig = Rig(wake = backgroundScope)
+            rig.linkedTo += ALICE
+            rig.read("m1")
+            // The deadline's wake starts sleeping now, on virtual time no step advances: only a release can send early.
+            runCurrent()
+            rig.now += ReadSync.LINKED_DEADLINE_MS
+            // A batch under the old root told m1 and is still settling, its root read taken before the reset and resumed
+            // late (#336): it holds m1's claim until it ends.
+            rig.liveRootGate = CompletableDeferred()
+            val settling = launch { rig.sync.flushDue() }
+            runCurrent()
+            assertEquals(1, rig.originated.size)
+            // The reset commits meanwhile: m1 is owed again, and its batch is due a deadline later.
+            rig.liveRoot = OTHER_ROOT
+            rig.originateAnswer = ReadSync.Sent.Told(OTHER_ROOT)
+            rig.sync.onRootChanged(ALICE, OTHER_ROOT)
+            assertEquals(setOf("m1"), rig.marks.owed())
+            rig.now += ReadSync.LINKED_DEADLINE_MS
+            rig.sync.flushDue()
+            // The old batch lets go: the due batch goes now, not a deadline after the old one ended.
+            rig.liveRootGate?.complete(Unit)
+            settling.join()
+            runCurrent()
+            assertEquals(listOf(ALICE to listOf("m1"), ALICE to listOf("m1")), rig.originated)
+            assertEquals(emptySet<String>(), rig.marks.owed())
+            assertEquals(OTHER_ROOT, rig.marks.toldRoot("m1"))
+        }
+
+    @Test
+    fun `a batch due while a seal holds every owed read goes once that seal gives them back`() =
+        runTest {
+            val rig = Rig(wake = backgroundScope)
+            rig.linkedTo += ALICE
+            rig.read("m1")
+            // The deadline's wake starts sleeping now, on virtual time no step advances: only a release can send early.
+            runCurrent()
+            // A seal toward alice claims the read as a rider and is still in flight at the deadline.
+            val riders = rig.sync.takeRiders(ALICE, CAPS, limit = 12, exclude = emptyList())
+            assertEquals(listOf("m1"), riders)
+            rig.now += ReadSync.LINKED_DEADLINE_MS
+            rig.sync.flushDue()
+            assertTrue("held by the seal: nothing to send yet", rig.originated.isEmpty())
+            // The seal declined: the rider goes back, still owed, and the due batch goes at once.
+            rig.sync.giveBack(riders)
+            runCurrent()
+            assertEquals(listOf(ALICE to listOf("m1")), rig.originated)
+            assertEquals(emptySet<String>(), rig.marks.owed())
+        }
+
+    @Test
+    fun `a batch whose listed read was told meanwhile still waits for a read a seal holds`() =
+        runTest {
+            val rig = Rig(wake = backgroundScope)
+            rig.linkedTo += ALICE
+            rig.read("m1", "m2")
+            // The deadline's wake starts sleeping now, on virtual time no step advances: only a release can send early.
+            runCurrent()
+            // Two seals in flight: one carries m2 as a rider, the other m1.
+            assertEquals(listOf("m2"), rig.sync.takeRiders(ALICE, CAPS, limit = 1, exclude = listOf("m1")))
+            assertEquals(listOf("m1"), rig.sync.takeRiders(ALICE, CAPS, limit = 1, exclude = emptyList()))
+            rig.now += ReadSync.LINKED_DEADLINE_MS
+            // The due batch lists m1 and m2, and its store read resumes late.
+            rig.marks.owedForGate = CompletableDeferred()
+            val gate = checkNotNull(rig.marks.owedForGate)
+            val due = launch { rig.sync.flushDue() }
+            runCurrent()
+            // Meanwhile m1's seal tells and lets go: the batch claims m1, finds it told, and has taken nothing.
+            rig.sync.told(ALICE, listOf("m1"), ROOT, riders = 1)
+            gate.complete(Unit)
+            due.join()
+            assertTrue("m2 is held: nothing to send yet", rig.originated.isEmpty())
+            // m2's seal falls through untold: the due batch goes now, not at the next read or restart (#336).
+            rig.sync.giveBack(listOf("m2"))
+            runCurrent()
+            assertEquals(listOf(ALICE to listOf("m2")), rig.originated)
+            assertEquals(emptySet<String>(), rig.marks.owed())
+        }
+
+    @Test
+    fun `a batch whose held read is let go while it rechecks what is owed keeps its deadline`() =
+        runTest {
+            val rig = Rig()
+            rig.linkedTo += ALICE
+            rig.read("m1")
+            val riders = rig.sync.takeRiders(ALICE, CAPS, limit = 12, exclude = emptyList())
+            rig.now += ReadSync.LINKED_DEADLINE_MS
+            // The due batch finds m1 held and takes nothing; its second store read, what is still owed, resumes late.
+            rig.marks.owedForSkip = 1
+            rig.marks.owedForGate = CompletableDeferred()
+            val gate = checkNotNull(rig.marks.owedForGate)
+            val due = launch { rig.sync.flushDue() }
+            runCurrent()
+            // The seal lets go untold before the batch could defer to it: the release itself sends nothing.
+            rig.sync.giveBack(riders)
+            gate.complete(Unit)
+            due.join()
+            assertTrue(rig.originated.isEmpty())
+            // m1 is owed and free by then: the deadline stays, and the next due pass sends it.
+            rig.sync.flushDue()
+            assertEquals(listOf(ALICE to listOf("m1")), rig.originated)
+        }
+
+    @Test
+    fun `without a wake scope a batch due while a seal holds its reads keeps its deadline for the next due pass`() =
+        runTest {
+            val rig = Rig()
+            rig.linkedTo += ALICE
+            rig.read("m1")
+            val riders = rig.sync.takeRiders(ALICE, CAPS, limit = 12, exclude = emptyList())
+            rig.now += ReadSync.LINKED_DEADLINE_MS
+            rig.sync.flushDue()
+            rig.sync.giveBack(riders)
+            assertTrue("no wake scope: the release sends nothing itself", rig.originated.isEmpty())
+            rig.sync.flushDue()
+            assertEquals(listOf(ALICE to listOf("m1")), rig.originated)
         }
 
     @Test
@@ -596,6 +741,30 @@ class ReadSyncTest {
             assertTrue(rig.originated.isEmpty())
             rig.now += ReadSync.ABSENT_BASE_MS
             rig.sync.flushDue()
+            assertEquals(listOf(ALICE to listOf("m1")), rig.originated)
+        }
+
+    @Test
+    fun `a quick push that finds every read held by a seal leaves them to the deadline, not to the seal's release`() =
+        runTest {
+            val rig = Rig(wake = backgroundScope)
+            rig.spoolCovers += ALICE
+            rig.spoolAnswer = ReadSync.Sent.NotPushed
+            rig.read("m1")
+            // A seal toward alice carries the read as a rider across the quick wake.
+            val riders = rig.sync.takeRiders(ALICE, CAPS, limit = 12, exclude = emptyList())
+            assertEquals(listOf("m1"), riders)
+            advanceTimeBy(ReadSync.QUICK_DELAY_MS)
+            runCurrent()
+            assertTrue(rig.pushed.isEmpty())
+            // The seal gives it back: the wake was best effort, so its release sends no standalone batch early.
+            rig.sync.giveBack(riders)
+            runCurrent()
+            assertTrue(rig.pushed.isEmpty())
+            assertTrue(rig.originated.isEmpty())
+            rig.now += ReadSync.ABSENT_BASE_MS
+            rig.sync.flushDue()
+            assertEquals(listOf(ALICE to listOf("m1")), rig.pushed)
             assertEquals(listOf(ALICE to listOf("m1")), rig.originated)
         }
 
