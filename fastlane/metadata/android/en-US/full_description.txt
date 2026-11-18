@@ -1,58 +1,47 @@
-Knit is a messenger that works with no internet, no cell service, and no accounts. It connects directly to the phones around you over Wi-Fi Aware and Bluetooth.
+Knit is an end-to-end encrypted messenger that runs on the phones themselves, with no account to make and no server in the middle. Phones connect directly over Wi-Fi Aware and Bluetooth, and nearby phones pass each message along, so it can cross a crowd, a building or a campsite far beyond your own range.
 
-Nearby phones pass each message on to the phones around them, so your words hop across a crowd, a building, or a campsite, far past your own range. The more people using Knit nearby, the further it travels.
+PRIVATE BY DEFAULT
+• A fresh install makes no network calls, so no server learns who you talk to, when, or from where. Anything that uses the internet stays off until you turn it on.
+• There's no account, phone number or email. You add people by QR code or by link.
+• Knit has no ads, analytics or tracking, and doesn't use Google Play Services.
+• A crash report stays on your phone until you read it and decide to send it.
 
-WHY KNIT
-• No internet or mobile data required
-• No account, phone number, or email to sign up
-• No central server — nothing to shut down, monitor, or leak
-• No ads, tracking, analytics, or Google Play Services
-• Free software — anyone can read what the app does
+END-TO-END ENCRYPTED
+Direct messages and group chats are end-to-end encrypted with forward secrecy, and so are delivery receipts and reactions. Every phone and relay that carries a message sees only ciphertext. Keys are made on your phone and held in Android's hardware-backed keystore, and a safety number or QR scan confirms who you're talking to. Links between phones on current versions are encrypted as well, so a radio nearby can't read what passes between them.
+
+The public Nearby room is the one exception. It has no fixed set of recipients, so it isn't encrypted, and it never leaves the radio mesh.
+
+RELAYS YOU CHOOSE, OR RUN YOURSELF
+To reach a contact who is never in radio range, turn on Internet relays. Knit leaves a sealed copy on a relay, which hands it over when their phone next connects. Before anything is sent, a one-time consent sheet sets out the trade: a relay sees your IP address, when you send and roughly how much. It never sees your messages or photos, who you're talking to, or who else is in a group. Turn relays off and uploads stop at once, and sealed copies already on a relay expire within 48 hours.
+
+Use any relay, or run knit-spool (AGPL-3.0-or-later), the software behind Knit's own relay, and hand it out as an invite link. Calls can go through a TURN server so the person you call never sees your IP address; the server itself sees both.
+
+OFF THE GRID
+• Messages wait on the phones carrying them until the person is back in range
+• Voice calls phone to phone, and walkie-talkie calls that hop across the mesh
+• Big files go phone to phone over Wi-Fi, with no network around
+• Install offline hands Knit to a nearby phone, no store or internet needed
+• Pair an optional Meshtastic LoRa radio and direct messages and the Nearby room reach kilometres instead of metres
 
 PERFECT FOR
+• Power cuts and emergencies when networks fail
+• The backcountry, ships, flights and travel abroad
 • Festivals and crowded venues where signal dies
-• Travel, flights, ships, camping, and the backcountry
-• Power outages and emergencies when networks fail
 
-PRIVATE BY DESIGN
-Direct and group chats are end-to-end encrypted. Each message is sealed so only the people in it can read it — every phone that carries it, and every relay, sees only ciphertext. Keys are generated on your device, protected by hardware-backed Android security. Confirm who you're talking to with a safety number or a QR scan.
+FREE SOFTWARE, BUILT REPRODUCIBLY
+Knit is GPL-3.0-or-later. F-Droid builds it from source and compares the result byte for byte with the developer's signed APK before it ships that APK, so the app you install is the code at github.com/getknit/knit.
 
-ABOUT THE PERMISSIONS
-Knit asks for nearby-devices (location before Android 13) as Android needs it to find peers over Wi-Fi Aware and Bluetooth LE and reach a paired radio. Location is read only when you tap Send location. INTERNET is declared because Android counts the local Wi-Fi Aware socket as network access, and because relays, link previews and model downloads use it. No account, no backend: a fresh install makes no network calls.
-
-FREE SOFTWARE
-Knit is released under the GNU General Public License v3 or later; the full source is at github.com/getknit/knit.
-
-FEATURES
-• Public "Nearby" room to broadcast to everyone in range
-• Private 1:1 messages (end-to-end encrypted)
-• Multi-member groups (end-to-end encrypted)
-• Quoted replies, emoji reactions, and @-mentions
-• Photos, GIFs, and short videos
-• Voice calls, phone to phone nearby or over Internet relays
-• Voice notes, files of any type, and big files phone to phone over Wi-Fi
-• On-device translation and speech to text
-• Search every chat, contact, and message
-• Encrypted backup for a new phone
-• Store-and-forward: messages wait until someone is back in range
-• Add a contact by link when you're too far apart to scan
-• Optional Meshtastic LoRa radio for far longer range
-• Optional Internet relays, off until you turn them on
-• Share the app to a nearby phone, no app store needed
+ALSO IN KNIT
+• Quoted replies, emoji reactions, @-mentions and text formatting
+• Photos, GIFs, short videos, voice notes and files of any type
+• On-device translation, and English speech to text, after a one-time model download
+• Search, and an encrypted backup for a new phone
+• On-device content filtering, blurred sensitive images and one-tap blocking
 • Material You dynamic colors and dark mode
 
-SAFER SPACES
-On-device filtering screens out abusive text and explicit images, offline, nothing sent anywhere. Sensitive content is blurred behind a tap to reveal, and any sender is one tap from blocked.
+ABOUT THE PERMISSIONS
+Nearby devices (location before Android 13) lets Android find peers over Wi-Fi Aware and Bluetooth LE and reach a paired radio. Location itself is read only when you tap Send location. INTERNET is declared because Android counts the local Wi-Fi Aware socket as network access, and because relays, link previews and model downloads use it once you turn them on.
 
 Knit is funded by its supporters: github.com/sponsors/getknit, ko-fi.com/knit. Liberapay.com/zaventh supports its developer alone.
 
-HOW IT WORKS
-Knit runs Wi-Fi Aware and Bluetooth Low Energy at once, so it works on phones with only one. Best allowed to run in the background. Requires Android 10 or newer.
-
-OPTIONAL LONG-RANGE RADIO
-Pair a Meshtastic LoRa radio over Bluetooth and the Nearby room and your direct messages ride it too, kilometres instead of metres, still with no internet or account. The radio is separate hardware you set up once; Knit works fully without one.
-
-OPTIONAL INTERNET RELAYS
-To reach a contact who is never in radio range, switch on Internet relays: Knit parks a sealed copy on a relay server, which hands it over when their phone next connects. Off until you turn it on, behind a one-time disclosure of what a relay can see — your IP address, when you send, roughly how much — and cannot: your messages, who you talk to, or who is in a group. Choose your relays or run your own; both are public.
-
-Note: with no radio paired and relays off, Knit reaches people nearby, or the crowd between you. The public Nearby room is unencrypted by design — no fixed set of recipients — and is never uploaded.
+Requires Android 10 or newer, and works best when allowed to run in the background.
