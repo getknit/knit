@@ -62,7 +62,7 @@ class NanHandshakePolicyTest {
         val ssi = Protocol.advertise(peer) + NanCueCodec.encodeSsiDigest(Long.MAX_VALUE)
         val parsed = checkNotNull(Protocol.parse(ssi))
         assertTrue("a peer dialing from our SSI opens sealed", NanHandshakePolicy.opensSealed(parsed.capabilities))
-        assertTrue("1c2fff", ssi.contains("|1c2fff|"))
+        assertTrue("3c2fff", ssi.contains("|3c2fff|"))
         assertTrue("${ssi.length} bytes", ssi.encodeToByteArray().size < 255)
     }
 
