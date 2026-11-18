@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.sim
 
 import app.getknit.knit.mesh.sim.SimSeeds.Purpose
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -226,6 +227,8 @@ class FieldMeterTest {
         val scanned = waypoint.getValue("imote_per_pair_hour").toDouble()
         val truth = waypoint.getValue("near30_per_pair_hour").toDouble()
         assertTrue("the iMote saw $scanned contacts a pair-hour against $truth", scanned < truth / 2)
+        // Scored against the conference's iMotes: a number to line runs up by, not a pass.
+        assertNotEquals("the iMote's gaps were scored against Infocom 2005", SimSummary.NONE, waypoint.getValue("imote_ks_infocom05_gap"))
         // A steady start links nobody at boot: every DM pair the radio linked, it linked on the walk.
         assertEquals("DM pairs the walk linked in two hours", "100", waypoint["dm_pairs_ever_linked_pct"])
     }

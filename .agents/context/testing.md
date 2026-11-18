@@ -1150,8 +1150,29 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   uneven pairs, though those pairs are only the groups' own. Every pair meets within four hours (100% met), against
   10 to 20% of pairs a week on a campus. An iMote sees about one contact in eight that the 500 ms truth holds, and
   median contacts of 19 s (single sightings). In the Jülich queue, phones sit at the six-link budget 91% of the time.
-  Still owed: reference CCDF tables from Haggle Infocom 2005 and Reality Mining, and KS distances to them. Their
-  CRAWDAD copies need an IEEE DataPort login.
+- **The published traces are tables, read one side at a time** (`ReferenceTable`, 2026-11-18). The tables cover
+  Haggle Infocom 2005 and 2006 (`imote`) and Reality Mining (`scan300`). `scripts/sim-reference.py` derives them from
+  the CRAWDAD copies, which live in `/media/walter/data/knit-sim/traces/` and are never redistributed. Each table counts
+  gaps and contact lengths on a log grid; the test resources' README cites them.
+  - Each trace is read as its files record it: "A saw B", one side, never matched with B's runs. The iMotes' clocks
+    were set by hand and are not trusted below five minutes, and the archive's own gaps of one, two and three scan
+    periods contradict its stated end-of-contact rule.
+  - `FieldMeter` scores each scanner's `sightings()` against them by KS distance (the `<scanner>_ks_<table>_*` keys).
+    Gaps run from five scan periods to half the run, contact lengths up to half the run. Each run value is weighted
+    1 / (T − x), because a short run holds short gaps whole more often than long ones.
+  - The derivation agrees with Chaintreau et al.: 0.194 Infocom 2005 runs an ordered pair-hour is their 4.6 contacts
+    a pair a day. Every trace's gap tail is heavy (LLR 0.37, 1.08, 0.11), where random waypoint's is −0.1.
+  - The two conferences lie 0.12 apart in gaps and 0.09 in contact lengths. Four hours of each Phase 1 motion
+    (`phase1/h4-ks/`) score:
+
+    | Against | Gaps | Contact lengths |
+    | --- | --- | --- |
+    | Infocom 2005 | 0.19–0.21 | 0.42 |
+    | Infocom 2006 | 0.31–0.32 | 0.37 |
+    | Reality Mining | 0.26–0.31 | 0.51–0.53 |
+
+    Walking groups move no number: the scanners read only where walkers stand, and the groups' pairs are too few to
+    shift the sightings of everyone else. These are yardsticks for Phase 2, not bands; pinning bands is Phase 5's.
 - **What it leaves out.** One plane, no path loss and none of the transports' own dial policies: `LabTransport` stands
   in for the whole radio, so the topology is the geometry's (and, under `ble1m`, a nearest-first budget's), not what
   Bluetooth or Wi-Fi Aware would have formed. `disc` has no link budget; `ble1m`'s is a measured rate, not yet a

@@ -15,6 +15,10 @@ import java.util.Locale
  *   often they parted beyond [APART_M] a pair-hour, and how long a parted pair took to come back within [TOGETHER_M].
  *   Street counts find 55 to 70% of pedestrians walking in groups that last the whole trip.
  * - **DM pairs ever linked**: of the pairs the workload DMs between ([dmPairs]), the share the radio ever linked directly.
+ * - **Against the published traces**: each scanner's one-sided [VirtualScanner.sightings] scored against every
+ *   [ReferenceTable] its profile matches, by [ReferenceTable.distance]: gaps from [GAP_FLOOR_SCANS] scan periods, below
+ *   which the scanning rule rather than the walk decides them, to half the run; contact lengths up to half the run.
+ *   Compare shapes, not rates: a 30 m iMote among 48 walkers in a field is not 41 people at a conference.
  *
  * [contacts] keeps the first outings' aggregate line and keys beside these.
  */
@@ -32,6 +36,7 @@ class FieldMeter(
     private var nearUp = emptySet<Link>()
     private val scanners = ScanProfile.ALL.map { VirtualScanner(it, seed, walkers) }
     private val scanRangeM = ScanProfile.ALL.maxOf { it.rangeM }
+    private val references = scanners.map { scanner -> scanner to ReferenceTable.ALL.filter { it.profile == scanner.profile.name } }
     private val initial = initialLinks
     private var firstMs: Long? = null
     private var lastMs = 0L
@@ -154,12 +159,61 @@ class FieldMeter(
         return logs.map { (prefix, label, log) -> Triple(prefix, label, ContactStats.of(log, walkers, from, lastMs)) }
     }
 
-    /** The report's lines: the aggregate, each log, then the budget, the groups and the DM pairs. */
+    /** One scanner's sightings scored against one trace's. */
+    private class Comparison(
+        val scanner: ScanProfile,
+        val table: ReferenceTable,
+        val gap: ReferenceTable.Fit?,
+        val contact: ReferenceTable.Fit?,
+    ) {
+        fun line(): String {
+            fun fit(fit: ReferenceTable.Fit?) =
+                fit?.let {
+                    "${"%.2f".format(Locale.ROOT, it.distance)} over ${seconds(it.fromS)}-${seconds(it.toS)} " +
+                        "(${it.samples} against the trace's ${it.referenceSamples})"
+                } ?: "n/a"
+            return "  ${scanner.name} ~ ${table.name}: gap ${fit(gap)}; contact ${fit(contact)}"
+        }
+
+        fun summaryValues(): List<Pair<String, Any?>> =
+            listOf("gap" to gap?.distance, "contact" to contact?.distance).map { (kind, distance) ->
+                "${scanner.name}_ks_${table.name}_$kind" to distance
+            }
+
+        private fun seconds(s: Double) = "%.0fs".format(Locale.ROOT, s)
+    }
+
+    private fun comparisons(): List<Comparison> {
+        val spanMs = spanMs()
+        val toS = spanMs / 2 / MS_PER_S
+        return references.flatMap { (scanner, tables) ->
+            if (tables.isEmpty()) return@flatMap emptyList()
+            val sightings = scanner.sightings().values
+            val gaps = ContactStats.gapsMs(sightings)
+            val lengths = ContactStats.lengthsMs(sightings)
+            val floorS = GAP_FLOOR_SCANS * scanner.profile.periodMs / MS_PER_S
+            tables.map { table ->
+                Comparison(
+                    scanner.profile,
+                    table,
+                    gap = table.distance(ReferenceTable.Kind.GAP, gaps, spanMs, floorS, toS),
+                    contact = table.distance(ReferenceTable.Kind.CONTACT, lengths, spanMs, fromS = null, toS),
+                )
+            }
+        }
+    }
+
+    /** The report's lines: the aggregate, each log, the published traces, then the budget, the groups and the DM pairs. */
     fun lines(): List<String> {
         val all = stats()
         val legend = all.joinToString("; ") { (prefix, label, _) -> "$prefix, $label" }
+        val traces =
+            "KS distance of each scanner's one-sided sightings from the published traces seen the same way " +
+                "(gaps from $GAP_FLOOR_SCANS scans, each run's values weighted for the run's length):"
         return listOf(contacts.summary(), "contact logs as each instrument saw the field ($legend); a gap is an inter-contact time:") +
             all.map { (prefix, _, stats) -> stats.line(prefix) } +
+            traces +
+            comparisons().map { it.line() } +
             fieldLine()
     }
 
@@ -193,6 +247,7 @@ class FieldMeter(
     fun summaryValues(): List<Pair<String, Any?>> =
         contacts.summaryValues() +
             stats().flatMap { (prefix, _, stats) -> stats.summaryValues(prefix) } +
+            comparisons().flatMap { it.summaryValues() } +
             listOf(
                 "cap_time_pct" to share(capWalkerTicks, presentWalkerTicks),
                 "group_together_pct" to share(togetherTicks, groupPairTicks),
@@ -216,6 +271,10 @@ class FieldMeter(
 
         /** And parted beyond this: past where a link drops. */
         const val APART_M = 35.0
+
+        /** A scanned trace's gaps are trusted from this many scan periods up: 10 minutes for an iMote. */
+        const val GAP_FLOOR_SCANS = 5
+        private const val MS_PER_S = 1_000.0
         private const val PERCENT = 100
         private const val MS_PER_HOUR = 3_600_000.0
     }

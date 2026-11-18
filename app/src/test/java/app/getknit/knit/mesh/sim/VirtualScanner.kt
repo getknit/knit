@@ -115,21 +115,34 @@ class VirtualScanner(
         if (scans.lastOrNull() != scan) scans += scan
     }
 
-    /** The observed contacts, by pair, in order. */
-    fun contacts(): Map<Link, List<Contact>> {
-        val runs = HashMap<Link, MutableList<Run>>()
+    /**
+     * Each walker's runs of sightings of each other walker, keyed by sighter and sighted, in order: what a trace's own
+     * files record ("A saw B"), before the two ends are matched into contacts. [ReferenceTable]s are read this way.
+     */
+    fun sightings(): Map<Pair<Int, Int>, List<Contact>> {
+        val out = HashMap<Pair<Int, Int>, List<Contact>>()
         for ((key, scans) in sighted) {
             val by = (key / walkers).toInt()
-            val of = (key % walkers).toInt()
-            val list = runs.getOrPut(Link.of(by, of)) { mutableListOf() }
+            val own = starts[by]
+            val runs = mutableListOf<Contact>()
             var first = 0
             for (i in 1..scans.size) {
                 if (i < scans.size && scans[i] == scans[i - 1] + 1) continue
-                val own = starts[by]
                 val censored = scans[first] == 0 || scans[i - 1] == own.lastIndex
-                list += Run(Contact(own[scans[first]], own[scans[i - 1]], censored), by)
+                runs += Contact(own[scans[first]], own[scans[i - 1]], censored)
                 first = i
             }
+            out[by to (key % walkers).toInt()] = runs
+        }
+        return out
+    }
+
+    /** The observed contacts, by pair, in order: both ends' [sightings] matched. */
+    fun contacts(): Map<Link, List<Contact>> {
+        val runs = HashMap<Link, MutableList<Run>>()
+        for ((pair, list) in sightings()) {
+            val (by, of) = pair
+            runs.getOrPut(Link.of(by, of)) { mutableListOf() } += list.map { Run(it, by) }
         }
         return runs
             .mapValues { (_, list) -> merge(list) }

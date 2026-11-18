@@ -115,13 +115,8 @@ class ContactStats private constructor(
             val pairs = walkers.toLong() * (walkers - 1) / 2
             val hours = (toMs - fromMs) / MS_PER_HOUR
             val count = contacts.values.sumOf { it.size }
-            val durations =
-                contacts.values
-                    .flatten()
-                    .filterNot { it.censored }
-                    .map { it.lengthMs }
-                    .sorted()
-            val icts = contacts.values.flatMap { list -> list.zipWithNext { a, b -> b.startMs - a.endMs } }.sorted()
+            val durations = lengthsMs(contacts.values)
+            val icts = gapsMs(contacts.values)
             val peers = IntArray(walkers)
             contacts.keys.forEach {
                 peers[it.a]++
@@ -139,6 +134,18 @@ class ContactStats private constructor(
                 ictTailLlr = tailLlr(icts),
             )
         }
+
+        /** The lengths of the contacts seen to begin and end, in each pair's ordered [contacts], sorted. */
+        internal fun lengthsMs(contacts: Collection<List<Contact>>): List<Long> =
+            contacts
+                .flatten()
+                .filterNot { it.censored }
+                .map { it.lengthMs }
+                .sorted()
+
+        /** Every gap from one of a pair's contacts to its next, over each pair's ordered [contacts], sorted. */
+        internal fun gapsMs(contacts: Collection<List<Contact>>): List<Long> =
+            contacts.flatMap { list -> list.zipWithNext { a, b -> b.startMs - a.endMs } }.sorted()
 
         // Pearson's r across every pair, met or not, of its contact time in the first half against the second.
         private fun halvesR(
