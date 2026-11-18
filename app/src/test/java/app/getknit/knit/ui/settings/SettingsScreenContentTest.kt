@@ -17,6 +17,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.R
 import app.getknit.knit.mesh.lora.BoardBattery
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.ui.BackgroundBattery
 import app.getknit.knit.ui.DeviceSupervision
@@ -256,6 +257,17 @@ class SettingsScreenContentTest {
         val battery = BoardBattery(percent = 78, voltage = 3.92f, powered = false)
         render(lora = LoraSummary(enabled = true, boardName = "Meshtastic_1a2b", plane = LoraPlane.Live, battery = battery))
         compose.onNodeWithText("On · Meshtastic_1a2b · connected · battery 78%").performScrollTo().assertIsDisplayed()
+    }
+
+    /**
+     * A MeshCore board's name is never kept, so the row names it by its kind; it read "On · connecting…". Its battery is a
+     * voltage with no percent and never "powered", which the row leaves to the LoRa screen rather than call "plugged in".
+     */
+    @Test
+    fun theLoraRowNamesALiveMeshcoreBoardByItsKind() {
+        val battery = BoardBattery(percent = null, voltage = 3.9f, powered = false)
+        render(lora = LoraSummary(enabled = true, boundKind = BoardKind.MESHCORE, plane = LoraPlane.Live, battery = battery))
+        compose.onNodeWithText("On · MeshCore · connected").performScrollTo().assertIsDisplayed()
     }
 
     @Test

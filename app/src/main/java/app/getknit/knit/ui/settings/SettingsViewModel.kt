@@ -12,6 +12,7 @@ import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.lora.BoardBattery
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.power.LowPowerPosture
@@ -30,12 +31,31 @@ import kotlinx.coroutines.launch
 /** The LoRa plane, as the Settings row summarises it before handing off to its own screen. */
 data class LoraSummary(
     val enabled: Boolean = false,
+    /** The bound Meshtastic board's name. A MeshCore board's is never kept (`BoardBindPolicy`), so it is null for one. */
     val boardName: String? = null,
+    /** The bound board's kind, which the row names in place of [boardName] when there is none. */
+    val boundKind: BoardKind? = null,
     /** The live link, so the row can say "connected" rather than only "on". */
     val plane: LoraPlane = LoraPlane.Off,
     /** The connected board's battery, once it has reported one. */
     val battery: BoardBattery? = null,
-)
+) {
+    /**
+     * What the row says, apart from its strings. A bound board is named by [boardName] or, when none is kept, by
+     * [boundKind], so a live MeshCore board reads as connected: it read "connecting…" while the row needed a name.
+     */
+    val line: LoraRowLine
+        get() =
+            when {
+                !enabled -> LoraRowLine.Off
+                boardName == null && boundKind == null -> LoraRowLine.Connecting
+                plane == LoraPlane.Live -> LoraRowLine.Connected
+                else -> LoraRowLine.NotConnected
+            }
+}
+
+/** The LoRa row's subtitle, as [LoraSummary.line] decides it. */
+enum class LoraRowLine { Off, Connecting, Connected, NotConnected }
 
 /**
  * The Calls row's subtitle (docs/VOICE_CALLS.md §3.14): which of the person's own servers a call uses, relay-all, and
@@ -185,8 +205,8 @@ class SettingsViewModel(
 
     /** Summary of the LoRa plane for the row that navigates to its own screen: settings + the live link. */
     val loraSummary: StateFlow<LoraSummary> =
-        combine(settings.loraEnabled, settings.loraDeviceName, loraFacts) { enabled, name, lora ->
-            LoraSummary(enabled, name, lora.plane, lora.battery)
+        combine(settings.loraEnabled, settings.loraDeviceName, settings.boundBoardKind, loraFacts) { enabled, name, kind, lora ->
+            LoraSummary(enabled, name, kind, lora.plane, lora.battery)
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LoraSummary())
 
     /** Low-power mode's switch and what holds the posture on, for the row's subtitle. */

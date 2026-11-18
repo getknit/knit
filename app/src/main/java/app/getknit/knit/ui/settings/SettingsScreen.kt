@@ -57,6 +57,7 @@ import app.getknit.knit.BuildConfig
 import app.getknit.knit.R
 import app.getknit.knit.di.CALL_SETTINGS_WIRED
 import app.getknit.knit.mesh.lora.BoardBattery
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.power.LOW_POWER_OFFERED
 import app.getknit.knit.mesh.power.LowPowerReason
@@ -551,23 +552,19 @@ private fun LoraRadioRow(
     summary: LoraSummary,
     onClick: () -> Unit,
 ) {
+    // A MeshCore board's name is never kept, so the row names the bound board by its kind instead. Unread without one.
+    val boardName =
+        summary.boardName ?: when (summary.boundKind) {
+            BoardKind.MESHTASTIC -> stringResource(R.string.lora_summary_kind_meshtastic)
+            BoardKind.MESHCORE -> stringResource(R.string.lora_summary_kind_meshcore)
+            null -> ""
+        }
     val subtitle =
-        when {
-            !summary.enabled -> {
-                stringResource(R.string.lora_summary_off)
-            }
-
-            summary.plane == LoraPlane.Live && summary.boardName != null -> {
-                loraConnectedSubtitle(summary.boardName, summary.battery)
-            }
-
-            summary.boardName != null -> {
-                stringResource(R.string.lora_summary_disconnected, summary.boardName)
-            }
-
-            else -> {
-                stringResource(R.string.lora_summary_connecting)
-            }
+        when (summary.line) {
+            LoraRowLine.Off -> stringResource(R.string.lora_summary_off)
+            LoraRowLine.Connected -> loraConnectedSubtitle(boardName, summary.battery)
+            LoraRowLine.NotConnected -> stringResource(R.string.lora_summary_disconnected, boardName)
+            LoraRowLine.Connecting -> stringResource(R.string.lora_summary_connecting)
         }
     NavigatingRow(
         title = stringResource(R.string.lora_title),
@@ -646,16 +643,19 @@ private fun lowPowerSubtitle(summary: LowPowerSummary): String =
         }
     }
 
-/** "On · <board> · connected", with the board's battery appended once it has reported one. */
+/**
+ * "On · <board> · connected", with the board's battery appended once it has reported a percent or external power. A
+ * MeshCore board reports a voltage alone, which the row leaves to the LoRa screen.
+ */
 @Composable
 private fun loraConnectedSubtitle(
     boardName: String,
     battery: BoardBattery?,
 ): String =
     when {
-        battery == null -> stringResource(R.string.lora_summary_connected, boardName)
-        battery.percent != null -> stringResource(R.string.lora_summary_connected_battery, boardName, battery.percent)
-        else -> stringResource(R.string.lora_summary_connected_powered, boardName)
+        battery?.percent != null -> stringResource(R.string.lora_summary_connected_battery, boardName, battery.percent)
+        battery?.powered == true -> stringResource(R.string.lora_summary_connected_powered, boardName)
+        else -> stringResource(R.string.lora_summary_connected, boardName)
     }
 
 /**

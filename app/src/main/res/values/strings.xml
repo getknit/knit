@@ -1908,6 +1908,10 @@
     <string name="lora_summary_connected_powered">On · %1$s · connected · plugged in</string>
     <string name="lora_summary_disconnected">On · %1$s · not connected</string>
     <string name="lora_summary_connecting">On · connecting…</string>
+    <!-- The bound board's kind, which the LoRa row shows in place of a board name when none is kept (a MeshCore board's
+         never is): "On · MeshCore · connected". Product names. -->
+    <string name="lora_summary_kind_meshtastic" translatable="false">Meshtastic</string>
+    <string name="lora_summary_kind_meshcore" translatable="false">MeshCore</string>
     <plurals name="relays_scope_count">
         <item quantity="one">%d conversation</item>
         <item quantity="other">%d conversations</item>

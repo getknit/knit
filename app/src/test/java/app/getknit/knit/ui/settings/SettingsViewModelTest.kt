@@ -7,6 +7,7 @@ import app.getknit.knit.data.relay.RelayFacts
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.power.LowPowerPosture
@@ -49,6 +50,7 @@ class SettingsViewModelTest {
     private val themeModeFlow = MutableStateFlow(ThemeMode.System)
     private val loraEnabledFlow = MutableStateFlow(false)
     private val loraDeviceNameFlow = MutableStateFlow<String?>(null)
+    private val boundBoardKindFlow = MutableStateFlow<BoardKind?>(null)
 
     private val relayFacts = MutableStateFlow(RelayFacts())
     private val loraFacts = MutableStateFlow(LoraFacts())
@@ -64,6 +66,7 @@ class SettingsViewModelTest {
         every { settings.themeMode } returns themeModeFlow
         every { settings.loraEnabled } returns loraEnabledFlow
         every { settings.loraDeviceName } returns loraDeviceNameFlow
+        every { settings.boundBoardKind } returns boundBoardKindFlow
     }
 
     @After
@@ -190,6 +193,42 @@ class SettingsViewModelTest {
             assertEquals("Meshtastic_1a2b", vm.loraSummary.value.boardName)
             assertEquals(LoraPlane.Live, vm.loraSummary.value.plane)
         }
+
+    /**
+     * A MeshCore board's name is never kept, so the summary carries the bound kind for the row to name it by. Without it
+     * the row read a live MeshCore board as "On · connecting…".
+     */
+    @Test
+    fun aLiveMeshcoreBoardWithNoKeptNameStillReachesTheRowAsBound() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.loraSummary.collect {} }
+            loraEnabledFlow.value = true
+            boundBoardKindFlow.value = BoardKind.MESHCORE
+            loraFacts.value = LoraFacts(plane = LoraPlane.Live, board = BoardKind.MESHCORE)
+            advanceUntilIdle()
+
+            assertEquals(
+                LoraSummary(enabled = true, boardName = null, boundKind = BoardKind.MESHCORE, plane = LoraPlane.Live),
+                vm.loraSummary.value,
+            )
+            assertEquals(LoraRowLine.Connected, vm.loraSummary.value.line)
+        }
+
+    /** The row names a bound board by its kept name or else its kind; only with neither is it still connecting. */
+    @Test
+    fun theRowLineTreatsABoundKindAsABoardToName() {
+        val meshcore = LoraSummary(enabled = true, boundKind = BoardKind.MESHCORE)
+        assertEquals(LoraRowLine.Connected, meshcore.copy(plane = LoraPlane.Live).line)
+        assertEquals(LoraRowLine.NotConnected, meshcore.copy(plane = LoraPlane.Down).line)
+        assertEquals(LoraRowLine.Off, meshcore.copy(enabled = false, plane = LoraPlane.Live).line)
+
+        val named = LoraSummary(enabled = true, boardName = "Meshtastic_1a2b", boundKind = BoardKind.MESHTASTIC)
+        assertEquals(LoraRowLine.Connected, named.copy(plane = LoraPlane.Live).line)
+        assertEquals(LoraRowLine.NotConnected, named.copy(plane = LoraPlane.Down).line)
+
+        assertEquals(LoraRowLine.Connecting, LoraSummary(enabled = true, plane = LoraPlane.Down).line)
+    }
 
     private companion object {
         const val NODE_ID = "node-abc"
