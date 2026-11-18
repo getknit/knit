@@ -191,6 +191,19 @@ class SimWorldTest {
     }
 
     @Test
+    fun theSlowBluetoothRadioIsTheSameRadioAtTheSlowestMeasuredDrain() {
+        val scenario = SimScenario(seed = 1, walkers = 3, durationMs = 60_000, fieldM = FIELD_M, radio = BleRadio.SLOW_NAME)
+        val radio = Radio.of(scenario, initial = emptySet())
+        assertEquals(BleRadio.SLOW_NAME, radio.name)
+        assertEquals(BleRadio.SLOW_LINK_BYTES_PER_S, radio.air?.bytesPerSecond)
+        assertEquals(BleRadio.SLOW_NODE_BYTES_PER_S, radio.nodeAirBytesPerSecond)
+        val values = radio.summaryValues().toMap()
+        assertEquals(BleRadio.SLOW_LINK_BYTES_PER_S, values["link_bps"])
+        assertEquals(BleRadio.SLOW_NODE_BYTES_PER_S, values["node_bps"])
+        assertEquals(BleRadio.DIAL_MEDIAN_MS, values["dial_ms"])
+    }
+
+    @Test
     fun hopsCountsLinksAlongTheShortestPath() {
         val line = setOf(Link(0, 1), Link(1, 2), Link(2, 3), Link(0, 3))
         assertEquals(0, hops(line, 2, 2))

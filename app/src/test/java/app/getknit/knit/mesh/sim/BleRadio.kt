@@ -19,6 +19,10 @@ import kotlin.math.ln
  *   shared by every connection, about three a link at four links.
  *
  * Range is the disc's: no path loss, no shadowing, no crowd. [seed] fixes every dial draw.
+ *
+ * [SLOW_NAME] is the same radio at the slowest 1M drain the field measured (P9→P8 4.8 to 7.9 KB/s and P9→P7 from
+ * 4.9 KB/s, ADR 2026-10.8jwn's trial), with the radio still four links' worth of it: the bound from below to set
+ * beside [NAME]'s, whose fluid ledger is a bound from above.
  */
 class BleRadio(
     private val seed: Long,
@@ -29,8 +33,8 @@ class BleRadio(
     private val maxLinks: Int = PromotionConfig.DEFAULT_MAX_LINKS,
     private val linkBytesPerSecond: Long = LINK_BYTES_PER_S,
     private val nodeBytesPerSecond: Long = NODE_BYTES_PER_S,
+    override val name: String = NAME,
 ) : Radio {
-    override val name = NAME
     override val air = LinkAir(linkBytesPerSecond)
     override val nodeAirBytesPerSecond = nodeBytesPerSecond
 
@@ -129,6 +133,9 @@ class BleRadio(
         const val NAME = "ble1m"
         const val LINK_BYTES_PER_S = 9_000L
         const val NODE_BYTES_PER_S = 36_000L
+        const val SLOW_NAME = "ble1m-slow"
+        const val SLOW_LINK_BYTES_PER_S = 5_000L
+        const val SLOW_NODE_BYTES_PER_S = 4 * SLOW_LINK_BYTES_PER_S
 
         /** The median relink after a drop once the 2026-10 fixes were in (`android-ble-link-trial`): 4.3 s. */
         const val DIAL_MEDIAN_MS = 4_300L

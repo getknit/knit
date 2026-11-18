@@ -782,6 +782,9 @@ class LabTransport(
     /** Whether this node's link to [other] has airtime. */
     fun airLinkTo(other: LabTransport): Boolean = pipes[other.nodeId]?.air != null
 
+    /** Whether this node has a link to [other] now, with airtime or without. */
+    fun linkedTo(other: LabTransport): Boolean = pipes.containsKey(other.nodeId)
+
     /**
      * Suspends until this node has answered every custody digest a peer advertised to it: each reply's frames are
      * sent, and a send returns once the far end holds the frame, so the far end's [awaitInboundDrained] after this
@@ -1703,8 +1706,7 @@ class LabTransport(
         pipe.target.airInbound.incrementAndGet()
         pipe.queuedBytes += bytes
         val depth = pipe.airQueue.size.toLong() + if (pipe.inHand == null) 0 else 1
-        aired.queuePeak.accumulateAndGet(depth, ::maxOf)
-        aired.backlogPeakMs.accumulateAndGet(pipe.queuedBytes * MS_PER_S / checkNotNull(pipe.air).bytesPerSecond, ::maxOf)
+        aired.noteQueue(depth, backlogMs = pipe.queuedBytes * MS_PER_S / checkNotNull(pipe.air).bytesPerSecond)
     }
 
     /**

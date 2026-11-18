@@ -102,7 +102,9 @@ class MeshSim(
     private val contacts = ContactLog(scenario.walkers)
     private val events = Workload.schedule(scenario.seed, groups, scenario.durationMs, scenario.dmMeanMs, scenario.roomMeanMs)
 
-    private lateinit var nodes: List<LabNode>
+    /** The walkers' nodes, once [play] has booted them: what a test reads the links they were given off. */
+    internal lateinit var nodes: List<LabNode>
+        private set
     private val dms = CopyOnWriteArrayList<Pair<SimEvent.Dm, Reach>>()
     private val rooms = CopyOnWriteArrayList<SimEvent.Room>()
     private val refused = AtomicInteger()

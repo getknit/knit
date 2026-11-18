@@ -693,8 +693,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `WifiAwareTransport` hand the router frames with `tryEmit` into a buffer of 256, so a frame that finds it full
   is lost. `LabLimits.inboundSlots` plays that for a node (`MeshLab.PHONE_INBOUND_SLOTS`: the plane's 256, the frame
   the composite's `merge` holds, its channel of 64 and the frame in hand), counted in `LabTransport.inboundRefused` and pinned by
-  `InboundBurstLabTest`. The lab has no airtime, so a burst reaches the queue faster than a radio could bring it:
-  what a bounded node drops is an upper bound on what a phone would.
+  `InboundBurstLabTest`. A plain lab link has no airtime, so a burst reaches the queue faster than a radio could bring
+  it: what a bounded node drops is an upper bound on what a phone would. On the simulator's `ble1m` air the queue
+  never held more than two frames (the Bluetooth result under "Mesh simulator"): the backlog waits on the links' air,
+  not in the router. A fast plane (Wi-Fi Aware) is not modelled yet.
 - **An air link has a rate** (`LinkAir`, `lab.link(a, b, air = …)`, `linkAll(…, air = …)`). Without one, the default
   every scripted scenario keeps, a send hands the frame to the far end before it returns. With one, the pipe queues
   what it is handed, as `FramedLink.send` does, and a writer per direction airs the queue in order at the link's rate.
@@ -1003,15 +1005,42 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   The walk originates about 6,000 frames for about 1,475 DMs; the gather's links hold back up to about 7,500 frames on
   one node (5,100 after a 2-minute walk). The DMs a long gathered outing never delivers are the ones custody evicted
   from every store during the walk: the same count as the walk alone loses. The seed-1 unbounded run matches the
-  2026-11-17 post-fix walk (5,769 frames originated against 5,760, 54 lost against 52, 84% arrived). The lab still
-  has no airtime here: `-Pknit.meshSimRadio=ble1m` is the comparison.
+  2026-11-17 post-fix walk (5,769 frames originated against 5,760, 54 lost against 52, 84% arrived). These links have
+  no airtime; the `ble1m` result below is the comparison.
 - **`-Pknit.meshSimRadio=ble1m` gives the links a Bluetooth 1M radio** (`BleRadio`). The disc's ranges are kept. Each
   approach draws its own dial time, log-normal around the measured 4.3 s relink median and clamped to 0.3–30 s. A node
   holds at most six links, nearest pairs first, with no eviction. Every link airs at 9 KB/s (the HCI-snoop drain at the
   default interval, ADR 2026-10.2da4), and each phone's radio at 36 KB/s for all its links in and out. The boot, the
   walk and the gather all link with that air. The report gains `air` lines and `air_*` summary keys: records and bytes
   aired, records a cut lost or a closing link refused, each record's wait from send to delivery (as the upper bound of
-  a power-of-two bucket) and the deepest queue and backlog one link held. `disc`, the default, has no air.
+  a power-of-two bucket) and the deepest queue and backlog one link held in that part of the run (`AirStats.peaksFromNow`).
+  `disc`, the default, has no air. `ble1m-slow` is the same radio at the slowest 1M drain the field measured (5 KB/s a
+  link, 20 KB/s a radio; ADR 2026-10.8jwn's trial): a bound from below, beside `ble1m`'s from above. `MeshSimAirTest`
+  pins that the boot's, the walk's and the gather's links all get the radio's air.
+- **On `ble1m` air the backlog moves from the router to the links, and the long gather settles** (`383c4c2`,
+  2026-11-17, the baseline's matrix with `-Pknit.meshSimRadio=ble1m`; reports and `run-ble1m.sh` in
+  `/media/walter/data/knit-sim/ble1m-own-queues/`). Means with [min..max]:
+
+  | Outing | DMs arrived (in run / by end) | DM p50 / p90 | Lost for good | Custody at cap (first / all) | After the walk |
+  | --- | --- | --- | --- | --- | --- |
+  | 10-minute walk, no gather | 71% [68..74] / same | 78 s / 190 s | 56 [26..82] | 220 s / 460 s | – |
+  | Same, unbounded queue (seed 1) | 74% / same | 66 s / 190 s | 26 | 180 s / 420 s | – |
+  | 2-minute walk, gather, 20-min settle | 69% [64..75] / 100% | 0 s / 19 s | 0 | 200 s / 255 s | parity in 132 s [121..138], probes ≤3 s [2..4], oracle passes |
+  | 10-minute walk, gather, 30-min settle | 71% [68..74] / 95% [93..97] | 78 s / 191 s | 60 [30..87] | 220 s / 460 s | parity in 289 s [192..348]; 60 [30..87] DMs never arrive (red); probes ≤10 s |
+
+  On the walk, DM p50 / p90 by reach go from 0 / 0 s to 0 / 0.3 s direct, 0.2 / 14 s to 3.3 / 75 s over a path and
+  61 / 142 s to 101 / 208 s partitioned. Frames originated per DM barely move (3.8 against 4.1). The phone's inbound
+  queue held at most two frames, where the baseline's gather piled up 7,500 at one node (#331's 4 to 6 thousand): the
+  backlog waits on the air instead, at most about 1,050 records (40 s) on one link in the walk and 1,700 (65 s) in the
+  gather. A record waits p50 ≤8 s and at worst under 65 s in the walk, p50 ≤65 s and at worst under 9 minutes in the
+  gather (power-of-two buckets). A cut loses about 27% of what the walk airs (85,000 of 316,000 records), and custody
+  re-serves it. Custody still reaches its cap in every run, about a minute later than the baseline's. About 87% of
+  what either gather airs reaches a node that already has it (`framesDeduped` against the records aired), consistent
+  with each missing row coming from most of a node's six neighbours: roughly one useful copy in eight. The baseline
+  pays nothing for those duplicates; here the settle spends its 2 to 6 minutes on them. Read every number as an upper
+  bound on a phone's: the ledger is fluid (a radio serves its links in any proportion, with no connection events), so
+  a `ble1m` result says the mesh can do this well at this rate, not that a phone mesh does. A first run whose ledger
+  booked the link and both radios jointly settled neither gather; `AirLedgerTest` pins why it was wrong.
 - **What it leaves out.** One plane, no path loss and none of the transports' own dial policies: `LabTransport` stands
   in for the whole radio, so the topology is the geometry's (and, under `ble1m`, a nearest-first budget's), not what
   Bluetooth or Wi-Fi Aware would have formed. `disc` has no link budget; `ble1m`'s is a measured rate, not yet a

@@ -99,10 +99,11 @@ class LinkAirLabTest {
             bob.transport.hold(carol.transport)
             alice.burstSigned(carol, fromAlice)
             bob.burstSigned(carol, fromBob)
-            // Both queues filled at once: a held frame is queued for the air as its release sends it.
+            // Both queues filled at once: a held frame is queued for the air as its release sends it, so the clock starts
+            // before the first release, never after the air has begun.
+            val started = System.nanoTime()
             alice.transport.release(carol.transport)
             bob.transport.release(carol.transport)
-            val started = System.nanoTime()
             lab.await(1, timeoutMs = BURST_AWAIT_MS) {
                 if (alice.transport.aired.records
                         .get() - aliceBefore >= BURST

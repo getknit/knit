@@ -31,7 +31,7 @@ interface Radio {
 
     companion object {
         /** Every radio [of] builds, by name. */
-        val NAMES = listOf(DiscRadio.NAME, BleRadio.NAME)
+        val NAMES = listOf(DiscRadio.NAME, BleRadio.NAME, BleRadio.SLOW_NAME)
 
         /** The radio [scenario] names, with [initial] links up before its first step (the groups that arrived together). */
         fun of(
@@ -39,9 +39,29 @@ interface Radio {
             initial: Set<Link>,
         ): Radio =
             when (scenario.radio) {
-                DiscRadio.NAME -> DiscRadio(scenario.connectM, scenario.dropM, scenario.dialMs, initial)
-                BleRadio.NAME -> BleRadio(scenario.seed, scenario.connectM, scenario.dropM, initial)
-                else -> throw IllegalArgumentException("no radio named ${scenario.radio}; there are $NAMES")
+                DiscRadio.NAME -> {
+                    DiscRadio(scenario.connectM, scenario.dropM, scenario.dialMs, initial)
+                }
+
+                BleRadio.NAME -> {
+                    BleRadio(scenario.seed, scenario.connectM, scenario.dropM, initial)
+                }
+
+                BleRadio.SLOW_NAME -> {
+                    BleRadio(
+                        scenario.seed,
+                        scenario.connectM,
+                        scenario.dropM,
+                        initial,
+                        linkBytesPerSecond = BleRadio.SLOW_LINK_BYTES_PER_S,
+                        nodeBytesPerSecond = BleRadio.SLOW_NODE_BYTES_PER_S,
+                        name = BleRadio.SLOW_NAME,
+                    )
+                }
+
+                else -> {
+                    throw IllegalArgumentException("no radio named ${scenario.radio}; there are $NAMES")
+                }
             }
     }
 }

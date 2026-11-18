@@ -103,17 +103,17 @@ internal object AirLedger {
 
 /**
  * What one node's air links did on the way out: what they aired, what a cut lost with them ([cut], [cutKeys]) and what
- * they refused because the link was already going down ([refused]), the deepest one link's queue ran ([queuePeak],
- * [backlogPeakMs]: its queued bytes at its own rate) and how long each record waited from its send to its delivery
- * ([waitPercentileMs]).
+ * they refused because the link was already going down ([refused]), the deepest one link's queue ran from a moment on
+ * ([peaksFromNow]) and how long each record waited from its send to its delivery ([waitPercentileMs]).
  */
 class AirStats {
     val bytes = AtomicLong()
     val records = AtomicLong()
     val cut = AtomicLong()
     val refused = AtomicLong()
-    val queuePeak = AtomicLong()
-    val backlogPeakMs = AtomicLong()
+
+    // Every [peaksFromNow] asked so far, each noting from its own start.
+    private val windows = java.util.concurrent.CopyOnWriteArrayList<Peaks>()
 
     /** The crossing keys of the frames a cut lost, in the order they were cut: what a relink must re-serve. */
     val cutKeys = java.util.concurrent.CopyOnWriteArrayList<String>()
@@ -123,6 +123,29 @@ class AirStats {
 
     internal fun recordWait(ms: Long) {
         waits.incrementAndGet(bucketOf(ms))
+    }
+
+    /**
+     * The deepest queue and backlog one of these links reaches from now on: what one part of a run reads as its own. A
+     * queue is noted as a record joins it, so one already deep when this is asked counts once its next record is queued.
+     */
+    fun peaksFromNow(): Peaks = Peaks().also { windows += it }
+
+    // One link's queue as a record joined it: [depth] records, [backlogMs] of its bytes at the link's own rate.
+    internal fun noteQueue(
+        depth: Long,
+        backlogMs: Long,
+    ) {
+        for (window in windows) {
+            window.queue.accumulateAndGet(depth, ::maxOf)
+            window.backlogMs.accumulateAndGet(backlogMs, ::maxOf)
+        }
+    }
+
+    /** The deepest queue in records ([queue]) and in airtime ([backlogMs]) one link reached since [peaksFromNow]. */
+    class Peaks {
+        val queue = AtomicLong()
+        val backlogMs = AtomicLong()
     }
 
     /** Every record's wait so far, by bucket ([waitPercentileMs] reads them; [merge] sums several nodes'). */

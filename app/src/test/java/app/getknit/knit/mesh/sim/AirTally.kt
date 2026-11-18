@@ -6,9 +6,9 @@ import java.util.Locale
 
 /**
  * What the field's air links did from the moment this was made ([LinkAir][app.getknit.knit.mesh.lab.LinkAir]), summed over
- * every node's [AirStats]: bytes and records aired, records a cut lost or a closing link refused, and how long a record
- * waited from its send to its delivery. The deepest queue and backlog are the outing's so far, whenever they were reached:
- * the `_walk` keys read them at the walk's end (the boot's link-ups included), the `_outing` keys at the outing's.
+ * every node's [AirStats]: bytes and records aired, records a cut lost or a closing link refused, how long a record
+ * waited from its send to its delivery, and the deepest queue and backlog one link reached. Each is this tally's own:
+ * the walk's from the walk's first step, the outing's from the boot's end.
  */
 internal class AirTally(
     private val nodes: List<LabNode>,
@@ -18,6 +18,7 @@ internal class AirTally(
     private val cut = sum { it.cut.get() }
     private val refused = sum { it.refused.get() }
     private val waits = AirStats.merge(nodes.map { it.transport.aired.waitBuckets() })
+    private val peaks = nodes.map { it.transport.aired.peaksFromNow() }
 
     private fun sum(read: (AirStats) -> Long): Long = nodes.sumOf { read(it.transport.aired) }
 
@@ -29,16 +30,8 @@ internal class AirTally(
             cut = sum { it.cut.get() } - cut,
             refused = sum { it.refused.get() } - refused,
             waits = LongArray(now.size) { now[it] - waits[it] },
-            queuePeak =
-                nodes.maxOf {
-                    it.transport.aired.queuePeak
-                        .get()
-                },
-            backlogPeakMs =
-                nodes.maxOf {
-                    it.transport.aired.backlogPeakMs
-                        .get()
-                },
+            queuePeak = peaks.maxOf { it.queue.get() },
+            backlogPeakMs = peaks.maxOf { it.backlogMs.get() },
         )
     }
 
@@ -64,7 +57,7 @@ internal class AirTally(
             "air $phase: ${m.records} records, ${"%.1f".format(Locale.ROOT, m.bytes / BYTES_PER_MB)} MB aired; " +
                 "${m.cut} lost to a cut, ${m.refused} refused by a closing link; a record waited p50 ≤${m.wait(P50)} ms, " +
                 "p90 ≤${m.wait(P90)} ms, max ≤${m.wait(MAX)} ms; deepest queue ${m.queuePeak} records, " +
-                "${m.backlogPeakMs / MS_PER_S} s of backlog on one link (so far)"
+                "${m.backlogPeakMs / MS_PER_S} s of backlog on one link"
         return line to
             listOf(
                 "air_records_$key" to m.records,
