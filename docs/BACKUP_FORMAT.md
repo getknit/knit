@@ -198,8 +198,10 @@ second root the peer would refuse inside its one-minute floor (ADR 2026-09.qerd,
 One router detail makes the re-seal land: the sender re-seals under the **same** frame id (so every other
 node dedups it), but the copy custody served the restored node moments earlier put that id in its seen
 set. A sealed DM addressed to us that fails to open reopens its id once (`SeenSet.reopen`), so the fresh
-seal gets through; a second reopen inside the window is refused, which bounds what a peer re-serving an
-unopenable frame can make us relay.
+seal gets through; a second reopen inside the window is refused. The id then stays unmarked until a copy of
+it opens (or 22 minutes pass): only its sender's verified copies are delivered meanwhile, a few per signature
+and never relayed, so another copy of the original reaching the restored node first cannot cost it the
+sender's second pass (#347, ADR 2026-10.dmgw).
 
 ## Compatibility
 

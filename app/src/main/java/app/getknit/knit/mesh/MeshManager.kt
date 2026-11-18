@@ -390,6 +390,9 @@ class MeshManager(
     // How often the re-offer round runs for the linked neighbours ([NEIGHBOR_REOFFER_INTERVAL_MS]). Injectable for
     // `mesh/lab`, whose scenario that a failing round does not end the loop (#206) must let the real loop run.
     private val reofferIntervalMs: Long = NEIGHBOR_REOFFER_INTERVAL_MS,
+    // How many reopened DM ids the router's seen set guards ([SeenSet.REOPENED_MAX], #347). Injectable for `mesh/lab`,
+    // whose scenario about a full guard table fills a small one.
+    private val reopenedMax: Int = SeenSet.REOPENED_MAX,
     // Whether this build queries neighbours for a blob's holders before it asks (ADR 2026-10.6e5t;
     // `BuildConfig.BLOB_QUERY`, on in every build by default), and how long it waits for their answers.
     // Off, every neighbour gets ADR 2026-10.f7gg's blind round; answering a query is never gated.
@@ -995,7 +998,8 @@ class MeshManager(
             classifyText = ::isTextFlagged,
             resealUnacked = ::resealRecentDmsTo,
             // `router` is rebuilt per session (declared below); the lambda reads the current one.
-            reopenFrame = { router.reopen(it) },
+            reopenFrame = { id, sender -> router.reopen(id, sender) },
+            settleReopened = { id, sender -> router.settle(id, sender) },
             redistributeGroupKey = ::redistributeGroupKey,
             flushGroupKeys = ::flushPendingGroupKeysFor,
             replayGroupCustody = ::replayCustodiedGroupFrames,
@@ -2056,10 +2060,11 @@ class MeshManager(
             routerScope,
             // The dedup window on the same clock as everything else here, so a test that moves the calendar
             // (the mesh-in-a-box lab) sees the window lapse; production's clock is the wall clock either way.
-            seen = SeenSet(clock = clock),
+            seen = SeenSet(clock = clock, reopenedMax = reopenedMax),
             metrics = metrics,
             budget = ingressBudget,
             onRelayed = { env, to -> ledger.onHandedOff(env, to.filterTo(HashSet(), ::radioLinked)) },
+            verifyReopened = pipeline::signedBySender,
             onDeliver = pipeline::onDeliver,
         ).also { it.onHandled = { frame -> onInboundHandled?.invoke(frame) } }
 
@@ -7399,10 +7404,11 @@ class MeshManager(
      * it stored under an id (the reset peer's own included), and a relay drops an id it first saw inside
      * [SeenSet.DEFAULT_TTL_MS] — which, for the DMs whose failures fired the reset, is every relay between
      * us. So the same ids are re-sealed once more after [ResetReseal.SECOND_PASS_MS] (the tick in
-     * [reofferToNeighbors]), when any window this pass ran into has lapsed (#171, ADR 2026-10.dmgw). A peer
-     * reachable live at neither pass still misses them: custody serves only the originals. So does one behind a
-     * relay that first saw an original after the reset (a custody pull inside the window), whose own window can
-     * cover the second pass too.
+     * [reofferToNeighbors]), when any window this pass ran into has lapsed (#171, ADR 2026-10.dmgw). The peer's own
+     * router keeps a DM it could not open unmarked until a copy opens (`SeenSet.reopen`'s guard, #347), so a copy of
+     * an original that reaches it between the passes no longer costs it the second. A peer reachable live at neither
+     * pass still misses them: custody serves only the originals. So does one behind a relay that first saw an original
+     * after the reset (a custody pull inside the window), whose own window can cover the second pass too.
      */
     internal suspend fun resealRecentDmsTo(recipientId: String) {
         val rows = unackedToReseal(recipientId)
@@ -7588,7 +7594,8 @@ class MeshManager(
                 TAG,
                 "metrics: originated=${s.frames.framesOriginated} delivered=${s.frames.framesDelivered} " +
                     "relayed=${s.frames.framesRelayed} handedOn=${s.frames.framesHandedOn} suppressed=${s.frames.framesSuppressed} " +
-                    "deduped=${s.frames.framesDeduped} bytesSent=${s.frames.bytesSent} " +
+                    "deduped=${s.frames.framesDeduped} reopenedDelivered=${s.frames.framesReopenedDelivered} " +
+                    "bytesSent=${s.frames.bytesSent} " +
                     "dropped=${s.frames.framesDropped} drops=${s.frames.dropsByReason} " +
                     "keyReq=${s.keys.keyRequestsSent} keyServed=${s.keys.keysServed} keyRecovered=${s.keys.keysRecovered} " +
                     "framesHeld=${s.keys.framesHeld} framesReplayed=${s.keys.framesReplayed} " +

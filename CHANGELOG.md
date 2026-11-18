@@ -76,6 +76,9 @@ document:
 - When you can only reach someone over LoRa and their radio comes back after missing several of your
   messages, the older ones now arrive right behind the newest. Before, each one waited another half hour or
   more (#343).
+- After you restore Knit or a chat's encryption resets, a message sent to you around then could go missing
+  for good if another phone passed you an old copy of it first. It now arrives, and the sender sees two ticks
+  (#347).
 
 ## [2.11.1](https://github.com/getknit/knit/releases/tag/v2.11.1) — 2026-11-11T07:27:26Z
 

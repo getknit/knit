@@ -6,6 +6,7 @@ import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.Protocol
+import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.VectorParty
@@ -90,6 +91,38 @@ class LabSybil(
         return signed(env)
     }
 
+    /**
+     * A ratchet-form DM to [to] stamped [sentAt] that opens under no session: a v2 header on an epoch of ours and no init.
+     * Signed, so its addressee authenticates it and fails it as `RATCHET_NO_SESSION`, the drop that reopens its id there.
+     * With [relay] false it is handed to the fork's neighbours and flooded no further, so custody never holds it.
+     */
+    fun ratchetDm(
+        to: String,
+        sentAt: Long,
+        relay: Boolean = true,
+    ): WireEnvelope {
+        val random = Random(sentAt)
+        val enc =
+            EncEnvelope(
+                v = EncEnvelope.VERSION_RATCHET,
+                nonce = random.nextBytes(NONCE_BYTES),
+                ct = random.nextBytes(KEY_BYTES + TAG_BYTES),
+                keys = emptyList(),
+                r = RatchetHeader(se = 1, ek = random.nextBytes(KEY_BYTES), pe = 1, n = 0),
+            )
+        val env =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = FrameId.new(),
+                senderId = nodeId,
+                sentAt = sentAt,
+                recipientId = to,
+                payload = WireCodec.encodePayload(ChatContent(enc = enc)),
+            )
+        val bytes = WireCodec.encodeEnvelope(env)
+        return WireEnvelope(relay = relay, sig = party.sign(bytes), signed = bytes)
+    }
+
     /** A Nearby-room post of [body] stamped [sentAt]: cleartext, delivered to everyone who hears it, carried for six hours. */
     fun room(
         body: String,
@@ -142,5 +175,6 @@ class LabSybil(
         ): EncEnvelope = EncEnvelope(nonce = random.nextBytes(NONCE_BYTES), ct = random.nextBytes(ctBytes), keys = emptyList())
 
         private const val NONCE_BYTES = 12
+        private const val TAG_BYTES = 16
     }
 }

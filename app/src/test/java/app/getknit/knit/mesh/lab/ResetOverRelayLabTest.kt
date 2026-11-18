@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.relay.coveredLabelsOf
 import app.getknit.knit.mesh.DropReason
+import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
@@ -467,6 +468,112 @@ class ResetOverRelayLabTest {
             assertEquals("bob never reset back", 0L, bob.session(alice)?.lastResetSentAt)
         }
 
+    /**
+     * #347, the same bytes opening later. Alice resets twice while apart from Bob; her follow-up X, sealed under the
+     * second reset F and carrying its init unflagged, reaches Bob after the first reset and ahead of F. Bob adopts the
+     * first, which starts his floor, so X meets the 60-minute incidental floor and fails, reopening its id under a guard,
+     * and F is floored and held. X is gone from Bob's custody each time (`forgetCustody`), so every relink has Alice serve
+     * the same bytes again: four deliveries of one signature before F is adopted, the last three under the guard, none
+     * of which marks the id. Then F's floor ends and Bob adopts it, with X still out of his custody, so the replay cannot
+     * reach it. Fifteen minutes after the failure one more copy of the same bytes comes through a relink (a fresh link
+     * starts the crossing memo clean): the signature's tries have refilled, and X opens under F, inside the guard's 22
+     * minutes. A cap that never refilled would have refused it.
+     */
+    @Suppress("LongMethod") // one sequence of copies against one clock; split, its steps would read out of order
+    @Test
+    fun aFollowUpAheadOfItsResetOpensAfterItsSignatureHasMetTheGuardFourTimes() =
+        runBlocking {
+            val limits = LabLimits(resetFloorMs = RESET_FLOOR_MS)
+            val alice = lab.node("alice", limits, board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", limits, board = false).apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            assertTrue(alice.sendDm(bob, "hello"))
+            lab.await(1) { bob.decrypted(bob.dmWith(alice)).size }
+            assertTrue(bob.sendDm(alice, "hi"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { dmThread(alice, bob)(it) }
+
+            lab.unlink(alice, bob)
+            val beforeFirst = alice.custodyIds()
+            assertEquals("the first reset went out", null, alice.resetSession(bob))
+            val first = (alice.custodyIds() - beforeFirst).single()
+            lab.clock.advance(RESET_FLOOR_MS)
+            val beforeSecond = alice.custodyIds()
+            assertEquals("the second reset went out", null, alice.resetSession(bob))
+            val reset = (alice.custodyIds() - beforeSecond).single()
+            val newRoot = checkNotNull(alice.session(bob)).rootHash
+            assertTrue(alice.sendDm(bob, "a follow-up ahead of its reset"))
+            val followUp = alice.ownMessageId(alice.dmWith(bob), "a follow-up ahead of its reset")
+            val order = listOf(first, followUp, reset)
+
+            lab.link(alice, bob) { alice.transport.hold(bob.transport) }
+            lab.await(order.size) {
+                alice.transport
+                    .held(bob.transport)
+                    .mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }
+                    .filter { it in order }
+                    .distinct()
+                    .size
+            }
+            alice.transport.release(bob.transport) { batch ->
+                val (ours, rest) = batch.partition { WireCodec.decodeEnvelope(it.signed)?.id in order }
+                rest + ours.sortedBy { order.indexOf(WireCodec.decodeEnvelope(it.signed)?.id) }
+            }
+            lab.await(1) { bob.drops(DropReason.RATCHET_RESET_FLOORED).toInt() }
+            val failedAt = lab.clock.now()
+            bob.transport.awaitInboundDrained()
+            assertEquals("the follow-up did not open", null, bob.row(followUp))
+
+            // Three more copies of the same bytes, each through a relink with the follow-up gone from Bob's custody.
+            repeat(SeenSet.REOPEN_TRIES) { serveAgain(alice, bob, followUp, copies = it + 2) }
+            assertTrue(
+                "the repeats met the guard: ${bob.metrics.frames().framesReopenedDelivered}",
+                bob.metrics.frames().framesReopenedDelivered >= SeenSet.REOPEN_TRIES,
+            )
+            assertEquals("and none of them opened", null, bob.row(followUp))
+
+            // F's floor ends; Bob adopts it with the follow-up out of his custody, so its replay has nothing to open.
+            bob.forgetCustody { it == followUp }
+            assertTrue(
+                "bob never re-opened the floored reset: bob on ${bob.session(alice)?.rootHash}, alice on $newRoot",
+                lab.tryAwait(1, timeoutMs = RESET_FLOOR_MS + MeshLab.AWAIT_MS) {
+                    bob.reopenFlooredResets()
+                    if (bob.session(alice)?.rootHash == newRoot) 1 else 0
+                },
+            )
+            assertEquals("the follow-up is still unopened", null, bob.row(followUp))
+
+            // Fifteen minutes after the failure, one more copy through a relink: its signature's tries have refilled.
+            lab.clock.advance(failedAt + FOLLOW_UP_AGAIN_AFTER_MS - lab.clock.now())
+            serveAgain(alice, bob, followUp, copies = SeenSet.REOPEN_TRIES + 2)
+            lab.await(1) { if (bob.row(followUp) != null) 1 else 0 }
+            assertTrue("inside the guard", lab.clock.now() - failedAt < SeenSet.REOPEN_GUARD_MS)
+            lab.assertConverged(listOf(alice, bob), atLeast = 3) { dmThread(alice, bob)(it) }
+            assertEquals("bob never reset back", 0L, bob.session(alice)?.lastResetSentAt)
+        }
+
+    /**
+     * Drops [frameId] from [bob]'s custody and relinks him to [alice], whose answer to his digest serves the same bytes
+     * again; returns once [alice] has written [copies] of it to Bob and Bob has handled them.
+     */
+    private suspend fun serveAgain(
+        alice: LabNode,
+        bob: LabNode,
+        frameId: String,
+        copies: Int,
+    ) {
+        bob.forgetCustody { it == frameId }
+        lab.unlink(alice, bob)
+        lab.link(alice, bob)
+        lab.await(copies) {
+            alice.transport.sent.count { line ->
+                val cols = line.split(' ')
+                cols.getOrNull(3) == frameId && bob.nodeId.startsWith(cols[1])
+            }
+        }
+        bob.transport.awaitInboundDrained()
+    }
+
     /** Whether this node's thread with [peer] reads covered by the relays, by the rule the chat's notice reads. */
     private fun LabNode.relayCovers(peer: LabNode): Boolean = peer.nodeId in coveredLabelsOf(manager.spoolStatus().filter { it.connected })
 
@@ -488,5 +595,8 @@ class ResetOverRelayLabTest {
 
         /** The reset floor the re-open scenario waits out on the wall clock, in place of the field's minute. */
         const val RESET_FLOOR_MS = 10_000L
+
+        /** When the follow-up's last copy reaches Bob after its failure: past one window, inside the 22-minute guard. */
+        const val FOLLOW_UP_AGAIN_AFTER_MS = 15 * 60_000L
     }
 }

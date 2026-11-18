@@ -16,9 +16,11 @@ import java.util.concurrent.ConcurrentHashMap
  * **The invariant that keeps this a byte saving and not a delivery change:** the window is the router
  * `SeenSet`'s ([SeenSet.DEFAULT_TTL_MS]), and a frame is marked on the way *in* as well as out, so anything
  * the memo suppresses is a frame the far end has already handed its router inside a window where the router
- * would drop it again. It is keyed per link and forgotten with the link ([forget]): a fresh link to the same
- * peer starts clean, because the peer may have restarted with an empty `SeenSet` and a wiped store — the
- * custody re-serve after its digest exchange must still get through.
+ * would drop it again. The one exception is an id the far end reopened (`SeenSet.reopen`'s guard, #347), whose router
+ * would deliver a repeat of the same signature again; the memo withholds that repeat for the window, as it did before
+ * the guard, and a fresh link or a fresh signature still crosses. It is keyed per link and forgotten with the link
+ * ([forget]): a fresh link to the same peer starts clean, because the peer may have restarted with an empty `SeenSet`
+ * and a wiped store — the custody re-serve after its digest exchange must still get through.
  *
  * Android-free and shared with the lab's `LabTransport`, which is how the box stays the Bluetooth plane as
  * shipped.

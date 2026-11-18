@@ -10,6 +10,7 @@ import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.CarrierPullPolicy
 import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.Peer
+import app.getknit.knit.mesh.ResetReseal
 import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.link.LinkFraming
 import app.getknit.knit.mesh.link.LinkHandshake
@@ -1286,6 +1287,85 @@ class MaliciousForkLabTest : StrandedLabBase() {
         return WireEnvelope(ttl = DEFAULT_TTL, relay = relay, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
     }
 
+    /**
+     * #347: a reopened DM keeps its guard when one pinned identity makes the same phone reopen more ids than its guard
+     * table holds. Bob restores behind Carol and fails Alice's DM; her first pass is dropped at Carol, as in
+     * `RestoreLabTest`. A pinned identity then has Bob reopen [FLOOD_REOPENS] ids of its own, past his [GUARD_TABLE], and
+     * a frame under the DM's id in Alice's name, not signed by her, follows. Pass: the DM opens on Alice's second pass, and
+     * that frame is counted as `REOPENED_UNVERIFIED`.
+     */
+    @Test
+    fun aFloodOfReopensFromOnePinnedIdentityNeverCostsAnotherSendersDmItsSecondPass() =
+        runBlocking {
+            val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+            // A small guard table, so a flood of tens fills it: the eviction rule is the same at any size.
+            val bob = lab.node("bob", LabLimits(reopenedMax = GUARD_TABLE), board = false).apply { setDisplayName("Bob") }
+            val carol = lab.node("carol", board = false).apply { setDisplayName("Carol") }
+            val mallory = lab.node("mallory", board = false).apply { setDisplayName("Mallory") }
+            val thread = { node: LabNode -> node.dmWith(if (node === alice) bob else alice) }
+            lab.linkAll(alice to carol, carol to bob)
+            lab.awaitAcquainted(alice, bob, carol)
+            assertTrue(alice.sendDm(bob, "before"))
+            lab.await(1) { if (bob.session(alice)?.confirmed == true) 1 else 0 }
+            assertTrue(bob.sendDm(alice, "before too"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol), conversation = thread)
+
+            lab.unlink(carol, bob)
+            bob.restoreFromBackup()
+            assertTrue(alice.sendDm(bob, "while you were away"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "while you were away")
+            lab.await(1) { if (dm in carol.custodyIds()) 1 else 0 }
+            lab.link(carol, bob)
+            // Bob's reset reaches Alice through Carol, whose router drops Alice's first re-seal as an id seen inside its
+            // window; Bob fails the original Carol served him, which reopens it.
+            lab.await(1) { if (alice.writesOf(carol, dm) >= 2) 1 else 0 }
+            val firstPass = lab.clock.now()
+            carol.transport.awaitInboundDrained()
+            lab.await(1) { if (carol.writesOf(bob, dm) >= 1) 1 else 0 }
+            bob.transport.awaitInboundDrained()
+            assertNull("the original did not open", bob.row(dm))
+            lab.clock.advance(MINUTE_MS * 3)
+
+            val sybil = LabSybil(seed = 3_470, name = "sybil")
+            lab.link(mallory, bob)
+            mallory.flood(sybil.profile(lab.clock.now()))
+            lab.await(1) { if (bob.pinned(sybil.nodeId) != null) 1 else 0 }
+            val noSession = bob.drops(DropReason.RATCHET_NO_SESSION)
+            // One burst, as a link's queue would take it: the lab's chaos draws one lag for the lot, not two per frame.
+            val flood = (1..FLOOD_REOPENS).map { i -> sybil.ratchetDm(to = bob.nodeId, sentAt = lab.clock.now() - i, relay = false) }
+            mallory.transport.sendBurst(bob.transport, flood)
+            lab.await(FLOOD_REOPENS) { (bob.drops(DropReason.RATCHET_NO_SESSION) - noSession).toInt() }
+            val unverified = bob.drops(DropReason.REOPENED_UNVERIFIED)
+            mallory.floodSigned(
+                RelayEnvelope(
+                    type = FrameType.CHAT,
+                    id = dm,
+                    senderId = alice.nodeId,
+                    sentAt = lab.clock.now(),
+                    recipientId = bob.nodeId,
+                    payload = WireCodec.encodePayload(ChatContent(enc = LabSybil.sealedNoise(Random(3_471)))),
+                ),
+            )
+            lab.await(1) { (bob.drops(DropReason.REOPENED_UNVERIFIED) + bob.drops(DropReason.SIG_INVALID) - unverified).toInt() }
+            bob.transport.awaitInboundDrained()
+
+            lab.clock.advance(firstPass + ResetReseal.SECOND_PASS_MS - lab.clock.now())
+            alice.reoffer()
+            lab.assertConverged(listOf(alice, bob), atLeast = 3, carriers = listOf(carol), conversation = thread)
+            assertEquals("the frame in Alice's name met the guard", 1L, bob.drops(DropReason.REOPENED_UNVERIFIED) - unverified)
+        }
+
+    /** Frames [this] wrote to [to] under [id], each a distinct write. */
+    private fun LabNode.writesOf(
+        to: LabNode,
+        id: String,
+    ): Int =
+        transport.sent.count { line ->
+            // Each line reads "#seq <receiver> <type> <id> …".
+            val cols = line.split(' ')
+            cols.getOrNull(3) == id && to.nodeId.startsWith(cols[1])
+        }
+
     private companion object {
         // #282's budget case: four pictures of 4 KiB fill a 10 KiB budget on the third.
         const val MINUTE_MS = 60_000L
@@ -1309,5 +1389,9 @@ class MaliciousForkLabTest : StrandedLabBase() {
 
         // #313: a key share one byte short of `LinkFraming.KEY_SHARE_BYTES`.
         const val SHORT_KEY_SHARE = 31
+
+        // #347: Bob's reopen guard table (`LabLimits.reopenedMax`), and a flood past it, so the flood must evict to fit.
+        const val GUARD_TABLE = 32
+        const val FLOOD_REOPENS = 40
     }
 }

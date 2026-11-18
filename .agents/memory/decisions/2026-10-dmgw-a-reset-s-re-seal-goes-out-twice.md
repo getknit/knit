@@ -70,3 +70,67 @@ or once the receipt is older than its re-arm floor (15 min, doubling). The reset
 so the first copy past it still earns one receipt under the new root. The second pass, eleven minutes later, finds
 that receipt held, in the same era and inside its floor, and seals nothing. Off LoRa, the second pass now buys one
 receipt in all at such a peer, where it used to buy two.
+
+## Amendment 2026-11-18 — a reopened id stays unmarked until it opens
+
+Status: Draft (2026-11-18), GitLab #347. Node-local: no wire, vector, schema or iOS change.
+
+**What was observed.** `SeenSet.reopen` removed the mark of a DM we could not open, once per id per window, and the
+next copy the router admitted took the mark again. A copy of the original that reached the phone that reset in the ten
+minutes before the second pass (a neighbour's flood, a carrier answering our digest once our own copy was evicted, a
+spool) failed with its own reopen refused, and its mark dropped the second pass as seen. Every custody then held the
+originals, the digests agreed, and the DM never showed. `RestoreLabTest` had met it as a flake (9b0527769) and was
+deflaked, not fixed. #347 has the rest.
+
+**The rule.** A reopened id stays unmarked until a copy of it opens.
+
+- `reopen(id, sender)` keeps its refusals (a live mark, once per id per window judged from the last reopen's time) and
+  leaves a guard: the sender, the reopen's time, and a count of tries per signature. `SeenSet.guardFor` reads it while
+  it is unsettled and younger than `REOPEN_GUARD_MS` (two windows and two minutes, 22 min: it outlasts the second pass,
+  which can leave up to a window after the failure), and `add` refuses a guarded id.
+- `MeshRouter.handleGuarded` meets a copy of a guarded id ahead of the meter and the mark. Only the guarded sender's
+  signed DM to us is delivered (`InboundPipeline.signedBySender`, which counts, asks and parks nothing); anything else is
+  `DropReason.REOPENED_UNVERIFIED`. A verified copy is delivered whatever its bytes, up to `REOPEN_TRIES` (3)
+  deliveries per signature, a signature's count refilling a window after its first try (`SeenSet.spendTry`); past that
+  it is `REOPENED_SPENT`. At most `REOPEN_KEYS` (8) signatures are counted per id, the least recently tried evicted, so
+  a new one always passes. A guarded delivery is never marked, relayed or counted as an overhear
+  (`MeshMetrics.Snapshot.Frames.framesReopenedDelivered`). Copies of one id take turns on a per-id `Mutex`, so two
+  re-seals never open at once, and one that waited past the settle reads the id as marked and dedups.
+- The pipeline's `settleReopened(id, sender)` (`MeshRouter.settle`, `SeenSet.settle`) marks the id and settles the guard
+  in one step, keeping its time, so a stale copy failing beside the one that opened is still refused its reopen inside
+  the window. It settles only a guard naming that sender. It runs when a DM's step commits (the decrypt path and
+  `ratchetOnly`), on each true answer of the exists-gate and on a row another sender holds. Never on `DUPLICATE`: a new
+  era's frame can meet an old era's row (#135).
+- The guard table holds `REOPENED_MAX` (1,024) ids, sized for a restore's backlog (custody's `DEFAULT_MAX_ROWS`, 1,000).
+  A full table drops a guard that no longer guards first (lapsed or settled, oldest first), and only then the newest
+  live guard of the sender holding the most, so one sender's reopens evict its own (`SeenSet.makeRoom`). An evicted
+  live guard leaves its id unmarked, and the next copy that fails re-arms it.
+- `persistWithInlineAcks` takes a row its own sender already holds, written by a sibling signed copy, as it takes
+  another sender's: the step and the inline acks commit, the row is not saved again, and nothing is shown or acked
+  twice when two re-seals open together.
+- If the guard lapses with the DM still unopened, the next copy is marked, fails and re-arms it, as every id did before.
+
+**Why each alternative strands the DM.**
+
+- *A guard of one window.* The second pass leaves eleven minutes after the first, and the first can leave up to a
+  window after the failure; a copy after a ten-minute guard marks the id inside the second pass's window again.
+- *Release the guard on any verified signature.* A stale genuine re-seal (an earlier reset's pass, or `RESEND_OWN`)
+  verifies and does not open, and releasing on it is the old strand with one more step.
+- *Drop a copy whose bytes equal the one that failed* (#347's option 1). The same bytes can open later: a follow-up can
+  carry its reset's init and arrive ahead of the reset (ADR 2026-11.sfms), the 60-min incidental floor can end by time
+  alone, and a peek can race a commit.
+- *A fixed cap of three per signature.* A follow-up met four times before its reset is adopted would be refused for the
+  rest of the guard, a DM the old rule delivered once the mark lapsed. The cap refills instead, so every copy the old
+  rule admitted at any point in the window still gets through.
+- *Evict guards oldest first.* An honest restore's backlog, or one sender's many failures, would push out the guards
+  of every other sender's DMs.
+
+**What it costs.** For a reopened id, one signature verify per copy, and a delivery and a ratchet peek for at most
+three copies per signature per window, inside 22 minutes; a guard holds eight signature counts, in a table of 1,024
+ids. A full table costs one scan per new reopen. A DM refused before persist (a blocked sender, moderation) keeps its
+guard to the lapse and pays that bound. On Bluetooth, `LinkCrossings` still withholds a same-signature repeat on one
+link for a window. Regression: `SeenSetTest`'s guard and eviction cases, `MeshRouterTest`'s guarded cases (an evicted
+guard among them), `RestoreLabTest.aCopyOfTheOriginalBetweenThePassesNeverCostsTheRestoredNodeTheSecondPass` (red
+before this amendment), its twin and its two-custodian cases,
+`ResetOverRelayLabTest.aFollowUpAheadOfItsResetOpensAfterItsSignatureHasMetTheGuardFourTimes`, and
+`MaliciousForkLabTest.aFloodOfReopensFromOnePinnedIdentityNeverCostsAnotherSendersDmItsSecondPass`.

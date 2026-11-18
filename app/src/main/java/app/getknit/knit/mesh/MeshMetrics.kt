@@ -171,6 +171,19 @@ enum class DropReason {
     NONCANONICAL_ID,
 
     /**
+     * A copy of an id under a reopen guard (`SeenSet.guardFor`, #347) that is not its guarded sender's signed DM to us
+     * (`InboundPipeline.signedBySender`). Dropped in [MeshRouter] before the meter, unmarked and never relayed.
+     */
+    REOPENED_UNVERIFIED,
+
+    /**
+     * A verified copy of a guarded id whose signature has had its `SeenSet.REOPEN_TRIES` deliveries in the window
+     * (`SeenSet.spendTry`, #347): a replay of bytes already tried. Dropped in [MeshRouter], unmarked; the signature's
+     * count refills a window after its first try.
+     */
+    REOPENED_SPENT,
+
+    /**
      * A verified frame whose `payload` wouldn't decode into its type's content: a field of the wrong CBOR type, a
      * missing required one, text that isn't UTF-8. Counted where the pipeline reads the payload, so a regressed
      * encoder on another port shows here instead of vanishing (the interop audit's AND-12).
@@ -566,6 +579,7 @@ class MeshMetrics {
     private val framesHandedOn = AtomicLong()
     private val framesSuppressed = AtomicLong()
     private val framesDeduped = AtomicLong()
+    private val framesReopenedDelivered = AtomicLong()
     private val bytesSent = AtomicLong()
     private val keyRequestsSent = AtomicLong()
     private val introsSent = AtomicLong()
@@ -828,6 +842,14 @@ class MeshMetrics {
     /** A duplicate of an already-seen frame, dropped without re-delivery. */
     fun onDeduped() {
         framesDeduped.incrementAndGet()
+    }
+
+    /**
+     * A copy of an id under a reopen guard delivered unmarked (`MeshRouter.handleGuarded`, #347): a verified copy of a DM
+     * to us that failed to open once, tried again.
+     */
+    fun onReopenedDelivered() {
+        framesReopenedDelivered.incrementAndGet()
     }
 
     /** [bytes] put on the wire (counted once per target endpoint a payload is sent to). */
@@ -2153,6 +2175,7 @@ class MeshMetrics {
             framesHandedOn = framesHandedOn.get(),
             framesSuppressed = framesSuppressed.get(),
             framesDeduped = framesDeduped.get(),
+            framesReopenedDelivered = framesReopenedDelivered.get(),
             bytesSent = bytesSent.get(),
             framesDropped = byReason.values.sum(),
             dropsByReason = byReason.filterValues { it > 0 },
@@ -2470,10 +2493,10 @@ class MeshMetrics {
         val lora: Lora = Lora(),
         val meshtastic: Meshtastic = Meshtastic(),
     ) {
-        /** What the router did with frames — authored, delivered, relayed, handed on, suppressed, deduped, dropped
-         * (by [DropReason]) — the bytes it put on the wire, and the sync rounds around them: heal passes, digests a
-         * newer one replaced in a link's queue, frames custody refused for their size, profiles refused for theirs, and
-         * session-loop rounds that threw (by [MeshRound]). */
+        /** What the router did with frames — authored, delivered, relayed, handed on, suppressed, deduped, delivered
+         * under a reopen guard, dropped (by [DropReason]) — the bytes it put on the wire, and the sync rounds around
+         * them: heal passes, digests a newer one replaced in a link's queue, frames custody refused for their size,
+         * profiles refused for theirs, and session-loop rounds that threw (by [MeshRound]). */
         data class Frames(
             val framesOriginated: Long = 0,
             val framesDelivered: Long = 0,
@@ -2481,6 +2504,8 @@ class MeshMetrics {
             val framesHandedOn: Long = 0,
             val framesSuppressed: Long = 0,
             val framesDeduped: Long = 0,
+            // #347: copies of a reopened id delivered under its guard, unmarked.
+            val framesReopenedDelivered: Long = 0,
             val bytesSent: Long = 0,
             val framesDropped: Long = 0,
             val dropsByReason: Map<DropReason, Long> = emptyMap(),

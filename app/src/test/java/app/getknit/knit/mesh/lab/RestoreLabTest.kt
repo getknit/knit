@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.mesh.ResetReseal
+import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.protocol.BlobHaveContent
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.Protocol
@@ -208,12 +209,10 @@ class RestoreLabTest {
             // handled it: dropped, for Carol saw every one of these ids inside her window.
             lab.await(sent.size) { sent.count { id -> alice.copiesTo(carol, id) >= 2 } }
             carol.transport.awaitInboundDrained()
-            // And Bob has failed to open the originals Carol served him at the link-up, each failure spending his one
-            // reopen of that id (SeenSet.reopen). The restore's reset waits on none of them, so that serve can still sit
-            // in his queue here; handled after the jump, it spends the reopen inside the window of Carol's next re-serve
-            // of the original, whose own reopen is then refused, and the second-pass re-seal behind it drops as seen.
-            lab.await(sent.size) { sent.count { id -> carol.copiesTo(bob, id) >= 1 } }
-            bob.transport.awaitInboundDrained()
+            // Bob's failures to open the originals Carol served him at the link-up are not waited on: the restore's reset
+            // waits on none of them, so that serve can still sit in his queue at the jump. Handled after it, a failure
+            // reopens the id under a guard that keeps it unmarked until a copy opens (#347), so neither Carol's next
+            // re-serve of an original nor the order of the two costs Bob the second pass.
 
             // The routers' window runs out; the 60 s tick (driven here, the lab clock moves no scheduler) re-seals the
             // three once more, and Carol now relays them.
@@ -221,6 +220,201 @@ class RestoreLabTest {
             alice.reoffer()
             lab.assertConverged(listOf(alice, bob), atLeast = 5, carriers = listOf(carol)) { it.dmWith(if (it === alice) bob else alice) }
         }
+
+    /**
+     * #347: the case above, with one more copy of each original reaching Bob between the two passes. Bob's custody
+     * loses the three (`forgetCustody`, as a quota eviction would), and about three minutes after Alice's first pass his
+     * link to Carol drops and comes back, so Carol answers his digest with the three originals again. Before the reopen
+     * guard each such copy was admitted as new, marked, failed again with its own reopen refused, and its mark still
+     * stood eight minutes later, when the second pass reached Bob's router: dropped as seen, and the DMs never shown.
+     * Now a reopened id stays unmarked until a copy of it opens ([app.getknit.knit.mesh.SeenSet.guardFor]).
+     */
+    @Test
+    fun aCopyOfTheOriginalBetweenThePassesNeverCostsTheRestoredNodeTheSecondPass() =
+        runBlocking {
+            val (alice, bob, carol) = relayedPair(bobBoard = false)
+            val thread = { node: LabNode -> node.dmWith(if (node === alice) bob else alice) }
+            bob.restoreFromBackup()
+            val sent = sendThreeWhileBobIsAway(alice, bob, carol)
+
+            lab.link(carol, bob)
+            // As above: Alice's first re-seal of each reaches Carol, and Carol's router drops it as an id seen inside its
+            // window. Bob has failed the originals Carol served him at the link-up.
+            lab.await(sent.size) { sent.count { id -> alice.copiesTo(carol, id) >= 2 } }
+            val firstPass = lab.clock.now()
+            carol.transport.awaitInboundDrained()
+            lab.await(sent.size) { sent.count { id -> carol.copiesTo(bob, id) >= 1 } }
+            bob.transport.awaitInboundDrained()
+
+            // Bob's custody loses the three, and his link to Carol drops and comes back three minutes on: Carol's
+            // answer to his digest carries each original again, a second copy of each on that pipe.
+            bob.forgetCustody { it in sent }
+            lab.clock.advance(RELINK_AFTER_FIRST_PASS_MS)
+            lab.unlink(carol, bob)
+            lab.link(carol, bob)
+            lab.await(sent.size) { sent.count { id -> carol.copiesTo(bob, id) >= 2 } }
+            bob.transport.awaitInboundDrained()
+            assertTrue("bob still holds none of the three", sent.none { bob.row(it) != null })
+            // Each copy met its id's guard: delivered again (and failed again) without taking the mark.
+            val guarded = bob.metrics.frames().framesReopenedDelivered
+            assertTrue("bob's router delivered $guarded copies under a guard, not one per original", guarded >= sent.size)
+
+            // Alice's second pass is due; Carol's window has run out, Bob's must not have restarted at the relink.
+            lab.clock.advance(firstPass + ResetReseal.SECOND_PASS_MS - lab.clock.now())
+            alice.reoffer()
+            lab.assertConverged(listOf(alice, bob), atLeast = 5, carriers = listOf(carol), conversation = thread)
+        }
+
+    /**
+     * The twin of the case above that worked before #347: Bob's relink to Carol comes after Alice's second pass has
+     * opened the three. His custody loses them again, so Carol serves her originals, and each meets an id the open
+     * settled: a duplicate, never a delivery under a guard. Past the window a relink carries them into his custody.
+     */
+    @Test
+    fun aCopyOfTheOriginalAfterTheSecondPassChangesNothing() =
+        runBlocking {
+            val (alice, bob, carol) = relayedPair(bobBoard = false)
+            val thread = { node: LabNode -> node.dmWith(if (node === alice) bob else alice) }
+            bob.restoreFromBackup()
+            val sent = sendThreeWhileBobIsAway(alice, bob, carol)
+
+            lab.link(carol, bob)
+            lab.await(sent.size) { sent.count { id -> alice.copiesTo(carol, id) >= 2 } }
+            val firstPass = lab.clock.now()
+            carol.transport.awaitInboundDrained()
+            lab.await(sent.size) { sent.count { id -> carol.copiesTo(bob, id) >= 1 } }
+            bob.transport.awaitInboundDrained()
+            bob.forgetCustody { it in sent }
+
+            lab.clock.advance(firstPass + ResetReseal.SECOND_PASS_MS - lab.clock.now())
+            alice.reoffer()
+            lab.await(sent.size) { sent.count { bob.row(it) != null } }
+            bob.transport.awaitInboundDrained()
+
+            bob.forgetCustody { it in sent }
+            val copiesBefore = sent.associateWith { carol.copiesTo(bob, it) }
+            val guardedBefore = bob.metrics.frames().framesReopenedDelivered
+            lab.unlink(carol, bob)
+            lab.link(carol, bob)
+            lab.await(sent.size) { sent.count { id -> carol.copiesTo(bob, id) > copiesBefore.getValue(id) } }
+            bob.transport.awaitInboundDrained()
+            // A delivered copy goes into custody and a deduped one never does, so this reads each id's own fate.
+            assertTrue("carol's originals met settled ids", sent.none { it in bob.custodyIds() })
+            assertEquals("none under a guard", guardedBefore, bob.metrics.frames().framesReopenedDelivered)
+
+            // Bob's window on the three runs out (the link cut first, so no copy lands across the jump); a relink's
+            // exchange carries them back into his custody.
+            lab.unlink(carol, bob)
+            lab.clock.advance(SeenSet.DEFAULT_TTL_MS)
+            lab.link(carol, bob)
+            lab.assertConverged(listOf(alice, bob), atLeast = 5, carriers = listOf(carol), conversation = thread)
+        }
+
+    /**
+     * #347, two genuine seals of one DM in two custodies. Carol holds Alice's original (X0); Dave holds the re-seal Alice
+     * made for an earlier reset of Bob's (X1), which Bob never received. Bob restores, so neither opens. He meets Carol
+     * first, then Dave, before Alice's first pass for the restore, which Carol drops as an id seen inside her window. X1
+     * is a valid signature of Alice's that does not open: it is delivered under the guard and leaves the id unmarked, so
+     * the second pass opens.
+     */
+    @Test
+    fun twoStaleSealsOfOneDmFromTwoCustodiansBeforeTheFirstPassStillLetTheSecondPassOpen() =
+        runBlocking { twoCustodians(staleResealAfterTheFirstPass = false) }
+
+    /**
+     * The case above with Dave's stale re-seal reaching Bob three minutes after Alice's first pass. Before the guard it was
+     * admitted as new, took the mark with its reopen refused, and dropped the second pass eight minutes on as seen.
+     */
+    @Test
+    fun aStaleResealFromASecondCustodianAfterTheFirstPassStillLetsTheSecondPassOpen() =
+        runBlocking { twoCustodians(staleResealAfterTheFirstPass = true) }
+
+    @Suppress("LongMethod", "CyclomaticComplexMethod") // one scenario, two orders: the setup and its awaits are most of it
+    private suspend fun twoCustodians(staleResealAfterTheFirstPass: Boolean) {
+        // No boards: the radios between the four are the subject. A short flagged-reset floor, so Alice takes the restore's
+        // reset a moment after the earlier one (it runs on the wall clock, and the wait for it below is on that clock).
+        val limits = LabLimits(resetFloorMs = RESET_FLOOR_MS)
+        val alice = lab.node("alice", limits, board = false).apply { setDisplayName("Alice") }
+        val bob = lab.node("bob", limits, board = false).apply { setDisplayName("Bob") }
+        val carol = lab.node("carol", limits, board = false).apply { setDisplayName("Carol") }
+        val dave = lab.node("dave", limits, board = false).apply { setDisplayName("Dave") }
+        val thread = { node: LabNode -> node.dmWith(if (node === alice) bob else alice) }
+        lab.linkAll(alice to carol, carol to bob, alice to dave, dave to bob)
+        lab.awaitAcquainted(alice, bob, carol, dave)
+        assertTrue(alice.sendDm(bob, "before"))
+        lab.await(1) { if (bob.session(alice)?.confirmed == true) 1 else 0 }
+        assertTrue(bob.sendDm(alice, "before too"))
+        lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol, dave), conversation = thread)
+        lab.unlink(dave, bob)
+        lab.unlink(carol, bob)
+
+        // X0, under the session Bob holds now: Carol custodies it, and the copy toward Dave is lost on the way.
+        alice.transport.hold(dave.transport)
+        assertTrue(alice.sendDm(bob, "sealed twice"))
+        val dm = alice.ownMessageId(alice.dmWith(bob), "sealed twice")
+        lab.await(1) { if (dm in carol.custodyIds()) 1 else 0 }
+        lab.await(1) { alice.transport.held(dave.transport).count { frameId(it) == dm } }
+        val original =
+            alice.transport
+                .held(dave.transport)
+                .first { frameId(it) == dm }
+                .sig
+        alice.transport.lossy(dave.transport) { frameId(it) == dm && it.sig.contentEquals(original) }
+        // lab-lint: allow filtered-release-then-oracle — the copy is lost on purpose; Dave's copy of the DM is X1 below.
+        alice.transport.release(dave.transport) { batch -> batch.filterNot { frameId(it) == dm && it.sig.contentEquals(original) } }
+
+        // X1: an earlier reset of Bob's reaches Alice through Carol, whose way back to Bob is held, and Alice re-seals the
+        // DM under it. Carol drops that re-seal as an id seen inside her window; Dave, who never saw the id, keeps it.
+        val rootBefore = alice.session(bob)?.rootHash
+        assertNull("bob's earlier reset went out", bob.resetSession(alice))
+        lab.link(carol, bob) { carol.transport.hold(bob.transport) }
+        lab.await(1) { if (alice.session(bob)?.rootHash != rootBefore) 1 else 0 }
+        val earlierResetAdoptedBy = System.currentTimeMillis()
+        lab.await(1) { if (dm in dave.custodyIds()) 1 else 0 }
+        assertTrue(
+            "dave holds a seal of the DM carol does not",
+            dave.custodiedSeal(dm)?.ct?.contentEquals(carol.custodiedSeal(dm)?.ct) == false,
+        )
+        lab.unlink(carol, bob) // what Carol held for Bob, the re-seal's answer among it, is lost
+        lab.unlink(alice, dave)
+
+        // Bob restores: neither seal opens now. Alice's floor since the earlier reset runs out on the wall clock.
+        bob.restoreFromBackup()
+        lab.await(1) { if (System.currentTimeMillis() - earlierResetAdoptedBy >= RESET_FLOOR_MS) 1 else 0 }
+
+        // Bob meets Carol, whose way on to Alice is held so the restore's reset waits: she serves X0, which fails and
+        // reopens the id under a guard.
+        lab.link(carol, bob) { carol.transport.hold(alice.transport) }
+        lab.await(1) { if (dm in bob.custodyIds()) 1 else 0 }
+        bob.transport.awaitInboundDrained()
+        assertNull("X0 did not open", bob.row(dm))
+
+        // Dave serves X1 (Bob's custody lost X0, so his digest asks for it again).
+        val meetDave: suspend () -> Unit = {
+            bob.forgetCustody { it == dm }
+            lab.link(dave, bob)
+            lab.await(1) { if (dm in bob.custodyIds()) 1 else 0 }
+            bob.transport.awaitInboundDrained()
+            assertNull("X1 did not open", bob.row(dm))
+        }
+        if (!staleResealAfterTheFirstPass) meetDave()
+
+        // The restore's reset crosses to Alice; her first pass reaches Carol, who drops it as an id seen inside her window.
+        val copiesBefore = alice.copiesTo(carol, dm)
+        carol.transport.release(alice.transport)
+        lab.await(1) { if (alice.copiesTo(carol, dm) > copiesBefore) 1 else 0 }
+        val firstPass = lab.clock.now()
+        carol.transport.awaitInboundDrained()
+        if (staleResealAfterTheFirstPass) {
+            lab.clock.advance(RELINK_AFTER_FIRST_PASS_MS)
+            meetDave()
+        }
+        assertTrue("X1 reached bob's router under the guard", bob.metrics.frames().framesReopenedDelivered >= 1)
+
+        lab.clock.advance(firstPass + ResetReseal.SECOND_PASS_MS - lab.clock.now())
+        alice.reoffer()
+        lab.assertConverged(listOf(alice, bob), atLeast = 3, carriers = listOf(carol), conversation = thread)
+    }
 
     /**
      * The twin of the case above that worked before #171: Bob comes back after Carol's window has run out, so the
@@ -545,4 +739,12 @@ class RestoreLabTest {
             assertTrue(bob.sendGroup(group, "still here"))
             lab.assertConverged(listOf(alice, bob, carol), atLeast = 3) { group }
         }
+
+    private companion object {
+        /** When Bob's link to Carol comes back after Alice's first pass: well inside the ten minutes before her second. */
+        const val RELINK_AFTER_FIRST_PASS_MS = 3 * 60_000L
+
+        /** The flagged-reset floor of the two-custodian cases, in place of the field's minute; on the wall clock. */
+        const val RESET_FLOOR_MS = 1_000L
+    }
 }

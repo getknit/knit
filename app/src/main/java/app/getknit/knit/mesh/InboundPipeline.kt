@@ -236,9 +236,15 @@ class InboundPipeline(
     // Re-seals our recent unacked DMs to a peer whose ratchet session was just replaced (the recovery
     // half of an inbound reset) — MeshManager.resealRecentDmsTo, lambda-mediated like originate.
     private val resealUnacked: suspend (String) -> Unit = {},
-    // Lets the sender's re-seal of an unopenable DM (same id, fresh seal) past the router's dedup — see
-    // `MeshRouter.reopen`. Default no-op for tests that build the pipeline without a router.
-    private val reopenFrame: (String) -> Unit = {},
+    // Lets the sender's re-seal of an unopenable DM (same id, fresh seal) past the router's dedup, under a guard naming
+    // the sender (frame id, sender) — see `MeshRouter.reopen`. Default no-op for tests that build the pipeline without a
+    // router.
+    private val reopenFrame: (String, String) -> Unit = { _, _ -> },
+    // A DM under this id from this sender opened or was taken (frame id, sender; `MeshRouter.settle`): ends a reopen
+    // guard on it that names that sender, and no other (#347). Called on every commit of a DM's step, on the exists-gate's
+    // true answers and on a row another sender holds; never on a DUPLICATE, which can be an old era's row meeting a new
+    // era's frame (#135). Default no-op, like [reopenFrame].
+    private val settleReopened: (String, String) -> Unit = { _, _ -> },
     // Answers a member's CTL_GROUP_KEY_REQ by re-sealing our current group seeds to them —
     // MeshManager.redistributeGroupKey (lands with the hardening phase), lambda-mediated like originate.
     private val redistributeGroupKey: suspend (String, String) -> Unit = { _, _ -> },
@@ -588,7 +594,7 @@ class InboundPipeline(
         val aad = MessageCrypto.header(env.id, env.senderId, env.sentAt, me)
         val now = System.currentTimeMillis()
         val peek = ratchet.peekOpen(me, env.senderId, peerIkPub, sealed.header, sealed.nonce, sealed.ct, aad, now)
-        if (peek !is RatchetEngine.OpenOutcome.Opened) return onRatchetFailure(env, peek, me, now, authenticated = false)
+        if (peek !is RatchetEngine.OpenOutcome.Opened) return onRatchetFailure(env, peek, me, now, authenticated = false, source = null)
         val committed =
             db.withWriteTransaction { ratchet.commitOpen(me, env.senderId, peerIkPub, sealed.header, sealed.nonce, sealed.ct, aad, now) {} }
         if (!committed) return
@@ -660,7 +666,7 @@ class InboundPipeline(
         val aad = MessageCrypto.header(env.id, env.senderId, env.sentAt, me)
         val now = clock()
         val peek = ratchet.peekOpen(me, env.senderId, peerIkPub, sealed.header, sealed.nonce, sealed.ct, aad, now)
-        if (peek !is RatchetEngine.OpenOutcome.Opened) return onRatchetFailure(env, peek, me, now, authenticated = false)
+        if (peek !is RatchetEngine.OpenOutcome.Opened) return onRatchetFailure(env, peek, me, now, authenticated = false, source = null)
         val committed =
             db.withWriteTransaction { ratchet.commitOpen(me, env.senderId, peerIkPub, sealed.header, sealed.nonce, sealed.ct, aad, now) {} }
         if (!committed) return
@@ -1096,6 +1102,23 @@ class InboundPipeline(
             Log.w(TAG, "drop frame ${env.id} from ${env.senderId}: verification error ${it.message}")
             false
         }
+
+    /**
+     * Whether [wire] is a DM to us signed by its [RelayEnvelope.senderId]: the router's check on a copy of an id under a
+     * reopen guard (`MeshRouter.handleGuarded`, #347), run before the copy is delivered. [verifyInbound]'s signature check
+     * without its side effects: it counts no metric, asks for no key and parks nothing, so a copy it refuses costs one
+     * verify and nothing else. Never throws; only the caller's cancellation is rethrown.
+     */
+    internal suspend fun signedBySender(
+        wire: WireEnvelope,
+        env: RelayEnvelope,
+    ): Boolean =
+        runCatchingUnlessCancelled {
+            if (env.type != FrameType.CHAT || env.group != null || env.recipientId != identity.nodeId()) return false
+            if (wire.sig.isEmpty()) return false
+            val bundle = verifierBundle(env, countDecode = false) ?: return false
+            NodeId.fromPublicKeyBundle(bundle.encoded) == env.senderId && MessageCrypto.verify(bundle, wire.sig, wire.signed)
+        }.getOrDefault(false)
 
     /**
      * Bounds a sender-supplied clock before it becomes a local last-writer-wins watermark. Every such
@@ -1696,11 +1719,16 @@ class InboundPipeline(
         val holder = messages.senderOf(env.id)
         if (holder != null && holder != env.senderId) return heldByOtherSender(env, enc, me, plane)
         val held = holder != null
-        if (env.group == null && loraDirectCopyTaken(env, enc, me, plane)) return true
+        if (env.group == null && loraDirectCopyTaken(env, enc, me, plane)) {
+            settleReopened(env.id, env.senderId)
+            return true
+        }
         if (!held) return false
         // No mark: a v1 copy, or a row from before the marks. Its receipt's own first seal may have minted our init (a
         // v1 first contact), and a re-seal past the floor rides that init rather than wait on an answer (NB1).
         acknowledge(env, me, plane, reDelivery = true, rideOwnFirstContact = true)
+        // The DM is held: a reopen guard on its id has nothing left to wait for (#347).
+        settleReopened(env.id, env.senderId)
         return true
     }
 
@@ -1732,6 +1760,8 @@ class InboundPipeline(
             if (!taken) return false
         }
         metrics.onDropped(DropReason.ROW_HELD_BY_OTHER_SENDER)
+        // The id is taken, by the row's own sender: nothing under it can open here any more (#347).
+        settleReopened(env.id, env.senderId)
         return true
     }
 
@@ -1818,7 +1848,10 @@ class InboundPipeline(
         // like any other missed ratchet-only step, never fed to the reset heuristic; it used to pass in silence, the
         // one exit of this step that left no trace (a KNIT_LAB_BOARDS restore pair ended with no session and none).
         if (!committed) missed("the commit refused what the peek opened")
-        if (committed) onPeerFrameOpened(env.senderId, wireHeader.init?.eph, wireHeader.flags and RatchetHeader.FLAG_RESET != 0)
+        if (committed) {
+            settleReopened(env.id, env.senderId)
+            onPeerFrameOpened(env.senderId, wireHeader.init?.eph, wireHeader.flags and RatchetHeader.FLAG_RESET != 0)
+        }
         return true
     }
 
@@ -1920,8 +1953,12 @@ class InboundPipeline(
                 db.withWriteTransaction {
                     ratchet.commitOpen(me, env.senderId, peerIkPub, wireHeader, nonce, enc.ct, aad, now, env.sentAt, onOpened)
                 }
-            // After the transaction and outside the session lock: the hook may seal an answer of its own.
-            if (committed) onPeerFrameOpened(env.senderId, wireHeader.init?.eph, wireHeader.flags and RatchetHeader.FLAG_RESET != 0)
+            // After the transaction and outside the session lock: the hook may seal an answer of its own. The id opened, so
+            // a reopen guard on it ends first (#347): a copy waiting on the router's turn then dedups.
+            if (committed) {
+                settleReopened(env.id, env.senderId)
+                onPeerFrameOpened(env.senderId, wireHeader.init?.eph, wireHeader.flags and RatchetHeader.FLAG_RESET != 0)
+            }
             committed
         }
         if (plain.ctl != null) {
@@ -1952,7 +1989,10 @@ class InboundPipeline(
      * A row another sender holds under this id, found inside the commit (it landed after the gate), is not this frame's:
      * the ratchet step and the inline acks still commit, and neither the row (`save` is an upsert, and would replace
      * it) nor a mark is written. The hook then answers false, and [deliverChat] stops short of everything that follows a
-     * persist.
+     * persist. A row its own sender holds that a sibling signed copy wrote (its mark already says the step ran, or no
+     * mark at all) is met the same way: two re-seals of one DM can open at once under a reopen guard (#347), and the
+     * second must not save, notify or acknowledge it again. A compact LoRa copy's row is not that case: its mark says
+     * the step is still owed, and this copy takes it as before.
      */
     private fun persistWithInlineAcks(
         env: RelayEnvelope,
@@ -1967,12 +2007,21 @@ class InboundPipeline(
                 val holder = messages.senderOf(env.id)
                 ours = holder == null || holder == env.senderId
                 if (ours) {
-                    val compactFirst = loraSeen.find(env.id)?.takeIf { seen -> seen.peerId == env.senderId } != null
-                    if (compactFirst) {
-                        loraSeen.markRatchetDone(env.id)
-                    } else {
-                        messages.save(row)
-                        if (markSeen) loraSeen.recordIfAbsent(env.id, env.senderId, clock(), ratchetDone = true)
+                    val mark = loraSeen.find(env.id)?.takeIf { seen -> seen.peerId == env.senderId }
+                    when {
+                        // A sibling signed copy committed first: its row and its step stand.
+                        holder != null && (mark == null || mark.ratchetDone) -> {
+                            ours = false
+                        }
+
+                        mark != null -> {
+                            loraSeen.markRatchetDone(env.id)
+                        }
+
+                        else -> {
+                            messages.save(row)
+                            if (markSeen) loraSeen.recordIfAbsent(env.id, env.senderId, clock(), ratchetDone = true)
+                        }
                     }
                 }
                 applyInlineAcks(env, plain, plane)
@@ -2944,8 +2993,9 @@ class InboundPipeline(
         now: Long,
         // False for a frame the unsigned door admitted (ADR 059): counted, never a reset trigger.
         authenticated: Boolean = true,
-        // The frame as it arrived, for the floored reset's hold; null on a path with nothing to hold.
-        source: InboundFrame? = null,
+        // The frame as it arrived, for the floored reset's hold; null on a path with nothing to hold. Named by every
+        // caller, never defaulted: the authenticated path's hold must not be lost to a call that forgot it.
+        source: InboundFrame?,
         // The peer's [RatchetSessions.rootGeneration], read BEFORE the open that failed: a root change committed between
         // the two can then only make a floored reset's hold stale, never let it outlive its era (ADR 2026-11.sfms).
         generation: Long = ratchet.rootGeneration(env.senderId),
@@ -2995,10 +3045,12 @@ class InboundPipeline(
             // The frame is addressed to us and we could not open it. If a reset is on its way (ours, sent
             // already or about to be), the sender answers with a fresh seal of this very frame under the
             // same id — which the router would otherwise dedup for ten minutes, since the copy custody just
-            // served us is what put the id in its set. Let that one copy through. This opens our gate only:
-            // a relay between us that saw the id in its window drops that seal, which is why the sender seals
-            // it once more after the window (MeshManager.resealRecentDmsTo, ADR 2026-10.dmgw).
-            reopenFrame(env.id)
+            // served us is what put the id in its set. Reopen it under a guard naming the sender: the id then
+            // stays unmarked until a copy opens (settleReopened), and only the sender's own signed copies are
+            // delivered meanwhile, so a stale original cannot spend the reopen (#347).
+            // This opens our gate only: a relay between us that saw the id in its window drops that seal, which
+            // is why the sender seals it once more after the window (MeshManager.resealRecentDmsTo, ADR 2026-10.dmgw).
+            reopenFrame(env.id, env.senderId)
             maybeRequestReset(
                 env,
                 me,
@@ -4373,7 +4425,8 @@ class InboundPipeline(
         // Null when another sender's row landed between the read above and the persist: the same refusal, after it.
         val stored = persistQuoted(built.withVideo(video), isNew, me, conversationId, persist)
         if (stored == null) {
-            metrics.onDropped(DropReason.ROW_HELD_BY_OTHER_SENDER)
+            // Or a sibling copy from the same sender committed first (persistWithInlineAcks): it saved, showed and acked.
+            if (heldByAnother(messages.senderOf(env.id), env.senderId)) metrics.onDropped(DropReason.ROW_HELD_BY_OTHER_SENDER)
             return
         }
         screenPoster(stored, fresh = isNew, own = env.senderId == me)

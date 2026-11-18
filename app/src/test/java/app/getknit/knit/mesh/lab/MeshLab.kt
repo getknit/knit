@@ -102,6 +102,7 @@ import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.RatchetPeerState
 import app.getknit.knit.mesh.ReadSync
 import app.getknit.knit.mesh.SPOOL_COVER_MS
+import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.bluetooth.BackoffConfig
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
@@ -1296,6 +1297,11 @@ data class LabLimits(
      */
     val reofferIntervalMs: Long = MeshLab.REOFFER_INTERVAL_MS,
     /**
+     * How many reopened DM ids the router's guard table holds ([SeenSet.REOPENED_MAX], the field value by default). A
+     * scenario about a full table shrinks it, so a flood of tens fills it rather than a thousand.
+     */
+    val reopenedMax: Int = SeenSet.REOPENED_MAX,
+    /**
      * The one-minute floor on a peer's flagged reset ([RatchetSessions.RESET_REPLACEMENT_MIN_INTERVAL_MS], ADR 023), as the
      * node applies it and as it models its peer's before it sends a reset (ADR 2026-09.qerd). The field value by default.
      * The open path stamps it on the wall clock, which a lab clock jump never moves, so a scenario that must outwait it
@@ -2274,6 +2280,7 @@ class LabNode internal constructor(
                 carrierBlobBudgetBytes = limits.carrierBlobBudgetBytes,
                 proofWaitMs = limits.proofWaitMs,
                 reofferIntervalMs = limits.reofferIntervalMs,
+                reopenedMax = limits.reopenedMax,
                 blobHolderQuery =
                     BlobExchange.HolderQuery(
                         enabled = limits.blobQuery,

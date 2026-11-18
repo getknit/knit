@@ -10,6 +10,7 @@ import app.getknit.knit.mesh.MeshRouter
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
+import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.protocol.DEFAULT_TTL
@@ -39,6 +40,7 @@ import org.junit.Test
 import java.io.File
 
 @OptIn(ExperimentalCoroutinesApi::class)
+@Suppress("LargeClass") // the router's whole contract: dedup, relay, hand-on, suppression and the reopen guard
 class MeshRouterTest {
     /** Transport double that records what the router sends. */
     private class RecordingTransport(
@@ -805,4 +807,295 @@ class MeshRouterTest {
 
             assertEquals(listOf(env.id), finished)
         }
+
+    /** A sealed DM from [sender] to "me" under [label]'s id, signed [sig] (one byte, so two copies can differ). */
+    private fun dm(
+        label: String,
+        sig: Byte,
+        sender: String = "a",
+    ): Pair<WireEnvelope, RelayEnvelope> {
+        val env =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = frameIdOf(label),
+                senderId = sender,
+                sentAt = 0L,
+                recipientId = "me",
+                payload = ByteArray(0),
+            )
+        return WireEnvelope(ttl = DEFAULT_TTL, hops = 0, relay = true, sig = byteArrayOf(sig), signed = WireCodec.encodeEnvelope(env)) to
+            env
+    }
+
+    /**
+     * #347: a reopened DM stays unmarked until a copy of it opens. A repeat of the copy that failed is delivered again,
+     * never marked and never relayed, and so is a fresh signature 11 minutes on, past the window a mark taken by the
+     * repeat would have held. Once a copy has opened (the pipeline's settle), the next is a duplicate.
+     */
+    @Test
+    fun aReopenedDmIsDeliveredUnmarkedUntilItSettles() =
+        runTest {
+            var now = 0L
+            val seen = SeenSet(clock = { now })
+            val metrics = MeshMetrics()
+            val transport = RecordingTransport(setOf("b", "c"))
+            val delivered = mutableListOf<Byte>()
+            val router =
+                MeshRouter(transport, this, seen = seen, metrics = metrics, jitter = { 0L }, verifyReopened = {
+                    _,
+                    _,
+                    ->
+                    true
+                }) { wire, _, _, _, _ ->
+                    delivered += wire.sig[0]
+                }
+            val (original, env) = dm("x", sig = 1)
+            router.handleInbound(original, env, "b")
+            advanceUntilIdle()
+            assertTrue("the failure reopens it", router.reopen(env.id, "a"))
+            transport.sent.clear()
+
+            router.handleInbound(original, env, "c")
+            advanceUntilIdle()
+            assertEquals("the repeat is delivered", listOf<Byte>(1, 1), delivered)
+            assertTrue("and never relayed", transport.sent.isEmpty())
+            assertEquals("nor marked", false, seen.contains(env.id))
+
+            now += 11 * 60_000L
+            val (reseal, _) = dm("x", sig = 2)
+            router.handleInbound(reseal, env, "b")
+            advanceUntilIdle()
+            assertEquals("the second-pass re-seal is delivered", listOf<Byte>(1, 1, 2), delivered)
+            assertTrue(transport.sent.isEmpty())
+            assertEquals(2L, metrics.frames().framesReopenedDelivered)
+
+            router.settle(env.id, "a")
+            router.handleInbound(reseal, env, "c")
+            advanceUntilIdle()
+            assertEquals("once settled, a duplicate", listOf<Byte>(1, 1, 2), delivered)
+            assertEquals(1L, metrics.frames().framesDeduped)
+        }
+
+    /** #347: a copy under a guarded id that fails the sender's signature, or names another sender, is dropped unmarked. */
+    @Test
+    fun aGuardedIdDropsACopyThatIsNotItsSendersSignedDm() =
+        runTest {
+            val seen = SeenSet(clock = { 0L })
+            val metrics = MeshMetrics()
+            val transport = RecordingTransport(setOf("b", "c"))
+            val delivered = mutableListOf<Byte>()
+            val router =
+                MeshRouter(
+                    transport,
+                    this,
+                    seen = seen,
+                    metrics = metrics,
+                    jitter = { 0L },
+                    verifyReopened = { wire, _ -> wire.sig[0] != BAD_SIG },
+                ) { wire, _, _, _, _ -> delivered += wire.sig[0] }
+            val (original, env) = dm("x", sig = 1)
+            router.handleInbound(original, env, "b")
+            advanceUntilIdle()
+            router.reopen(env.id, "a")
+            transport.sent.clear()
+
+            val (forged, _) = dm("x", sig = BAD_SIG)
+            router.handleInbound(forged, env, "c")
+            val (stranger, strangerEnv) = dm("x", sig = 3, sender = "z")
+            router.handleInbound(stranger, strangerEnv, "c")
+            advanceUntilIdle()
+            assertEquals("neither is delivered", listOf<Byte>(1), delivered)
+            assertTrue("nor relayed", transport.sent.isEmpty())
+            assertEquals("nor marked", false, seen.contains(env.id))
+            assertEquals(2L, metrics.frames().dropsByReason[DropReason.REOPENED_UNVERIFIED])
+            assertTrue("the guard stands", seen.guardFor(env.id) != null)
+
+            val (reseal, _) = dm("x", sig = 2)
+            router.handleInbound(reseal, env, "b")
+            advanceUntilIdle()
+            assertEquals("the sender's re-seal still gets through", listOf<Byte>(1, 2), delivered)
+        }
+
+    /**
+     * #347: one signature is delivered [SeenSet.REOPEN_TRIES] times per window, then dropped as spent until the window
+     * from its first try has passed; another signature always has tries of its own.
+     */
+    @Test
+    fun aGuardedSignatureIsDeliveredThreeTimesAWindow() =
+        runTest {
+            var now = 0L
+            val seen = SeenSet(clock = { now })
+            val metrics = MeshMetrics()
+            val delivered = mutableListOf<Byte>()
+            val router =
+                MeshRouter(RecordingTransport(setOf("b")), this, seen = seen, metrics = metrics, jitter = { 0L }, verifyReopened = {
+                    _,
+                    _,
+                    ->
+                    true
+                }) {
+                    wire,
+                    _,
+                    _,
+                    _,
+                    _,
+                    ->
+                    delivered += wire.sig[0]
+                }
+            val (original, env) = dm("x", sig = 1)
+            router.handleInbound(original, env, "b")
+            advanceUntilIdle()
+            router.reopen(env.id, "a")
+
+            repeat(SeenSet.REOPEN_TRIES + 1) { router.handleInbound(original, env, "b") }
+            advanceUntilIdle()
+            assertEquals("the first copy and three tries", 1 + SeenSet.REOPEN_TRIES, delivered.size)
+            assertEquals(1L, metrics.frames().dropsByReason[DropReason.REOPENED_SPENT])
+            val (fresh, _) = dm("x", sig = 2)
+            router.handleInbound(fresh, env, "b")
+            advanceUntilIdle()
+            assertEquals("a new signature passes", 2 + SeenSet.REOPEN_TRIES, delivered.size)
+
+            now += SeenSet.DEFAULT_TTL_MS
+            router.handleInbound(original, env, "b")
+            advanceUntilIdle()
+            assertEquals("a window on, the spent signature refills", 3 + SeenSet.REOPEN_TRIES, delivered.size)
+            assertEquals(false, seen.contains(env.id))
+        }
+
+    /**
+     * #347: guarded copies of one id take turns. Two re-seals arriving together are never opened at once: the second
+     * waits for the first, and once the first has opened (settled) it reads the id as marked and dedups.
+     */
+    @Test
+    fun guardedCopiesOfOneIdTakeTurnsAndTheSecondDedupsAfterASettle() =
+        runTest {
+            val seen = SeenSet(clock = { 0L })
+            val metrics = MeshMetrics()
+            val opening = CompletableDeferred<Unit>()
+            val opened = CompletableDeferred<Unit>()
+            val delivered = mutableListOf<Byte>()
+            lateinit var router: MeshRouter
+            router =
+                MeshRouter(RecordingTransport(setOf("b")), this, seen = seen, metrics = metrics, jitter = { 0L }, verifyReopened = {
+                    _,
+                    _,
+                    ->
+                    true
+                }) {
+                    wire,
+                    env,
+                    _,
+                    _,
+                    _,
+                    ->
+                    delivered += wire.sig[0]
+                    if (wire.sig[0] == 2.toByte()) {
+                        opening.complete(Unit)
+                        opened.await()
+                        router.settle(env.id, "a")
+                    }
+                }
+            val (original, env) = dm("x", sig = 1)
+            router.handleInbound(original, env, "b")
+            advanceUntilIdle()
+            router.reopen(env.id, "a")
+
+            val (first, _) = dm("x", sig = 2)
+            val (second, _) = dm("x", sig = 3)
+            val one = launch { router.handleInbound(first, env, "b") }
+            opening.await()
+            val two = launch { router.handleInbound(second, env, "b") }
+            runCurrent()
+            assertEquals("the second waits its turn", listOf<Byte>(1, 2), delivered)
+            opened.complete(Unit)
+            one.join()
+            two.join()
+            assertEquals("and dedups once the first has opened", listOf<Byte>(1, 2), delivered)
+            assertEquals(1L, metrics.frames().framesDeduped)
+            assertEquals(1L, metrics.frames().framesReopenedDelivered)
+        }
+
+    /** #347: a guard no copy settles lapses at [SeenSet.REOPEN_GUARD_MS], and the id is marked and deduped as before. */
+    @Test
+    fun aGuardNoCopySettlesLapsesAndNormalDedupResumes() =
+        runTest {
+            var now = 0L
+            val seen = SeenSet(clock = { now })
+            val metrics = MeshMetrics()
+            val transport = RecordingTransport(setOf("b", "c"))
+            val delivered = mutableListOf<Byte>()
+            val router =
+                MeshRouter(transport, this, seen = seen, metrics = metrics, jitter = { 0L }, verifyReopened = {
+                    _,
+                    _,
+                    ->
+                    true
+                }) { wire, _, _, _, _ ->
+                    delivered += wire.sig[0]
+                }
+            val (original, env) = dm("x", sig = 1)
+            router.handleInbound(original, env, "b")
+            advanceUntilIdle()
+            router.reopen(env.id, "a")
+            transport.sent.clear()
+
+            now += SeenSet.REOPEN_GUARD_MS
+            router.handleInbound(original, env, "b")
+            advanceUntilIdle() // the relay fires before the next copy could suppress it
+            router.handleInbound(original, env, "c")
+            advanceUntilIdle()
+            assertEquals("the first copy past the lapse is delivered, the next deduped", listOf<Byte>(1, 1), delivered)
+            assertEquals(0L, metrics.frames().framesReopenedDelivered)
+            assertEquals(1L, metrics.frames().framesDeduped)
+            assertTrue("marked again", seen.contains(env.id))
+            assertEquals("and relayed, as any first-seen copy is", setOf("c"), transport.sent.mapNotNull { it.second?.nodeId }.toSet())
+        }
+
+    /**
+     * #347, the honest variant of a full guard table: a restore whose failures outnumber it, all from one sender, evicts
+     * a guard of that sender's. The evicted id is left unmarked, not marked, so nothing there can drop the second pass: a
+     * stale copy of the original that arrives first is admitted, fails and reopens the id afresh, and the re-seal behind
+     * it is delivered under the new guard.
+     */
+    @Test
+    fun anEvictedGuardLeavesItsIdUnmarkedAndTheSecondPassStillGetsThrough() =
+        runTest {
+            val seen = SeenSet(clock = { 0L })
+            val transport = RecordingTransport(setOf("b"))
+            val delivered = mutableListOf<Byte>()
+            lateinit var router: MeshRouter
+            router =
+                MeshRouter(transport, this, seen = seen, jitter = { 0L }, verifyReopened = { _, _ -> true }) { wire, env, _, _, _ ->
+                    delivered += wire.sig[0]
+                    // The pipeline's answer to a copy of the original: it fails, and reopens.
+                    if (wire.sig[0] == 1.toByte()) router.reopen(env.id, "a")
+                }
+            // The rest of the backlog, all from the same sender, then x: its newest guard when the table fills.
+            (1 until SeenSet.REOPENED_MAX).forEach {
+                seen.add("backlog$it")
+                seen.reopen("backlog$it", "a")
+            }
+            val (original, env) = dm("x", sig = 1)
+            router.handleInbound(original, env, "b")
+            advanceUntilIdle()
+            assertTrue("x is guarded", seen.guardFor(env.id) != null)
+            seen.add("one-more")
+            seen.reopen("one-more", "a")
+            assertEquals("x's guard made room", null, seen.guardFor(env.id))
+            assertEquals("and x is unmarked", false, seen.contains(env.id))
+
+            router.handleInbound(original, env, "b")
+            advanceUntilIdle()
+            assertTrue("the stale copy re-armed the guard", seen.guardFor(env.id) != null)
+            val (secondPass, _) = dm("x", sig = 2)
+            router.handleInbound(secondPass, env, "b")
+            advanceUntilIdle()
+            assertEquals("the second pass is delivered", listOf<Byte>(1, 1, 2), delivered)
+        }
+
+    private companion object {
+        /** The signature byte the guarded cases' fake verifier refuses. */
+        const val BAD_SIG: Byte = 9
+    }
 }

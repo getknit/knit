@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.Locale
 import kotlin.random.Random
 
 /**
@@ -47,6 +48,10 @@ class MeshRouter(
     // call. Not invoked for a relay that fired with no neighbor to send to. Defaulted to a no-op so the tests
     // that bind `onDeliver` as a trailing lambda are untouched; keep it before `onDeliver` for that reason.
     private val onRelayed: suspend (envelope: RelayEnvelope, to: Set<String>) -> Unit = { _, _ -> },
+    // Whether a copy of an id under a reopen guard ([SeenSet.guardFor], #347) is signed by its sender, checked with no
+    // side effect (`InboundPipeline.signedBySender`): only such a copy is delivered while the guard stands. Fails closed,
+    // so a rig with no pipeline drops every guarded copy. Before `onDeliver`, like `onRelayed`.
+    private val verifyReopened: suspend (wire: WireEnvelope, envelope: RelayEnvelope) -> Boolean = { _, _ -> false },
     // [onLink]: the frame came in on a link, so [fromNodeId] is that link's peer ([InboundFrame.onLink], ADR 2026-11.264w).
     private val onDeliver: suspend (
         wire: WireEnvelope,
@@ -119,6 +124,10 @@ class MeshRouter(
             metrics.onDropped(DropReason.NONCANONICAL_ID)
             return
         }
+        // A reopened id stays unmarked until a copy of it opens (#347): ahead of the meter and the mark, a guarded copy is
+        // delivered or dropped here and never marked, relayed or counted as an overhear. False when the guard ended while
+        // this copy waited for its turn: it then takes the path below like any other.
+        if (seen.guardFor(envelope.id) != null && handleGuarded(wire, envelope, fromNodeId, kind, onLink)) return
         // The ingress meter sits between the dedup *check* and the dedup *add*: a duplicate is never metered
         // (it is evidence of propagation, not a cost — see countOverheard), and a refused frame is never
         // marked seen, so the custody re-serve can bring it through later. The gap between the two lets the
@@ -155,11 +164,90 @@ class MeshRouter(
     }
 
     /**
-     * Admits one more copy of [id] through the dedup gate — for a sealed DM addressed to us that we could
-     * not open, whose sender will answer our session reset with a fresh seal under the same id
-     * (`MeshManager.resealRecentDmsTo`). See [SeenSet.reopen] for the bound.
+     * A copy of an id under a reopen guard ([SeenSet.guardFor]): true when it was delivered or dropped here, false when
+     * the guard ended while it waited, so the caller's dedup decides it.
+     *
+     * Only the guarded sender's own signature on a DM to us is delivered ([verifyReopened]); anything else under the id is
+     * dropped unmarked (#347). A verified
+     * copy is delivered whatever its signature bytes, since the same bytes that failed can open later (a follow-up ahead of
+     * its reset, ADR 2026-11.sfms), up to [SeenSet.REOPEN_TRIES] per signature per window ([SeenSet.spendTry]). Never
+     * marked and never relayed: the id is marked when a copy opens ([settle]), and no neighbour needs our copy of a DM to
+     * us. Copies of one id take turns on a per-id lock, so two re-seals never open at once, and one that waited past the
+     * settle finds the id marked and dedups.
      */
-    fun reopen(id: String): Boolean = seen.reopen(id)
+    private suspend fun handleGuarded(
+        wire: WireEnvelope,
+        envelope: RelayEnvelope,
+        fromNodeId: String,
+        kind: TransportKind,
+        onLink: Boolean,
+    ): Boolean {
+        val id = envelope.id
+        val guard = seen.guardFor(id) ?: return false
+        if (envelope.senderId != guard.sender || !verifyReopened(wire, envelope)) {
+            metrics.onDropped(DropReason.REOPENED_UNVERIFIED)
+            return true
+        }
+        val lock = guardLock(id)
+        return lock.withLock {
+            if (seen.guardFor(id) == null) {
+                dropGuardLock(id, lock)
+                return@withLock false
+            }
+            if (!seen.spendTry(id, sigKey(wire))) {
+                // Settled or lapsed between the two reads: the dedup below decides it.
+                if (seen.guardFor(id) == null) return@withLock false
+                metrics.onDropped(DropReason.REOPENED_SPENT)
+                return@withLock true
+            }
+            metrics.onReopenedDelivered()
+            // Under NonCancellable for the reason a first-seen frame's delivery is (see handleInbound).
+            withContext(NonCancellable) { onDeliver(wire, envelope, fromNodeId, kind, onLink) }
+            true
+        }
+    }
+
+    /** The turn-taking lock for guarded copies of [id]; pruned of ids no longer guarded as each new one is added. */
+    private fun guardLock(id: String): Mutex =
+        synchronized(guardLocks) {
+            guardLocks[id] ?: Mutex().also { lock ->
+                guardLocks.entries.removeAll { (other, held) -> !held.isLocked && seen.guardFor(other) == null }
+                guardLocks[id] = lock
+            }
+        }
+
+    private fun dropGuardLock(
+        id: String,
+        lock: Mutex,
+    ) {
+        synchronized(guardLocks) { guardLocks.remove(id, lock) }
+    }
+
+    // Guarded ids only (see [guardLock]); every entry is removed once its id settles or its guard has lapsed.
+    private val guardLocks = HashMap<String, Mutex>()
+
+    /**
+     * Lets the sender's re-seal of [id] through the dedup gate — for a sealed DM from [sender] addressed to us that we
+     * could not open, whose sender will answer our session reset with a fresh seal under the same id
+     * (`MeshManager.resealRecentDmsTo`). The id stays unmarked until a copy opens ([settle]); see [SeenSet.reopen] for
+     * the bound and [handleGuarded] for what a copy meets meanwhile.
+     */
+    fun reopen(
+        id: String,
+        sender: String,
+    ): Boolean = seen.reopen(id, sender)
+
+    /**
+     * A copy of [id] from [sender] opened (`InboundPipeline`'s settle sites): the id is marked, and its reopen guard ends
+     * if [sender] is the one it guards ([SeenSet.settle]).
+     */
+    fun settle(
+        id: String,
+        sender: String,
+    ) {
+        seen.settle(id, sender)
+        if (seen.guardFor(id) == null) synchronized(guardLocks) { guardLocks.remove(id) }
+    }
 
     /** Sends a locally-originated frame ([id] = its dedup key) to the whole mesh, immediately. */
     suspend fun originate(
@@ -318,6 +406,9 @@ class MeshRouter(
     }
 
     private companion object {
+        /** A copy's signature, the key [SeenSet.spendTry] counts tries under. */
+        fun sigKey(wire: WireEnvelope): String = wire.sig.joinToString("") { "%02x".format(Locale.ROOT, it) }
+
         /** Max jitter before a first-seen relayable frame is forwarded. */
         const val DEFAULT_JITTER_WINDOW_MS = 150L
 

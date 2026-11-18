@@ -141,6 +141,23 @@ LoRa plane (2026-09.ggq4).
   still unacked, once per reset — the second pass never records an entry, and the drain is clock-driven, outside
   the link-set guards. Regression: `MeshManagerTest.aResetsResealGoesOutOnceMoreAfterTheDedupWindow`,
   `RestoreLabTest`'s relayed-restore scenarios.
+- **When touching the reopen guard — `SeenSet.guardFor` / `spendTry` / `settle` / `makeRoom`, `REOPEN_GUARD_MS` /
+  `REOPEN_TRIES` / `REOPEN_KEYS` / `REOPENED_MAX`, `MeshRouter.handleGuarded` / `settle` / `verifyReopened`,
+  `InboundPipeline.signedBySender` / `settleReopened`, or `DropReason.REOPENED_UNVERIFIED` / `REOPENED_SPENT`:** READ ADR
+  2026-10.dmgw's 2026-11-18 amendment (draft, #347). A reopened DM id stays unmarked until a copy opens or 22 min pass.
+  Meanwhile the router delivers only the guarded sender's verified copies, never marks, relays or counts one as an
+  overhear, gives each signature 3 deliveries a window (refilled a window after its first try, 8 signatures per id,
+  LRU), and serialises one id's copies on a per-id `Mutex`. `settleReopened(id, sender)` settles only a guard naming
+  that sender, and runs on a DM step's commit (decrypt path and `ratchetOnly`), the exists-gate's true answers and a row
+  another sender holds — never on `DUPLICATE` (#135). The table holds 1,024 ids; full, it drops a lapsed or settled
+  guard first, then the newest live guard of the sender holding the most. Traps: never mark a guarded id from the
+  router, never release the guard on a signature alone (a stale genuine re-seal verifies and does not open), never drop
+  a verified copy for repeating bytes that failed (ADR 2026-11.sfms's follow-up opens later), never evict guards oldest
+  first, and `signedBySender` stays side-effect free (no count, key request or park). Regression: `SeenSetTest`'s guard
+  and eviction cases, `MeshRouterTest`'s guarded cases,
+  `RestoreLabTest.aCopyOfTheOriginalBetweenThePassesNeverCostsTheRestoredNodeTheSecondPass` and the two-custodian cases
+  beside it, `ResetOverRelayLabTest.aFollowUpAheadOfItsResetOpensAfterItsSignatureHasMetTheGuardFourTimes`,
+  `MaliciousForkLabTest.aFloodOfReopensFromOnePinnedIdentityNeverCostsAnotherSendersDmItsSecondPass`.
 - **When touching `GroupRatchetEngine` / `GroupRatchetSessions`, `MeshManager.sealGroupRatchet` / `groupKeyPayload` /
   `currentSeeds`, the seed outbox (`group_key_sends`, `CTL_GROUP_KEY_ACK`), `InboundPipeline.flushPendingGroupKeysFor`
   / `adoptGroupSeeds` / `maybeRequestGroupKey`, `CTL_GROUP_KEY_REQ`, `MAX_ADOPTIONS_PER_DAY`, or
