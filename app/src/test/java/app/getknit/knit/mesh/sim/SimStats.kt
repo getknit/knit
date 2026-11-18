@@ -96,20 +96,26 @@ class ContactLog(
     }
 }
 
-/** The size of the biggest set of walkers [links] join into one mesh. */
+/** The size of the biggest set of walkers [links] join into one mesh: union-find, linear in the links. */
 fun largestComponent(
     links: Set<Link>,
     walkers: Int,
 ): Int {
-    val seen = BooleanArray(walkers)
-    var largest = 0
-    for (start in 0 until walkers) {
-        if (seen[start]) continue
-        val members = (0 until walkers).filter { !seen[it] && hops(links, start, it) != null }
-        members.forEach { seen[it] = true }
-        largest = maxOf(largest, members.size)
+    if (walkers == 0) return 0
+    val parent = IntArray(walkers) { it }
+
+    fun root(of: Int): Int {
+        var at = of
+        while (parent[at] != at) {
+            parent[at] = parent[parent[at]]
+            at = parent[at]
+        }
+        return at
     }
-    return largest
+    links.forEach { parent[root(it.a)] = root(it.b) }
+    val sizes = IntArray(walkers)
+    for (walker in 0 until walkers) sizes[root(walker)]++
+    return sizes.max()
 }
 
 /** The nearest-rank [p]th percentile of [sorted], or null when it is empty. */

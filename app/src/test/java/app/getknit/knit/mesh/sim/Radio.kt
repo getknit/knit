@@ -20,10 +20,14 @@ interface Radio {
     /** Each node's radio, shared by its air links both ways ([app.getknit.knit.mesh.lab.NodeAir]), or null for none. */
     val nodeAirBytesPerSecond: Long? get() = null
 
-    /** Moves the radio to [atMs] with every walker at its place in [positions]. */
+    /**
+     * Moves the radio to [atMs] with every walker at its place in [positions]. A walker [present] marks false is out of
+     * the field ([Mobility.present]): its links drop and nobody dials it. Null means everyone is there.
+     */
     fun step(
         atMs: Long,
         positions: List<Point>,
+        present: BooleanArray? = null,
     ): LinkChanges
 
     /** The numbers it was built with, as [SimSummary] keys: two runs line up by them. */

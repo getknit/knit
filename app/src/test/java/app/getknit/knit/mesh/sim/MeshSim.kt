@@ -30,8 +30,14 @@ data class SimScenario(
     val durationMs: Long,
     /** The field is a square this many metres on a side. */
     val fieldM: Double,
-    /** Friends arrive together, [groupSize] at a time, and DM only each other. */
+    /** Friends arrive together, [groupSize] at a time, unless [groups] names other sizes. */
     val groupSize: Int = 3,
+    /** How the walkers split into groups ([GroupSizes.of]): `fixed` keeps [groupSize]; `street` draws a street's. */
+    val groups: String = GroupSizes.FIXED,
+    /** How the walkers move ([Motion.of]): `rwp`, each alone once its group has left the gate, or `groups`, together. */
+    val motion: String = Motion.WAYPOINT,
+    /** Whom the walkers DM ([Friends.of]): `group`, the friends they came with, or `circles`, their circle's too. */
+    val friends: String = Friends.Group.name,
     /** How long a group stands together at its gate before its walkers set off. */
     val departMs: Long = 10_000,
     /** Which [Radio] turns places into links ([Radio.of]); the three numbers after it are [DiscRadio]'s. */
@@ -89,18 +95,16 @@ class MeshSim(
     /** Told where the outing has got to, as it goes: a run that stalls says where. */
     private val progress: (String) -> Unit = {},
 ) {
-    private val groups = (0 until scenario.walkers).chunked(scenario.groupSize)
-    private val mobility =
-        RandomWaypoint(
-            seed = scenario.seed,
-            widthM = scenario.fieldM,
-            heightM = scenario.fieldM,
-            starts = gates(),
-            departMs = scenario.departMs,
-        )
-    private val radio = Radio.of(scenario, initial = groups.flatMap(::pairs).toSet())
+    private val groupSizes = GroupSizes.of(scenario.groups, scenario.groupSize)
+    private val groups = groupSizes.partition(scenario.seed, scenario.walkers)
+    private val mobility = Motion.of(scenario, groups, gates())
+    private val workloadFriends = Friends.of(scenario.friends, scenario.seed, groups)
+
+    // The groups at their gates at the start: linked before the walk, as friends who arrived together are.
+    private val radio = Radio.of(scenario, initial = groups.filter { g -> g.all { mobility.present(it, 0) } }.flatMap(::pairs).toSet())
     private val contacts = ContactLog(scenario.walkers)
-    private val events = Workload.schedule(scenario.seed, groups, scenario.durationMs, scenario.dmMeanMs, scenario.roomMeanMs)
+    private val events =
+        Workload.schedule(scenario.seed, groups, scenario.durationMs, scenario.dmMeanMs, scenario.roomMeanMs, workloadFriends)
 
     /** The walkers' nodes, once [play] has booted them: what a test reads the links they were given off. */
     internal lateinit var nodes: List<LabNode>
@@ -343,10 +347,10 @@ class MeshSim(
     }
 
     // Each group stands at its own gate: a point drawn in the field, shared by its walkers.
+    // One gate a group, where it stands until it sets off.
     private fun gates(): List<Point> {
         val random = kotlin.random.Random(scenario.seed)
-        val gates = groups.map { Point(random.nextDouble() * scenario.fieldM, random.nextDouble() * scenario.fieldM) }
-        return (0 until scenario.walkers).map { gates[it / scenario.groupSize] }
+        return groups.map { Point(random.nextDouble() * scenario.fieldM, random.nextDouble() * scenario.fieldM) }
     }
 
     private fun pairs(group: List<Int>): List<Link> = group.flatMapIndexed { i, a -> group.drop(i + 1).map { b -> Link.of(a, b) } }
@@ -360,11 +364,15 @@ class MeshSim(
         val limits = LabLimits(inboundSlots = scenario.inboundSlots, nodeAirBytesPerSecond = radio.nodeAirBytesPerSecond)
         nodes = (0 until scenario.walkers).map { i -> lab.node("w$i", limits).apply { setDisplayName("Walker $i") } }
         val bootMs = (System.nanoTime() - started) / NANOS_PER_MS / scenario.walkers
-        for (group in groups) {
-            val friends = group.map { nodes[it] }.toTypedArray()
-            lab.linkAll(*pairs(group).map(::ends).toTypedArray(), air = radio.air)
+        // Everyone who DMs each other meets first: a group, or under circles its whole circle. Friends who came separately
+        // already know each other, so only the links the radio starts with stay up once they have.
+        val parties = (workloadFriends as? Friends.Circle)?.circles?.map { circle -> circle.flatMap { groups[it] } } ?: groups
+        for (members in parties) {
+            val friends = members.map { nodes[it] }.toTypedArray()
+            lab.linkAll(*pairs(members).map(::ends).toTypedArray(), air = radio.air)
             lab.awaitAcquainted(*friends)
             lab.befriend(*friends)
+            pairs(members).filterNot { it in radio.links }.map(::ends).forEach { (a, b) -> a.transport.disconnect(b.transport) }
         }
         val perNode = (usedHeapMb() - heapBefore).toDouble() / scenario.walkers
         val heapEach = "%.1f".format(Locale.ROOT, perNode)
@@ -415,7 +423,8 @@ class MeshSim(
     // One radio step, applied as a radio applies it: the link is gone or there, and nobody waits for the mesh.
     private fun step(atMs: Long) {
         val positions = nodes.indices.map { mobility.position(it, atMs) }
-        val changes = radio.step(atMs, positions)
+        val present = BooleanArray(nodes.size) { mobility.present(it, atMs) }
+        val changes = radio.step(atMs, positions, present)
         changes.dropped.map(::ends).forEach { (a, b) -> a.transport.disconnect(b.transport) }
         changes.raised.map(::ends).forEach { (a, b) -> lab.link(a, b, air = radio.air) }
         contacts.record(atMs, changes, radio.links)

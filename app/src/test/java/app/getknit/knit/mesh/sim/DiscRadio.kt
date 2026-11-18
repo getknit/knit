@@ -61,16 +61,18 @@ class DiscRadio(
     override fun step(
         atMs: Long,
         positions: List<Point>,
+        present: BooleanArray?,
     ): LinkChanges {
         val raised = mutableListOf<Link>()
         val dropped = mutableListOf<Link>()
         for (a in positions.indices) {
             for (b in a + 1 until positions.size) {
                 val link = Link(a, b)
+                val away = present != null && !(present[a] && present[b])
                 val distance = positions[a].distanceTo(positions[b])
                 when {
-                    link in up -> if (distance > dropM) dropped += link
-                    distance > connectM -> inRangeSince.remove(link)
+                    link in up -> if (away || distance > dropM) dropped += link
+                    away || distance > connectM -> inRangeSince.remove(link)
                     atMs - inRangeSince.getOrPut(link) { atMs } >= dialMs -> raised += link
                 }
             }

@@ -3,7 +3,7 @@
 
 Each report `ParkWalkSimTest` writes ends in a `summary:` block of `key=value` lines (`mesh/sim/SimSummary.kt`). This
 reads any number of them, groups them by the outing's shape (walkers, minutes, inbound bound, gather, settle) and,
-within a shape, by variant (the radio and its numbers, or a label you give), then prints every key as
+within a shape, by variant (the radio and its numbers, the motion, groups and friends, or a label you give), then prints every key as
 `mean [min..max]` across the seeds of each variant, the variants side by side. That is the A/B a radio change is
 judged by: never one run against another, always seeds against seeds.
 
@@ -24,8 +24,10 @@ from collections import OrderedDict
 from pathlib import Path
 
 SHAPE_KEYS = ("walkers", "minutes", "inbound_slots", "gather", "settle_minutes")
-VARIANT_KEYS = ("radio", "connect_m", "drop_m", "dial_ms")
+VARIANT_KEYS = ("radio", "connect_m", "drop_m", "dial_ms", "motion", "groups", "friends")
 SCENARIO_KEYS = ("seed", "field_m") + SHAPE_KEYS + VARIANT_KEYS
+# Keys a later summary added, read as what every earlier run had: an older report lines up with a new default one.
+DEFAULTS = {"motion": "rwp", "groups": "3", "friends": "group"}
 LINE = re.compile(r"^  ([a-z][a-z0-9_]*)=(\S+)$")
 
 
@@ -104,6 +106,8 @@ def main():
                 print(f"no summary (cut short?): {path}", file=sys.stderr)
                 missing += 1
                 continue
+            for key, default in DEFAULTS.items():
+                values.setdefault(key, default)
             shape = " ".join(f"{k}={values.get(k, '?')}" for k in SHAPE_KEYS)
             variant = label or " ".join(f"{k}={values.get(k, '?')}" for k in VARIANT_KEYS)
             table.setdefault(shape, OrderedDict()).setdefault(variant, []).append((path, values))

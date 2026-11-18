@@ -47,18 +47,7 @@ class ParkWalkSimTest {
             val seed = checkNotNull(System.getProperty(SEED)).toLong()
             val walkers = System.getProperty(WALKERS)?.toInt() ?: DEFAULT_WALKERS
             val minutes = System.getProperty(MINUTES)?.toInt() ?: DEFAULT_MINUTES
-            // The field grows with the crowd, so a bigger run is the same park with more of it, not a denser one.
-            val scenario =
-                SimScenario(
-                    seed = seed,
-                    walkers = walkers,
-                    durationMs = minutes * MS_PER_MINUTE,
-                    fieldM = FIELD_M * sqrt(walkers.toDouble() / DEFAULT_WALKERS),
-                    inboundSlots = System.getProperty(INBOUND)?.let { if (it == "phone") MeshLab.PHONE_INBOUND_SLOTS else it.toInt() },
-                    settleMs = (System.getProperty(SETTLE)?.toLong() ?: 0L) * MS_PER_MINUTE,
-                    gather = System.getProperty(GATHER) != "false",
-                    radio = System.getProperty(RADIO) ?: DiscRadio.NAME,
-                )
+            val scenario = scenario(seed, walkers, minutes)
             val bound = scenario.inboundSlots?.let { "-q$it" }.orEmpty() + if (scenario.gather) "" else "-walk"
             val tag = System.getProperty(TAG)?.let { "-$it" }.orEmpty()
             val dir = File(System.getProperty(OUT) ?: "build/mesh-sim").apply { mkdirs() }
@@ -78,6 +67,26 @@ class ParkWalkSimTest {
             assertTrue("the lab's oracle did not converge after the gather:\n${report.text}", report.converged)
         }
 
+    // The outing the properties name. The field grows with the crowd, so a bigger run is the same park with more of it, not
+    // a denser one.
+    private fun scenario(
+        seed: Long,
+        walkers: Int,
+        minutes: Int,
+    ) = SimScenario(
+        seed = seed,
+        walkers = walkers,
+        durationMs = minutes * MS_PER_MINUTE,
+        fieldM = FIELD_M * sqrt(walkers.toDouble() / DEFAULT_WALKERS),
+        inboundSlots = System.getProperty(INBOUND)?.let { if (it == "phone") MeshLab.PHONE_INBOUND_SLOTS else it.toInt() },
+        settleMs = (System.getProperty(SETTLE)?.toLong() ?: 0L) * MS_PER_MINUTE,
+        gather = System.getProperty(GATHER) != "false",
+        radio = System.getProperty(RADIO) ?: DiscRadio.NAME,
+        motion = System.getProperty(MOTION) ?: Motion.WAYPOINT,
+        groups = System.getProperty(GROUPS) ?: GroupSizes.FIXED,
+        friends = System.getProperty(FRIENDS) ?: Friends.Group.name,
+    )
+
     private companion object {
         const val SEED = "knit.meshSim"
         const val WALKERS = "knit.meshSimWalkers"
@@ -94,6 +103,15 @@ class ParkWalkSimTest {
 
         /** Which [Radio] makes the links ([Radio.NAMES]); `disc` when unset. */
         const val RADIO = "knit.meshSimRadio"
+
+        /** How the walkers move ([Motion.NAMES]); `rwp` when unset. */
+        const val MOTION = "knit.meshSimMotion"
+
+        /** The group sizes ([GroupSizes.of]): a number, `street`, or `fixed` (threes) when unset. */
+        const val GROUPS = "knit.meshSimGroups"
+
+        /** Whom the walkers DM ([Friends.NAMES]); `group` when unset. */
+        const val FRIENDS = "knit.meshSimFriends"
 
         /** The directory the report goes to, in place of `build/mesh-sim` (relative to the app module). */
         const val OUT = "knit.meshSimOut"

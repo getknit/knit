@@ -77,19 +77,31 @@ class BleRadio(
     override fun step(
         atMs: Long,
         positions: List<Point>,
+        present: BooleanArray?,
     ): LinkChanges {
+        val (dropped, ready) = survey(atMs, positions, present)
+        return admit(positions.size, dropped, ready)
+    }
+
+    // Every pair's step: the links that went out of range or out of the field, and the pairs whose dial is done.
+    private fun survey(
+        atMs: Long,
+        positions: List<Point>,
+        present: BooleanArray?,
+    ): Pair<List<Link>, List<Pair<Link, Double>>> {
         val dropped = mutableListOf<Link>()
         val ready = mutableListOf<Pair<Link, Double>>()
         for (a in positions.indices) {
             for (b in a + 1 until positions.size) {
                 val link = Link(a, b)
+                val away = present != null && !(present[a] && present[b])
                 val distance = positions[a].distanceTo(positions[b])
                 when {
                     link in up -> {
-                        if (distance > dropM) dropped += link
+                        if (away || distance > dropM) dropped += link
                     }
 
-                    distance > connectM -> {
+                    away || distance > connectM -> {
                         dialing.remove(link)
                     }
 
@@ -100,8 +112,17 @@ class BleRadio(
                 }
             }
         }
+        return dropped to ready
+    }
+
+    // Drops what [survey] dropped, then raises the ready pairs nearest first while both ends have room.
+    private fun admit(
+        walkers: Int,
+        dropped: List<Link>,
+        ready: List<Pair<Link, Double>>,
+    ): LinkChanges {
         up -= dropped.toSet()
-        val degree = IntArray(positions.size)
+        val degree = IntArray(walkers)
         up.forEach {
             degree[it.a]++
             degree[it.b]++
@@ -124,7 +145,7 @@ class BleRadio(
     // pair's next approach would redraw about the dial it had.
     private fun dialTime(link: Link): Long {
         val n = approaches.merge(link, 1, Int::plus) ?: 1
-        val key = listOf(seed, link.a.toLong(), link.b.toLong(), n.toLong()).fold(0L) { h, v -> mix(h * PAIR_MIX + v) }
+        val key = SimSeeds.key(seed, link.a.toLong(), link.b.toLong(), n.toLong())
         val draw = java.util.Random(key).nextGaussian()
         return exp(ln(dialMedianMs.toDouble()) + DIAL_SIGMA * draw).toLong().coerceIn(DIAL_MIN_MS, DIAL_MAX_MS)
     }
@@ -144,18 +165,5 @@ class BleRadio(
         const val DIAL_SIGMA = 0.8
         const val DIAL_MIN_MS = 300L
         const val DIAL_MAX_MS = 30_000L
-        private const val PAIR_MIX = 1_000_003L
-
-        // SplitMix64's finaliser: every input bit moves every output bit.
-        private fun mix(x: Long): Long {
-            var z = x + GOLDEN
-            z = (z xor (z ushr 30)) * MIX_1
-            z = (z xor (z ushr 27)) * MIX_2
-            return z xor (z ushr 31)
-        }
-
-        private const val GOLDEN = -0x61c8864680b583ebL
-        private const val MIX_1 = -0x40a7b892e31b1a47L
-        private const val MIX_2 = -0x6b2fb644ecceee15L
     }
 }

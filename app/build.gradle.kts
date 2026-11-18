@@ -817,7 +817,8 @@ android {
                 // crowd the 1 GiB above cannot hold. `knit.meshSimInbound` (`phone` or a count) bounds each router's
                 // inbound queue as a phone's is; `knit.meshSimSettleMinutes` watches custody parity after the gather;
                 // `knit.meshSimGather=false` ends the outing at the walk; `knit.meshSimRadio` names the radio that makes
-                // its links (`disc` unless set). `knit.meshSimOut` (an absolute directory) and
+                // its links (`disc` unless set); `knit.meshSimMotion`, `knit.meshSimGroups` and `knit.meshSimFriends` how the
+                // walkers move, the groups they walk in and whom they DM (`rwp`, threes and their own group unless set). `knit.meshSimOut` (an absolute directory) and
                 // `knit.meshSimTag` say where the report goes and what its name ends in. An outing is a measurement, so
                 // it runs every time it is asked: never up to date, never from the cache.
                 val meshSim = providers.gradleProperty("knit.meshSim").orNull
@@ -826,7 +827,16 @@ android {
                 } else {
                     test.systemProperty("knit.meshSim", meshSim)
                     val sizes = listOf("knit.meshSimWalkers", "knit.meshSimMinutes")
-                    val shapes = listOf("knit.meshSimInbound", "knit.meshSimSettleMinutes", "knit.meshSimGather", "knit.meshSimRadio")
+                    val shapes =
+                        listOf(
+                            "knit.meshSimInbound",
+                            "knit.meshSimSettleMinutes",
+                            "knit.meshSimGather",
+                            "knit.meshSimRadio",
+                            "knit.meshSimMotion",
+                            "knit.meshSimGroups",
+                            "knit.meshSimFriends",
+                        )
                     (sizes + shapes + listOf("knit.meshSimOut", "knit.meshSimTag")).forEach { key ->
                         providers.gradleProperty(key).orNull?.let { test.systemProperty(key, it) }
                     }

@@ -1041,10 +1041,24 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   bound on a phone's: the ledger is fluid (a radio serves its links in any proportion, with no connection events), so
   a `ble1m` result says the mesh can do this well at this rate, not that a phone mesh does. A first run whose ledger
   booked the link and both radios jointly settled neither gather; `AirLedgerTest` pins why it was wrong.
+- **How the walkers move is the scenario's to say** (`-Pknit.meshSimMotion`, `knit.meshSimGroups`,
+  `knit.meshSimFriends`; `Motion.of`). `rwp`, the default, is random waypoint: each walker alone once its group has
+  left the gate. `groups` is `GroupWalk`, Reference Point Group Mobility. Each group's point walks a random waypoint
+  0.04 m/s slower per member past the first. Its members walk side by side 0.8 m apart across the heading and stand
+  within 3 m of the point, and nobody leaves their group. `groups=street` draws the walking groups' sizes from a weekday
+  street (46/37/10/4/3% of people alone, in twos and so on to fives; Moussaïd et al. 2010); a number fixes them.
+  `friends=circles` pairs the walking groups into circles of friends who came separately. The whole circle meets at boot
+  and pins each other's keys, then only the walking groups stay linked, and half of a walker's DMs go to its circle's
+  other group; the default DMs only the walker's own group. Every draw comes from a `SimSeeds` stream keyed by its
+  purpose, so a new draw shifts no other. `Mobility.present` lets a model take a walker out of the field: its links drop
+  and nobody dials it. A model's arithmetic is `StrictMath`, never `Math`. `MobilityTest` pins the first outings' walk,
+  dial and workload draws through all of it; `MeshSimBootTest` pins the circle's boot. The research behind it is the
+  "Mesh Sim Pedestrian Models" report (`/media/walter/data/knit-sim/reports/`).
 - **What it leaves out.** One plane, no path loss and none of the transports' own dial policies: `LabTransport` stands
   in for the whole radio, so the topology is the geometry's (and, under `ble1m`, a nearest-first budget's), not what
   Bluetooth or Wi-Fi Aware would have formed. `disc` has no link budget; `ble1m`'s is a measured rate, not yet a
-  function of distance, and it airs no files.
+  function of distance, and it airs no files. Walkers move in an open square, alone or in groups that never part: no
+  paths, arrivals, crowds or transit yet.
 
 ## JVM Room/DAO + migration tests (Robolectric)
 
