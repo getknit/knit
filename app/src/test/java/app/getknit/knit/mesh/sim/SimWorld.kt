@@ -98,6 +98,7 @@ class FieldRun(
             }
             atMs += scenario.tickMs
         }
+        val gather = if (GatherBy.walks(scenario) && world.trace == null) walkIn() else null
         val seconds = (System.nanoTime() - started) / NANOS_PER_S
         val summary = SimSummary()
         summary.putAll(scenario.summaryValues())
@@ -108,11 +109,19 @@ class FieldRun(
         val lines = mutableListOf("mesh sim: the field alone, ${world.trace?.let { "replaying ${it.name}, " }.orEmpty()}$scenario")
         lines += meter.lines()
         summary.putAll(meter.summaryValues())
+        (mobility as? ParkMobility)?.report(scenario.durationMs)?.let { (line, values) ->
+            lines += line
+            summary.putAll(values)
+        }
         if (dms.isNotEmpty()) {
             lines += "DMs between friends by how the two stood when sent: " +
                 Reach.entries.joinToString(", ") { "${it.name.lowercase()} ${reach[it.ordinal]}" } + " of ${dms.size}"
             Reach.entries.forEach { summary["dm_${it.name.lowercase()}_sent"] = reach[it.ordinal] }
             summary["dm_all_sent"] = dms.size
+        }
+        gather?.let { (line, values) ->
+            lines += line
+            summary.putAll(values)
         }
         lines += "machine: ${"%.1f".format(Locale.ROOT, seconds)} s for ${scenario.durationMs / MS_PER_S} s of field"
         summary["field_run_s"] = seconds
@@ -120,8 +129,28 @@ class FieldRun(
         return lines.joinToString("\n")
     }
 
-    private companion object {
-        const val NANOS_PER_S = 1e9
-        const val MS_PER_S = 1_000L
+    // The walk to the meeting point after the walk, stepped on through the radio until the last walker has stood there
+    // [GATHER_HOLD_MS]: the field is not measured, only how the radio's links joined the crowd.
+    private fun walkIn(): Pair<String, List<Pair<String, Any?>>> {
+        val scenario = world.scenario
+        val gathering = world.mobility as Gathering
+        val watch = GatherWatch(scenario.walkers, scenario.durationMs)
+        watch.step(scenario.durationMs, world.radio.links)
+        var atMs = scenario.durationMs + scenario.tickMs
+        while (atMs <= gathering.gatheredByMs + GATHER_HOLD_MS) {
+            val positions = (0 until scenario.walkers).map { world.mobility.position(it, atMs) }
+            val present = BooleanArray(scenario.walkers) { world.mobility.present(it, atMs) }
+            world.radio.step(atMs, positions, present)
+            watch.step(atMs, world.radio.links)
+            atMs += scenario.tickMs
+        }
+        return watch.line(gathering.gatheredByMs, world.radio.links) to watch.summaryValues(gathering.gatheredByMs, world.radio.links)
+    }
+
+    companion object {
+        /** How long a walking gather goes on once the last walker has reached its spot: time for the last dials. */
+        const val GATHER_HOLD_MS = 30_000L
+        private const val NANOS_PER_S = 1e9
+        private const val MS_PER_S = 1_000L
     }
 }

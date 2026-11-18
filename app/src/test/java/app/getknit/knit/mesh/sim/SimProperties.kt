@@ -21,8 +21,23 @@ internal object SimProperties {
     /** Minutes to watch custody parity after the gather ([SimScenario.settleMs]). */
     const val SETTLE = "knit.meshSimSettleMinutes"
 
-    /** `false` ends the outing at the walk: a measurement with no gather, settle or oracle. */
+    /**
+     * `false` ends the outing at the walk: a measurement with no gather, settle or oracle. `walk` has everyone walk to a
+     * meeting point ([GatherBy.WALK]); unset, the gather lays its links by hand ([GatherBy.RING]).
+     */
     const val GATHER = "knit.meshSimGather"
+
+    /** The field's side in metres: 1,000 under `motion=park`, else grown with the crowd from [FIELD_M], when unset. */
+    const val FIELD = "knit.meshSimFieldM"
+
+    /** Under `motion=park`: minutes over which units arrive at their gates ([SimScenario.arrivalWindowMs]); 0 when unset. */
+    const val ARRIVAL = "knit.meshSimArrivalMinutes"
+
+    /** Under `motion=park`: LATP's exponent ([SimScenario.latp]). */
+    const val LATP = "knit.meshSimLatp"
+
+    /** Under `motion=park`: excursions a member of a group starts an hour ([SimScenario.excursionsPerHour]). */
+    const val EXCURSIONS = "knit.meshSimExcursions"
 
     /** Which [Radio] makes the links ([Radio.NAMES]); `disc` when unset. */
     const val RADIO = "knit.meshSimRadio"
@@ -54,6 +69,9 @@ internal object SimProperties {
     /** Twelve walkers in 150 m square: about one other walker in dial range of each, on average. */
     const val FIELD_M = 150.0
 
+    /** A sparse park: a square kilometre, where 48 walkers are about one in two hectares. */
+    const val PARK_FIELD_M = 1_000.0
+
     fun seed(): Long = checkNotNull(System.getProperty(SEED)).toLong()
 
     fun walkers(): Int = System.getProperty(WALKERS)?.toInt() ?: DEFAULT_WALKERS
@@ -68,14 +86,14 @@ internal object SimProperties {
 
     /**
      * The outing the properties name. The field grows with the crowd, so a bigger run is the same park with more of it,
-     * not a denser one, unless [fieldM] says how big it is.
+     * not a denser one, unless [fieldM] or [FIELD] says how big it is; a [Motion.PARK] park is [PARK_FIELD_M] across.
      */
     fun scenario(
         seed: Long,
         walkers: Int,
         minutes: Int,
-        fieldM: Double = FIELD_M * sqrt(walkers.toDouble() / DEFAULT_WALKERS),
         motion: String = System.getProperty(MOTION) ?: Motion.WAYPOINT,
+        fieldM: Double = System.getProperty(FIELD)?.toDouble() ?: defaultFieldM(walkers, motion),
     ) = SimScenario(
         seed = seed,
         walkers = walkers,
@@ -84,10 +102,19 @@ internal object SimProperties {
         inboundSlots = System.getProperty(INBOUND)?.let { if (it == "phone") MeshLab.PHONE_INBOUND_SLOTS else it.toInt() },
         settleMs = (System.getProperty(SETTLE)?.toLong() ?: 0L) * MS_PER_MINUTE,
         gather = System.getProperty(GATHER) != "false",
+        gatherBy = if (System.getProperty(GATHER) == GatherBy.WALK) GatherBy.WALK else GatherBy.RING,
+        arrivalWindowMs = (System.getProperty(ARRIVAL)?.toLong() ?: 0L) * MS_PER_MINUTE,
+        latp = System.getProperty(LATP)?.toDouble() ?: ParkConfig.DEFAULT_LATP,
+        excursionsPerHour = System.getProperty(EXCURSIONS)?.toDouble() ?: ParkConfig.DEFAULT_EXCURSIONS_PER_HOUR,
         radio = System.getProperty(RADIO) ?: DiscRadio.NAME,
         motion = motion,
         groups = System.getProperty(GROUPS) ?: GroupSizes.FIXED,
         friends = System.getProperty(FRIENDS) ?: Friends.Group.name,
         awayShare = System.getProperty(AWAY_SHARE)?.toDouble() ?: Friends.Circle.DEFAULT_AWAY_SHARE,
     )
+
+    private fun defaultFieldM(
+        walkers: Int,
+        motion: String,
+    ): Double = if (motion == Motion.PARK) PARK_FIELD_M else FIELD_M * sqrt(walkers.toDouble() / DEFAULT_WALKERS)
 }

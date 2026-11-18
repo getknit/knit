@@ -100,8 +100,13 @@ class ContactLog(
 fun largestComponent(
     links: Set<Link>,
     walkers: Int,
-): Int {
-    if (walkers == 0) return 0
+): Int = if (walkers == 0) 0 else componentSizes(links, walkers).max()
+
+/** How many walkers each mesh [links] make holds, at its root's index and 0 elsewhere: union-find, linear in the links. */
+fun componentSizes(
+    links: Set<Link>,
+    walkers: Int,
+): IntArray {
     val parent = IntArray(walkers) { it }
 
     fun root(of: Int): Int {
@@ -115,7 +120,7 @@ fun largestComponent(
     links.forEach { parent[root(it.a)] = root(it.b) }
     val sizes = IntArray(walkers)
     for (walker in 0 until walkers) sizes[root(walker)]++
-    return sizes.max()
+    return sizes
 }
 
 /** The nearest-rank [p]th percentile of [sorted], or null when it is empty. */

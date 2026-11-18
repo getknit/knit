@@ -81,6 +81,10 @@ fun SimScenario.summaryValues(): List<Pair<String, Any?>> =
         "groups" to GroupSizes.of(groups, groupSize).name,
         "friends" to friends,
         "away_share" to awayShare.takeIf { friends == Friends.Circle.NAME },
+        "gather_by" to gatherBy,
+        "arrival_min" to (arrivalWindowMs / MS_PER_MINUTE).takeIf { motion == Motion.PARK },
+        "latp" to latp.takeIf { motion == Motion.PARK },
+        "excursions_per_hour" to excursionsPerHour.takeIf { motion == Motion.PARK },
     )
 
 /**

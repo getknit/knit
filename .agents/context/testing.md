@@ -1173,6 +1173,45 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
 
     Walking groups move no number: the scanners read only where walkers stand, and the groups' pairs are too few to
     shift the sightings of everyone else. These are yardsticks for Phase 2, not bands; pinning bands is Phase 5's.
+- **`motion=park` walks a synthetic park** (`ParkLayout`, `ParkMobility`, Phase 2, 2026-11-18). The default field is
+  1 km (`knit.meshSimFieldM`).
+  - **The park:** a looped lattice of paths at about 90 m a hectare (Helsinki's), six gates, and 20 places a km²
+    (benches, amenities, lawns) with Pareto popularity.
+  - **The groups:** each plans 3–6 places (SLAW's subset) and visits them by LATP (`knit.meshSimLatp`, a = 2). They
+    follow the paths or cut across, pause by a truncated power law (β 1.8, 30 s to 1 h), and leave when a lognormal
+    visit budget (median 45 min) runs out.
+  - **Budgets** apply only to outings that don't gather (`knit.meshSimGather=false`).
+  - **Arrivals** spread over `knit.meshSimArrivalMinutes`.
+  - **Excursions:** members of a group wander 10–50 m on their own excursions (`knit.meshSimExcursions`, 2 an hour,
+    a guess).
+  - **The walking gather:** `knit.meshSimGather=walk` walks every motion to a meeting point. The park walks along its
+    paths to its most popular lawn; the other motions walk straight to the field's centre. Groups stand on a Vogel
+    spiral 10 m apart, and the radio raises the links, budget and all, rather than the ring laying them.
+    `gather_connected_s` and `gather_meshes` report how it went.
+  - **Calibrated, not emergent:** the off-path shares are tuned to their targets (more than 15 m from a path; runners
+    13% from Korpilo et al., walkers 20% and dog walkers 25% guessed), and groups stay together by construction. So
+    `ParkMobilityTest`'s checks of both only guard the calibration.
+  - **What the park does on its own** (`phase2/field/`, 4 h, `ble1m`, 3 seeds):
+    - Contacts over 5 minutes, companions and shared stops, are 3–10% of the park's contacts and none of random
+      waypoint's.
+    - Pass-bys of 10–40 s are 58–63% of the park's link contacts, but 79% of random waypoint's, so they don't tell
+      the two apart.
+    - Pairs are uneven: halves r 0.92–0.97 with everyone staying, 0.28–0.34 with visits.
+    - Contact lengths land far closer to the iMote traces: KS 0.24–0.28 against Infocom 2005, where random waypoint
+      at 1 km scores 0.45.
+    - **Gaps stay exponential** (near30 tail LLR −0.13 to −0.26). Their KS against Infocom 2005 is 0.35–0.37,
+      against random waypoint's 0.38–0.42; 0.21 with visits (one seed's iMote LLR is +0.08).
+    - So paths, places and pauses give the long contacts and the uneven pairs, but not the heavy-tailed gaps.
+  - **A 30-minute park outing with stacks strands DMs at custody's cap** (seed 1, 48 walkers, circles, `ble1m`, ring
+    gather; `phase2/outings/`). The red is the mesh's, not the harness's.
+    - Of 4,342 DMs, 3,174 were sent while sender and recipient were out of reach of each other.
+    - Every node's custody sat at 1,000 rows at the walk's end.
+    - 1,192 DMs were never delivered, held by no store, the sender's included.
+    - Delivery: 99% of DMs between linked friends arrived in the run, but only 27% of the others (62% by the end).
+    - The same outing with `gather=walk` walks the same walk (545 contacts, the same DMs). Everyone reached the
+      meeting point 1,608 s after the walk ended, and the radio's links made one mesh of all 48 at 1,498 s.
+    - It still strands DMs: 66% had arrived by the end against the ring's 72%, and 1,473 were missing against
+      1,192. The eviction happens in the walk, so how the outing gathers doesn't save those DMs.
 - **What it leaves out.** One plane, no path loss and none of the transports' own dial policies: `LabTransport` stands
   in for the whole radio, so the topology is the geometry's (and, under `ble1m`, a nearest-first budget's), not what
   Bluetooth or Wi-Fi Aware would have formed. `disc` has no link budget; `ble1m`'s is a measured rate, not yet a

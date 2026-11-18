@@ -83,7 +83,7 @@ class ContactStats private constructor(
     fun line(label: String): String {
         val tail = ictTailLlr?.let { "${fmt(it)} (${if (it < 0) "exponential" else "heavy"})" } ?: "n/a"
         return "  ${label.padEnd(LABEL_WIDTH)} ${perPairHour?.let(::fmt) ?: "n/a"} a pair-hour; " +
-            "contact p50 ${seconds(percentile(durationsMs, P50))} p90 ${seconds(percentile(durationsMs, P90))}; " +
+            contactPart() +
             "gap p50 ${seconds(percentile(ictsMs, P50))} p90 ${seconds(percentile(ictsMs, P90))} " +
             "cv ${ictCv?.let(::fmt) ?: "n/a"} tail $tail; " +
             "pairs met ${pairsMetPct?.let { "$it%" } ?: "n/a"}, ${peersMean?.let { "%.1f".format(Locale.ROOT, it) } ?: "n/a"} " +
@@ -96,6 +96,8 @@ class ContactStats private constructor(
             "per_pair_hour" to perPairHour,
             "contact_p50_s" to tenths(percentile(durationsMs, P50)),
             "contact_p90_s" to tenths(percentile(durationsMs, P90)),
+            "contact_10_40s_pct" to passesPct(),
+            "contact_over_5min_pct" to longPct(),
             "ict_p50_s" to tenths(percentile(ictsMs, P50)),
             "ict_p90_s" to tenths(percentile(ictsMs, P90)),
             "ict_cv" to ictCv,
@@ -104,7 +106,27 @@ class ContactStats private constructor(
             "halves_r" to halvesR,
         ).map { (key, value) -> "${prefix}_$key" to value }
 
+    private fun contactPart(): String =
+        "contact p50 ${seconds(percentile(durationsMs, P50))} p90 ${seconds(percentile(durationsMs, P90))}, " +
+            "${passesPct()?.let { "$it%" } ?: "n/a"} passes of ${PASS_MS.first / MS_PER_S_LONG}-${PASS_MS.last / MS_PER_S_LONG} s, " +
+            "${longPct()?.let { "$it%" } ?: "n/a"} over ${LONG_MS / MS_PER_S_LONG / SECONDS_PER_MINUTE} min; "
+
+    /** The share of the contacts seen to begin and end that lasted [PASS_MS]: two walkers passing each other. */
+    fun passesPct(): Int? = shareOf { it in PASS_MS }
+
+    /** The share that lasted over [LONG_MS]: companions, or two parties at one place. */
+    fun longPct(): Int? = shareOf { it > LONG_MS }
+
+    private fun shareOf(test: (Long) -> Boolean): Int? =
+        if (durationsMs.isEmpty()) null else (durationsMs.count(test) * PERCENT / durationsMs.size)
+
     companion object {
+        /** A pass: 25 s head-on at 1.2 m/s each under a 25/35 m hysteresis, 14 s past a jogger, 33 s overtaken by one. */
+        val PASS_MS = 10_000L..40_000L
+        const val LONG_MS = 300_000L
+        private const val MS_PER_S_LONG = 1_000L
+        private const val SECONDS_PER_MINUTE = 60L
+
         /** The statistics of [contacts] among [walkers], over the log's span from [fromMs] to [toMs]. */
         fun of(
             contacts: Map<Link, List<Contact>>,

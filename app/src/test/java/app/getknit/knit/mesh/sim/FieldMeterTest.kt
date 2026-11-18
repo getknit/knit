@@ -234,6 +234,17 @@ class FieldMeterTest {
     }
 
     @Test
+    fun theDefaultWalkStillMakesTheRecordedContacts() {
+        // The `ble1m` matrix's W seed-1 outing (48 walkers, 10 minutes): every later motion, gather and knob is off by
+        // default, so its links are still the recorded ones, to the contact and to the DM reach mix.
+        val summary = summaryOf(FieldRun(SimWorld(scenario(motion = Motion.WAYPOINT, minutes = 10))).play())
+        assertEquals("608", summary["contacts_made"])
+        assertEquals("146", summary["dm_direct_sent"])
+        assertEquals("91", summary["dm_path_sent"])
+        assertEquals(GatherBy.RING, summary["gather_by"])
+    }
+
+    @Test
     fun walkingGroupsAreUnevenPairsThatNeverPart() {
         val groups = summaryOf(FieldRun(SimWorld(scenario(motion = Motion.GROUPS, minutes = 60))).play())
         val r = groups.getValue("near30_halves_r").toDouble()

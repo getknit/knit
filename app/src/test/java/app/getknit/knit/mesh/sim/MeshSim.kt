@@ -59,7 +59,19 @@ data class SimScenario(
      * walk: a measurement of the walk alone, which checks nothing ([SimReport.checked]).
      */
     val gather: Boolean = true,
-)
+    /** How the gather brings everyone together ([GatherBy]): `ring`, links laid by hand, or `walk`, everyone walking in. */
+    val gatherBy: String = GatherBy.RING,
+    /** Under `motion=park`: units arrive at a gate over this long from the start ([ParkConfig.arrivalWindowMs]). */
+    val arrivalWindowMs: Long = 0,
+    /** Under `motion=park`: the exponent of its choice of places ([ParkConfig.latp]). */
+    val latp: Double = ParkConfig.DEFAULT_LATP,
+    /** Under `motion=park`: how often a member of a group wanders off ([ParkConfig.excursionsPerHour]). */
+    val excursionsPerHour: Double = ParkConfig.DEFAULT_EXCURSIONS_PER_HOUR,
+) {
+    init {
+        require(gatherBy in GatherBy.NAMES) { "no gather named $gatherBy; there are ${GatherBy.NAMES}" }
+    }
+}
 
 /**
  * What a run found. [text] is the whole report; the rest is what the harness asserts on: that the workload was
@@ -125,9 +137,12 @@ class MeshSim(
     // Set as the gather begins, before its links come up: the sampler's line between the walk and the gather.
     @Volatile private var walkOver = false
 
+    // The walking gather's line, once it has walked in ([walkIn]).
+    private var walkInLine: String? = null
+
     // Set once the walk's last step is applied: a sample after it, with no gather, is labelled after the walk.
     @Volatile private var walkEnded = false
-    private val probes = CopyOnWriteArrayList<Probe>()
+    private val probes = GatherProbes(nodes = { nodes }, groups = world.groups)
 
     // Each workload DM's frame id, read off its sender's row as it is sent: what a custody row is matched against.
     private val dmIds = ConcurrentHashMap<SimEvent.Dm, String>()
@@ -262,6 +277,10 @@ class MeshSim(
         val cores = (cpuNanos() - cpuBefore).toDouble() / ((endedAt - startedAt) * NANOS_PER_MS)
         lines += field.lines()
         summary.putAll(field.summaryValues())
+        (mobility as? ParkMobility)?.report(scenario.durationMs)?.let { (line, values) ->
+            lines += line
+            summary.putAll(values)
+        }
         val walked = RouterCounters.of(nodes) - before
         lines += "frames in the run: $walked; room posts moderation refused ${refused.get()}"
         summary.putAll(walked.summaryValues(suffix = "walk"))
@@ -304,7 +323,7 @@ class MeshSim(
         summary["gather_dms_missing"] = stranded.size
         val settled = settleLine()
         settled?.let { lines += it.text }
-        lines += probeLine(after = if (settled == null) "the gather" else "the settle")
+        lines += probes.line(after = if (settled == null) "the gather" else "the settle", walked = GatherBy.walks(scenario), summary)
         sampleFollowed()
         lines += lostLines()
         if (settled != null) {
@@ -340,9 +359,11 @@ class MeshSim(
     // The gather, and for what it left undelivered, where the two ends say it is stuck.
     private suspend fun gatherLine(endedAt: Long): String {
         gather()
+        walkInLine?.let(progress)
         val late = outcomes(endedAt, ticks = false).filter { it.latencyMs == null }
         progress("gathered: ${late.size} DMs still missing")
-        return if (late.isEmpty()) "gather: every DM arrived" else strandedLine(late)
+        val arrived = if (late.isEmpty()) "gather: every DM arrived" else strandedLine(late)
+        return listOfNotNull(walkInLine, arrived).joinToString("\n")
     }
 
     private fun pairs(group: List<Int>): List<Link> = SimWorld.pairs(group)
@@ -419,7 +440,8 @@ class MeshSim(
         val changes = radio.step(atMs, positions, present)
         changes.dropped.map(::ends).forEach { (a, b) -> a.transport.disconnect(b.transport) }
         changes.raised.map(::ends).forEach { (a, b) -> lab.link(a, b, air = radio.air) }
-        field.record(atMs, positions, present, changes, radio.links)
+        // The field is measured over the walk; a walking gather's walk-in is the gather's, not the walk's.
+        if (atMs <= scenario.durationMs) field.record(atMs, positions, present, changes, radio.links)
         // Robolectric keeps every log line of the test: a long run would measure that, not the stacks.
         if (atMs % LOG_CLEAR_MS == 0L) {
             ShadowLog.clear()
@@ -455,6 +477,11 @@ class MeshSim(
      */
     private suspend fun gather() {
         walkOver = true
+        if (GatherBy.walks(scenario)) {
+            walkIn()
+            awaitArrivals(GATHER_MS)
+            return
+        }
         val stride = ceil(cbrt(scenario.walkers.toDouble())).toInt().coerceAtLeast(2)
         val ring =
             (0 until scenario.walkers).flatMap { a ->
@@ -462,54 +489,33 @@ class MeshSim(
             }
         val wanted = (groups.flatMap(::pairs) + ring).toSet() - radio.links
         lab.linkAll(*wanted.map(::ends).toTypedArray(), air = radio.air)
-        sendProbes(wanted)
+        probes.send(wanted)
         follow()
         awaitArrivals(GATHER_MS)
     }
 
-    /** A DM sent to a friend one link away as the gather's links came up; [arrivedAt] once its row is there. */
-    private class Probe(
-        val from: Int,
-        val to: Int,
-        val body: String,
-        val sentAt: Long,
-    ) {
-        @Volatile var arrivedAt: Long? = null
-    }
-
-    // One fresh DM in each of the first [PROBES] groups with a friend pair the gather just linked ([raised]): it waits
-    // behind every backlog those links serve at once, the head-of-line cost of readers that wait (#331).
-    private suspend fun sendProbes(raised: Set<Link>) {
-        val pairs = groups.mapNotNull { group -> pairs(group).firstOrNull { it in raised } }.take(PROBES)
-        for ((i, pair) in pairs.withIndex()) {
-            val body = "probe $i"
-            val at = System.nanoTime() / NANOS_PER_MS
-            if (nodes[pair.a].sendDm(nodes[pair.b], body)) probes += Probe(pair.a, pair.b, body, at)
+    /**
+     * The walking gather ([GatherBy.WALK]): the walk goes on to the meeting point on the wall clock, the radio raising
+     * and cutting its own links as it does in the walk, until the last walker has stood there [FieldRun.GATHER_HOLD_MS].
+     * Then the probes go over the links the walk-in raised. The field's instruments stop at the walk's end.
+     */
+    private suspend fun walkIn() {
+        val gathering = mobility as Gathering
+        val before = radio.links.toSet()
+        val watch = GatherWatch(nodes.size, scenario.durationMs)
+        watch.step(scenario.durationMs, radio.links)
+        follow()
+        val origin = System.nanoTime()
+        var atMs = scenario.durationMs + scenario.tickMs
+        while (atMs <= gathering.gatheredByMs + FieldRun.GATHER_HOLD_MS) {
+            worldLateMs.accumulateAndGet(waitUntil(origin, atMs - scenario.durationMs), ::maxOf)
+            step(atMs)
+            watch.step(atMs, radio.links)
+            atMs += scenario.tickMs
         }
-    }
-
-    // Notes the probes that have landed; true while any is still missing.
-    private suspend fun probesMissing(): Boolean {
-        val now = System.nanoTime() / NANOS_PER_MS
-        for (p in probes.filter { it.arrivedAt == null }) {
-            val to = nodes[p.to]
-            if (rows(to, to.dmWith(nodes[p.from]))[p.body] != null) p.arrivedAt = now
-        }
-        return probes.any { it.arrivedAt == null }
-    }
-
-    // The probes' times, read at the gather's 1 s poll and the settle's 15 s one: an upper bound, in whole seconds.
-    private suspend fun probeLine(after: String): String {
-        if (probes.isEmpty()) return "probes: none sent"
-        probesMissing()
-        val took = probes.map { p -> p.arrivedAt?.let { (it - p.sentAt) / MS_PER_S } }
-        val missing = took.count { it == null }
-        summary["probes_sent"] = probes.size
-        summary["probes_max_s"] = took.filterNotNull().maxOrNull()
-        summary["probes_missing"] = missing
-        return "probes: ${probes.size} DMs sent to a friend over a link the gather raised, in as its links came up, " +
-            "arrived by " + took.filterNotNull().sorted().joinToString(" ") { "${it}s" } + " (polled)" +
-            if (missing > 0) "; $missing not in by the end of $after" else ""
+        walkInLine = watch.line(gathering.gatheredByMs, radio.links)
+        summary.putAll(watch.summaryValues(gathering.gatheredByMs, radio.links))
+        probes.send(radio.links - before, friends = events.filterIsInstance<SimEvent.Dm>().mapTo(HashSet()) { Link.of(it.from, it.to) })
     }
 
     // The most link frames one node's readers held back at once, sampled through the outing: how deep a phone's backlog
@@ -541,7 +547,7 @@ class MeshSim(
             withTimeoutOrNull(timeoutMs) {
                 var polls = 0L
                 while (outcomes(Long.MAX_VALUE, ticks = false).any { it.latencyMs == null }) {
-                    probesMissing()
+                    probes.missing()
                     delay(GATHER_POLL_MS)
                     if (++polls % (FOLLOW_POLL_MS / GATHER_POLL_MS) == 0L) sampleFollowed()
                 }
@@ -708,7 +714,7 @@ class MeshSim(
                 gap = CustodyGap(nodes.map { it.custodyIds() })
                 tookS = (lab.clock.now() - startedAt) / MS_PER_S
                 sampleFollowed()
-                probesMissing()
+                probes.missing()
                 progress("settle +${tookS}s: ${gap.odd.size} ids odd, ${gap.missing} rows missing on ${gap.short} stores")
                 if (trail.keys.none { it / SECONDS_PER_MINUTE == tookS / SECONDS_PER_MINUTE }) trail[tookS] = gap.missing
             }
@@ -786,12 +792,12 @@ class MeshSim(
     // first thread to fail it failed, or null when every thread passed.
     // Every thread a DM was sent in, probes included: a lost probe is a strand like any other DM.
     private suspend fun oracle(): String? {
-        val threads = (dms.map { (event, _) -> Link.of(event.from, event.to) } + probes.map { Link.of(it.from, it.to) }).distinct()
+        val threads = (dms.map { (event, _) -> Link.of(event.from, event.to) } + probes.pairs).distinct()
         for (pair in threads) {
             val (a, b) = ends(pair)
             val count =
                 dms.count { (event, _) -> Link.of(event.from, event.to) == pair } +
-                    probes.count { Link.of(it.from, it.to) == pair }
+                    probes.pairs.count { it == pair }
             val thread = { node: LabNode -> if (node === a) a.dmWith(b) else b.dmWith(a) }
             val failure =
                 runCatching { lab.assertConverged(listOf(a, b), count, nodes - a - b, timeoutMs = ORACLE_MS, conversation = thread) }
@@ -815,8 +821,6 @@ class MeshSim(
         const val GATHER_MS = 180_000L
         const val GATHER_POLL_MS = 1_000L
 
-        /** Fresh DMs sent across the gather's new links, to time the wait behind their backlogs. */
-        const val PROBES = 8
         const val HELD_POLL_MS = 250L
 
         /** Every store read once a minute: a 33-minute outing reports in about 33 lines. */

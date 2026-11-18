@@ -235,15 +235,33 @@ object Motion {
     /** Groups that walk together all outing ([GroupWalk]). */
     const val GROUPS = "groups"
 
+    /** Visitors to a sparse park, on its paths and at its places ([ParkMobility] over a [ParkLayout]). */
+    const val PARK = "park"
+
     /** Walkers replayed from a recorded or generated trace ([TraceMobility]): never built by name, read from its file. */
     const val TRACE = "trace"
 
-    val NAMES = listOf(WAYPOINT, WAYPOINT_STEADY, GROUPS)
+    val NAMES = listOf(WAYPOINT, WAYPOINT_STEADY, GROUPS, PARK)
 
     /** Whether [motion] starts each group together at its gate, linked: every motion but a steady start and a trace. */
     fun startsTogether(motion: String): Boolean = motion != WAYPOINT_STEADY && motion != TRACE
 
+    /** The motion [scenario] names, walking to a meeting point once the walk ends if it gathers so ([GatherBy.WALK]). */
     fun of(
+        scenario: SimScenario,
+        groups: List<List<Int>>,
+        gates: List<Point>,
+    ): Mobility {
+        if (scenario.motion == PARK) {
+            val layout = ParkLayout.generate(scenario.seed, scenario.fieldM)
+            return ParkMobility(scenario.seed, layout, groups, ParkConfig.of(scenario))
+        }
+        val walk = walk(scenario, groups, gates)
+        if (!GatherBy.walks(scenario)) return walk
+        return GatherWalk(scenario.seed, walk, scenario.durationMs, groups, scenario.fieldM)
+    }
+
+    private fun walk(
         scenario: SimScenario,
         groups: List<List<Int>>,
         gates: List<Point>,

@@ -162,45 +162,63 @@ class GroupWalk(
         val size = sizes[group]
         if (size == 1) return centre
         val leg = reference.legAt(group, atMs)
-        val heading = leg.heading
-        val offset =
-            if (heading != null) {
-                // Across the heading: the heading turned a quarter, left of the walk.
-                val across = (slotOf[walker] - (size - 1) / 2.0) * ABREAST_M
-                Point(-heading.y * across, heading.x * across)
-            } else {
-                standingSpot(walker, leg.index)
-            }
+        val offset = Formation.offset(seed, walker, slotOf[walker], size, leg.heading, leg.index.toLong())
         return Point((centre.x + offset.x).coerceIn(0.0, widthM), (centre.y + offset.y).coerceIn(0.0, heightM))
     }
 
-    // A spot in the disc of [STAND_RADIUS_M] for one member's one stand, drawn by rejection from its square: no trigonometry.
-    private fun standingSpot(
-        walker: Int,
-        stand: Int,
-    ): Point {
-        val random = SimSeeds.stream(seed, Purpose.FORMATION, walker.toLong(), stand.toLong())
-        while (true) {
-            val x = (random.nextDouble() * 2 - 1) * STAND_RADIUS_M
-            val y = (random.nextDouble() * 2 - 1) * STAND_RADIUS_M
-            if (sqrt(x * x + y * y) <= STAND_RADIUS_M) return Point(x, y)
-        }
-    }
-
     companion object {
-        const val ABREAST_M = 0.8
-        const val STAND_RADIUS_M = 3.0
+        const val ABREAST_M = Formation.ABREAST_M
+        const val STAND_RADIUS_M = Formation.STAND_RADIUS_M
         const val SLOWER_PER_MEMBER_MPS = 0.04
 
         // No group strolls slower than this, however big.
         private const val SLOWEST_MPS = 0.3
 
-        private fun slower(
+        /** [speeds] for a group of [size]: slower by [SLOWER_PER_MEMBER_MPS] for every member past the first. */
+        internal fun slower(
             speeds: ClosedFloatingPointRange<Double>,
             size: Int,
         ): ClosedFloatingPointRange<Double> {
             val by = SLOWER_PER_MEMBER_MPS * (size - 1)
             return (speeds.start - by).coerceAtLeast(SLOWEST_MPS)..(speeds.endInclusive - by).coerceAtLeast(SLOWEST_MPS)
+        }
+    }
+}
+
+/**
+ * Where a group's member stands off the group's point: side by side across the [heading] while it walks, [ABREAST_M]
+ * apart in the group's order, and while it stands at a spot within [STAND_RADIUS_M] drawn for the member and the stand
+ * ([Purpose.FORMATION]), so the same seed scatters it the same way.
+ */
+internal object Formation {
+    const val ABREAST_M = 0.8
+    const val STAND_RADIUS_M = 3.0
+
+    fun offset(
+        seed: Long,
+        walker: Int,
+        slot: Int,
+        size: Int,
+        heading: Point?,
+        stand: Long,
+    ): Point {
+        if (heading == null) return standingSpot(seed, walker, stand)
+        // Across the heading: the heading turned a quarter, left of the walk.
+        val across = (slot - (size - 1) / 2.0) * ABREAST_M
+        return Point(-heading.y * across, heading.x * across)
+    }
+
+    /** A spot in the disc of [STAND_RADIUS_M] for one member's one stand, drawn by rejection from its square: no trigonometry. */
+    fun standingSpot(
+        seed: Long,
+        walker: Int,
+        stand: Long,
+    ): Point {
+        val random = SimSeeds.stream(seed, Purpose.FORMATION, walker.toLong(), stand)
+        while (true) {
+            val x = (random.nextDouble() * 2 - 1) * STAND_RADIUS_M
+            val y = (random.nextDouble() * 2 - 1) * STAND_RADIUS_M
+            if (sqrt(x * x + y * y) <= STAND_RADIUS_M) return Point(x, y)
         }
     }
 }
