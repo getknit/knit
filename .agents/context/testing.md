@@ -1041,6 +1041,27 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   bound on a phone's: the ledger is fluid (a radio serves its links in any proportion, with no connection events), so
   a `ble1m` result says the mesh can do this well at this rate, not that a phone mesh does. A first run whose ledger
   booked the link and both radios jointly settled neither gather; `AirLedgerTest` pins why it was wrong.
+- **On `ble1m-slow` air the long gather never settles** (`d0c78a3`, 2026-11-17, the same matrix with
+  `-Pknit.meshSimRadio=ble1m-slow`; reports and `run-ble1m-slow.sh` in `/media/walter/data/knit-sim/ble1m-slow/`).
+  The contacts are `ble1m`'s to the link: only the rate differs. Means with [min..max]:
+
+  | Outing | DMs arrived (in run / by end) | DM p50 / p90 | Lost for good | Custody at cap (first / all) | After the walk |
+  | --- | --- | --- | --- | --- | --- |
+  | 10-minute walk, no gather | 61% [60..63] / same | 112 s / 254 s | 18 [11..24] | 240 s / 420 s (one run never all) | – |
+  | Same, unbounded queue (seed 1) | 63% / same | 102 s / 251 s | 16 | 240 s / 420 s | – |
+  | 2-minute walk, gather, 20-min settle | 66% [62..74] / 100% | 0.1 s / 19 s | 0 | 280 s / 420 s | parity in 265 s [245..291], probes ≤5 s [4..6], oracle passes |
+  | 10-minute walk, gather, 30-min settle | 60% [58..63] / 95% [94..95] | 110 s / 258 s | 18 [17..20] | 240 s / 500 s | no parity in 30 min, 82,000 [57,000..98,000] rows still missing; 18 [17..20] DMs never arrive (red); probes ≤18 s [16..21] |
+
+  Partitioned DMs drop from 66% to 55% in the walk (p50 139 s against 102 s); direct ones keep arriving but wait up to
+  4 s (p90). A cut throws away about as many records as the walk airs (216,000 against 226,000; `ble1m` 85,000 against
+  316,000): most links drop before their queue drains. In the long gather the missing rows fall for about four minutes,
+  then hover for the rest of the settle while every store sits at its cap, and one link's backlog grows to 11 minutes
+  (about 9,600 records); a record waits p50 ≤9 minutes. Its 180-second count of missing DMs (64) is mostly lateness here:
+  43 to 59 of them arrive during the settle. Fewer DMs are lost for good than on `ble1m` (18 against 56 in the walk)
+  although senders evict more of their own (408 against 279). A guess, not yet tested: slower spreading leaves the
+  stores holding different rows, so a DM one store evicts survives at another. The 10-minute gather is red on every
+  radio (68 DMs on the baseline, 60 on `ble1m`, 18 here): custody's cap, not the air. Between the two rates, the walk
+  delivers 61% to 71% of DMs inside 10 minutes; both ledgers are fluid, so neither is a phone's floor.
 - **How the walkers move is the scenario's to say** (`-Pknit.meshSimMotion`, `knit.meshSimGroups`,
   `knit.meshSimFriends`; `Motion.of`). `rwp`, the default, is random waypoint: each walker alone once its group has
   left the gate. `groups` is `GroupWalk`, Reference Point Group Mobility. Each group's point walks a random waypoint
@@ -1048,12 +1069,89 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   within 3 m of the point, and nobody leaves their group. `groups=street` draws the walking groups' sizes from a weekday
   street (46/37/10/4/3% of people alone, in twos and so on to fives; Moussaïd et al. 2010); a number fixes them.
   `friends=circles` pairs the walking groups into circles of friends who came separately. The whole circle meets at boot
-  and pins each other's keys, then only the walking groups stay linked, and half of a walker's DMs go to its circle's
-  other group; the default DMs only the walker's own group. Every draw comes from a `SimSeeds` stream keyed by its
+  and pins each other's keys, then only the walking groups stay linked, and a share of a walker's DMs go to its
+  circle's other group (`knit.meshSimAwayShare`, a half unless set: a guess no study gives, so read a circle's delivery
+  at more than one share); the default DMs only the walker's own group. Every draw comes from a `SimSeeds` stream keyed by its
   purpose, so a new draw shifts no other. `Mobility.present` lets a model take a walker out of the field: its links drop
   and nobody dials it. A model's arithmetic is `StrictMath`, never `Math`. `MobilityTest` pins the first outings' walk,
   dial and workload draws through all of it; `MeshSimBootTest` pins the circle's boot. The research behind it is the
   "Mesh Sim Pedestrian Models" report (`/media/walter/data/knit-sim/reports/`).
+- **Walking in groups moves the DMs to direct and cuts the room's reach** (`e3ab305` plus the away-share setting,
+  2026-11-17). Each row is one seed-1 walk: 48 walkers, 10 minutes, the phone's queue, `ble1m`, no gather. Reports and
+  `run-p0.sh` are in `/media/walter/data/knit-sim/mobility-p0/`. `rwp` reproduces `ble1m`'s W seed-1 report to the
+  contact (608 made, p50 25 s, degree 1.64, largest component 10.9) and to the DM reach mix, and so do its delivery and
+  room numbers. The three `groups` walks share one link log whatever the friends, as they must.
+
+  | Walk | DMs direct / path / partitioned | DMs in run | DM p50 / p90 | Room reach | Lost for good | Contacts, degree |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | `rwp` | 146 / 91 / 1,152 | 74% | 66 s / 191 s | 74% | 24 | 608, 1.6 |
+  | `groups` | 1,389 / 0 / 0 | 99% | 0 s / 3 s | 42% | 0 | 501, 3.3 |
+  | `groups`, circles at 0.5 | 710 / 29 / 650 | 75% | 0.1 s / 184 s | 43% | 21 | 501, 3.3 |
+  | `groups`, circles at 0.2 | 1,138 / 3 / 248 | 89% | 0 s / 24 s | 43% | 18 | 501, 3.3 |
+  | `groups=street`, circles at 0.5 | 398 / 38 / 964 | 72% | 55 s / 225 s | 62% | 43 | 639, 2.3 |
+
+  The degree counts a group's own links, which never drop. Walking in threes, the walkers meet fewer others (501
+  contacts against 608), and a room post reaches 42% of them against 74%. A DM to another group in the circle arrives
+  less often than `rwp`'s partitioned ones (49% against 69% in the run) and later (p50 123 s against 93 s). A circle's
+  delivery follows its away share (75% at 0.5, 89% at 0.2), so it is the share's number, not the park's. On a street's
+  sizes 46% of people walk alone, and a walker with no companions DMs only away, so 72% of DMs leave the group whatever
+  the share. Those groups mix more (639 contacts, room 62%) and lose the most DMs for good (43). Direct DMs wait longer
+  in a group (p90 3 to 6 s against 0.6 s). A cut loses about four times `rwp`'s records (214,000 to 236,000 against
+  56,000), most likely because two groups parting drop up to nine links at once. One seed each: a direction, not yet a
+  measurement.
+- **The field alone runs in seconds** (`FieldSimTest`, `FieldRun`). The groups, the motion, the radio and the workload
+  are `SimWorld`'s, built from the scenario and the seed only. The radio's links depend on where the walkers stand and
+  on nothing the mesh does, so a run without stacks makes the outing's exact links. It is gated like the outings and
+  takes the same properties: `scripts/gradle-turn.sh ./gradlew :app:testDebugUnitTest --tests
+  'app.getknit.knit.mesh.sim.FieldSimTest' -Pknit.meshSim=1 -Pknit.meshSimMinutes=240`. Four hours of 48 walkers take
+  about 1.5 s. Its report is `field-s<seed>-w<walkers>-m<minutes>`. It classes each DM by how its two ends stood when it
+  was sent, but delivers nothing. `knit.meshSimTrace=<file>` replays a BonnMotion `.movements` file (`TraceMobility`):
+  straight lines between waypoints, and each walker present only from its first waypoint to its last.
+  `scripts/sim-trace.py` turns a Jülich PeTrack file into one. `motion=rwp-steady` starts random waypoint from its
+  long-run state (Navidi and Camp 2004), with no gates and no groups; it is the baseline the literature analysed.
+- **The instruments measure the field as the proximity traces measured theirs** (`FieldMeter`). Both runs report
+  them. Each contact log becomes per-pair intervals (`PairLog`), and `ContactStats` reads each log the way Chaintreau
+  et al. did. The logs are:
+  - `link`, the radio's links;
+  - `near30`, everyone within 30 m every 500 ms (the truth a scanner samples);
+  - three `VirtualScanner` views of that truth: `imote` (a 5 s inquiry every 120 s ± 12 s at 30 m, mutual, as Haggle
+    ran), `scan300` (Reality Mining's and Copenhagen's 5 minutes at 10 m) and `scan20` (SocioPatterns' 20 s at 1.5 m).
+
+  A trace is compared with its scanned log, never with `link`, since the gap between `near30` and `link` is what the
+  dial and the cap cost. Per log, the `<log>_` keys are:
+  - contacts a pair-hour, and contact and gap p50 and p90 (a gap is an inter-contact time, one sample per gap);
+  - the gaps' CV (1 for an exponential);
+  - `ict_tail_llr`: above the median, the mean log-likelihood ratio of a power law over an exponential, both fitted by
+    maximum likelihood (Clauset et al. 2009);
+  - the share of pairs that ever met;
+  - `halves_r`, the correlation across all pairs between contact time in the first and second halves (about 0 when
+    pairs are alike, about 1 when friends stay together).
+
+  The scanners record one sighting as a contact of no length, and a pair's gap is never shorter than a period plus
+  its jitter. Beside the logs come `cap_time_pct` (walker-time at the radio's link budget), the group pairs' time
+  within 25 m, partings beyond 35 m per pair-hour and rejoins within 25 m, and `dm_pairs_ever_linked_pct`.
+  `FieldMeterTest` pins the arithmetic and the scanner's catch rate for a pass-by (25 s of 120 at each end: 37% for
+  either end, 4% mutual). It also replays the fixture `juelich-2018crowdqueue-030.movements.gz` through `ble1m`. That
+  fixture is CC BY 4.0, run 030 of the Wuppertal 2018 entrance queue (75 people, 65 s); its README carries the
+  attribution. The test then holds the baseline to its failures.
+- **Random waypoint shows the failures it should** (Phase 1, 2026-11-18). The field run reproduces `ble1m`'s W seed-1
+  outing to the contact and to the DM reach mix (608 made, 146 / 91 / 1,152). Four hours, 48 walkers, `ble1m`, three
+  seeds, in `/media/walter/data/knit-sim/phase1/h4/`:
+
+  | Motion | Link contacts | Gaps p50, CV, tail LLR | Halves r | Contacts a pair-hour, iMote / `near30` | Group pairs within 25 m | At the budget |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | `rwp` | 15,031 | 711 s, 0.9, −0.1 | 0.0 | 0.6 / 4.3 | 3% | 0% |
+  | `rwp-steady` | 15,037 | 704 s, 0.9, −0.1 | 0.0 | 0.5 / 4.3 | 2% | 0% |
+  | `groups` | 10,835 | 911 s, 0.9, −0.1 | 1.0 | 0.5 / 3.9 | 100% | 6.7% |
+  | `groups=street`, circles | 14,101 | 746 s, 0.9, −0.1 | 1.0 | 0.6 / 4.2 | 100% | 4.3% |
+
+  Every log of every motion has exponential gaps: walking groups still wander as random-waypoint units, so only a
+  model with places and paths (Phase 2) can give the heavy-tailed head every human trace has. Walking groups do make
+  uneven pairs, though those pairs are only the groups' own. Every pair meets within four hours (100% met), against
+  10 to 20% of pairs a week on a campus. An iMote sees about one contact in eight that the 500 ms truth holds, and
+  median contacts of 19 s (single sightings). In the Jülich queue, phones sit at the six-link budget 91% of the time.
+  Still owed: reference CCDF tables from Haggle Infocom 2005 and Reality Mining, and KS distances to them. Their
+  CRAWDAD copies need an IEEE DataPort login.
 - **What it leaves out.** One plane, no path loss and none of the transports' own dial policies: `LabTransport` stands
   in for the whole radio, so the topology is the geometry's (and, under `ble1m`, a nearest-first budget's), not what
   Bluetooth or Wi-Fi Aware would have formed. `disc` has no link budget; `ble1m`'s is a measured rate, not yet a

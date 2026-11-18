@@ -811,16 +811,19 @@ android {
                         ).get()
                         .coerceAtLeast(1)
                 // `-Pknit.meshSim=<seed>` runs the mobility simulator's outings (app/src/test/.../mesh/sim/*SimTest):
-                // each takes the minutes of wall clock it simulates and reports what the mesh did, so it is a
-                // measurement and no check, and every other run leaves it out. `knit.meshSimWalkers` and
-                // `knit.meshSimMinutes` size the outing; `knit.meshSimHeap` (say `4g`) lifts the fork's heap for a
-                // crowd the 1 GiB above cannot hold. `knit.meshSimInbound` (`phone` or a count) bounds each router's
-                // inbound queue as a phone's is; `knit.meshSimSettleMinutes` watches custody parity after the gather;
-                // `knit.meshSimGather=false` ends the outing at the walk; `knit.meshSimRadio` names the radio that makes
-                // its links (`disc` unless set); `knit.meshSimMotion`, `knit.meshSimGroups` and `knit.meshSimFriends` how the
-                // walkers move, the groups they walk in and whom they DM (`rwp`, threes and their own group unless set). `knit.meshSimOut` (an absolute directory) and
-                // `knit.meshSimTag` say where the report goes and what its name ends in. An outing is a measurement, so
-                // it runs every time it is asked: never up to date, never from the cache.
+                // each takes the minutes of wall clock it simulates and reports what the mesh did (FieldSimTest, the
+                // walk and radio alone, takes seconds), so it is a measurement and no check, and every other run leaves
+                // it out. `knit.meshSimWalkers` and `knit.meshSimMinutes` size the outing; `knit.meshSimHeap` (say
+                // `4g`) lifts the fork's heap for a crowd the 1 GiB above cannot hold. `knit.meshSimInbound` (`phone`
+                // or a count) bounds each router's inbound queue as a phone's is; `knit.meshSimSettleMinutes` watches
+                // custody parity after the gather; `knit.meshSimGather=false` ends the outing at the walk;
+                // `knit.meshSimRadio` names the radio that makes its links (`disc` unless set); `knit.meshSimMotion`,
+                // `knit.meshSimGroups` and `knit.meshSimFriends` how the walkers move, the groups they walk in and whom
+                // they DM (`rwp`, threes and their own group unless set), and `knit.meshSimAwayShare` the share of a
+                // circle's DMs that go to its other groups (a half unless set); `knit.meshSimTrace` a `.movements` file
+                // FieldSimTest replays. `knit.meshSimOut` (an absolute directory) and `knit.meshSimTag` say where the
+                // report goes and what its name ends in. An outing is a measurement, so it runs every time it is asked:
+                // never up to date, never from the cache.
                 val meshSim = providers.gradleProperty("knit.meshSim").orNull
                 if (meshSim == null) {
                     test.filter.excludeTestsMatching("app.getknit.knit.mesh.sim.*SimTest")
@@ -836,6 +839,8 @@ android {
                             "knit.meshSimMotion",
                             "knit.meshSimGroups",
                             "knit.meshSimFriends",
+                            "knit.meshSimAwayShare",
+                            "knit.meshSimTrace",
                         )
                     (sizes + shapes + listOf("knit.meshSimOut", "knit.meshSimTag")).forEach { key ->
                         providers.gradleProperty(key).orNull?.let { test.systemProperty(key, it) }

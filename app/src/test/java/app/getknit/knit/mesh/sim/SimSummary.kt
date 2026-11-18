@@ -80,6 +80,7 @@ fun SimScenario.summaryValues(): List<Pair<String, Any?>> =
         "motion" to motion,
         "groups" to GroupSizes.of(groups, groupSize).name,
         "friends" to friends,
+        "away_share" to awayShare.takeIf { friends == Friends.Circle.NAME },
     )
 
 /**

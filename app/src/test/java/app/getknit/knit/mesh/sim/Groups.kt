@@ -235,6 +235,8 @@ sealed interface Friends {
     /**
      * A walker's friends are its group's and its circle's other groups' ([Circles]): a DM goes to someone in another
      * group of the circle with probability [awayShare], and to a companion otherwise. One with no companions DMs away.
+     * [DEFAULT_AWAY_SHARE] is a guess, not a measurement: no study the simulator draws on gives the share of a walker's
+     * messages that go to friends who are elsewhere, so a run that leans on it says which share it used.
      */
     data class Circle(
         val circles: List<List<Int>>,
@@ -255,15 +257,16 @@ sealed interface Friends {
     companion object {
         val NAMES = listOf(Group.name, Circle.NAME)
 
-        /** The workload [name] gives the walkers in [groups], on [seed]. */
+        /** The workload [name] gives the walkers in [groups], on [seed]; a circle sends [awayShare] of its DMs away. */
         fun of(
             name: String,
             seed: Long,
             groups: List<List<Int>>,
+            awayShare: Double = Circle.DEFAULT_AWAY_SHARE,
         ): Friends =
             when (name) {
                 Group.name -> Group
-                Circle.NAME -> Circle(Circles.of(seed, groups.size))
+                Circle.NAME -> Circle(Circles.of(seed, groups.size), awayShare)
                 else -> throw IllegalArgumentException("no friends named $name; there are $NAMES")
             }
     }

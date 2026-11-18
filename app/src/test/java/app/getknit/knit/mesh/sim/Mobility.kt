@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.sim
 
+import app.getknit.knit.mesh.sim.SimSeeds.Purpose
 import kotlin.math.ceil
 import kotlin.math.sqrt
 import kotlin.random.Random
@@ -41,6 +42,10 @@ fun interface Mobility {
  * [speedMps], stands there up to [maxPauseMs], and draws the next. The classic open-space model: no paths,
  * no attraction, every walker alone once it has left. A park at its emptiest.
  *
+ * With [steady], nobody starts at a gate: each walker starts where the walk itself would have it after a long while
+ * ([steadyStart]), so a run measures the model's long-run contacts from its first second, as the literature's analyses
+ * of it do, not the drift from the gates towards its crowded middle. [starts] then only counts the walkers.
+ *
  * Each walker draws from its own generator, so adding a walker moves none of the others.
  */
 class RandomWaypoint(
@@ -53,6 +58,7 @@ class RandomWaypoint(
     private val maxPauseMs: Long = DEFAULT_MAX_PAUSE_MS,
     /** Each walker's own speed range, [speedMps] for all unless given: a group walks at its size's pace. */
     private val speedOf: (Int) -> ClosedFloatingPointRange<Double> = { speedMps },
+    steady: Boolean = false,
 ) : Mobility {
     private class Leg(
         val fromMs: Long,
@@ -62,7 +68,10 @@ class RandomWaypoint(
     )
 
     private val randoms = starts.indices.map { Random(seed * SEED_STRIDE + it) }
-    private val legs = starts.map { start -> mutableListOf(Leg(0, departMs, start, start)) }
+    private val legs =
+        starts.mapIndexed { walker, start ->
+            if (steady) steadyStart(seed, walker) else mutableListOf(Leg(0, departMs, start, start))
+        }
 
     override fun position(
         walker: Int,
@@ -112,8 +121,7 @@ class RandomWaypoint(
         return lo
     }
 
-    // One walk and the stand that follows it. The walk's time is rounded up, so the drawn speed is never exceeded, and
-    // it takes at least a millisecond, so the path always grows.
+    // One walk and the stand that follows it.
     private fun extend(walker: Int) {
         val random = randoms[walker]
         val path = legs[walker]
@@ -121,14 +129,90 @@ class RandomWaypoint(
         val target = Point(random.nextDouble() * widthM, random.nextDouble() * heightM)
         val speeds = speedOf(walker)
         val speed = speeds.start + random.nextDouble() * (speeds.endInclusive - speeds.start)
-        val walkMs = ceil(last.to.distanceTo(target) / speed * MS_PER_S).toLong().coerceAtLeast(1)
-        val arriveMs = last.toMs + walkMs
-        path += Leg(last.toMs, arriveMs, last.to, target)
-        val pauseMs = if (maxPauseMs > 0) random.nextLong(maxPauseMs + 1) else 0
-        if (pauseMs > 0) path += Leg(arriveMs, arriveMs + pauseMs, target, target)
+        walk(walker, path, last.toMs, last.to, target, speed)
+    }
+
+    // A walk from [from] to [to] at [speed], then a stand drawn from the walker's own generator. The walk's time is rounded
+    // up, so the speed is never exceeded, and it takes at least a millisecond, so the path always grows.
+    private fun walk(
+        walker: Int,
+        path: MutableList<Leg>,
+        fromMs: Long,
+        from: Point,
+        to: Point,
+        speed: Double,
+    ) {
+        val arriveMs = fromMs + ceil(from.distanceTo(to) / speed * MS_PER_S).toLong().coerceAtLeast(1)
+        path += Leg(fromMs, arriveMs, from, to)
+        val pauseMs = if (maxPauseMs > 0) randoms[walker].nextLong(maxPauseMs + 1) else 0
+        if (pauseMs > 0) path += Leg(arriveMs, arriveMs + pauseMs, to, to)
+    }
+
+    /**
+     * Where [walker] is at time 0 when the walk has been going for ever, drawn exactly rather than run in (Navidi and Camp
+     * 2004, "Stationary distributions for the random waypoint mobility model", IEEE TMC 3(1)). A walker stands with the
+     * share of time the walk spends standing, mean stand over mean stand plus mean walk, the mean walk being the mean
+     * distance between two points of the field ([meanDistanceM]) times the mean of one over the speed. A stander stands
+     * anywhere in the field for what is left of a stand caught in the middle: a long stand is likelier to be caught, so
+     * the remainder of a uniform stand has the density 2(1 − r/max)/max. A walker is caught on a leg likelier the longer
+     * it is (a leg kept with probability its length over the diagonal), anywhere along it, at a speed likelier the slower
+     * it is (density in proportion to one over the speed, drawn as `min·(max/min)^u`). From there on it walks as any
+     * walker does, from its own generator. The draws come from a stream of their own ([Purpose.STEADY_START]).
+     */
+    private fun steadyStart(
+        seed: Long,
+        walker: Int,
+    ): MutableList<Leg> {
+        val speeds = speedOf(walker)
+        require(speeds.start > 0) { "a walk caught at a speed of zero never ends: $speeds" }
+        val random = SimSeeds.stream(seed, Purpose.STEADY_START, walker.toLong())
+        val walkS = meanDistanceM(widthM, heightM) * meanInverse(speeds)
+        val standS = maxPauseMs / 2.0 / MS_PER_S
+        val path = mutableListOf<Leg>()
+        if (random.nextDouble() * (walkS + standS) < standS) {
+            val at = Point(random.nextDouble() * widthM, random.nextDouble() * heightM)
+            val leftMs = ceil(maxPauseMs * (1 - sqrt(1 - random.nextDouble()))).toLong().coerceAtLeast(1)
+            path += Leg(0, leftMs, at, at)
+            return path
+        }
+        val diagonal = sqrt(widthM * widthM + heightM * heightM)
+        var from: Point
+        var to: Point
+        do {
+            from = Point(random.nextDouble() * widthM, random.nextDouble() * heightM)
+            to = Point(random.nextDouble() * widthM, random.nextDouble() * heightM)
+        } while (random.nextDouble() * diagonal >= from.distanceTo(to))
+        val done = random.nextDouble()
+        val at = Point(from.x + (to.x - from.x) * done, from.y + (to.y - from.y) * done)
+        val speed = speeds.start * StrictMath.exp(random.nextDouble() * StrictMath.log(speeds.endInclusive / speeds.start))
+        walk(walker, path, 0, at, to, speed)
+        return path
     }
 
     companion object {
+        /**
+         * The mean distance between two points drawn uniformly in a [w] by [h] rectangle (Ghosh 1951, "Random distances
+         * within a rectangle and between two rectangles", Bull. Calcutta Math. Soc. 43): about 0.5214 of a square's side.
+         */
+        fun meanDistanceM(
+            w: Double,
+            h: Double,
+        ): Double {
+            val d = sqrt(w * w + h * h)
+            val ends = w * w * w / (h * h) + h * h * h / (w * w) + d * (3 - w * w / (h * h) - h * h / (w * w))
+            val logs = h * h / w * StrictMath.log((w + d) / h) + w * w / h * StrictMath.log((h + d) / w)
+            return (ends + LOG_WEIGHT * logs) / GHOSH_DIVISOR
+        }
+
+        // The mean of one over a speed drawn uniformly from [speeds], in seconds a metre.
+        private fun meanInverse(speeds: ClosedFloatingPointRange<Double>): Double {
+            val (lo, hi) = speeds.start to speeds.endInclusive
+            return if (hi == lo) 1 / lo else StrictMath.log(hi / lo) / (hi - lo)
+        }
+
+        private const val LOG_WEIGHT = 2.5
+        private const val GHOSH_DIVISOR = 15.0
+
         /** A stroll to a brisk walk. */
         val DEFAULT_SPEED_MPS = 0.8..1.6
         const val DEFAULT_MAX_PAUSE_MS = 30_000L
@@ -142,10 +226,22 @@ object Motion {
     /** Every walker for itself once its group has left its gate ([RandomWaypoint]): the first outings' crowd. */
     const val WAYPOINT = "rwp"
 
+    /**
+     * [WAYPOINT] from its long-run spread at time 0 ([RandomWaypoint]'s steady start): no gates, nobody with their group.
+     * The instruments' baseline, the model as the literature analysed it.
+     */
+    const val WAYPOINT_STEADY = "rwp-steady"
+
     /** Groups that walk together all outing ([GroupWalk]). */
     const val GROUPS = "groups"
 
-    val NAMES = listOf(WAYPOINT, GROUPS)
+    /** Walkers replayed from a recorded or generated trace ([TraceMobility]): never built by name, read from its file. */
+    const val TRACE = "trace"
+
+    val NAMES = listOf(WAYPOINT, WAYPOINT_STEADY, GROUPS)
+
+    /** Whether [motion] starts each group together at its gate, linked: every motion but a steady start and a trace. */
+    fun startsTogether(motion: String): Boolean = motion != WAYPOINT_STEADY && motion != TRACE
 
     fun of(
         scenario: SimScenario,
@@ -153,7 +249,7 @@ object Motion {
         gates: List<Point>,
     ): Mobility =
         when (scenario.motion) {
-            WAYPOINT -> {
+            WAYPOINT, WAYPOINT_STEADY -> {
                 val gateOf = IntArray(scenario.walkers)
                 groups.forEachIndexed { g, group -> group.forEach { gateOf[it] = g } }
                 RandomWaypoint(
@@ -162,6 +258,7 @@ object Motion {
                     heightM = scenario.fieldM,
                     starts = (0 until scenario.walkers).map { gates[gateOf[it]] },
                     departMs = scenario.departMs,
+                    steady = scenario.motion == WAYPOINT_STEADY,
                 )
             }
 

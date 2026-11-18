@@ -20,6 +20,9 @@ interface Radio {
     /** Each node's radio, shared by its air links both ways ([app.getknit.knit.mesh.lab.NodeAir]), or null for none. */
     val nodeAirBytesPerSecond: Long? get() = null
 
+    /** The most links one walker may hold, or null for a radio with no budget. */
+    val maxLinks: Int? get() = null
+
     /**
      * Moves the radio to [atMs] with every walker at its place in [positions]. A walker [present] marks false is out of
      * the field ([Mobility.present]): its links drop and nobody dials it. Null means everyone is there.

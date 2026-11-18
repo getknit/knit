@@ -177,8 +177,9 @@ class MobilityTest {
     }
 
     /**
-     * Under circles a DM goes to the sender's circle only, half of them away from its own group; one with no companions
-     * DMs only away; and a walker with companions DMs at the same moments as under its group alone.
+     * Under circles a DM goes to the sender's circle only, the circle's away share of them away from its own group, at the
+     * default and at a lower share; one with no companions DMs only away; and a walker with companions DMs at the same
+     * moments as under its group alone.
      */
     @Test
     fun aCircleDmsItsOtherGroupsAtTheAwayShare() {
@@ -199,22 +200,28 @@ class MobilityTest {
                 friends = friends,
             )
         }
-        val dms = schedule(Friends.Circle(circles)).filterIsInstance<SimEvent.Dm>()
-
-        assertTrue(dms.all { it.to != it.from && it.to in circleOf.getValue(it.from) })
-        assertTrue("the singleton DMed its own group", dms.filter { it.from == 5 }.all { groupOf[it.to] != groupOf[5] })
-        val withCompanions = dms.filter { groups[groupOf.getValue(it.from)].size > 1 }
-        val awayShare = withCompanions.count { groupOf[it.to] != groupOf[it.from] }.toDouble() / withCompanions.size
-        assertEquals(Friends.Circle.DEFAULT_AWAY_SHARE, awayShare, AWAY_SHARE_SLACK)
-
         val alone = schedule(Friends.Group).filterIsInstance<SimEvent.Dm>()
-        assertEquals(alone.map { it.from to it.atMs }, withCompanions.map { it.from to it.atMs })
+        for (share in listOf(Friends.Circle.DEFAULT_AWAY_SHARE, LOW_AWAY_SHARE)) {
+            val dms = schedule(Friends.Circle(circles, share)).filterIsInstance<SimEvent.Dm>()
+
+            assertTrue(dms.all { it.to != it.from && it.to in circleOf.getValue(it.from) })
+            assertTrue("the singleton DMed its own group", dms.filter { it.from == 5 }.all { groupOf[it.to] != groupOf[5] })
+            val withCompanions = dms.filter { groups[groupOf.getValue(it.from)].size > 1 }
+            val awayShare = withCompanions.count { groupOf[it.to] != groupOf[it.from] }.toDouble() / withCompanions.size
+            assertEquals("the away share at $share", share, awayShare, AWAY_SHARE_SLACK)
+            assertEquals(alone.map { it.from to it.atMs }, withCompanions.map { it.from to it.atMs })
+        }
     }
 
     @Test
     fun friendsAreNamed() {
         assertEquals(Friends.Group, Friends.of("group", seed = 1, groups = GROUPS))
         assertEquals(Friends.Circle(Circles.of(seed = 1, groupCount = GROUPS.size)), Friends.of("circles", seed = 1, groups = GROUPS))
+        assertEquals(
+            Friends.Circle(Circles.of(seed = 1, groupCount = GROUPS.size), LOW_AWAY_SHARE),
+            Friends.of("circles", seed = 1, groups = GROUPS, awayShare = LOW_AWAY_SHARE),
+        )
+        assertThrows(IllegalArgumentException::class.java) { Friends.of("circles", seed = 1, groups = GROUPS, awayShare = 1.5) }
         assertThrows(IllegalArgumentException::class.java) { Friends.of("everyone", seed = 1, groups = GROUPS) }
     }
 
@@ -305,6 +312,9 @@ class MobilityTest {
         const val PERCENT = 100.0
         const val SHARE_POINTS = 2.0
         const val AWAY_SHARE_SLACK = 0.04
+
+        // A share well off the default, to show the setting is what moves the DMs away.
+        const val LOW_AWAY_SHARE = 0.2
         const val HOUR_MS = 3_600_000L
     }
 }

@@ -19,6 +19,8 @@ object SimSeeds {
         CIRCLES(4),
         FRIEND_PICK(5),
         LONE_DMS(6),
+        STEADY_START(7),
+        SCAN(8),
     }
 
     /** A hash of [parts], in order: every input bit moves every output bit, so neighbouring keys draw unrelated streams. */

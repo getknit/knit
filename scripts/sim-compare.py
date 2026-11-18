@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Line up mesh-simulator reports by their `summary:` blocks.
 
-Each report `ParkWalkSimTest` writes ends in a `summary:` block of `key=value` lines (`mesh/sim/SimSummary.kt`). This
+Each report `ParkWalkSimTest` or `FieldSimTest` writes ends in a `summary:` block of `key=value` lines (`mesh/sim/SimSummary.kt`). This
 reads any number of them, groups them by the outing's shape (walkers, minutes, inbound bound, gather, settle) and,
-within a shape, by variant (the radio and its numbers, the motion, groups and friends, or a label you give), then prints every key as
+within a shape, by variant (the radio and its numbers, the motion, groups and friends, a replayed trace, or a label you give), then prints every key as
 `mean [min..max]` across the seeds of each variant, the variants side by side. That is the A/B a radio change is
 judged by: never one run against another, always seeds against seeds.
 
@@ -24,10 +24,10 @@ from collections import OrderedDict
 from pathlib import Path
 
 SHAPE_KEYS = ("walkers", "minutes", "inbound_slots", "gather", "settle_minutes")
-VARIANT_KEYS = ("radio", "connect_m", "drop_m", "dial_ms", "motion", "groups", "friends")
+VARIANT_KEYS = ("radio", "connect_m", "drop_m", "dial_ms", "motion", "groups", "friends", "away_share", "trace")
 SCENARIO_KEYS = ("seed", "field_m") + SHAPE_KEYS + VARIANT_KEYS
 # Keys a later summary added, read as what every earlier run had: an older report lines up with a new default one.
-DEFAULTS = {"motion": "rwp", "groups": "3", "friends": "group"}
+DEFAULTS = {"motion": "rwp", "groups": "3", "friends": "group", "away_share": "none", "trace": "none"}
 LINE = re.compile(r"^  ([a-z][a-z0-9_]*)=(\S+)$")
 
 

@@ -38,6 +38,8 @@ data class SimScenario(
     val motion: String = Motion.WAYPOINT,
     /** Whom the walkers DM ([Friends.of]): `group`, the friends they came with, or `circles`, their circle's too. */
     val friends: String = Friends.Group.name,
+    /** Under `circles`, the share of a walker's DMs that go to its circle's other groups ([Friends.Circle.awayShare]). */
+    val awayShare: Double = Friends.Circle.DEFAULT_AWAY_SHARE,
     /** How long a group stands together at its gate before its walkers set off. */
     val departMs: Long = 10_000,
     /** Which [Radio] turns places into links ([Radio.of]); the three numbers after it are [DiscRadio]'s. */
@@ -95,16 +97,13 @@ class MeshSim(
     /** Told where the outing has got to, as it goes: a run that stalls says where. */
     private val progress: (String) -> Unit = {},
 ) {
-    private val groupSizes = GroupSizes.of(scenario.groups, scenario.groupSize)
-    private val groups = groupSizes.partition(scenario.seed, scenario.walkers)
-    private val mobility = Motion.of(scenario, groups, gates())
-    private val workloadFriends = Friends.of(scenario.friends, scenario.seed, groups)
-
-    // The groups at their gates at the start: linked before the walk, as friends who arrived together are.
-    private val radio = Radio.of(scenario, initial = groups.filter { g -> g.all { mobility.present(it, 0) } }.flatMap(::pairs).toSet())
-    private val contacts = ContactLog(scenario.walkers)
-    private val events =
-        Workload.schedule(scenario.seed, groups, scenario.durationMs, scenario.dmMeanMs, scenario.roomMeanMs, workloadFriends)
+    private val world = SimWorld(scenario)
+    private val groups = world.groups
+    private val mobility = world.mobility
+    private val workloadFriends = world.friends
+    private val radio = world.radio
+    private val field = world.meter()
+    private val events = world.events
 
     /** The walkers' nodes, once [play] has booted them: what a test reads the links they were given off. */
     internal lateinit var nodes: List<LabNode>
@@ -261,8 +260,8 @@ class MeshSim(
         val endedAt = lab.clock.now()
         walkEnded = true
         val cores = (cpuNanos() - cpuBefore).toDouble() / ((endedAt - startedAt) * NANOS_PER_MS)
-        lines += contacts.summary()
-        summary.putAll(contacts.summaryValues())
+        lines += field.lines()
+        summary.putAll(field.summaryValues())
         val walked = RouterCounters.of(nodes) - before
         lines += "frames in the run: $walked; room posts moderation refused ${refused.get()}"
         summary.putAll(walked.summaryValues(suffix = "walk"))
@@ -346,14 +345,7 @@ class MeshSim(
         return if (late.isEmpty()) "gather: every DM arrived" else strandedLine(late)
     }
 
-    // Each group stands at its own gate: a point drawn in the field, shared by its walkers.
-    // One gate a group, where it stands until it sets off.
-    private fun gates(): List<Point> {
-        val random = kotlin.random.Random(scenario.seed)
-        return groups.map { Point(random.nextDouble() * scenario.fieldM, random.nextDouble() * scenario.fieldM) }
-    }
-
-    private fun pairs(group: List<Int>): List<Link> = group.flatMapIndexed { i, a -> group.drop(i + 1).map { b -> Link.of(a, b) } }
+    private fun pairs(group: List<Int>): List<Link> = SimWorld.pairs(group)
 
     private fun ends(link: Link): Pair<LabNode, LabNode> = nodes[link.a] to nodes[link.b]
 
@@ -427,7 +419,7 @@ class MeshSim(
         val changes = radio.step(atMs, positions, present)
         changes.dropped.map(::ends).forEach { (a, b) -> a.transport.disconnect(b.transport) }
         changes.raised.map(::ends).forEach { (a, b) -> lab.link(a, b, air = radio.air) }
-        contacts.record(atMs, changes, radio.links)
+        field.record(atMs, positions, present, changes, radio.links)
         // Robolectric keeps every log line of the test: a long run would measure that, not the stacks.
         if (atMs % LOG_CLEAR_MS == 0L) {
             ShadowLog.clear()

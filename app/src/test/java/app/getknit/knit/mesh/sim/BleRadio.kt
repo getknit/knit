@@ -30,7 +30,7 @@ class BleRadio(
     private val dropM: Double,
     initial: Set<Link> = emptySet(),
     private val dialMedianMs: Long = DIAL_MEDIAN_MS,
-    private val maxLinks: Int = PromotionConfig.DEFAULT_MAX_LINKS,
+    override val maxLinks: Int = PromotionConfig.DEFAULT_MAX_LINKS,
     private val linkBytesPerSecond: Long = LINK_BYTES_PER_S,
     private val nodeBytesPerSecond: Long = NODE_BYTES_PER_S,
     override val name: String = NAME,
