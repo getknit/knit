@@ -12,13 +12,16 @@ enum class RowKind {
     DM_DELIVERED,
 
     /**
-     * A recipient-addressed chat frame that is no workload DM: sealed receipts, session hellos, ratchet traffic, and the
-     * gather's probe DMs.
+     * A recipient-addressed chat frame that is no workload DM: sealed receipts, session hellos, ratchet traffic, the
+     * gather's probe DMs, and the DMs of a backlog ([Workload.backlog]).
      */
     SEALED_OTHER,
 
     /** A cleartext post in the Nearby room. */
     ROOM,
+
+    /** A post in a party's group chat ([GroupChats]), the boot's and the backlog's too: no receipt purges it. */
+    GROUP,
     PROFILE,
     OTHER,
 }
@@ -32,19 +35,22 @@ data class HeldRow(
 
 /**
  * One row as `LabNode.custodyFrames` writes it (`id:type:sender→recipient@sentAt#…`), classed; [pending] says, for each
- * workload DM's frame id, whether it is still on its way.
+ * workload DM's frame id, whether it is still on its way, and [groupPosts] are the workload's group-chat posts.
  */
 fun heldRow(
     described: String,
     pending: Map<String, Boolean>,
+    groupPosts: Set<String> = emptySet(),
 ): HeldRow {
     val (id, type, rest) = described.split(':', limit = ROW_PARTS)
     val recipient = rest.substringAfter('→').substringBefore('@')
     val sentAt = rest.substringAfter('@').substringBefore('#').toLong()
     val kind =
-        pending[id]?.let { if (it) RowKind.DM_UNDELIVERED else RowKind.DM_DELIVERED } ?: when (type) {
-            FrameType.CHAT -> if (recipient == "null") RowKind.ROOM else RowKind.SEALED_OTHER
-            FrameType.PROFILE -> RowKind.PROFILE
+        when {
+            id in pending -> if (pending.getValue(id)) RowKind.DM_UNDELIVERED else RowKind.DM_DELIVERED
+            id in groupPosts -> RowKind.GROUP
+            type == FrameType.CHAT -> if (recipient == "null") RowKind.ROOM else RowKind.SEALED_OTHER
+            type == FrameType.PROFILE -> RowKind.PROFILE
             else -> RowKind.OTHER
         }
     return HeldRow(id, kind, sentAt)
@@ -198,6 +204,7 @@ class CustodyPressure(
                 RowKind.DM_DELIVERED -> "dm-delivered"
                 RowKind.SEALED_OTHER -> "sealed-other"
                 RowKind.ROOM -> "room"
+                RowKind.GROUP -> "group"
                 RowKind.PROFILE -> "profile"
                 RowKind.OTHER -> "other"
             }

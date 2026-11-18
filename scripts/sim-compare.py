@@ -26,13 +26,14 @@ from pathlib import Path
 SHAPE_KEYS = ("walkers", "minutes", "inbound_slots", "gather", "settle_minutes")
 VARIANT_KEYS = (
     "radio", "connect_m", "drop_m", "dial_ms", "motion", "groups", "friends", "away_share", "trace",
-    "gather_by", "arrival_min", "latp", "excursions_per_hour",
+    "gather_by", "arrival_min", "latp", "excursions_per_hour", "dm_s", "room_s", "group_s", "backlog",
 )
 SCENARIO_KEYS = ("seed", "field_m") + SHAPE_KEYS + VARIANT_KEYS
 # Keys a later summary added, read as what every earlier run had: an older report lines up with a new default one.
 DEFAULTS = {
     "motion": "rwp", "groups": "3", "friends": "group", "away_share": "none", "trace": "none",
     "gather_by": "ring", "arrival_min": "none", "latp": "none", "excursions_per_hour": "none",
+    "dm_s": "20", "room_s": "60", "group_s": "0", "backlog": "0",
 }
 LINE = re.compile(r"^  ([a-z][a-z0-9_]*)=(\S+)$")
 

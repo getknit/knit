@@ -38,7 +38,26 @@ class SimWorld(
         if (trace != null) {
             emptyList()
         } else {
-            Workload.schedule(scenario.seed, groups, scenario.durationMs, scenario.dmMeanMs, scenario.roomMeanMs, friends)
+            Workload.schedule(
+                scenario.seed,
+                groups,
+                scenario.durationMs,
+                scenario.dmMeanMs,
+                scenario.roomMeanMs,
+                friends,
+                scenario.groupMeanMs,
+            )
+        }
+
+    /** Everyone who knows each other before the outing ([Workload.parties]): what the boot acquaints. */
+    val parties: List<List<Int>> = Workload.parties(groups, friends)
+
+    /** What each walker sent before the outing, sent as the boot links its party ([Workload.backlog]). */
+    val backlog: List<SimEvent> =
+        if (trace != null) {
+            emptyList()
+        } else {
+            Workload.backlog(scenario.seed, parties, scenario.backlog, scenario.dmMeanMs, scenario.roomMeanMs, scenario.groupMeanMs)
         }
 
     /** The instruments for this world's walk, before its first step. */

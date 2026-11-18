@@ -1,7 +1,6 @@
 package app.getknit.knit.mesh.sim
 
 import app.getknit.knit.data.forward.ForwardRepository
-import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.mesh.lab.LabLimits
 import app.getknit.knit.mesh.lab.LabNode
@@ -48,8 +47,14 @@ data class SimScenario(
     val dropM: Double = 35.0,
     val dialMs: Long = 2_000,
     val tickMs: Long = 500,
+    /** The mean gap between one walker's DMs ([Workload]); 0 sends none. */
     val dmMeanMs: Long = 20_000,
+    /** The mean gap between one walker's Nearby posts; 0 posts none. */
     val roomMeanMs: Long = 60_000,
+    /** The mean gap between one member's posts in its party's group chat ([Workload.parties]); 0, the default, makes none. */
+    val groupMeanMs: Long = 0,
+    /** Messages each walker sends while the boot links its party, before the walk ([Workload.backlog]): custody's history. */
+    val backlog: Int = 0,
     /** Frames a node's router may have queued before its plane drops the next ([LabLimits.inboundSlots]); null holds all. */
     val inboundSlots: Int? = null,
     /** How long after the gather to keep reading custody across the field for parity ([MeshSim.settleLine]); 0 skips it. */
@@ -112,7 +117,6 @@ class MeshSim(
     private val world = SimWorld(scenario)
     private val groups = world.groups
     private val mobility = world.mobility
-    private val workloadFriends = world.friends
     private val radio = world.radio
     private val field = world.meter()
     private val events = world.events
@@ -143,6 +147,7 @@ class MeshSim(
     // Set once the walk's last step is applied: a sample after it, with no gather, is labelled after the walk.
     @Volatile private var walkEnded = false
     private val probes = GatherProbes(nodes = { nodes }, groups = world.groups)
+    private val chats = GroupChats(lab, world.parties)
 
     // Each workload DM's frame id, read off its sender's row as it is sent: what a custody row is matched against.
     private val dmIds = ConcurrentHashMap<SimEvent.Dm, String>()
@@ -201,7 +206,8 @@ class MeshSim(
         val ids = dmIds.toMap()
         val pending = ids.entries.associate { (event, id) -> id to (event !in delivered) }
         val undelivered = ids.filterKeys { it !in delivered }.entries.associate { (event, id) -> id to event.from }
-        val stores = frames.map { rows -> rows.map { heldRow(it, pending) } }
+        val posts = chats.frameIds.toSet()
+        val stores = frames.map { rows -> rows.map { heldRow(it, pending, posts) } }
         val phase =
             when {
                 settling -> "settle"
@@ -226,7 +232,8 @@ class MeshSim(
         lines += "DMs between friends, by how the two stood when it was sent (no gather: the end is the walk's end):"
         lines += deliveryLines(outcomes)
         summary.putAll(deliverySummary(outcomes))
-        lines += roomLine(endedAt)
+        lines += roomLine(nodes, rooms, endedAt, summary)
+        chats.line(nodes, endedAt, summary)?.let { lines += it }
         lines += "frames refused since boot: ${drops(nodes).ifEmpty { "none" }}"
         airLines(lines, airOuting, "over the whole outing", key = "outing")
         val totals = counterTotals(nodes)
@@ -270,6 +277,10 @@ class MeshSim(
         val inboundBefore = nodes.map { it.transport.inboundWaited to it.transport.inboundRefused }
         val airWalk = AirTally(nodes)
         val cpuBefore = cpuNanos()
+        val atWalk = nodes.map { it.custodyIds().size }.sorted()
+        summary["custody_rows_at_walk_min"] = atWalk.firstOrNull()
+        summary["custody_rows_at_walk_p50"] = atWalk.getOrNull(atWalk.size / 2)
+        summary["custody_rows_at_walk_max"] = atWalk.lastOrNull()
         val startedAt = lab.clock.now()
         walkAndTalk()
         val endedAt = lab.clock.now()
@@ -317,10 +328,12 @@ class MeshSim(
         lines += "DMs between friends, by how the two stood when it was sent:"
         lines += deliveryLines(outcomes)
         summary.putAll(deliverySummary(outcomes))
-        lines += roomLine(endedAt)
+        lines += roomLine(nodes, rooms, endedAt, summary)
+        chats.line(nodes, endedAt, summary)?.let { lines += it }
         lines += gathering
         val stranded = outcomes.filter { it.latencyMs == null }.map { it.event.body }
         summary["gather_dms_missing"] = stranded.size
+        val groupStranded = chats.stranded(nodes, summary)
         val settled = settleLine()
         settled?.let { lines += it.text }
         lines += probes.line(after = if (settled == null) "the gather" else "the settle", walked = GatherBy.walks(scenario), summary)
@@ -344,16 +357,12 @@ class MeshSim(
         // is with custody the settle watched not converge for at least as long as the oracle would wait. A shorter settle
         // would call a late field stuck, so then the oracle decides.
         val unsettled = settled?.parity == false && scenario.settleMs >= ORACLE_MS
-        val failure =
-            when {
-                stranded.isNotEmpty() -> "not asked, ${stranded.size} DMs never arrived"
-                unsettled -> "not asked, custody never matched in the settle"
-                else -> oracle()
-            }
-        lines += "oracle: " + (failure ?: "every DM thread converged (messages, ticks, custody parity across the field)")
-        summary["oracle"] = oracleWord(failure, stranded = stranded.isNotEmpty(), unsettled = unsettled)
+        val failure = verdict(stranded, groupStranded, unsettled)
+        lines += "oracle: " + (failure ?: "every DM and group thread converged (messages, ticks, custody parity across the field)")
+        val strandedAll = stranded + groupStranded
+        summary["oracle"] = oracleWord(failure, stranded = strandedAll.isNotEmpty(), unsettled = unsettled)
         lines += summary.lines()
-        return SimReport(lines.joinToString("\n"), outcomes.size, unsent.get(), stranded, converged = failure == null)
+        return SimReport(lines.joinToString("\n"), outcomes.size, unsent.get(), strandedAll, converged = failure == null)
     }
 
     // The gather, and for what it left undelivered, where the two ends say it is stuck.
@@ -378,13 +387,20 @@ class MeshSim(
         nodes = (0 until scenario.walkers).map { i -> lab.node("w$i", limits).apply { setDisplayName("Walker $i") } }
         val bootMs = (System.nanoTime() - started) / NANOS_PER_MS / scenario.walkers
         // Everyone who DMs each other meets first: a group, or under circles its whole circle. Friends who came separately
-        // already know each other, so only the links the radio starts with stay up once they have.
-        val parties = (workloadFriends as? Friends.Circle)?.circles?.map { circle -> circle.flatMap { groups[it] } } ?: groups
-        for (members in parties) {
+        // already know each other, so only the links the radio starts with stay up once they have. While linked, a party
+        // opens its group chat and sends what it sent before the outing (its backlog), and its stores settle on it.
+        val backlog = world.backlog.groupBy { it.from }
+        for ((party, members) in world.parties.withIndex()) {
             val friends = members.map { nodes[it] }.toTypedArray()
             lab.linkAll(*pairs(members).map(::ends).toTypedArray(), air = radio.air)
             lab.awaitAcquainted(*friends)
             lab.befriend(*friends)
+            if (scenario.groupMeanMs > 0) chats.open(party, friends.toList())
+            val history = members.flatMap { backlog[it].orEmpty() }
+            if (history.isNotEmpty()) {
+                history.forEach { if (!sendBacklog(nodes, chats, it)) refused.incrementAndGet() }
+                lab.awaitCustodyParity(*friends)
+            }
             pairs(members).filterNot { it in radio.links }.map(::ends).forEach { (a, b) -> a.transport.disconnect(b.transport) }
         }
         val perNode = (usedHeapMb() - heapBefore).toDouble() / scenario.walkers
@@ -466,6 +482,10 @@ class MeshSim(
             is SimEvent.Room -> {
                 if (from.sendRoom(event.body)) rooms += event else refused.incrementAndGet()
             }
+
+            is SimEvent.Group -> {
+                if (!chats.send(from, event)) refused.incrementAndGet()
+            }
         }
     }
 
@@ -546,7 +566,8 @@ class MeshSim(
         withContext(Dispatchers.Default) {
             withTimeoutOrNull(timeoutMs) {
                 var polls = 0L
-                while (outcomes(Long.MAX_VALUE, ticks = false).any { it.latencyMs == null }) {
+                // Every DM and every group post: a post still riding custody toward one member is late, not lost.
+                while (outcomes(Long.MAX_VALUE, ticks = false).any { it.latencyMs == null } || chats.missing(nodes).isNotEmpty()) {
                     probes.missing()
                     delay(GATHER_POLL_MS)
                     if (++polls % (FOLLOW_POLL_MS / GATHER_POLL_MS) == 0L) sampleFollowed()
@@ -768,25 +789,18 @@ class MeshSim(
         }
     }
 
-    // How far a room post got: the share of the other walkers holding it when the run ended, and after the gather.
-    private suspend fun roomLine(endedAt: Long): String {
-        val held = nodes.map { rows(it, Conversations.NEARBY) }
-        var inRun = 0
-        var byEnd = 0
-        for (post in rooms) {
-            for ((walker, rows) in held.withIndex()) {
-                val arrivedAt = rows[post.body]?.arrivedAt?.takeIf { walker != post.from } ?: continue
-                byEnd++
-                if (arrivedAt <= endedAt) inRun++
-            }
+    // Why the outing failed, or null: what is still missing decides it before the oracle is asked.
+    private suspend fun verdict(
+        stranded: List<String>,
+        groupStranded: List<String>,
+        unsettled: Boolean,
+    ): String? =
+        when {
+            stranded.isNotEmpty() -> "not asked, ${stranded.size} DMs never arrived"
+            groupStranded.isNotEmpty() -> "not asked, ${groupStranded.size} group posts never reached every member"
+            unsettled -> "not asked, custody never matched in the settle"
+            else -> oracle() ?: chats.oracle(nodes, ORACLE_MS)
         }
-        val audience = rooms.size * (scenario.walkers - 1)
-        summary["room_sent"] = rooms.size
-        summary["room_in_run_pct"] = share(inRun, audience)
-        summary["room_by_end_pct"] = share(byEnd, audience)
-        return "room posts: ${rooms.size} sent, reached ${percent(inRun, audience)} of the other walkers in the run, " +
-            "${percent(byEnd, audience)} by the end"
-    }
 
     // The lab's own oracle, thread by thread: delivery, ticks, custody parity across the whole field. Returns how the
     // first thread to fail it failed, or null when every thread passed.

@@ -39,6 +39,18 @@ internal object SimProperties {
     /** Under `motion=park`: excursions a member of a group starts an hour ([SimScenario.excursionsPerHour]). */
     const val EXCURSIONS = "knit.meshSimExcursions"
 
+    /** The mean seconds between one walker's DMs ([SimScenario.dmMeanMs]); 20 when unset, 0 for none. */
+    const val DM_SECONDS = "knit.meshSimDmSeconds"
+
+    /** The mean seconds between one walker's Nearby posts ([SimScenario.roomMeanMs]); 60 when unset, 0 for none. */
+    const val ROOM_SECONDS = "knit.meshSimRoomSeconds"
+
+    /** The mean seconds between one member's group-chat posts ([SimScenario.groupMeanMs]); none when unset. */
+    const val GROUP_SECONDS = "knit.meshSimGroupSeconds"
+
+    /** Messages each walker sends before the outing, as the boot links its party ([SimScenario.backlog]); none when unset. */
+    const val BACKLOG = "knit.meshSimBacklog"
+
     /** Which [Radio] makes the links ([Radio.NAMES]); `disc` when unset. */
     const val RADIO = "knit.meshSimRadio"
 
@@ -65,6 +77,7 @@ internal object SimProperties {
     const val DEFAULT_WALKERS = 12
     const val DEFAULT_MINUTES = 4
     const val MS_PER_MINUTE = 60_000L
+    private const val MS_PER_SECOND = 1_000L
 
     /** Twelve walkers in 150 m square: about one other walker in dial range of each, on average. */
     const val FIELD_M = 150.0
@@ -103,15 +116,29 @@ internal object SimProperties {
         settleMs = (System.getProperty(SETTLE)?.toLong() ?: 0L) * MS_PER_MINUTE,
         gather = System.getProperty(GATHER) != "false",
         gatherBy = if (System.getProperty(GATHER) == GatherBy.WALK) GatherBy.WALK else GatherBy.RING,
-        arrivalWindowMs = (System.getProperty(ARRIVAL)?.toLong() ?: 0L) * MS_PER_MINUTE,
-        latp = System.getProperty(LATP)?.toDouble() ?: ParkConfig.DEFAULT_LATP,
-        excursionsPerHour = System.getProperty(EXCURSIONS)?.toDouble() ?: ParkConfig.DEFAULT_EXCURSIONS_PER_HOUR,
         radio = System.getProperty(RADIO) ?: DiscRadio.NAME,
         motion = motion,
         groups = System.getProperty(GROUPS) ?: GroupSizes.FIXED,
         friends = System.getProperty(FRIENDS) ?: Friends.Group.name,
         awayShare = System.getProperty(AWAY_SHARE)?.toDouble() ?: Friends.Circle.DEFAULT_AWAY_SHARE,
-    )
+    ).let(::withPark).let(::withWorkload)
+
+    // The park's visitors, as the properties shape them.
+    private fun withPark(scenario: SimScenario) =
+        scenario.copy(
+            arrivalWindowMs = (System.getProperty(ARRIVAL)?.toLong() ?: 0L) * MS_PER_MINUTE,
+            latp = System.getProperty(LATP)?.toDouble() ?: ParkConfig.DEFAULT_LATP,
+            excursionsPerHour = System.getProperty(EXCURSIONS)?.toDouble() ?: ParkConfig.DEFAULT_EXCURSIONS_PER_HOUR,
+        )
+
+    // What the walkers send, and what they bring, as the properties set it; the scenario's own defaults when unset.
+    private fun withWorkload(scenario: SimScenario) =
+        scenario.copy(
+            dmMeanMs = System.getProperty(DM_SECONDS)?.let { it.toLong() * MS_PER_SECOND } ?: scenario.dmMeanMs,
+            roomMeanMs = System.getProperty(ROOM_SECONDS)?.let { it.toLong() * MS_PER_SECOND } ?: scenario.roomMeanMs,
+            groupMeanMs = System.getProperty(GROUP_SECONDS)?.let { it.toLong() * MS_PER_SECOND } ?: scenario.groupMeanMs,
+            backlog = System.getProperty(BACKLOG)?.toInt() ?: scenario.backlog,
+        )
 
     private fun defaultFieldM(
         walkers: Int,

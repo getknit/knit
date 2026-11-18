@@ -1212,6 +1212,19 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
       meeting point 1,608 s after the walk ended, and the radio's links made one mesh of all 48 at 1,498 s.
     - It still strands DMs: 66% had arrived by the end against the ring's 72%, and 1,473 were missing against
       1,192. The eviction happens in the walk, so how the outing gathers doesn't save those DMs.
+- **What the walkers send is the scenario's to say** (`Workload`, `GroupChats`, 2026-11-18). The default is a stress
+  load no study gives:
+  - **Rates:** each walker DMs every 20 s on average and posts in the Nearby room every 60 s
+    (`knit.meshSimDmSeconds`, `knit.meshSimRoomSeconds`; 0 sends none).
+  - **Group chats:** `knit.meshSimGroupSeconds` gives each party of three or more one (`Workload.parties`: a circle
+    under `friends=circles`, else a walking group). Each member posts on its own stream, so DMs and room posts don't
+    move. The boot opens each chat while the party is linked, and every member posts once, so each holds every chain
+    before the walk. The oracle checks each chat's thread, and a post that misses a member turns the outing red.
+  - **Backlog:** `knit.meshSimBacklog` gives each walker that many messages, sent while the boot links its party. They
+    follow the outing's own mix and stay out of the workload's numbers, so every store starts the walk holding its
+    party's history (`custody_rows_at_walk_*`).
+  - **Custody:** group posts are a class of their own in the custody lines. They are never acked, so only the 24 h TTL,
+    the per-group quota (200) and the cap take them out.
 - **What it leaves out.** One plane, no path loss and none of the transports' own dial policies: `LabTransport` stands
   in for the whole radio, so the topology is the geometry's (and, under `ble1m`, a nearest-first budget's), not what
   Bluetooth or Wi-Fi Aware would have formed. `disc` has no link budget; `ble1m`'s is a measured rate, not yet a

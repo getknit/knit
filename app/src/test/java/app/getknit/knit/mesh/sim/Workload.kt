@@ -23,6 +23,14 @@ sealed interface SimEvent {
         override val from: Int,
         override val body: String,
     ) : SimEvent
+
+    /** A post in the group chat of [party], one of [Workload.parties]: everyone the walker came with or knows. */
+    data class Group(
+        override val atMs: Long,
+        override val from: Int,
+        val party: Int,
+        override val body: String,
+    ) : SimEvent
 }
 
 /**
@@ -34,8 +42,15 @@ sealed interface SimEvent {
  * from its circle's other groups at the circle's away share. A walker with companions DMs at the same moments under both,
  * whoever it DMs: its companion is drawn off the shared stream as before, and the circle's away picks, and the moments of
  * one with no companions, come from streams of their own.
+ *
+ * With [groupMeanMs] above 0, each member of a party of [GROUP_CHAT_MIN] or more ([parties]) also posts in its party's
+ * group chat [groupMeanMs] apart on average, on a stream of its own, so turning group chats on moves no DM or room post.
+ * A mean of 0 turns that kind off; for DMs or the room that redraws the other kind's moments, which share one stream.
  */
 object Workload {
+    /** The fewest people a group chat is made for: two have their DM. */
+    const val GROUP_CHAT_MIN = 3
+
     fun schedule(
         seed: Long,
         groups: List<List<Int>>,
@@ -43,6 +58,7 @@ object Workload {
         dmMeanMs: Long,
         roomMeanMs: Long,
         friends: Friends = Friends.Group,
+        groupMeanMs: Long = 0,
     ): List<SimEvent> {
         val random = Random(seed)
         val events = mutableListOf<SimEvent>()
@@ -51,14 +67,81 @@ object Workload {
             for (walker in group) {
                 val companions = group - walker
                 val elsewhere = away[g] - walker
-                if (companions.isNotEmpty() || elsewhere.isNotEmpty()) {
+                if (dmMeanMs > 0 && (companions.isNotEmpty() || elsewhere.isNotEmpty())) {
                     events += dms(seed, walker, companions, elsewhere, friends, random, dmMeanMs, durationMs)
                 }
-                moments(random, roomMeanMs, durationMs).forEach { events += SimEvent.Room(it, walker, "room w$walker @$it") }
+                if (roomMeanMs > 0) {
+                    moments(random, roomMeanMs, durationMs).forEach { events += SimEvent.Room(it, walker, "room w$walker @$it") }
+                }
             }
         }
+        if (groupMeanMs > 0) events += groupPosts(seed, parties(groups, friends), groupMeanMs, durationMs)
         return events.sortedBy { it.atMs }
     }
+
+    /**
+     * Everyone who knows each other before the outing: each circle's walkers under [Friends.Circle], else each walking
+     * group. Every walker is in exactly one party. The boot makes each party acquainted, and each party of
+     * [GROUP_CHAT_MIN] or more has one group chat.
+     */
+    fun parties(
+        groups: List<List<Int>>,
+        friends: Friends,
+    ): List<List<Int>> = (friends as? Friends.Circle)?.circles?.map { circle -> circle.flatMap { groups[it] } } ?: groups
+
+    /**
+     * What [backlog] messages from each walker sent before the outing would be: each a DM to someone in its party, a room
+     * post or a post in its party's group chat, with odds in proportion to the outing's own rates (a mean of 0 never
+     * drawn). Bodies are unique and the times 0, since they are sent as the boot links each party.
+     */
+    fun backlog(
+        seed: Long,
+        parties: List<List<Int>>,
+        backlog: Int,
+        dmMeanMs: Long,
+        roomMeanMs: Long,
+        groupMeanMs: Long,
+    ): List<SimEvent> {
+        if (backlog <= 0) return emptyList()
+        val events = mutableListOf<SimEvent>()
+        for ((p, party) in parties.withIndex()) {
+            val chat = party.size >= GROUP_CHAT_MIN
+            for (walker in party) {
+                val others = party - walker
+                val dm = if (dmMeanMs > 0 && others.isNotEmpty()) 1.0 / dmMeanMs else 0.0
+                val room = if (roomMeanMs > 0) 1.0 / roomMeanMs else 0.0
+                val group = if (groupMeanMs > 0 && chat) 1.0 / groupMeanMs else 0.0
+                val total = dm + room + group
+                if (total <= 0) continue
+                val random = SimSeeds.stream(seed, SimSeeds.Purpose.BACKLOG, walker.toLong())
+                repeat(backlog) { n ->
+                    val body = "backlog w$walker #$n"
+                    val draw = random.nextDouble() * total
+                    events +=
+                        when {
+                            draw < dm -> SimEvent.Dm(0, walker, others.random(random), body)
+                            draw < dm + room -> SimEvent.Room(0, walker, body)
+                            else -> SimEvent.Group(0, walker, p, body)
+                        }
+                }
+            }
+        }
+        return events
+    }
+
+    // Each member of a party with a chat posts on its own process: one more party moves nobody else's posts.
+    private fun groupPosts(
+        seed: Long,
+        parties: List<List<Int>>,
+        groupMeanMs: Long,
+        durationMs: Long,
+    ): List<SimEvent.Group> =
+        parties.withIndex().filter { it.value.size >= GROUP_CHAT_MIN }.flatMap { (p, party) ->
+            party.flatMap { walker ->
+                moments(SimSeeds.stream(seed, SimSeeds.Purpose.GROUP_CHAT, walker.toLong()), groupMeanMs, durationMs)
+                    .map { SimEvent.Group(it, walker, p, "group w$walker @$it") }
+            }
+        }
 
     // One walker's DMs: each to a companion, or under a circle to its other groups at the away share.
     private fun dms(

@@ -85,6 +85,10 @@ fun SimScenario.summaryValues(): List<Pair<String, Any?>> =
         "arrival_min" to (arrivalWindowMs / MS_PER_MINUTE).takeIf { motion == Motion.PARK },
         "latp" to latp.takeIf { motion == Motion.PARK },
         "excursions_per_hour" to excursionsPerHour.takeIf { motion == Motion.PARK },
+        "dm_s" to dmMeanMs / MS_PER_SECOND,
+        "room_s" to roomMeanMs / MS_PER_SECOND,
+        "group_s" to groupMeanMs / MS_PER_SECOND,
+        "backlog" to backlog,
     )
 
 /**
@@ -118,3 +122,4 @@ internal fun tenths(ms: Long?): String? = ms?.let { "%.1f".format(Locale.ROOT, i
 private const val PERCENT = 100
 private const val MS_PER_S = 1_000.0
 private const val MS_PER_MINUTE = 60_000L
+private const val MS_PER_SECOND = 1_000L

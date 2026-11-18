@@ -81,7 +81,7 @@ class CustodyPressureTest {
         assertEquals(60L, first.oldestMedianS)
         assertEquals(
             "  +60s gather: mean 3 rows, 1/1 at the cap; oldest row median 60s, min 60s; dm-pending 33% dm-delivered 0% " +
-                "sealed-other 33% room 0% profile 33% other 0%; gone none",
+                "sealed-other 33% room 0% group 0% profile 33% other 0%; gone none",
             pressure.lines(neverArrived = setOf("lost"), untallied = 0, slowestSampleMs = 0)[1],
         )
         // "parked" was never in any store, so its absence is no loss.
@@ -140,6 +140,16 @@ class CustodyPressureTest {
         val values = pressure.summaryValues(neverArrived = emptySet()).toMap()
         assertEquals(null, values["custody_first_at_cap_s"])
         assertEquals(null, values["custody_all_at_cap_s"])
+    }
+
+    @Test
+    fun aGroupPostIsToldFromARoomPostByItsFrameId() {
+        // Both are chat frames with no recipient: only the workload's own record of its group posts tells them apart.
+        val post = "g1:chat:abc123→null@1000#1/2"
+        val room = "r1:chat:abc123→null@1000#3/4"
+        assertEquals(RowKind.GROUP, heldRow(post, pending = emptyMap(), groupPosts = setOf("g1")).kind)
+        assertEquals(RowKind.ROOM, heldRow(room, pending = emptyMap(), groupPosts = setOf("g1")).kind)
+        assertEquals(RowKind.ROOM, heldRow(post, pending = emptyMap()).kind)
     }
 
     private fun row(

@@ -823,7 +823,10 @@ android {
                 // `knit.meshSimGroups` and `knit.meshSimFriends` how the walkers move, the groups they walk in and whom
                 // they DM (`rwp`, threes and their own group unless set), and `knit.meshSimAwayShare` the share of a
                 // circle's DMs that go to its other groups (a half unless set); `knit.meshSimArrivalMinutes`,
-                // `knit.meshSimLatp` and `knit.meshSimExcursions` shape `motion=park`'s visitors; `knit.meshSimTrace` a
+                // `knit.meshSimLatp` and `knit.meshSimExcursions` shape `motion=park`'s visitors; `knit.meshSimDmSeconds`,
+                // `knit.meshSimRoomSeconds` and `knit.meshSimGroupSeconds` the mean gaps between one walker's DMs, room
+                // posts and group-chat posts (20, 60 and none unless set), `knit.meshSimBacklog` the messages each walker
+                // sent before the outing (none unless set); `knit.meshSimTrace` a
                 // `.movements` file FieldSimTest replays. `knit.meshSimOut` (an absolute directory) and `knit.meshSimTag` say where the
                 // report goes and what its name ends in. An outing is a measurement, so it runs every time it is asked:
                 // never up to date, never from the cache.
@@ -848,6 +851,10 @@ android {
                             "knit.meshSimArrivalMinutes",
                             "knit.meshSimLatp",
                             "knit.meshSimExcursions",
+                            "knit.meshSimDmSeconds",
+                            "knit.meshSimRoomSeconds",
+                            "knit.meshSimGroupSeconds",
+                            "knit.meshSimBacklog",
                         )
                     (sizes + shapes + listOf("knit.meshSimOut", "knit.meshSimTag")).forEach { key ->
                         providers.gradleProperty(key).orNull?.let { test.systemProperty(key, it) }
