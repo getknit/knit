@@ -145,3 +145,17 @@ Fixed in three layers:
 an API 36 emulator: the smoke test passes on its minified APK, and Install offline on a split install of its bundle
 merges and signs `Knit-2.11.0-alpha.2-36-merged-r1.apk`. Installing that merged APK on a second phone was not tried.
 This supersedes the residual above that called both xmlpull keep rules load-bearing.
+
+## Amendment 2026-11-18 — the byte ceiling is 11.9 MB (ADR 2026-11.gsqu)
+
+Main's release build measured 10,600,673 bytes of defined dex code (job 13269, 054ddf4db), over the 10.2 MB ceiling.
+Main had already crossed it at 27ab19758, which measured about 10,265,100 (jobs 13226 and 13247, two medic MRs on that
+base). That step came from the read-receipt and USB-control commits after 2.11.0. The MeshCore board plane added the
+next 335,533 bytes. Comparing the two builds by deobfuscated package, `app.getknit.knit.mesh.lora` grew 220 KB, of
+which 170 KB is `mesh.lora.meshcore`, and `ui.lora` grew 20 KB and `mesh.bluetooth.meshcore` 13 KB. Libraries barely
+moved. All of it is our own code, renamed and shrunk, not a keep rule, and the named-package share fell from 6.7% to
+6.5%. Release builds carry the MeshCore plane's code although they build no MeshCore child. That matches ADR
+2026-11.gsqu's "not a code strip": `BoardKind.MESHCORE in BUILT_BOARD_KINDS` is a list lookup R8 cannot fold. So the
+ceiling is now 11,900,000, about 12% above the measured size, as the last three raises were. Making `MESHCORE_PLANE` a
+code strip (a constant R8 can fold at every wiring site) would win back most of the MeshCore share until the plane
+ships.
