@@ -1,0 +1,15 @@
+Encrypted links between phones, Simplified Chinese, and a clearer view of who's nearby
+
+When two phones on this version link over Bluetooth or Wi-Fi Aware, the link is now encrypted, so a radio
+nearby can't read what passes between them. A link with an older version works as before until it updates,
+and Diagnostics shows for each person your phone reaches whether your link to them is encrypted.
+
+Knit now comes in Simplified Chinese. A green dot on someone's photo shows when your radios can see them, now
+in the chat list and the chat header too, and the supporter badge sits after their name. Chats show a scroll
+bar while you scroll, mentions get a chime of their own, and with Content filtering on, a name with slurs
+shows as an alias.
+
+Fixed: contacts you reach only over the Internet going quiet after a restore, a message request's pictures
+downloading before you accepted it, a Bluetooth link that kept redialing, a lone "x" blocked as profanity,
+older LoRa messages waiting another half hour after a radio came back, and a modified copy of Knit nearby
+replacing a message's text.

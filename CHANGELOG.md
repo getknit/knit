@@ -9,7 +9,7 @@ product:
   platforms: [android]
   category: Communication
 document:
-  updated: 2026-11-11T07:27:26Z
+  updated: 2026-11-18T23:31:49Z
   coverage: partial
   canonical: https://whatsnew.fyi/product/knit
   locale: en
@@ -22,22 +22,46 @@ document:
 
 ### Added
 
-- Knit now comes in Simplified Chinese and Indonesian. It follows your phone's language, or on Android 13 and
-  later you can pick one for Knit alone in Settings › Apps › Knit › Language. Both are machine translations no
-  native speaker has checked yet, and anyone can suggest a fix on Weblate.
+- Knit now comes in Indonesian. It follows your phone's language, or on Android 13 and later you can pick it
+  for Knit alone in Settings › Apps › Knit › Language. It is a machine translation no native speaker has
+  checked yet, and anyone can suggest a fix on Weblate.
+- Knit now shows when your messages are read: the ticks become a filled circle, and Message info lists who
+  read it and when, in direct chats and groups. Turning it off in Settings › Chats stops both sending and
+  showing reads. Only people on this version send them.
+- A chat now marks where each day starts, with a header such as Today, Yesterday or Mon, Nov 10 above that
+  day's first message. Messages older than an hour show the time they were sent rather than how long ago.
+
+### Changed
+
+- The Meshtastic room is now titled with the network and its channel, such as "Meshtastic (LongFast)", and
+  shows a radio tower instead of Knit's logo, so it no longer looks like one of Knit's own rooms.
+
+### Fixed
+
+- At a busy gathering, a message waiting for other phones to carry it could be lost before it arrived, when
+  repeated copies of profiles nobody had changed filled their storage. Knit now sends a new copy of your
+  profile only after you edit it (#335).
+- After you restore Knit or a chat's encryption resets, a message sent to you around then could go missing
+  for good if another phone passed you an old copy of it first. It now arrives, and the sender sees two ticks
+  (#347).
+
+## [2.12.0](https://github.com/getknit/knit/releases/tag/v2.12.0) — 2026-11-18T23:31:49Z
+
+> Encrypted links between phones, Simplified Chinese, and a clearer view of who's nearby
+
+### Added
+
+- Knit now comes in Simplified Chinese. It follows a phone set to Chinese, or on Android 13 and later you can
+  pick it for Knit alone in Settings › Apps › Knit › Language. It is a machine translation no native speaker
+  has checked yet, and anyone can suggest a fix on Weblate.
 - When two phones on this version link over Bluetooth or Wi-Fi Aware, the link is now encrypted, so a radio
   nearby can't read what passes between them. A link with a phone on an older version of Knit works as before
   until that phone updates (#286).
 - Knit's message chime now plays on phones that had Knit before 2.11.0, and mentions and the "open to chat"
   alert get chimes of their own. Your notification settings carry over, except hiding on the lock screen and
   Priority conversations, which you'll need to set again.
-- Knit now shows when your messages are read: the ticks become a filled circle, and Message info lists who
-  read it and when, in direct chats and groups. Turning it off in Settings › Chats stops both sending and
-  showing reads. Only people on this version send them.
 - The chat list and your chats show a thin scroll bar at the side while you scroll, so you can tell where you
   are in a long list or conversation. It fades a moment after you stop.
-- A chat now marks where each day starts, with a header such as Today, Yesterday or Mon, Nov 10 above that
-  day's first message. Messages older than an hour show the time they were sent rather than how long ago.
 - With Content filtering on, someone whose name or status uses slurs or profanity now shows under their alias,
   and a group whose name has a slur shows its members' names instead. Knit won't let you set such a name or
   status for yourself either.
@@ -52,8 +76,6 @@ document:
   chat header too. In contacts and group members the dot moved from the end of the row onto the photo.
 - The field log now saves as a `.log` file, so you can attach it to a GitHub bug report without renaming it
   first.
-- The Meshtastic room is now titled with the network and its channel, such as "Meshtastic (LongFast)", and
-  shows a radio tower instead of Knit's logo, so it no longer looks like one of Knit's own rooms.
 
 ### Fixed
 
@@ -70,17 +92,14 @@ document:
   example right after you restored Knit from a backup. It now starts as soon as its message arrives.
 - Posts to the Nearby and Meshtastic rooms with a lone "x" in them, like "2 x 3" or a kiss at the end, were
   blocked as profanity, and hidden when you received one. They now go through.
+- A modified copy of Knit nearby could reuse a message's id to show its own text instead, or make a message
+  you sent look delivered when it wasn't. Knit now keeps whichever message arrived first and, in a chat
+  already under way, ignores a delivery check meant for another message.
 - If a message reached your relay while your phone was checking it, your phone could miss it until it next
   reconnected, sometimes hours later. It now checks again straight away.
-- At a busy gathering, a message waiting for other phones to carry it could be lost before it arrived, when
-  repeated copies of profiles nobody had changed filled their storage. Knit now sends a new copy of your
-  profile only after you edit it (#335).
 - When you can only reach someone over LoRa and their radio comes back after missing several of your
   messages, the older ones now arrive right behind the newest. Before, each one waited another half hour or
   more (#343).
-- After you restore Knit or a chat's encryption resets, a message sent to you around then could go missing
-  for good if another phone passed you an old copy of it first. It now arrives, and the sender sees two ticks
-  (#347).
 
 ## [2.11.1](https://github.com/getknit/knit/releases/tag/v2.11.1) — 2026-11-11T07:27:26Z
 
