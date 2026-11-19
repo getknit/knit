@@ -8,7 +8,15 @@ pluginManagement {
             }
         }
         mavenCentral()
-        gradlePluginPortal()
+        // JetBrains publishes the Kotlin and kotlinx plugins (compose, serialization, kotlin.jvm, kover) to Maven Central
+        // with signatures. The Portal mirrors their marker POMs as different files with no `.asc`, so when Central misses
+        // one, Gradle takes the Portal's copy and verification fails: v2.12.0's cold F-Droid leg did, and a rerun passed.
+        // Fenced off, a Central miss fails resolution, saying so, instead of failing verification on the Portal's copy.
+        gradlePluginPortal {
+            content {
+                excludeGroupByRegex("org\\.jetbrains\\.kotlinx?(\\..*)?")
+            }
+        }
     }
 }
 // NO foojay-resolver-convention here, deliberately. That plugin auto-downloads a JDK from api.foojay.io

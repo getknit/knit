@@ -92,5 +92,8 @@ after the lockfile, and read its diff before committing:
 - a new `trusted-key` or checksum is a new party the build trusts;
 - a changed checksum under an unchanged version is never noise.
 
-Never hand-edit an entry to make a build pass. A Gradle bump also moves `distributionSha256Sum` in
+Never hand-edit an entry to make a build pass. `settings.gradle.kts` keeps the Plugin Portal from serving the
+`org.jetbrains.kotlin*` groups: the Portal's copies of their marker POMs differ from Central's and are unsigned, so a
+Central miss on a cold build (F-Droid's, `release.yml`'s `build-fdroid`) fails verification there. Keep the fence when
+adding a plugin; a JetBrains plugin that is only on the Portal gets its own `content` rule. A Gradle bump also moves `distributionSha256Sum` in
 `gradle/wrapper/gradle-wrapper.properties`: take it from `https://services.gradle.org/distributions/<zip>.sha256`.
