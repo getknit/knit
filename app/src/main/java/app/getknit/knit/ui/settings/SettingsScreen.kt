@@ -71,6 +71,8 @@ import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.deviceSupervision
 import app.getknit.knit.ui.openUnusedAppPauseSettings
+import app.getknit.knit.ui.preset.StartingPoint
+import app.getknit.knit.ui.preset.titleRes
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.rememberOnResume
 import app.getknit.knit.ui.rememberWifiAwareSupported
@@ -100,6 +102,10 @@ internal data class SettingsFormState(
     val wifiAwareOn: Boolean = true,
     /** Settings › Watch (ADR 2026-09.wetm's seventh amendment): off by default. */
     val watchOn: Boolean = false,
+    /** Settings › Starting point: the preset the defaults come from, and whether the person changed any of them. */
+    val startingPoint: StartingPoint = StartingPoint(),
+    /** Settings › Block screenshots: off by default, or as the starting point has it. */
+    val secureScreens: Boolean = false,
 )
 
 /**
@@ -119,6 +125,7 @@ fun SettingsScreen(
     onOpenBackup: () -> Unit = {},
     onOpenBlockedUsers: () -> Unit = {},
     onOpenWhatsNew: () -> Unit = {},
+    onOpenStartingPoint: () -> Unit = {},
     viewModel: SettingsViewModel = koinViewModel(),
 ) {
     val header by viewModel.header.collectAsStateWithLifecycle()
@@ -131,6 +138,8 @@ fun SettingsScreen(
     val lowPower by viewModel.lowPower.collectAsStateWithLifecycle()
     val wifiAwareOn by viewModel.wifiAwareOn.collectAsStateWithLifecycle()
     val watchOn by viewModel.watchOn.collectAsStateWithLifecycle()
+    val startingPoint by viewModel.startingPoint.collectAsStateWithLifecycle()
+    val secureScreens by viewModel.secureScreens.collectAsStateWithLifecycle()
     // The clone row's "Sign out here": one confirmation, then the wipe (ui/signout/SignOut).
     var showSignOut by remember { mutableStateOf(false) }
 
@@ -157,6 +166,8 @@ fun SettingsScreen(
                 lowPower = lowPower,
                 wifiAwareOn = wifiAwareOn,
                 watchOn = watchOn,
+                startingPoint = startingPoint,
+                secureScreens = secureScreens,
             ),
         battery = rememberOnResume { backgroundBattery(context) },
         unusedPause = rememberOnResume { unusedAppPause(context) },
@@ -164,11 +175,13 @@ fun SettingsScreen(
         onBack = onBack,
         onOpenProfile = onOpenProfile,
         onOpenChats = onOpenChats,
+        onOpenStartingPoint = onOpenStartingPoint,
         onSelectThemeMode = viewModel::setThemeMode,
         onToggleDynamicColor = viewModel::setDynamicColor,
         onToggleLowPower = viewModel::setLowPowerMode,
         onToggleWifiAware = viewModel::setWifiAwareOn,
         onToggleWatch = viewModel::setWatchOn,
+        onToggleSecureScreens = viewModel::setSecureScreens,
         onOpenRelays = onOpenRelays,
         onOpenLora = onOpenLora,
         onOpenCalls = onOpenCalls,
@@ -192,11 +205,13 @@ internal fun SettingsScreenContent(
     onBack: () -> Unit,
     onOpenProfile: () -> Unit = {},
     onOpenChats: () -> Unit = {},
+    onOpenStartingPoint: () -> Unit = {},
     onSelectThemeMode: (ThemeMode) -> Unit = {},
     onToggleDynamicColor: (Boolean) -> Unit = {},
     onToggleLowPower: (Boolean) -> Unit = {},
     onToggleWifiAware: (Boolean) -> Unit = {},
     onToggleWatch: (Boolean) -> Unit = {},
+    onToggleSecureScreens: (Boolean) -> Unit = {},
     onOpenRelays: () -> Unit,
     onOpenLora: () -> Unit = {},
     onOpenCalls: () -> Unit = {},
@@ -318,6 +333,20 @@ internal fun SettingsScreenContent(
                 CloneNoticeRow(onClick = onSignOut)
             }
 
+            // Where the defaults below come from: the preset picked at onboarding, changed here.
+            val presetName = stringResource(form.startingPoint.preset.titleRes())
+            NavigatingRow(
+                title = stringResource(R.string.settings_preset_title),
+                subtitle =
+                    if (form.startingPoint.customised) {
+                        stringResource(R.string.settings_preset_subtitle_customised, presetName)
+                    } else {
+                        presetName
+                    },
+                onClick = onOpenStartingPoint,
+                modifier = Modifier.testTag("settings_starting_point"),
+            )
+
             // What a chat sends, shows and lets in — typing, link previews, content filtering, large Bluetooth downloads —
             // on its own screen, so this column keeps to the app, its planes and the phone.
             NavigatingRow(
@@ -367,6 +396,15 @@ internal fun SettingsScreenContent(
                     modifier = Modifier.testTag("settings_watch"),
                 )
             }
+
+            // What this phone shows to whoever holds it, beside the backup that carries what it keeps.
+            ToggleRow(
+                title = stringResource(R.string.settings_secure_screens_title),
+                subtitle = stringResource(R.string.settings_secure_screens_subtitle),
+                enabled = form.secureScreens,
+                onToggle = onToggleSecureScreens,
+                modifier = Modifier.testTag("settings_secure_screens"),
+            )
 
             NavigatingRow(
                 title = stringResource(R.string.settings_backup_title),

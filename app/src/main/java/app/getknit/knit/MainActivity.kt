@@ -18,6 +18,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.WithCallBar
 import app.getknit.knit.di.demoSceneRequested
 import app.getknit.knit.notifications.ConversationShortcutSync
@@ -28,6 +29,7 @@ import app.getknit.knit.ui.StorageUnavailableScreen
 import app.getknit.knit.ui.WindowWedgePolicy
 import app.getknit.knit.ui.addcontact.ContactCardInbox
 import app.getknit.knit.ui.addcontact.contactLinkFrom
+import app.getknit.knit.ui.followSecureScreens
 import app.getknit.knit.ui.relay.RelayInviteInbox
 import app.getknit.knit.ui.relay.relayInviteFrom
 import app.getknit.knit.ui.share.ShareInbox
@@ -62,10 +64,14 @@ class MainActivity : ComponentActivity() {
     // Keeps the launcher's conversation shortcuts inside the chat list's universe (ADR 2026-10.jbsa).
     private val shortcutSync: ConversationShortcutSync by inject()
 
+    // Settings › Block screenshots (ADR 2026-11.j8pf): FLAG_SECURE on this window while it is on.
+    private val settings: SettingsStore by inject()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         disableContentCapture()
+        followSecureScreens(settings.secureScreens)
         watchForUndrawnWindow()
         // A cold-start share: stage the payload before composition so KnitApp opens the picker.
         handleShareIntent(intent)

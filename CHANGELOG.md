@@ -30,6 +30,10 @@ document:
   showing reads. Only people on this version send them.
 - A chat now marks where each day starts, with a header such as Today, Yesterday or Mon, Nov 10 above that
   day's first message. Messages older than an hour show the time they were sent rather than how long ago.
+- When you first open Knit you can pick a starting point: Everyday, Privacy-first or Battery saver. It sets
+  defaults such as relays, read receipts and Wi-Fi Aware, and Settings › Starting point switches it later.
+- A new Block screenshots switch in Settings makes screenshots and screen recordings of Knit come out blank,
+  and hides its preview in recent apps. Privacy-first turns it on.
 
 ### Changed
 

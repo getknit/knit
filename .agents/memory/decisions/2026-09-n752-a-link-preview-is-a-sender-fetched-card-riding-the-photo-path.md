@@ -89,3 +89,9 @@ sealed-and-clear case, the `ChatViewModelTest` composer cases, and `ChatScreenCo
 ADR 2026-10.9rh6: `LinkPreviewService.fetchCard` classifies a card's text and picture only when it is bound for
 the Nearby room, and its memo holds the unscreened card for both scopes. The receive half is unchanged: every
 recipient opens and screens the card, one verdict per card.
+
+## Amendment (2026-11-18): the Everyday starting point turns previews on
+
+ADR 2026-11.j8pf: `linkPreviewsEnabled` reads the person's starting point until they set the switch. Previews stay off
+by default, and off in Privacy-first and Battery saver; Everyday turns them on, and its card says the site sees this
+phone's IP address before the person picks it. The fetch is unchanged: the sender's phone, for a link the sender sent.

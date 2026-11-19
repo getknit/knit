@@ -6,6 +6,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import app.getknit.knit.ui.onboarding.NamePagePreview
 import app.getknit.knit.ui.onboarding.OnboardingNamePreview
 import app.getknit.knit.ui.onboarding.OnboardingPermissionsPreview
+import app.getknit.knit.ui.onboarding.OnboardingPresetPreview
 import app.getknit.knit.ui.onboarding.OnboardingWelcomePreview
 import app.getknit.knit.ui.onboarding.PermissionsPageDeniedPreview
 import app.getknit.knit.ui.onboarding.PermissionsPageFamilyLinkPreview
@@ -13,6 +14,7 @@ import app.getknit.knit.ui.onboarding.PermissionsPageGrantedPreview
 import app.getknit.knit.ui.onboarding.PermissionsPageLocationTierPreview
 import app.getknit.knit.ui.onboarding.PermissionsPagePreview
 import app.getknit.knit.ui.onboarding.PermissionsPageUnsupportedPreview
+import app.getknit.knit.ui.onboarding.PresetPagePreview
 import app.getknit.knit.ui.onboarding.WelcomePagePreview
 import com.android.tools.screenshot.PreviewTest
 
@@ -73,9 +75,19 @@ fun OnboardingWelcome() = OnboardingWelcomePreview()
 @PreviewTest
 @ScreenShots
 @Composable
+fun OnboardingPreset() = OnboardingPresetPreview()
+
+@PreviewTest
+@ScreenShots
+@Composable
 fun OnboardingName() = OnboardingNamePreview()
 
 @PreviewTest
 @ScreenShots
 @Composable
 fun OnboardingPermissions() = OnboardingPermissionsPreview()
+
+@PreviewTest
+@ScreenShots
+@Composable
+fun PresetPage() = PresetPagePreview()

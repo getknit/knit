@@ -76,6 +76,7 @@ import app.getknit.knit.ui.donate.DonateScreen
 import app.getknit.knit.ui.group.GroupDetailsScreen
 import app.getknit.knit.ui.lora.LoraRadioScreen
 import app.getknit.knit.ui.onboarding.OnboardingScreen
+import app.getknit.knit.ui.preset.StartingPointScreen
 import app.getknit.knit.ui.profile.ProfileDetailsScreen
 import app.getknit.knit.ui.profile.ProfileScreen
 import app.getknit.knit.ui.relay.InternetRelayScreen
@@ -110,6 +111,7 @@ private object Routes {
     const val CONTACTS = "contacts"
     const val SETTINGS = "settings"
     const val CHAT_SETTINGS = "chatSettings"
+    const val STARTING_POINT = "startingPoint"
     const val PROFILE = "profile"
     const val DIAGNOSTICS = "diagnostics"
 
@@ -632,6 +634,7 @@ fun KnitApp(startRoute: String? = null) {
                     onBack = { navController.popFrom(entry) },
                     onOpenProfile = { navController.navigate(Routes.PROFILE) },
                     onOpenChats = { navController.navigate(Routes.CHAT_SETTINGS) },
+                    onOpenStartingPoint = { navController.navigate(Routes.STARTING_POINT) },
                     onOpenRelays = { navController.navigate(Routes.INTERNET_RELAYS) },
                     onOpenLora = { navController.navigate(Routes.LORA_RADIO) },
                     onOpenCalls = { navController.navigate(Routes.CALLS) },
@@ -644,6 +647,9 @@ fun KnitApp(startRoute: String? = null) {
             }
             composable(Routes.CHAT_SETTINGS) { entry ->
                 ChatSettingsScreen(onBack = { navController.popFrom(entry) })
+            }
+            composable(Routes.STARTING_POINT) { entry ->
+                StartingPointScreen(onBack = { navController.popFrom(entry) })
             }
             composable(Routes.WHATS_NEW) { entry ->
                 // Reading the screen reads the newest announcement, whichever door it came through.

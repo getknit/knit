@@ -10,9 +10,10 @@ import kotlinx.coroutines.flow.map
 
 /**
  * The person's Wi-Fi Aware switch, Settings › Wi-Fi Aware (GitHub #44), over the settings DataStore rather than grown
- * into [SettingsStore], like [LowPowerSwitch]. On by default; off stops the plane outright through `SwitchableTransport`
- * (`awareSwitchedOff`), and Bluetooth carries the mesh alone. Phone-bound: `wifi_aware_` is in
- * `SettingsKeys.TRANSIENT_PREFIXES`, because whether this phone's Wi-Fi can spare the airtime is about this phone.
+ * into [SettingsStore], like [LowPowerSwitch]. On by default, or as the person's [Preset] has it; off stops the plane
+ * outright through `SwitchableTransport` (`awareSwitchedOff`), and Bluetooth carries the mesh alone. Phone-bound:
+ * `wifi_aware_` is in `SettingsKeys.TRANSIENT_PREFIXES`, because whether this phone's Wi-Fi can spare the airtime is
+ * about this phone; a restored phone reads the restored [Preset]'s default until the person sets it here.
  *
  * **The one-time move from low-power mode.** Low-power mode is no longer offered (`LOW_POWER_OFFERED`), and its only
  * Aware lever was switching the plane off. A phone that had it on keeps Aware off: until [migrateFromLowPower] has run,
@@ -42,11 +43,15 @@ class AwareSwitch(
     }
 
     internal companion object {
-        val KEY = booleanPreferencesKey(SettingsKeys.WIFI_AWARE_ENABLED)
+        val KEY = PresetSetting.WIFI_AWARE.key
         val MIGRATED = booleanPreferencesKey(SettingsKeys.WIFI_AWARE_MIGRATED)
         private val LOW_POWER = booleanPreferencesKey(SettingsKeys.LOW_POWER_MODE)
 
-        /** The switch as stored, or, before the move has been journaled, low-power mode's answer for it. */
-        fun readOn(prefs: Preferences): Boolean = prefs[KEY] ?: (prefs[MIGRATED] == true || prefs[LOW_POWER] != true)
+        /**
+         * The switch as stored; before the move has been journaled, low-power mode's answer for it (off) on a phone that
+         * had the mode on; otherwise the person's [Preset].
+         */
+        fun readOn(prefs: Preferences): Boolean =
+            prefs[KEY] ?: ((prefs[MIGRATED] == true || prefs[LOW_POWER] != true) && prefs.orPreset(PresetSetting.WIFI_AWARE))
     }
 }

@@ -7,6 +7,7 @@ import app.getknit.knit.data.relay.RelayFacts
 import app.getknit.knit.data.settings.AwareSwitch
 import app.getknit.knit.data.settings.CallIntake
 import app.getknit.knit.data.settings.LowPowerSwitch
+import app.getknit.knit.data.settings.PresetStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
@@ -17,6 +18,8 @@ import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.power.LowPowerPosture
 import app.getknit.knit.mesh.power.LowPowerReason
+import app.getknit.knit.ui.preset.StartingPoint
+import app.getknit.knit.ui.preset.startingPoint
 import app.getknit.knit.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -132,6 +135,8 @@ class SettingsViewModel(
     meshCalls: Boolean = false,
     // The person's Settings › Wi-Fi Aware switch (GitHub #44); null reads on and writes nothing (tests that skip it).
     private val awareSwitch: AwareSwitch? = null,
+    // The starting point the person picked (Settings › Starting point); null reads Standard (tests that skip it).
+    presets: PresetStore? = null,
 ) : ViewModel() {
     private val nodeId = MutableStateFlow("")
     private val alias = MutableStateFlow("")
@@ -215,6 +220,10 @@ class SettingsViewModel(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LowPowerSummary())
 
     /** Whether Wi-Fi Aware is on (Settings › Wi-Fi Aware). On by default; off stops the plane outright. */
+    val startingPoint: StateFlow<StartingPoint> =
+        (presets?.startingPoint() ?: flowOf(StartingPoint()))
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StartingPoint())
+
     val wifiAwareOn: StateFlow<Boolean> =
         (awareSwitch?.on ?: flowOf(true))
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
@@ -238,6 +247,13 @@ class SettingsViewModel(
     val watchOn: StateFlow<Boolean> =
         settings.wearStatusEnabled
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    val secureScreens: StateFlow<Boolean> =
+        settings.secureScreens.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    fun setSecureScreens(value: Boolean) {
+        viewModelScope.launch { settings.setSecureScreens(value) }
+    }
 
     fun setWatchOn(value: Boolean) {
         viewModelScope.launch { settings.setWearStatusEnabled(value) }

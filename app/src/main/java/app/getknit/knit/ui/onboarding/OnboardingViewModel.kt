@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.TextLimits
 import app.getknit.knit.clampToUtf16
+import app.getknit.knit.data.settings.Preset
+import app.getknit.knit.data.settings.PresetStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
@@ -19,8 +21,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** The three pages of the first run, in order. */
-enum class OnboardingStep { WELCOME, NAME, PERMISSIONS }
+/** The pages of the first run, in order. */
+enum class OnboardingStep { WELCOME, PRESET, NAME, PERMISSIONS }
 
 /**
  * Owns what the onboarding pager needs to remember across rotation and between pages: which step is showing,
@@ -40,6 +42,8 @@ class OnboardingViewModel(
     identity: Identity,
     // Screens the name before it is saved (ADR 2026-11.y4pc); null in tests that don't exercise it.
     private val names: ShownNames? = null,
+    // Where the picked starting point is written; null in tests that don't exercise the preset page.
+    private val presets: PresetStore? = null,
 ) : ViewModel() {
     private val _nameRefused = MutableStateFlow(false)
 
@@ -50,6 +54,11 @@ class OnboardingViewModel(
     // not a guess, so a returning phone never flashes "Welcome" before landing on the permissions page.
     private val _step = MutableStateFlow<OnboardingStep?>(null)
     val step: StateFlow<OnboardingStep?> = _step.asStateFlow()
+
+    private val _preset = MutableStateFlow<Preset?>(null)
+
+    /** The starting point picked on the preset page; null until one is, and Continue waits for it. */
+    val preset: StateFlow<Preset?> = _preset.asStateFlow()
 
     private val _name = MutableStateFlow("")
     val name: StateFlow<String> = _name.asStateFlow()
@@ -68,13 +77,22 @@ class OnboardingViewModel(
     // again) only writes when something changed — and clearing a name written a page ago writes the clear.
     private var savedName = ""
 
+    // A phone that had seen the intro when this opened: it already has its settings, so Back walks past the preset page
+    // rather than offer a reset over them.
+    private var returning = false
+
     init {
         viewModelScope.launch {
             val id = identity.nodeId()
             _nodeId.value = id
             _alias.value = Alias.aliasFor(id)
-            _step.value = if (settings.onboardingSeen.first()) OnboardingStep.PERMISSIONS else OnboardingStep.WELCOME
+            returning = settings.onboardingSeen.first()
+            _step.value = if (returning) OnboardingStep.PERMISSIONS else OnboardingStep.WELCOME
         }
+    }
+
+    fun selectPreset(value: Preset) {
+        _preset.value = value
     }
 
     fun setName(value: String) {
@@ -89,10 +107,20 @@ class OnboardingViewModel(
         _name.value = normalizeSingleLine(_name.value)
     }
 
-    /** Welcome → Name → Permissions. Leaving the name page is what persists the name (blank included). */
+    /**
+     * Welcome → Preset → Name → Permissions. Leaving the preset page writes the pick; leaving the name page persists the
+     * name (blank included) and marks the intro seen, so a phone that comes back opens on the permissions page and is
+     * never offered a preset over the settings it already has.
+     */
     fun next() {
         when (_step.value) {
             OnboardingStep.WELCOME -> {
+                _step.value = if (returning) OnboardingStep.NAME else OnboardingStep.PRESET
+            }
+
+            OnboardingStep.PRESET -> {
+                val picked = _preset.value ?: return
+                persistPreset(picked)
                 _step.value = OnboardingStep.NAME
             }
 
@@ -113,7 +141,20 @@ class OnboardingViewModel(
 
     fun back() {
         val current = _step.value ?: return
-        _step.value = OnboardingStep.entries.getOrElse(current.ordinal - 1) { OnboardingStep.WELCOME }
+        val previous = OnboardingStep.entries.getOrElse(current.ordinal - 1) { OnboardingStep.WELCOME }
+        _step.value = if (previous == OnboardingStep.PRESET && returning) OnboardingStep.WELCOME else previous
+    }
+
+    /**
+     * Writes the pick and resets to it: a fresh install has nothing of its own to keep. [NonCancellable] for the
+     * reason [persistName] is. Written before the name page, so a phone killed between the two pages is asked again
+     * (the intro is not yet marked seen), never left with a preset it did not pick.
+     */
+    private fun persistPreset(picked: Preset) {
+        val store = presets ?: return
+        viewModelScope.launch {
+            withContext(NonCancellable) { store.apply(picked, resetOverrides = true) }
+        }
     }
 
     private fun persistName() {

@@ -140,6 +140,7 @@ import app.getknit.knit.notifications.MessageNotifier
 import app.getknit.knit.ui.call.stt.SttModelStore
 import app.getknit.knit.ui.chat.messagePreview
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.followSecureScreens
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.theme.KnitTheme
@@ -207,6 +208,8 @@ class CallActivity :
         setShowWhenLocked(true)
         setTurnScreenOn(true)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Settings › Block screenshots covers the call screen too: it shows who is calling and the walkie's transcript.
+        followSecureScreens(settings.secureScreens)
         enableEdgeToEdge()
         handle(intent)
         lifecycleScope.launch {

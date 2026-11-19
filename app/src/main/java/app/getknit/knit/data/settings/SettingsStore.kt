@@ -157,41 +157,50 @@ class SettingsStore(
     /**
      * Whether a link in a message this device sends grows a preview card — the page's title and picture,
      * fetched by **this** phone over the Internet and sent with the message, so the people it reaches never
-     * contact the site (ADR: link previews). **Off by default**: each fetch is a socket toward a site somebody
-     * chose by typing a link, from this phone's IP address, and that is the user's call to make. Folded with
+     * contact the site (ADR: link previews). **Off by default**, or as the [Preset] has it: each fetch is a
+     * socket toward a site somebody chose by typing a link, from this phone's IP address, and that is the
+     * user's call to make. Folded with
      * `BuildConfig.INTERNET_PLANE` the way [spoolEnabled] is, so a build with no Internet plane has no
      * Internet feature at all, and gated once here so no consumer can forget it. The receive side needs no
      * setting: a card is an ordinary attachment, hidden by the content filter like any other when flagged.
      */
     val linkPreviewsEnabled: Flow<Boolean> =
-        dataStore.data.map { BuildConfig.INTERNET_PLANE && (it[KEY_LINK_PREVIEWS] ?: false) }
+        dataStore.data.map { BuildConfig.INTERNET_PLANE && it.orPreset(PresetSetting.LINK_PREVIEWS) }
 
     /**
      * Typing indicators: whether this phone tells the people it chats with that it is typing, and shows them typing. **On
-     * by default.** Off, `MeshManager.sendTyping` sends no cue on any plane, the radios or a relay's signal lane
-     * (docs/SPOOL_PROTOCOL.md §7.8), and no cue this phone receives is shown. A choice the person made, so it rides a
-     * backup.
+     * by default**, or as the [Preset] has it. Off, `MeshManager.sendTyping` sends no cue on any plane, the radios or a
+     * relay's signal lane (docs/SPOOL_PROTOCOL.md §7.8), and no cue this phone receives is shown. A choice the person
+     * made, so it rides a backup.
      */
     override val typingIndicatorsEnabled: Flow<Boolean> =
-        dataStore.data.map { it[KEY_TYPING_INDICATORS] ?: true }
+        dataStore.data.map { it.orPreset(PresetSetting.TYPING_INDICATORS) }
 
     /**
      * Read receipts: whether this phone tells the author of a DM or a private-group message that it has been read here,
-     * and shows when the people it writes to have read theirs. **On by default.** Off, the mesh records no read for
-     * anyone (`MeshController.onMessagesRead` drops it) and forgets the reads it still owed; the reads other people send
+     * and shows when the people it writes to have read theirs. **On by default**, or as the [Preset] has it. Off, the
+     * mesh records no read for anyone (`MeshController.onMessagesRead` drops it) and forgets the reads it still owed; the
+     * reads other people send
      * are still recorded, so turning it back on shows them, but nothing shows one while it is off. Never on the wire:
      * `Protocol.CAP_READ_RECEIPTS` says what the build can do, not what this switch says. A choice the person made, so
      * it rides a backup.
      */
     val readReceiptsEnabled: Flow<Boolean> =
-        dataStore.data.map { it[KEY_READ_RECEIPTS] ?: true }
+        dataStore.data.map { it.orPreset(PresetSetting.READ_RECEIPTS) }
 
     /**
      * Whether this phone translates messages and declares, on what it sends, the language a message is in and the one
-     * its reader reads (ADR 2026-10.t2h6's 2026-10-29 amendment). **On by default**; off hides every translation surface
-     * and sends no language on the wire. Read only where translation is wired.
+     * its reader reads (ADR 2026-10.t2h6's 2026-10-29 amendment). **On by default**, or as the [Preset] has it; off
+     * hides every translation surface and sends no language on the wire. Read only where translation is wired.
      */
-    val translationEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_TRANSLATION_ENABLED] ?: true }
+    val translationEnabled: Flow<Boolean> = dataStore.data.map { it.orPreset(PresetSetting.TRANSLATION) }
+
+    /**
+     * Block screenshots: Knit's windows carry `FLAG_SECURE`, so a screenshot or a screen recording of them comes out
+     * blank and Recents shows no preview (`ui/SecureWindow`). **Off by default**, or as the [Preset] has it (on for
+     * Privacy-first). About what this phone shows, so it rides a backup.
+     */
+    val secureScreens: Flow<Boolean> = dataStore.data.map { it.orPreset(PresetSetting.SECURE_SCREENS) }
 
     /**
      * The language a message is translated into, as its model registry code, or null for Automatic: the language the
@@ -261,9 +270,9 @@ class SettingsStore(
      */
     val themeMode: Flow<ThemeMode> = dataStore.data.map { ThemeMode.of(it[KEY_THEME_MODE]) }
 
-    /** "Ask before large Bluetooth downloads" (ADR 2026-10.js2p); [BluetoothDownloadLimit.DEFAULT] until the user picks. */
+    /** "Ask before large Bluetooth downloads" (ADR 2026-10.js2p); the [Preset]'s limit until the user picks. */
     val bluetoothDownloadLimit: Flow<BluetoothDownloadLimit> =
-        dataStore.data.map { BluetoothDownloadLimit.of(it[KEY_BT_DOWNLOAD_LIMIT]) }
+        dataStore.data.map { BluetoothDownloadLimit.of(it.orPreset(PresetSetting.BLUETOOTH_DOWNLOAD_LIMIT)) }
 
     override val bluetoothDownloadLimitBytes: Flow<Long?> = bluetoothDownloadLimit.map { it.bytes }
 
@@ -876,6 +885,8 @@ class SettingsStore(
 
     suspend fun setReadReceiptsEnabled(value: Boolean) = dataStore.edit { it[KEY_READ_RECEIPTS] = value }
 
+    suspend fun setSecureScreens(value: Boolean) = dataStore.edit { it[PresetSetting.SECURE_SCREENS.key] = value }
+
     suspend fun setTranslationEnabled(value: Boolean) = dataStore.edit { it[KEY_TRANSLATION_ENABLED] = value }
 
     /** [code] for a language, null for Automatic ([translateTarget]). */
@@ -1326,18 +1337,18 @@ class SettingsStore(
         val KEY_PENDING_INTROS = stringSetPreferencesKey("pending_intros")
         val KEY_INTRO_GRACE = stringSetPreferencesKey("intro_grace")
         val KEY_CONTENT_FILTERING = booleanPreferencesKey("content_filtering_enabled")
-        val KEY_LINK_PREVIEWS = booleanPreferencesKey("link_previews_enabled")
-        val KEY_TYPING_INDICATORS = booleanPreferencesKey("typing_indicators_enabled")
-        val KEY_READ_RECEIPTS = booleanPreferencesKey("read_receipts_enabled")
+        val KEY_LINK_PREVIEWS = PresetSetting.LINK_PREVIEWS.key
+        val KEY_TYPING_INDICATORS = PresetSetting.TYPING_INDICATORS.key
+        val KEY_READ_RECEIPTS = PresetSetting.READ_RECEIPTS.key
         val KEY_TRANSLATE_TARGET = stringPreferencesKey("translate_target")
-        val KEY_TRANSLATION_ENABLED = booleanPreferencesKey("translation_enabled")
+        val KEY_TRANSLATION_ENABLED = PresetSetting.TRANSLATION.key
         val KEY_CALLS_RELAY_ALL = booleanPreferencesKey("calls_relay_all")
         val KEY_FIELD_LOG = booleanPreferencesKey("field_log_enabled")
         val KEY_WEAR_STATUS = booleanPreferencesKey("wear_status_enabled")
         val KEY_OPEN_TO_CHAT = booleanPreferencesKey("open_to_chat")
         val KEY_DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
-        val KEY_BT_DOWNLOAD_LIMIT = stringPreferencesKey("bluetooth_download_limit")
+        val KEY_BT_DOWNLOAD_LIMIT = PresetSetting.BLUETOOTH_DOWNLOAD_LIMIT.key
         val KEY_OPEN_TO_CHAT_NAMED = stringSetPreferencesKey("open_to_chat_named")
         val KEY_OPEN_TO_CHAT_LAST_POST_AT = longPreferencesKey("open_to_chat_last_post_at")
         val KEY_MESH_ENABLED = booleanPreferencesKey("mesh_enabled")
@@ -1345,11 +1356,11 @@ class SettingsStore(
         val KEY_CONTRIB_PASSED_ALONG = longPreferencesKey("contrib_passed_along")
         val KEY_CONTRIB_HANDED_DIRECT = longPreferencesKey("contrib_handed_direct")
         val KEY_CONTRIB_SINCE = longPreferencesKey("contrib_since")
-        val KEY_SPOOL_ENABLED = booleanPreferencesKey("spool_enabled")
+        val KEY_SPOOL_ENABLED = booleanPreferencesKey(SettingsKeys.SPOOL_ENABLED)
         val KEY_SPOOL_URLS = stringSetPreferencesKey(SettingsKeys.SPOOL_URLS)
         val KEY_SPOOL_DISABLED = stringSetPreferencesKey(SettingsKeys.SPOOL_URLS_DISABLED)
         val KEY_SPOOL_SEEDED = booleanPreferencesKey(SettingsKeys.SPOOL_DEFAULTS_SEEDED)
-        val KEY_SPOOL_CONSENTED = booleanPreferencesKey("spool_consented")
+        val KEY_SPOOL_CONSENTED = booleanPreferencesKey(SettingsKeys.SPOOL_CONSENTED)
         val KEY_MESHTASTIC_POST_CONSENTED = booleanPreferencesKey("meshtastic_post_consented")
         val KEY_LOCATION_SHARE_CONSENTED = booleanPreferencesKey("location_share_consented")
         val KEY_DIRECT_TRANSFER_CONSENTED = booleanPreferencesKey("direct_transfer_consented")

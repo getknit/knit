@@ -37,10 +37,12 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
+import app.getknit.knit.data.settings.Preset
 import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.ui.MeshPermissionTier
 import app.getknit.knit.ui.meshPermissionTier
 import app.getknit.knit.ui.preview.KnitPreview
+import app.getknit.knit.ui.rememberWifiAwareSupported
 import app.getknit.knit.ui.theme.KnitMotion
 import org.koin.androidx.compose.koinViewModel
 
@@ -77,6 +79,8 @@ fun OnboardingScreen(
     val nameRefused by viewModel.nameRefused.collectAsStateWithLifecycle()
     val alias by viewModel.alias.collectAsStateWithLifecycle()
     val nodeId by viewModel.nodeId.collectAsStateWithLifecycle()
+    val preset by viewModel.preset.collectAsStateWithLifecycle()
+    val awareSupported = rememberWifiAwareSupported()
     val current = step ?: return
 
     OnboardingScreenContent(
@@ -88,6 +92,9 @@ fun OnboardingScreen(
         rows = permissions.rows,
         tier = tier,
         meshSupported = meshSupported,
+        preset = preset,
+        awareSupported = awareSupported,
+        onSelectPreset = viewModel::selectPreset,
         onNext = viewModel::next,
         onBack = viewModel::back,
         onNameChange = viewModel::setName,
@@ -132,6 +139,9 @@ internal fun OnboardingScreenContent(
     onOpenUnusedPauseSettings: () -> Unit = {},
     onOpenFullScreenSettings: () -> Unit = {},
     onRestore: () -> Unit = {},
+    preset: Preset? = null,
+    awareSupported: Boolean = true,
+    onSelectPreset: (Preset) -> Unit = {},
 ) {
     BackHandler(enabled = step != OnboardingStep.WELCOME, onBack = onBack)
     val enterForward = KnitMotion.enterStep(forward = true)
@@ -144,6 +154,7 @@ internal fun OnboardingScreenContent(
             OnboardingFooter(
                 step = step,
                 nameBlank = name.isBlank(),
+                presetPicked = preset != null,
                 startEnabled = rows.radioGranted,
                 onNext = onNext,
                 onReady = onReady,
@@ -167,6 +178,10 @@ internal fun OnboardingScreenContent(
             when (current) {
                 OnboardingStep.WELCOME -> {
                     WelcomePage(onRestore = onRestore)
+                }
+
+                OnboardingStep.PRESET -> {
+                    PresetPage(selected = preset, onSelect = onSelectPreset, awareSupported = awareSupported)
                 }
 
                 OnboardingStep.NAME -> {
@@ -200,14 +215,15 @@ internal fun OnboardingScreenContent(
 }
 
 /**
- * Dots and the CTA. One button per page: "Get started", then "Skip for now" that becomes "Continue" the
- * moment something is typed (what's in the field is what gets saved — there is no second path), then
- * "Start meshing". Rides above the keyboard on the name page.
+ * Dots and the CTA. One button per page: "Get started", then "Continue" once a starting point is picked, then
+ * "Skip for now" that becomes "Continue" the moment something is typed (what's in the field is what gets saved —
+ * there is no second path), then "Start meshing". Rides above the keyboard on the name page.
  */
 @Composable
 private fun OnboardingFooter(
     step: OnboardingStep,
     nameBlank: Boolean,
+    presetPicked: Boolean,
     startEnabled: Boolean,
     onNext: () -> Unit,
     onReady: () -> Unit,
@@ -227,6 +243,16 @@ private fun OnboardingFooter(
             OnboardingStep.WELCOME -> {
                 Button(onClick = onNext, modifier = Modifier.fillMaxWidth().testTag("onboarding_next")) {
                     Text(stringResource(R.string.onboarding_get_started))
+                }
+            }
+
+            OnboardingStep.PRESET -> {
+                Button(
+                    onClick = onNext,
+                    enabled = presetPicked,
+                    modifier = Modifier.fillMaxWidth().testTag("onboarding_next"),
+                ) {
+                    Text(stringResource(R.string.onboarding_continue))
                 }
             }
 
@@ -256,8 +282,8 @@ private fun OnboardingFooter(
 }
 
 /**
- * Three dots, the current one stretched into a pill. Material 3 has no page-indicator component, so this is
- * the smallest correct one: a single semantics node reading "Step n of 3", nothing focusable.
+ * One dot per page, the current one stretched into a pill. Material 3 has no page-indicator component, so this is
+ * the smallest correct one: a single semantics node reading "Step n of N", nothing focusable.
  */
 @Composable
 private fun StepDots(
@@ -316,6 +342,31 @@ fun OnboardingWelcomePreview() =
             onAllowBattery = {},
             onOpenSettings = {},
             onReady = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun OnboardingPresetPreview() =
+    KnitPreview {
+        OnboardingScreenContent(
+            step = OnboardingStep.PRESET,
+            name = "",
+            alias = "SmartlyBrightSparrow",
+            nodeId = "node-preview",
+            rows = PermissionRows.FRESH,
+            tier = MeshPermissionTier.NEARBY_DEVICES,
+            meshSupported = true,
+            onNext = {},
+            onBack = {},
+            onNameChange = {},
+            onNameCommit = {},
+            onRequestRadio = {},
+            onRequestNotifications = {},
+            onAllowBattery = {},
+            onOpenSettings = {},
+            onReady = {},
+            preset = Preset.PRIVATE,
         )
     }
 

@@ -64,6 +64,7 @@ import app.getknit.knit.data.settings.HomeStore
 import app.getknit.knit.data.settings.IncomingCallStore
 import app.getknit.knit.data.settings.MeshcoreClaimStore
 import app.getknit.knit.data.settings.OwnIceStore
+import app.getknit.knit.data.settings.PresetStore
 import app.getknit.knit.data.settings.ReviewPromptStore
 import app.getknit.knit.data.settings.SettingsKeys
 import app.getknit.knit.data.settings.SettingsStore
@@ -122,6 +123,8 @@ val appModule =
             }
         }
         single { SettingsStore(get()) }
+        // The starting point the person picked (Everyday, Privacy-first, Battery saver), which supplies the defaults.
+        single { PresetStore(get()) }
         // §3.14: the person's own call servers, beside the settings; read by the Settings row in every build.
         single { OwnIceStore(get()) }
         // C-3.3-7: which incoming calls this phone takes; read by the Settings row in every build, as the servers are.

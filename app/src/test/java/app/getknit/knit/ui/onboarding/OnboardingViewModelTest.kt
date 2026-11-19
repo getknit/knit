@@ -3,6 +3,8 @@
 package app.getknit.knit.ui.onboarding
 
 import app.getknit.knit.TextLimits
+import app.getknit.knit.data.settings.Preset
+import app.getknit.knit.data.settings.PresetStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
@@ -29,7 +31,8 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * The stepper's contract: pages advance in order and stop at the ends; leaving the name page is the one
+ * The stepper's contract: pages advance in order and stop at the ends; leaving the preset page writes the pick;
+ * leaving the name page is the one
  * moment the name is written (normalized, capped, and only when it changed) and the intro is marked seen;
  * a phone that has seen the intro opens on the permissions page. Pure JVM, mockk stand-ins for the store
  * and identity — the same rig as `ProfileViewModelTest`.
@@ -37,6 +40,7 @@ import org.junit.Test
 class OnboardingViewModelTest {
     private val settings = mockk<SettingsStore>(relaxed = true)
     private val identity = mockk<Identity>(relaxed = true)
+    private val presets = mockk<PresetStore>(relaxed = true)
     private val seenFlow = MutableStateFlow(false)
 
     @Before
@@ -51,7 +55,7 @@ class OnboardingViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun vm() = OnboardingViewModel(settings, identity)
+    private fun vm() = OnboardingViewModel(settings, identity, presets = presets)
 
     @Test
     fun stepsAdvanceInOrderAndStopAtTheEnds() =
@@ -61,6 +65,11 @@ class OnboardingViewModelTest {
             vm.back()
             assertEquals(OnboardingStep.WELCOME, vm.step.value)
             vm.next()
+            assertEquals(OnboardingStep.PRESET, vm.step.value)
+            vm.next()
+            assertEquals("Continue waits for a pick", OnboardingStep.PRESET, vm.step.value)
+            vm.selectPreset(Preset.BATTERY)
+            vm.next()
             assertEquals(OnboardingStep.NAME, vm.step.value)
             vm.next()
             assertEquals(OnboardingStep.PERMISSIONS, vm.step.value)
@@ -68,7 +77,43 @@ class OnboardingViewModelTest {
             assertEquals(OnboardingStep.PERMISSIONS, vm.step.value)
             vm.back()
             assertEquals(OnboardingStep.NAME, vm.step.value)
+            vm.back()
+            assertEquals(OnboardingStep.PRESET, vm.step.value)
         }
+
+    @Test
+    fun leavingThePresetPageWritesThePickAndResetsToIt() =
+        runTest {
+            val vm = vm()
+            vm.next()
+            vm.selectPreset(Preset.EVERYDAY)
+            vm.selectPreset(Preset.PRIVATE)
+            coVerify(exactly = 0) { presets.apply(any(), any()) }
+            vm.next()
+            coVerify(exactly = 1) { presets.apply(Preset.PRIVATE, resetOverrides = true) }
+            coVerify(exactly = 0) { settings.markOnboardingSeen() }
+        }
+
+    @Test
+    fun aReturningPhoneIsNeverOfferedAPreset() =
+        runTest {
+            seenFlow.value = true
+            val vm = vm()
+            vm.back()
+            assertEquals(OnboardingStep.NAME, vm.step.value)
+            vm.back()
+            assertEquals("Back walks past the preset page", OnboardingStep.WELCOME, vm.step.value)
+            vm.next()
+            assertEquals("and so does Get started", OnboardingStep.NAME, vm.step.value)
+            coVerify(exactly = 0) { presets.apply(any(), any()) }
+        }
+
+    // Welcome → Preset (a pick) → Name, as a person gets there.
+    private fun OnboardingViewModel.toNamePage() {
+        next()
+        selectPreset(Preset.PRIVATE)
+        next()
+    }
 
     @Test
     fun aliasComesFromTheNodeId() =
@@ -87,7 +132,7 @@ class OnboardingViewModelTest {
     fun leavingTheNamePageNormalizesCapsAndWritesTheNameOnce() =
         runTest {
             val vm = vm()
-            vm.next()
+            vm.toNamePage()
             vm.setName("  Ada   Lovelace  ")
             vm.next()
             assertEquals("Ada Lovelace", vm.name.value)
@@ -112,7 +157,7 @@ class OnboardingViewModelTest {
     fun aBlankNameWritesNothingButStillMarksSeen() =
         runTest {
             val vm = vm()
-            vm.next()
+            vm.toNamePage()
             vm.setName("   ")
             vm.next()
             coVerify(exactly = 0) { settings.setDisplayName(any()) }
@@ -123,7 +168,7 @@ class OnboardingViewModelTest {
     fun clearingANameWrittenAPageAgoWritesTheClear() =
         runTest {
             val vm = vm()
-            vm.next()
+            vm.toNamePage()
             vm.setName("Ada")
             vm.next()
             vm.back()
@@ -161,7 +206,7 @@ class OnboardingViewModelTest {
                     identity,
                     names = ShownNames(NameScreen(listOf("kike"), listOf("fuck", "kike"), emptyList(), emptyList(), emptyList())),
                 )
-            vm.next()
+            vm.toNamePage()
             vm.setName("Fuck69")
             vm.next()
             assertEquals(OnboardingStep.NAME, vm.step.value)

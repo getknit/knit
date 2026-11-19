@@ -57,6 +57,7 @@ import app.getknit.knit.ui.diagnostics.FieldLogViewModel
 import app.getknit.knit.ui.group.GroupDetailsViewModel
 import app.getknit.knit.ui.lora.LoraRadioViewModel
 import app.getknit.knit.ui.onboarding.OnboardingViewModel
+import app.getknit.knit.ui.preset.StartingPointViewModel
 import app.getknit.knit.ui.profile.ProfileDetailsViewModel
 import app.getknit.knit.ui.profile.ProfileViewModel
 import app.getknit.knit.ui.relay.InternetRelayViewModel
@@ -204,7 +205,7 @@ val uiModule =
                 names = get(),
             )
         }
-        viewModel { OnboardingViewModel(get(), get(), names = get()) }
+        viewModel { OnboardingViewModel(get(), get(), names = get(), presets = get()) }
         viewModel { ChatSettingsViewModel(get(), reader = if (TRANSLATE_WIRED) get<ReaderLanguage>() else null) }
         viewModel {
             SettingsViewModel(
@@ -220,8 +221,10 @@ val uiModule =
                 liveCalls = LIVE_CALLS_WIRED,
                 meshCalls = WALKIE_WIRED,
                 awareSwitch = get(),
+                presets = get(),
             )
         }
+        viewModel { StartingPointViewModel(get(), get<SettingsStore>().spoolConsented) }
         viewModel {
             BackupViewModel(
                 androidContext(),

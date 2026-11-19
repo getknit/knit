@@ -39,6 +39,17 @@ lines.
   so the row hides) — READ ADR 2026-09.54xg: it has no prompt, its default is not an error (`quietHint`), and
   its callback is `openUnusedAppPauseSettings`, not `openSettings`, because Android 11 keeps the switch on a
   page of its own.
+- **When touching `data/settings/Preset` / `PresetSetting` / `orPreset`, `PresetStore` (`apply`, `customised`),
+  `SettingsKeys.SETTINGS_PRESET`, onboarding's `OnboardingStep.PRESET` / `PresetPage` / `OnboardingViewModel.returning`,
+  `ui/preset/` (`PresetChoices`, `presetLines`, `StartingPointScreen`), or a covered getter
+  (`linkPreviewsEnabled`, `typingIndicatorsEnabled`, `readReceiptsEnabled`, `translationEnabled`,
+  `bluetoothDownloadLimit`, `TranscriptStore.enabled`, `AwareSwitch.readOn`):** READ ADR 2026-11.j8pf. The picked
+  preset is stored and each covered getter falls back to it (`orPreset`); a person's own value outranks it. An absent
+  preset reads `STANDARD`, the pre-preset literals. Relays are never a folded default: a relays-on preset writes the
+  consent and the switch in one edit, on a reset only, with `RelayConsentText` on screen. Onboarding writes the pick on
+  leaving PRESET (before NAME marks the intro seen), and a returning or restored phone never reaches the page. A new
+  covered switch needs its `PresetSetting`, its `orPreset` getter, a value per preset and a `presetLines` line.
+  Regression: `PresetStoreTest`, `OnboardingViewModelTest`.
 - **When touching `ui/DeviceSupervision.kt`, `ui/components/PermissionDeniedDialog`, the `settingsHint` of a
   permission row, or the location / mic / camera gates' denial copy:** READ ADR 2026-09.a8ud. A parent's or
   an administrator's denial (`POLICY_FIXED`) is indistinguishable from "don't ask again" from inside the

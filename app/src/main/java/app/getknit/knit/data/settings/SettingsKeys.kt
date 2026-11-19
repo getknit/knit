@@ -27,6 +27,23 @@ object SettingsKeys {
     const val WIFI_AWARE_ENABLED = "wifi_aware_enabled"
     const val WIFI_AWARE_MIGRATED = "wifi_aware_migrated"
 
+    // The starting point the person picked (`Preset`), and the switches whose default it supplies, here because
+    // `PresetStore` resets them in one edit across the stores that own them. The preset rides a backup: it is the
+    // person's choice, and a phone-bound switch stripped by a restore falls back to it.
+    const val SETTINGS_PRESET = "settings_preset"
+    const val LINK_PREVIEWS = "link_previews_enabled"
+    const val TYPING_INDICATORS = "typing_indicators_enabled"
+    const val READ_RECEIPTS = "read_receipts_enabled"
+    const val TRANSLATION_ENABLED = "translation_enabled"
+    const val BLUETOOTH_DOWNLOAD_LIMIT = "bluetooth_download_limit"
+    const val CALL_TRANSCRIPTS = "calls_transcripts"
+    const val SECURE_SCREENS = "secure_screens"
+
+    // The relay plane's switch and its disclosure (`SettingsStore.spoolEnabled` / `spoolConsented`), here because
+    // `PresetStore` writes both in the preset's one edit, as `acceptSpoolConsent` does.
+    const val SPOOL_ENABLED = "spool_enabled"
+    const val SPOOL_CONSENTED = "spool_consented"
+
     // The relay list and its parked subset (`SettingsStore.spoolUrls`), here because `RelayRename` rewrites both in the
     // same edit as the per-host keys below (ADR 2026-10.qpja).
     const val SPOOL_URLS = "spool_urls"
@@ -168,7 +185,7 @@ object SettingsKeys {
      * stays on the phone that drew it.
      * Low-power mode (`low_power_mode`, ADR 2026-10.d44b) is about this phone's battery, not the person, and the Wi-Fi
      * Aware switch (`wifi_aware_enabled`, GitHub #44) about whether this phone's Wi-Fi can spare the airtime: a restored
-     * phone starts with Aware on.
+     * phone starts with Aware as the restored [Preset] has it (on, unless Battery saver).
      */
     val TRANSIENT_PREFIXES: List<String> =
         listOf(
