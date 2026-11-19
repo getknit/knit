@@ -828,6 +828,19 @@ android {
                     }
                     providers.gradleProperty("knit.meshSimHeap").orNull?.let { test.maxHeapSize = it }
                 }
+                // A build-cache hit (the workstation's local cache, GitLab CI's) restores an earlier run's results and
+                // runs no test. Never for these runs: a chaos seed and a simulator outing are draws, not build products,
+                // and the preview recorders and KNIT_WRITE_VECTORS write files outside the task's outputs, which a hit
+                // never writes. Each is still a Test input, so a plain run's results never answer one either.
+                val uncacheable =
+                    listOfNotNull(
+                        labChaos?.let { "a mesh-lab chaos draw" },
+                        meshSim?.let { "a mesh-simulator outing" },
+                        previewStrings?.let { "it records preview strings into $it" },
+                        previewLayout?.let { "it audits preview layout into $it" },
+                        "it writes the wire vectors".takeIf { writeVectors.get().isNotEmpty() },
+                    )
+                if (uncacheable.isNotEmpty()) test.outputs.doNotCacheIf(uncacheable.joinToString()) { true }
             }
         }
 
@@ -1165,8 +1178,8 @@ tasks.withType<Test>().configureEach {
 // mostly asleep in the stalls it injects. `-Pknit.labChaosShards=<k>` registers k copies of testDebugUnitTest, each
 // running every selected scenario on its own slice of the seeds `knit.labChaos .. + knit.labChaosRuns - 1`, filtered by
 // `knit.labChaosTests` (comma-separated `--tests` patterns: a task option binds to one task, a property to all k). With
-// the configuration cache on they run in parallel, each writing build/test-results/labChaosShard<i>/. Never up to date:
-// a sweep is a draw, not a build product. Off unless asked for, so nothing else sees these tasks. `-Pknit.labBoards=true`
+// the configuration cache on they run in parallel, each writing build/test-results/labChaosShard<i>/. Never up to date
+// and never from the build cache: a sweep is a draw, not a build product. Off unless asked for, so nothing else sees these tasks. `-Pknit.labBoards=true`
 // (lab-chaos.sh --boards) gives every node a board here as in testDebugUnitTest, and leaves out the same classes.
 val labChaosShards =
     providers
@@ -1234,6 +1247,7 @@ if (labChaosShards > 0) {
                 }
             }
             outputs.upToDateWhen { false }
+            outputs.doNotCacheIf("a shard's run is a draw, not a build product") { true }
         }
     }
 }
@@ -1242,7 +1256,8 @@ if (labChaosShards > 0) {
 // k copies of testDebugUnitTest filtered by `knit.unitStressTests` (comma-separated `--tests` patterns), each running the
 // selected classes once in its own JVM. With the configuration cache on they run side by side, so every copy competes
 // for the cores the way a loaded CI runner's work does, and each writes build/test-results/unitStressShard<i>/ — never
-// testDebugUnitTest's own results, which a sibling reviewer's run may be writing at the same time. Never up to date.
+// testDebugUnitTest's own results, which a sibling reviewer's run may be writing at the same time. Never up to date and
+// never from the build cache: every round is a new draw of the same inputs.
 val unitStressShards =
     providers
         .gradleProperty("knit.unitStressShards")
@@ -1284,6 +1299,7 @@ if (unitStressShards > 0) {
                 }
             }
             outputs.upToDateWhen { false }
+            outputs.doNotCacheIf("a shard's run is a draw, not a build product") { true }
         }
     }
 }

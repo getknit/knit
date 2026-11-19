@@ -27,11 +27,23 @@ always starts. Beside others it waits for `KNIT_GRADLE_MIN_FREE_MB` (default 122
 for each build that began in the last five minutes and has not grown into its memory yet; the free memory also counts
 what the CI runners on the workstation hold, since they build outside the turn. A long run (`KNIT_GRADLE_LONG=1`, or any
 `-Pknit.meshSim` outing) never takes slot 0, so an hour-long outing or sweep loop always leaves a slot for short runs:
-set it for a sweep loop or a soak. A waiting run prints who holds the slots. Both locks are re-entrant, so a script holding the
-turn (`lab-chaos.sh`, `unit-stress.sh`) can nest, and the reviewers the Stop hook spawns at once read in parallel and
-take turns at Gradle. Still chain your own runs in one command, never one in the background and one in the foreground.
+set it for a sweep loop or a soak. A waiting run prints who holds the slots. Both locks are re-entrant, so a script
+holding the turn (`lab-chaos.sh`, `unit-stress.sh`) can nest, and the reviewers the Stop hook spawns at once read in
+parallel and take turns at Gradle. Still chain your own runs in one command, never one in the background and one in the foreground.
 The script also runs the command in a systemd scope of CPU weight 20, so the daemon it starts and that daemon's test
 JVMs yield the CPU to the IDE and the terminals.
+
+## Every worktree shares one build cache
+
+On the workstation `~/.gradle/gradle.properties` turns on Gradle's local build cache, and
+`~/.gradle/init.d/build-cache.gradle` puts it on the data drive. Every worktree and clone shares it, and Gradle drops entries unused for 7 days. A task whose
+inputs any worktree has built comes back `FROM-CACHE`: a fresh worktree's first compile took 3 s in place of 1 min 44 s
+(2026-11-19). That includes `testDebugUnitTest`. A hit restores that run's XMLs and runs no test, which is the right
+answer for the same inputs. Pass `--rerun` when the tests must run again: a flake hunt, or a test that reads what Gradle
+cannot see, such as an environment variable (`LocalIssuerCrossCheckTest`). A run that is a draw or writes outside its
+outputs never reads or writes the cache: `-Pknit.labChaos`, `-Pknit.meshSim`, `-Pknit.previewStrings`,
+`-Pknit.previewLayout`, `KNIT_WRITE_VECTORS`, and the `labChaosShard` and `unitStressShard` tasks. Release and
+reproducibility builds pass `--no-build-cache`.
 
 ## Never load the machine to make a race show
 
