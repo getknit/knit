@@ -3,10 +3,12 @@ package app.getknit.knit.a11y
 import android.os.Build
 import android.util.Log
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.accessibility.enableAccessibilityChecks
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.tryPerformAccessibilityChecks
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -170,28 +172,48 @@ class AccessibilityInstrumentedTest : SeededUiTest() {
 
     @Test fun addContact() = audit(route = "addContact") { awaitTag("screen_add_contact") }
 
-    // Onboarding, all three pages. The seeded build normally skips the gate, but the demo route lands on it
-    // directly; nothing here needs seeded data, and the audit never taps Allow (the system dialog is another
-    // window, not this screen).
+    // Onboarding, all four pages. The seeded build normally skips the gate, but the demo route lands on it
+    // directly as a first run (WELCOME → PRESET → NAME → PERMISSIONS); nothing here needs seeded data, and the
+    // audit never taps Allow (the system dialog is another window, not this screen). The preset page's Continue
+    // waits for a pick, so every page past it taps one first.
     @Test fun onboardingWelcome() = audit(route = "onboarding") { awaitTag("onboarding_page_welcome") }
+
+    // Everyday picked, so the audit covers the selected card and the relay disclosure it opens, not only the
+    // unpicked group.
+    @Test
+    fun onboardingPreset() =
+        audit(route = "onboarding") {
+            toPresetPage()
+            compose.onNodeWithTag("preset_everyday").performScrollTo().performClick()
+            awaitTag("preset_relay_disclosure")
+        }
 
     @Test
     fun onboardingName() =
         audit(route = "onboarding") {
-            awaitTag("onboarding_page_welcome")
-            compose.onNodeWithTag("onboarding_next").performClick()
-            awaitTag("onboarding_page_name")
+            toNamePage()
         }
 
     @Test
     fun onboardingPermissions() =
         audit(route = "onboarding") {
-            awaitTag("onboarding_page_welcome")
-            compose.onNodeWithTag("onboarding_next").performClick()
-            awaitTag("onboarding_page_name")
+            toNamePage()
             compose.onNodeWithTag("onboarding_next").performClick()
             awaitTag("onboarding_page_permissions")
         }
+
+    private fun toPresetPage() {
+        awaitTag("onboarding_page_welcome")
+        compose.onNodeWithTag("onboarding_next").performClick()
+        awaitTag("onboarding_page_preset")
+    }
+
+    private fun toNamePage() {
+        toPresetPage()
+        compose.onNodeWithTag("preset_private").performScrollTo().performClick()
+        compose.onNodeWithTag("onboarding_next").assertIsEnabled().performClick()
+        awaitTag("onboarding_page_name")
+    }
 
     // Search, three ways: the idle field, a query with all three sections answering (Sam is a chat, a
     // contact and a speaker), and the no-results state.
