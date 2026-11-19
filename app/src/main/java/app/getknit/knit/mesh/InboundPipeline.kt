@@ -93,6 +93,7 @@ import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.LinkSignal
+import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.PresenceKeyPayload
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
@@ -1368,7 +1369,10 @@ class InboundPipeline(
             )
         deliverChat(
             env = env,
-            content = ChatContent(body = post.body),
+            // A `@[name]` token naming our own board (ADR 2026-11.gsqu's 2026-11-19 amendment) is a mention of us, bound to
+            // our id here, so the bubble draws it and the Mentions channel takes it. Anyone can type one: it is a claim, as
+            // the name is, and buys only that channel.
+            content = ChatContent(body = post.body, mentions = listOfNotNull(post.mentionedAs?.let { Mention(me, "[$it]") })),
             me = me,
             conversationId = Conversations.MESHCORE_PUBLIC,
             plane = DeliveryPlane.LoRa,
@@ -4478,8 +4482,10 @@ class InboundPipeline(
     ) {
         val (shown, fileName) = notificationSubject(content, sealed, video)
         if (isAccepted(conversationId, me)) {
-            if (env.senderId != me && content.mentions.mention(me)) {
-                notifyMention(env, shown, conversationId, fileName, hidden)
+            // A heard post sits in our sender column by convention: its origin, not the sender test, says it is not ours.
+            val othersWords = env.senderId != me || origin != null
+            if (othersWords && content.mentions.mention(me)) {
+                notifyMention(env, shown, conversationId, fileName, hidden, origin)
             } else {
                 notifyIncoming(env, shown, conversationId, fileName, hidden, origin)
             }
@@ -5012,11 +5018,17 @@ class InboundPipeline(
         hidden: Boolean,
         origin: MeshPostOrigin? = null,
     ) {
-        // A MeshCore room post the filter hides was flagged on its name as much as its words (deliverMeshcorePost), so
-        // the hidden line names nobody either.
-        val shown = if (hidden && origin != null && MeshPostOrigin.isMeshcoreOrigin(origin.node)) origin.copy(name = null) else origin
-        notifyWithBody(env, conversationId, notificationBody(content, fileName, hidden), shown)
+        notifyWithBody(env, conversationId, notificationBody(content, fileName, hidden), shownOrigin(origin, hidden))
     }
+
+    /**
+     * [origin] as a notification may name it: a MeshCore room post the filter hides was flagged on its name as much as its
+     * words ([deliverMeshcorePost]), so the hidden line names nobody either.
+     */
+    private fun shownOrigin(
+        origin: MeshPostOrigin?,
+        hidden: Boolean,
+    ): MeshPostOrigin? = if (hidden && origin != null && MeshPostOrigin.isMeshcoreOrigin(origin.node)) origin.copy(name = null) else origin
 
     /**
      * What a notification says of [content]. A message content filtering hides ([hidden] — its body flagged, or the
@@ -5256,13 +5268,18 @@ class InboundPipeline(
             else -> true
         }
 
-    /** Fires a "you were mentioned" notification on the Mentions channel for an inbound chat in [conversationId]. */
+    /**
+     * Fires a "you were mentioned" notification on the Mentions channel for an inbound chat in [conversationId]. A heard
+     * post's ([origin]: the MeshCore room's, ADR 2026-11.gsqu's 2026-11-19 amendment) is keyed on, named after and wears its
+     * speaker exactly as its room notification would ([notifyWithBody]), never this phone, whose id sits in its sender column.
+     */
     private suspend fun notifyMention(
         env: RelayEnvelope,
         content: ChatContent,
         conversationId: String,
         fileName: String?,
         hidden: Boolean,
+        origin: MeshPostOrigin? = null,
     ) {
         val me = identity.nodeId()
         val peer = peers.find(env.senderId)
@@ -5271,14 +5288,15 @@ class InboundPipeline(
         val senderLabel = labels.labelFor(env.senderId, peer?.name)
         val peerAvatar = peer?.avatarHash?.let { blobs.bytes(it) }
         val body = notificationBody(content, fileName, hidden)
+        val speaker = shownOrigin(origin, hidden)?.let { heardSpeaker(it, labels::shown) { id, name -> labels.labelFor(id, name).text } }
         val incoming =
             mentionNotification(
-                senderId = env.senderId,
+                senderId = speaker?.id ?: env.senderId,
                 body = body,
                 sentAt = env.sentAt,
                 selfId = me,
-                peerName = senderLabel.text,
-                peerAvatarBytes = peerAvatar,
+                peerName = speaker?.name ?: senderLabel.text,
+                peerAvatarBytes = if (speaker != null) speaker.avatar else peerAvatar,
                 conversationId = conversationId,
             ) ?: return
         val conversation = conversationFaces.resolve(conversationId, me, labels)

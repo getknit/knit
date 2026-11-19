@@ -513,8 +513,15 @@ val meshModule =
                             }
                         },
                         // The MeshCore room's inbound half (ADR 2026-11.gsqu's Stage 6 amendment): a judged stranger's post off
-                        // slot 0, delivered into `Conversations.MESHCORE_PUBLIC` across the seam as the room's own value.
-                        onPublicPost = { post -> get<MeshPostSink>().onMeshcorePostHeard(meshcoreHeard(post)) },
+                        // slot 0, delivered into `Conversations.MESHCORE_PUBLIC` across the seam as the room's own value, read
+                        // for a mention of the board's name as its face carries it now (the 2026-11-19 amendment).
+                        onPublicPost = { post ->
+                            val ownName =
+                                get<LoraMeshTransport>(loraPlane(BoardKind.MESHCORE))
+                                    .status.value.meshcore
+                                    ?.handle
+                            get<MeshPostSink>().onMeshcorePostHeard(meshcoreHeard(post, ownName))
+                        },
                     )
                 },
                 // The board reports its own Knit slot (`MeshcoreHooks.boundSlot`): the config's index is never read.

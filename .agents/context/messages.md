@@ -34,8 +34,10 @@ lines.
   `DeliveryStatus.NotSent` / `Unconfirmed`, `bridgedBoardOf` / `roomFactsFor`, `meshcoreRoomClashKeys` / `meshcoreNameClashes`,
   `meshcoreAuthorLine`, `MessageDetailsViewModel`'s sender, `MeshOrigin.meshcore` /
   `nameClash`, `NotificationChannels.MESHCORE`, `SettingsStore.meshcorePostConsented` / `meshcorePostConsentPosition` /
-  `setMeshcoreRoomEnabled`, `ChatViewModel`'s `meshcoreSharesPosition`, or a
-  reader that turns `originNode` into a label:** READ ADR 2026-11.gsqu's Stage 6 amendment (part 6b), then "The Meshtastic
+  `setMeshcoreRoomEnabled`, `ChatViewModel`'s `meshcoreSharesPosition`, the room's replies and mentions
+  (`MeshcoreMentions`, `MeshcorePost.mentionedAs`, `ui/chat/meshcoreReplyPrefix`), or a
+  reader that turns `originNode` into a label:** READ ADR 2026-11.gsqu's Stage 6 amendment (part 6b) and its 2026-11-19
+  amendment, then "The Meshtastic
   room" and "MeshCore's Public channel" in `lora-bridge.md`. Every rule both rooms share reads the one predicate. A MeshCore
   room post is always a stranger's: the fixed sentinel `originNode`, never resolved, never `!hex`, named by its own claim or
   "Unnamed", moderated with its name, marked when the name reads as someone the user knows, keyed `mc:`+SHA-256 in the
@@ -45,7 +47,9 @@ lines.
   a "Same name as someone you know" line when it reads, by `NameKey`, as "You", ours, our board's or any name the screens
   render for a person. The details screen reads `writtenBy`; neither bridged room takes anyone's reaction but ours. Each room is gated and titled by its own kind's facts (`perKind`), posts by room
   through its own kind's board and consent, and an own MeshCore post that ended without airing reads "Not sent" or "May
-  not have gone out" off its row, never resent. Regression: `ConversationsKindTest`, `MeshcorePostIdTest`,
+  not have gone out" off its row, never resent. A MeshCore reply posts MeshCore's own `@[name] ` ahead of the words,
+  counted, screened and stored with them; a `@[name]` token naming the user's board, by `NameKey`, is bound to us and
+  notified on the Mentions channel under the speaker; no other token draws as a mention. Regression: `MeshcoreMentionsTest`, `ConversationsKindTest`, `MeshcorePostIdTest`,
   `InboundPipelineTest`'s MeshCore block, `MeshManagerTest`'s MeshCore posts, `MessageDaoTest`'s sentinel and ended cases,
   `MessageRetentionTest`, `ChatViewModelTest`'s and `ChatMeshRoomTest`'s MeshCore room, `ChatListViewModelTest`,
   `LoraReachTest`, `DeliveryStatusTest`, the notification tests, `LoraRadioViewModelTest`, `LoraPlaneWiringTest`.

@@ -50,7 +50,9 @@ interface MeshPostSink {
  * and proves nothing: anyone on the key can post under any name, `You` and our own board's `Knit xxxx` included, so it is
  * never resolved to a contact. [body] is the words, cleaned and clamped. [timestampSecs] and [raw] — the sender's stamp and
  * the text exactly as drained, before any cleaning — are what the row id is derived from and nothing else: a row orders
- * and ages by its arrival.
+ * and ages by its arrival. [mentionedAs] is the `@[name]` token in [body] that names the user's own board, as written
+ * ([MeshcoreMentions.mentionOf], read against the board's name when the post was heard), or null: the room notifies it as
+ * a mention. It is a claim like the name: anyone can type it.
  *
  * Equal by content. [toString] names neither the text nor the name: a stranger's words never reach a log.
  */
@@ -59,6 +61,7 @@ class MeshcorePost(
     val body: String,
     val timestampSecs: Long,
     raw: ByteArray,
+    val mentionedAs: String? = null,
 ) {
     private val bytes = raw.copyOf()
 
@@ -70,16 +73,18 @@ class MeshcorePost(
             other.name == name &&
             other.body == body &&
             other.timestampSecs == timestampSecs &&
-            other.bytes.contentEquals(bytes)
+            other.bytes.contentEquals(bytes) &&
+            other.mentionedAs == mentionedAs
 
     override fun hashCode(): Int {
         var h = name.hashCode()
         h = h * PRIME + body.hashCode()
         h = h * PRIME + timestampSecs.hashCode()
-        return h * PRIME + bytes.contentHashCode()
+        h = h * PRIME + bytes.contentHashCode()
+        return h * PRIME + mentionedAs.hashCode()
     }
 
-    override fun toString(): String = "MeshcorePost(named=${name != null}, ${body.length} ch)"
+    override fun toString(): String = "MeshcorePost(named=${name != null}, ${body.length} ch, mention=${mentionedAs != null})"
 
     private companion object {
         const val PRIME = 31

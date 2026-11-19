@@ -24,6 +24,7 @@ import app.getknit.knit.data.message.AttachmentFetchRow
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
+import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.PeerRename
 import app.getknit.knit.data.message.QuoteSettlement
@@ -6149,7 +6150,8 @@ class InboundPipelineTest {
         name: String? = "Bob",
         stamp: Long = meshcoreStamp,
         raw: ByteArray = (name?.let { "$it: " }.orEmpty() + body).encodeToByteArray(),
-    ) = MeshcorePost(name = name, body = body, timestampSecs = stamp, raw = raw)
+        mentionedAs: String? = null,
+    ) = MeshcorePost(name = name, body = body, timestampSecs = stamp, raw = raw, mentionedAs = mentionedAs)
 
     @Test
     fun aMeshcorePostLandsInItsRoomAsAStrangerUnderTheSentinel() =
@@ -6334,6 +6336,72 @@ class InboundPipelineTest {
             )
             assertEquals(NotificationLabels.ENGLISH.hidden, notification.captured.body)
             assertEquals(NotificationLabels.ENGLISH.unnamed, notification.captured.senderName)
+        }
+
+    /**
+     * A `@[name]` token naming our own board (ADR 2026-11.gsqu's 2026-11-19 amendment) is a mention of us: stored bound to
+     * our id, and notified on the Mentions channel under its speaker as the room's own notification names them — never under
+     * this phone, whose id is the row's sender by convention.
+     */
+    @Test
+    fun aMeshcorePostNamingOurBoardNotifiesAsAMentionUnderItsSpeaker() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val mention = slot<NotifMessage>()
+            coEvery { rig.notifier.notifyMention(capture(mention), any(), any(), any(), any()) } returns Unit
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[walter] on my way", mentionedAs = "walter"))
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertEquals(listOf(Mention(rig.self.nodeId, "[walter]")), MentionStore.decode(row.mentions))
+            assertEquals(meshcoreSpeakerKey("Bob"), mention.captured.senderId)
+            assertEquals(NotificationLabels.ENGLISH.claimedName.format("Bob"), mention.captured.senderName)
+            assertEquals("@[walter] on my way", mention.captured.body)
+            assertNull("a stranger wears no face", mention.captured.avatarBytes)
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    /**
+     * A post the seam marked as no mention of us notifies in its room, bound to nobody, whatever tokens its text holds:
+     * the pipeline never reads the body for one (`LoraPlaneWiringTest` pins the match against the board's name).
+     */
+    @Test
+    fun aMeshcorePostWithNoMentionOfUsNotifiesInItsRoom() =
+        runTest {
+            val rig = Rig(backgroundScope)
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[Sam] on my way"))
+            advanceUntilIdle()
+
+            assertTrue(
+                MentionStore
+                    .decode(
+                        rig.msgMap.values
+                            .single()
+                            .mentions,
+                    ).isEmpty(),
+            )
+            coVerify(exactly = 1) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { rig.notifier.notifyMention(any(), any(), any(), any(), any()) }
+        }
+
+    /** A mention the filter hides says only that it is hidden, under no name, as the room's own notification does. */
+    @Test
+    fun aHiddenMeshcoreMentionNamesNobody() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            rig.flagWhen = { it.startsWith("Slurname") }
+            rig.settings.contentFilteringEnabled.value = true
+            val mention = slot<NotifMessage>()
+            coEvery { rig.notifier.notifyMention(capture(mention), any(), any(), any(), any()) } returns Unit
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[walter] hello", name = "Slurname", mentionedAs = "walter"))
+            advanceUntilIdle()
+
+            assertEquals(NotificationLabels.ENGLISH.hidden, mention.captured.body)
+            assertEquals(NotificationLabels.ENGLISH.unnamed, mention.captured.senderName)
+            assertEquals(meshcoreSpeakerKey(null), mention.captured.senderId)
         }
 
     /**

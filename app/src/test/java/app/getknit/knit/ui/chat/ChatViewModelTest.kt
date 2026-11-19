@@ -36,6 +36,7 @@ import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.GroupFace
+import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.TransferPhase
 import app.getknit.knit.data.message.TransferRecord
@@ -1536,6 +1537,113 @@ class ChatViewModelTest {
             }
             assertEquals(List(expected.size) { Conversations.MESHCORE_PUBLIC }, mesh.sentPublicPostRooms)
             assertEquals("each carries the name it was consented under", List(expected.size) { boardHandle }, mesh.sentPublicPostHandles)
+        }
+
+    /** A quote of row [id] as the composer builds one: a bridged room's never leaves the phone. */
+    private fun quoting(id: String) = ReplyRef(messageId = id, authorId = "", author = "", snippet = "")
+
+    /**
+     * A reply in the MeshCore room goes out in MeshCore's own form (ADR 2026-11.gsqu's 2026-11-19 amendment): the quoted
+     * post's name in brackets ahead of the words, our board's name for one of ours, and a plain post where there is no name
+     * to address. The prefix is the post's own bytes, so the room's cap counts it.
+     */
+    @Test
+    fun aMeshcoreReplyGoesOutInMeshcoresOwnFormAndItsPrefixCountsAgainstTheCap() =
+        runTest {
+            meshcoreConsentFlow.value = true
+            meshcoreSharesFlow.value = false
+            val vm = vm(Conversations.MESHCORE_PUBLIC, loraRooms = loraRoomsFlow)
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive)
+            messagesFlow.value =
+                listOf(
+                    meshcoreHeard("bob", "Bob"),
+                    meshcoreHeard("unnamed", null),
+                    msg(senderId = "me", id = "ours", sentAt = 50, body = "earlier", conversationId = Conversations.MESHCORE_PUBLIC),
+                )
+            advanceUntilIdle()
+
+            for ((text, quoted) in listOf("on my way" to "bob", "still here" to "ours", "hi" to "unnamed", "gone" to "swept")) {
+                vm.send(text, replyTo = quoting(quoted))
+                advanceUntilIdle()
+                vm.onInputCleared()
+            }
+            assertEquals(listOf("@[Bob] on my way", "@[Knit 1a2b] still here", "hi", "gone"), mesh.sentPublicPosts)
+
+            // `meshcoreLive` leaves 64 B: "@[Bob] " takes 7, so 58 B of words no longer fit, and nothing is posted.
+            vm.send("x".repeat(58), replyTo = quoting("bob"))
+            advanceUntilIdle()
+            assertEquals(R.string.chat_mesh_post_too_large, events.last())
+            assertEquals(4, mesh.sentPublicPosts.size)
+            vm.send("x".repeat(57), replyTo = quoting("bob"))
+            advanceUntilIdle()
+            assertEquals("@[Bob] " + "x".repeat(57), mesh.sentPublicPosts.last())
+        }
+
+    /**
+     * The Meshtastic room has no reply form: a quote there leaves the words as they are. A pin, not coverage of one guard:
+     * it holds by three (`postPublic`'s room check, `meshcoreHandle` read only in the MeshCore room, and a heard row's
+     * name taken only from a MeshCore origin), and no row a view-model rig can build gets past the last two.
+     */
+    @Test
+    fun aMeshtasticRoomPostCarriesNoReplyPrefix() =
+        runTest {
+            publicConsentFlow.value = true
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true, primaryChannel = "LongFast")
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "me",
+                        id = "heard",
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0x1234abcdL,
+                        originName = "Bob",
+                    ),
+                )
+            advanceUntilIdle()
+
+            vm.send("on my way", replyTo = quoting("heard"))
+            advanceUntilIdle()
+
+            assertEquals(listOf("on my way"), mesh.sentPublicPosts)
+        }
+
+    /**
+     * A MeshCore room row draws only the mentions stored on it (the 2026-11-19 amendment, security review): the one its
+     * delivery bound to us ([InboundPipelineTest] pins the binding), never an `@[name]` read off a stranger's text, a
+     * contact's name included.
+     */
+    @Test
+    fun onlyAMeshcoreMentionOfUsDrawsAsAMention() =
+        runTest {
+            val vm = vm(Conversations.MESHCORE_PUBLIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            peersFlow.value = listOf(peer("sam", name = "Sam"))
+            messagesFlow.value =
+                listOf(
+                    meshcoreHeard("reply", "Bob").copy(
+                        body = "@[Knit 1a2b] ask @[Sam] too",
+                        mentions = MentionStore.encode(listOf(Mention("me", "[Knit 1a2b]"))),
+                    ),
+                    meshcoreHeard("plain", "Bob").copy(body = "@[Sam] are you there?"),
+                )
+            advanceUntilIdle()
+
+            val rows =
+                vm.state.value.rows
+                    .associateBy { it.id }
+            assertEquals(listOf(Mention("me", "[Knit 1a2b]")), rows.getValue("reply").mentions)
+            assertEquals(
+                "[@[Knit 1a2b]]",
+                mentionSpans(rows.getValue("reply").body, rows.getValue("reply").mentions)
+                    .map { rows.getValue("reply").body.substring(it.start, it.end) }
+                    .toString(),
+            )
+            assertTrue("a contact's name in a stranger's text is no mention", rows.getValue("plain").mentions.isEmpty())
         }
 
     /**

@@ -1794,7 +1794,13 @@ internal fun ChatScreenContent(
                                         // A staged position rides the body, so its bytes come off the same budget.
                                         ?.let { if (stagedLocation != null) (it - GeoUri.RESERVE_BYTES).coerceAtLeast(0) else it },
                                 loraHint = loraHintFor(state.loraCarry),
-                                maxBytes = state.publicPostBudget,
+                                // A MeshCore room reply's `@[name] ` prefix rides the same post, so it comes off the cap.
+                                maxBytes =
+                                    state.publicPostBudget?.let { budget ->
+                                        val quoted = replyingTo.takeIf { state.isMeshcoreRoom }
+                                        val prefix = meshcoreReplyPrefix(quoted, state.rows, state.meshcoreHandle?.text)
+                                        (budget - (prefix?.let(LoraSizeHint::utf8Length) ?: 0)).coerceAtLeast(0)
+                                    },
                                 // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
                                 // no on-device model can screen speech, so it is the one place unscreenable audio is not
                                 // offered. See docs/CONTENT_MODERATION.md.
@@ -1991,7 +1997,9 @@ internal fun ChatScreenContent(
                                                 onStartReply(
                                                     ReplyRef(
                                                         messageId = msg.id,
-                                                        authorId = msg.senderNodeId,
+                                                        // A heard post sits in our sender column by convention: never quoted
+                                                        // as ours. A bridged room's quote never leaves the phone.
+                                                        authorId = if (msg.origin != null) "" else msg.senderNodeId,
                                                         author = msg.senderPlainName,
                                                         // The rule a recipient holding the original rebuilds it by.
                                                         snippet =

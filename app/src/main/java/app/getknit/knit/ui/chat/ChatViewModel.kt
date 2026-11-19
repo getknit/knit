@@ -2670,10 +2670,16 @@ class ChatViewModel(
      * sends what they already wrote), then the board. Every refusal keeps the draft and says why, so a post
      * never silently goes nowhere — the failure the whole room is designed around.
      */
-    private fun postPublic(text: String) {
+    private fun postPublic(
+        typed: String,
+        replyTo: ReplyRef? = null,
+    ) {
         // One state for every check below and for the name the post carries: the consent decision and the handle it was
         // made under must be the same reading (ADR 2026-11.f4d3).
         val now = state.value
+        // A reply in the MeshCore room is MeshCore's own `@[name] ` ahead of the words (ADR 2026-11.gsqu's 2026-11-19
+        // amendment), counted, screened and posted with them; the Meshtastic room's posts carry no reply.
+        val text = meshcoreReplyPrefix(replyTo.takeIf { isMeshcoreRoom }, now.rows, now.meshcoreHandle?.text).orEmpty() + typed
         if (now.publicPostGate != PublicPostGate.Open) {
             _events.tryEmit(R.string.chat_mesh_post_not_connected)
             return
@@ -3065,9 +3071,9 @@ class ChatViewModel(
         if (state.value.commonsStale) return
         // The Meshtastic room is not addressed to anybody: no recipient, no group, no attachment, no reply.
         // `sendChat` would read that shape as the Nearby room and put the post there, so it has its own path
-        // to the board, with its own gate, disclosure and refusals.
+        // to the board, with its own gate, disclosure and refusals. The MeshCore room's reply goes in its own text form.
         if (isBridged) {
-            postPublic(trimmed)
+            postPublic(trimmed, replyTo)
             return
         }
         val body = bodyUnderCap(whole, staged) ?: return

@@ -2285,3 +2285,45 @@ Board trials owed: scenario 3 on two boards, a stock client deleting the contact
 phone's restart and the sender's re-probe (`lora reprobe <id> -> <peer>`, then `lora direct acked`); scenario 1 at range
 with a MeshCore repeater between two boards out of each other's direct range (`loraHearingsJudged` moving with no
 `lora direct heard` line until the boards meet).
+
+## Amendment 2026-11-19 — the MeshCore room's replies and mentions, in MeshCore's own form (draft)
+
+Before this, a reply in the MeshCore room showed its quote in the composer and then posted the words alone: the quote was
+dropped at `ChatViewModel.send`, and the strip named a heard author "You" (the row's sender column is ours by convention).
+A post that tagged the user's board was an ordinary low-importance room notification. MeshCore clients write both in plain
+text: a reply is the parent's sender name in brackets ahead of the text, `@[Name] body` (the companion apps' keyless form,
+which MeshCore Open, mesh-client and the hardened Android client all read), and a mention is the same `@[Name]` token
+anywhere in a post. There is no wire field to add: the token is the form.
+
+- **Out.** A reply in the MeshCore room posts `MeshcoreMentions.replyPrefix(name)` + the words, where the name is the
+  quoted row's as the thread holds it (`ui/chat/meshcoreReplyPrefix`): a heard post's own name, or the board's name now
+  (`MeshcoreHandle.text`) for one of ours. No prefix, and a plain post, for an unnamed post, one whose name the screen
+  hides, a row no longer loaded, or a name the token cannot carry (a bracket, a line break, more than 31 bytes). The prefix
+  is part of the post: screened with the words (`MeshManager.sendPublicPost`'s `isTextFlagged`), counted against the
+  room's cap by the same function in the composer (`maxBytes`) and in `postPublic`, stored in our row's body, and inside
+  the text the row id is derived from. The Meshtastic room is unchanged: its posts carry no reply. The strip names a
+  heard author by the post's name (`ReplyRef.authorId` empty for a row with an origin; a bridged room's quote never
+  leaves the phone).
+- **In.** `di/LoraWiring.meshcoreHeard` reads each judged post against the bound board's name as its face carries it at
+  delivery (`LoraStatus.meshcore.handle`) and puts the first token that names it, as written, on
+  `MeshcorePost.mentionedAs` (`MeshcoreMentions.mentionOf`: by `NameKey`, so case, a lookalike letter or an invisible
+  character still match; tokens of 1–31 bytes with no bracket or line break). `InboundPipeline.deliverMeshcorePost` binds
+  it to our id (`Mention(me, "[name]")`), so the row stores it and `notifyDelivered` routes it to the Mentions channel:
+  a heard post counts as somebody else's by its origin, not the sender test. `notifyMention` names, keys and pictures the
+  speaker exactly as the room's notification does (`heardSpeaker`, `shownOrigin`: `mc:` + the name's hash, claimed and
+  marked, no face; a hidden post's line names nobody). Nothing in `mesh/lora/` changed.
+- **The bubble.** Only the token bound to us draws as a mention: any other `@[name]` stays the stranger's plain text
+  (security review, 2026-11-19, blocking: a span in the mention style reads as a name the app resolved, and in this room
+  no name is ever resolved; it would have widened #247).
+
+**What it costs** (recorded, not built): a mention is a claim like the name, so anyone on the key can put a post on the
+Mentions channel, which alerts where the room's channel is `IMPORTANCE_LOW`; the air's duty limits how often, the user can
+quiet the channel or turn the room off, and nothing else is granted. A room whose own channel the user switched off in the
+system settings still alerts on a mention, on the Mentions channel: MeshCore's own "Mentions only" setting, kept on
+purpose (security review, non-blocking); to silence it too, quiet Mentions or turn the room off. A board renamed by another app is matched under its
+new name only once its face reads it. A reply is addressed by name, as every MeshCore client addresses one, so two
+speakers under one name are one addressee. There is no `@` autocomplete in the room yet, and an inbound reply is shown as
+its text, never rebuilt into a quote: which post it answers is the sender's claim, and a name names no post. Regression:
+`MeshcoreMentionsTest`, `LoraPlaneWiringTest`, `InboundPipelineTest`'s MeshCore mention cases, `ChatViewModelTest`'s
+MeshCore reply and token cases. Board trial owed: from a stock client, reply to a Knit post and tag the board's name in
+another; the phone alerts on the Mentions channel. From Knit, reply to the stock client's post; it shows as a reply there.

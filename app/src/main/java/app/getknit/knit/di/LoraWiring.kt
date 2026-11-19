@@ -14,6 +14,7 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshcoreBoardHolder
+import app.getknit.knit.mesh.MeshcoreMentions
 import app.getknit.knit.mesh.MeshcorePost
 import app.getknit.knit.mesh.PublicChannelAnswer
 import app.getknit.knit.mesh.PublicChannelSink
@@ -266,9 +267,22 @@ internal fun bindsMeshcoreDirect(kinds: List<BoardKind>): Boolean = BoardKind.ME
  */
 internal fun meshcoreRowId(key: PublicPostKey): String = FrameId.forMeshcorePost(key.timestampSecs, key.raw)
 
-/** A judged MeshCore Public post, carried across the seam as the room's own value ([MeshcorePost]), never the plane's. */
-internal fun meshcoreHeard(post: MeshcorePublicPost): MeshcorePost =
-    MeshcorePost(name = post.name, body = post.body, timestampSecs = post.key.timestampSecs, raw = post.key.raw)
+/**
+ * A judged MeshCore Public post, carried across the seam as the room's own value ([MeshcorePost]), never the plane's.
+ * [ownName] is the bound board's name as heard now, its owner's handle (ADR 2026-11.f4d3), or null while none is known: a
+ * `@[name]` token in the body that names it is the post's mention of the user (ADR 2026-11.gsqu's 2026-11-19 amendment).
+ */
+internal fun meshcoreHeard(
+    post: MeshcorePublicPost,
+    ownName: MeshcoreHandle? = null,
+): MeshcorePost =
+    MeshcorePost(
+        name = post.name,
+        body = post.body,
+        timestampSecs = post.key.timestampSecs,
+        raw = post.key.raw,
+        mentionedAs = MeshcoreMentions.mentionOf(post.body, ownName?.text),
+    )
 
 /**
  * The MeshCore room's outbound half (ADR 2026-11.gsqu's Stage 6 amendment, security N13): [body] goes to the MeshCore

@@ -252,6 +252,12 @@ class LoraPlaneWiringTest {
 
             val heard = meshcoreHeard(MeshcorePublicPost(name = "Knit 1a2b", body = "hi", key = key, live = true))
             assertEquals(MeshcorePost("Knit 1a2b", "hi", 1_763_200_000, "Knit 1a2b: hi".encodeToByteArray()), heard)
+            // A token naming the board's name as heard now is the post's mention of us, as written (the 2026-11-19
+            // amendment); none without a name known.
+            val tagged = MeshcorePublicPost(name = "Bob", body = "@[walter] hi", key = key, live = true)
+            assertEquals("walter", meshcoreHeard(tagged, MeshcoreHandle("Walter".encodeToByteArray())).mentionedAs)
+            assertNull(meshcoreHeard(tagged, MeshcoreHandle("Sam".encodeToByteArray())).mentionedAs)
+            assertNull(meshcoreHeard(tagged).mentionedAs)
 
             val ends =
                 meshcorePostEnds(
