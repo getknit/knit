@@ -280,6 +280,129 @@ class CustodyQuotaLabTest {
             assertTrue("the evicted DM is held nowhere", listOf(alice, bob, carol).none { d in it.custodyIds() })
         }
 
+    /**
+     * Three stores linked to each other all along, and Alice sending past her per-sender quota while they are. Carol's
+     * copies are held until Alice is done and then land newest first, so her store meets the frames in another order
+     * than Bob's and Alice's own. Every store still keeps exactly Alice's newest ten by the frame-global `(sentAt, id)`
+     * (store-and-forward.md, "Bounds"), and custody agrees with no seen window waited out: a key read off the local
+     * arrival, or a store keeping its first ten, leaves Carol holding Alice's oldest instead.
+     */
+    @Test
+    fun linkedStoresKeepASendersNewestWhateverOrderTheFramesCameIn() =
+        runBlocking {
+            val limits = LabLimits(custodyMaxPerSender = QUOTA)
+            val three = linkedThree(limits)
+            val (alice, bob) = three
+            val sent =
+                carolMeetsAliceNewestFirst(three) {
+                    (1..OVER_QUOTA).map { i ->
+                        assertTrue(alice.sendDm(bob, "dm $i"))
+                        alice.ownMessageId(alice.dmWith(bob), "dm $i")
+                    }
+                }
+            lab.await(OVER_QUOTA) { bob.decrypted(bob.dmWith(alice)).size }
+            lab.awaitCustodyParity(*three.toTypedArray())
+            for (node in three) {
+                val held = node.custodyIds().intersect(sent.toSet())
+                assertEquals("${node.name}'s copies of alice's DMs", sent.takeLast(QUOTA).toSet(), held)
+                assertEquals("${node.name} holds nothing else of alice's", QUOTA, node.custodiedFrom(alice.nodeId))
+            }
+            lab.assertConverged(listOf(alice, bob), atLeast = OVER_QUOTA, carriers = listOf(three[2])) {
+                it.dmWith(if (it === alice) bob else alice)
+            }
+        }
+
+    /**
+     * The mesh simulator's boot with a backlog: three friends linked to each other send their history one message at a
+     * time, each DMing the next and every fourth message a Nearby post, every one of them past its quota, and Carol
+     * meets Alice's frames newest first. A bucket holds more than its sender's messages: the sealed receipt each DM draws
+     * from its reader is the reader's frame, minted after the DM, so most of every bucket is receipts and most messages
+     * go, posts included. Every store keeps each sender's bucket full and its messages newest first, a suffix of what it
+     * sent, and custody agrees before they part.
+     */
+    @Test
+    fun linkedStoresAgreeWhenEverySenderIsOverQuota() =
+        runBlocking {
+            val three = linkedThree(LabLimits(custodyMaxPerSender = QUOTA))
+            // Each sender's messages in the order sent.
+            val sent = three.associateWith { mutableListOf<String>() }
+            carolMeetsAliceNewestFirst(three) {
+                for (i in 1..OVER_QUOTA) {
+                    for ((n, from) in three.withIndex()) {
+                        val body = "${from.name} $i"
+                        val room = i % ROOM_EVERY == 0
+                        val to = three[(n + 1) % 3]
+                        assertTrue(if (room) from.sendRoom(body) else from.sendDm(to, body))
+                        sent.getValue(from) += from.ownMessageId(if (room) Conversations.NEARBY else from.dmWith(to), body)
+                    }
+                }
+            }
+            val dms = OVER_QUOTA - OVER_QUOTA / ROOM_EVERY
+            for ((n, from) in three.withIndex()) {
+                val to = three[(n + 1) % 3]
+                lab.await(dms) { to.decrypted(to.dmWith(from)).size }
+            }
+            lab.awaitCustodyParity(*three.toTypedArray())
+            for (node in three) {
+                val held = node.custodyIds()
+                for ((from, ids) in sent) {
+                    val kept = ids.filter { it in held }
+                    assertEquals("${node.name} kept an older message of ${from.name}'s over a newer", ids.takeLast(kept.size), kept)
+                    assertEquals("${node.name}'s bucket for ${from.name}", QUOTA, node.custodiedFrom(from.nodeId))
+                }
+            }
+            // Where a reader's receipts fall among its own sends is its router's to decide, so the loop may leave Alice's
+            // bucket all receipts. Two more DMs from her, with nobody writing to her any more, are newer than any frame of
+            // hers: every store holds them, so the suffix above was read over a bucket her messages reach.
+            val (alice, bob) = three
+            val last =
+                (1..2).map { i ->
+                    assertTrue(alice.sendDm(bob, "alice after $i"))
+                    alice.ownMessageId(alice.dmWith(bob), "alice after $i")
+                }
+            lab.awaitCustodyParity(*three.toTypedArray())
+            for (node in three) {
+                val held = node.custodyIds()
+                assertTrue("${node.name} lacks alice's last DMs ${last - held}; holds ${held.sorted()}", held.containsAll(last))
+            }
+            for ((n, from) in three.withIndex()) {
+                val to = three[(n + 1) % 3]
+                val atLeast = if (from === alice) dms + last.size else dms
+                lab.assertConverged(listOf(from, to), atLeast = atLeast, carriers = three - setOf(from, to)) {
+                    it.dmWith(if (it === from) to else from)
+                }
+            }
+            lab.assertConverged(three, atLeast = 3 * (OVER_QUOTA / ROOM_EVERY)) { Conversations.NEARBY }
+        }
+
+    /**
+     * Runs [sends] with everything Alice and Bob send Carol held, then lands Alice's batch on her newest first and Bob's
+     * (his own frames, and his relays of Alice's) after it as sent: Carol's store meets Alice's frames in the reverse
+     * of the order the other two did. Returns what [sends] returned.
+     */
+    private suspend fun <T> carolMeetsAliceNewestFirst(
+        three: List<LabNode>,
+        sends: suspend () -> T,
+    ): T {
+        val (alice, bob, carol) = three
+        alice.transport.hold(carol.transport)
+        bob.transport.hold(carol.transport)
+        val result = sends()
+        alice.transport.release(carol.transport, reorder = { it.reversed() })
+        bob.transport.release(carol.transport)
+        return result
+    }
+
+    /** Alice, Bob and Carol, each linked to both others, acquainted and friends. */
+    private suspend fun linkedThree(limits: LabLimits): List<LabNode> {
+        val three = listOf("alice", "bob", "carol").map { lab.node(it, limits).apply { setDisplayName(it) } }
+        val (alice, bob, carol) = three
+        lab.linkAll(alice to bob, bob to carol, alice to carol)
+        lab.awaitAcquainted(alice, bob, carol)
+        lab.befriend(alice, bob, carol)
+        return three
+    }
+
     /** Frames [this] handed [to] under [id], each line "#seq <receiver> <type> <id> …" one delivered write. */
     private fun LabNode.copiesTo(
         to: LabNode,
@@ -384,4 +507,13 @@ class CustodyQuotaLabTest {
         bob: LabNode,
         carol: LabNode,
     ) = bob.transport.connect(carol.transport, lossy = { it.hops > 0 })
+
+    private companion object {
+        // A per-sender quota a scenario fills in seconds, and five messages past it.
+        const val QUOTA = 10
+        const val OVER_QUOTA = 15
+
+        // One message in four a Nearby post, about the simulator's mix at a 60 s DM gap and a 180 s room gap.
+        const val ROOM_EVERY = 4
+    }
 }

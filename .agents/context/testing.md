@@ -1225,6 +1225,24 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
     party's history (`custody_rows_at_walk_*`).
   - **Custody:** group posts are a class of their own in the custody lines. They are never acked, so only the 24 h TTL,
     the per-group quota (200) and the cap take them out.
+  - **The boot waits out the backlog's airtime** (`MeshSim.BACKLOG_SETTLE_MS`, 125 ms a message and other member). Over
+    `ble1m`'s 9 KB/s links a three's 900 messages take about 32 s to agree, past the lab's 30 s await: a fixed wait
+    failed the boot at a backlog of 100. Linked stores over their quotas do agree, one of them meeting the frames
+    newest first (`CustodyQuotaLabTest.linkedStoresKeepASendersNewestWhateverOrderTheFramesCameIn`).
+- **What the workload sweeps found** (2026-11-18, 48 walkers, `motion=park groups=street friends=circles`, `ble1m`,
+  the phone queue, seed 1 unless named; reports in `/media/walter/data/knit-sim/workload/`):
+  - **Rate barely matters on a 10-minute park walk.** At DM gaps of 20, 60, 180, 600 and 1,800 s (room 3×, seeds 1–3),
+    DMs in the run stay 24–48% and partitioned ones 0–21% at every rate: the walk's length and topology bound
+    delivery, not custody. Only seed 1 at 20 s reached the cap (7 of 48 stores at 480 s); mean rows grow about 60 a
+    minute there, and 68–81 rows are a floor of profiles, intros and receipts. The walk uses 0.06–0.27 cores.
+  - **A ring gather fills every store.** At a 60 s DM gap the walk-only run stays under the cap, but the gather's
+    merged field does not: 45 of 48 stores at the cap a minute in, parity 289 s after it (pass).
+  - **Group chats deliver but never settle.** Posts every 60 s: 100% reached their members by the end, yet the
+    field held 1,011 live ids against the 1,000-row cap, so the stores keep different sets for good (`unsettled`).
+  - **A backlog starts the walk full.** 100 or 300 messages each: 346–1,000 rows at the walk's start, 46 of 48 stores
+    at the cap a minute in, the backlog 98–99% of custody and the walk 1.2–1.3 cores. DMs fare as without one (31% in
+    the run, none lost for good), but a few partitioned ones miss the gather's 180 s and arrive in the settle, which
+    the verdict counts as stranded, and 1,344–1,410 live ids never settle.
 - **What it leaves out.** One plane, no path loss and none of the transports' own dial policies: `LabTransport` stands
   in for the whole radio, so the topology is the geometry's (and, under `ble1m`, a nearest-first budget's), not what
   Bluetooth or Wi-Fi Aware would have formed. `disc` has no link budget; `ble1m`'s is a measured rate, not yet a

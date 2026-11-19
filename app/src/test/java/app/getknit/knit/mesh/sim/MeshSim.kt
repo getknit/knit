@@ -399,6 +399,10 @@ class MeshSim(
             val history = members.flatMap { backlog[it].orEmpty() }
             if (history.isNotEmpty()) {
                 history.forEach { if (!sendBacklog(nodes, chats, it)) refused.incrementAndGet() }
+                // The airtime the backlog takes first, then the lab's own check, which fails with every store's listing.
+                lab.tryAwait(1, history.size * (members.size - 1) * BACKLOG_SETTLE_MS) {
+                    if (friends.map { it.custodyFingerprint() }.toSet().size == 1) 1 else 0
+                }
                 lab.awaitCustodyParity(*friends)
             }
             pairs(members).filterNot { it in radio.links }.map(::ends).forEach { (a, b) -> a.transport.disconnect(b.transport) }
@@ -836,6 +840,15 @@ class MeshSim(
         const val GATHER_POLL_MS = 1_000L
 
         const val HELD_POLL_MS = 250L
+
+        /**
+         * How long a party's stores may take to agree on its backlog, per message sent and other member it reaches: what
+         * the airtime needs, with headroom. Measured on threes: three walkers' 900 messages, and the receipts they draw,
+         * settled in 32 s on `ble1m`'s 9 KB/s links, past the lab's 30 s await, so a fixed wait failed the 48-walker
+         * park's boot at a backlog of 100 and of 300. A whole circle's party sends each group post to more members and
+         * draws more receipts, which the member count scales in; past it the lab's own check still fails the boot.
+         */
+        const val BACKLOG_SETTLE_MS = 125L
 
         /** Every store read once a minute: a 33-minute outing reports in about 33 lines. */
         const val CUSTODY_POLL_MS = 60_000L
