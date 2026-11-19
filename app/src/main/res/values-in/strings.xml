@@ -805,9 +805,9 @@
     <string name="settings_bt_download_title">Tanya sebelum unduhan Bluetooth besar</string>
     <string name="settings_bt_download_subtitle">File besar terunduh sendiri lewat Wi-Fi Aware. Di atas ukuran ini, file yang hanya bisa dibawa Bluetooth menunggu ketukan Anda, karena itu bisa memakan waktu beberapa menit.</string>
     <string name="settings_bt_download_subtitle_bluetooth_only">Di atas ukuran ini, lampiran menunggu ketukan Anda sebelum Bluetooth membawanya, karena itu bisa memakan waktu beberapa menit.</string>
-    <string name="settings_bt_download_never">Tidak</string>
-    <string name="settings_bt_download_1mb">&gt; 1 MB</string>
-    <string name="settings_bt_download_5mb">&gt; 5 MB</string>
+    <string name="settings_bt_download_never">Tidak pernah</string>
+    <string name="settings_bt_download_1mb">Di atas 1 MB</string>
+    <string name="settings_bt_download_5mb">Di atas 5 MB</string>
     <string name="settings_dynamic_color_title">Warna dinamis</string>
     <string name="settings_dynamic_color_subtitle">Warnai Knit dari wallpaper Anda dengan Material You. Jika nonaktif, Knit memakai warna bawaannya.</string>
     <string name="settings_link_previews_title">Pratinjau tautan</string>

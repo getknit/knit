@@ -61,6 +61,9 @@ fun DraftTranslateLine(
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val hint = ui.hint
     val from = ui.translatedFrom
+    val icon: @Composable () -> Unit = {
+        Icon(Icons.Filled.Translate, contentDescription = null, modifier = Modifier.size(16.dp), tint = muted)
+    }
     val line: (@Composable RowScope.() -> Unit)? =
         when {
             from != null -> {
@@ -69,12 +72,15 @@ fun DraftTranslateLine(
                     // never reads as undoing the question. Both are links, as in the bubble, so the three fit one line on
                     // a phone. A larger font or a longer translation breaks the line by whole items, and Undo, weighted
                     // into what its row leaves, stays at the end of whichever row it lands on: beside the question when
-                    // the label takes a row alone, so the two touch targets share one.
+                    // the label takes a row alone, so the two touch targets share one. The icon is the flow's
+                    // first item, as in the bubble's TranslationToggle, so it stays beside the label on the first
+                    // row: beside the whole flow, it would centre between the rows once the line breaks.
                     FlowRow(
                         modifier = Modifier.weight(1f),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         itemVerticalAlignment = Alignment.CenterVertically,
                     ) {
+                        icon()
                         Text(
                             stringResource(R.string.translate_label, languageName(from)),
                             style = MaterialTheme.typography.labelMedium,
@@ -152,7 +158,8 @@ fun DraftTranslateLine(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Icon(Icons.Filled.Translate, contentDescription = null, modifier = Modifier.size(16.dp), tint = muted)
+        // The translated line draws the icon inside its own flow (above).
+        if (from == null) icon()
         line()
     }
 }

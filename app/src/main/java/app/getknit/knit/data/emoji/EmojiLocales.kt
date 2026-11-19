@@ -35,6 +35,7 @@ object EmojiLocales {
             "UY",
             "VE",
         )
+
     /**
      * The ISO 639 codes java.util.Locale may still hand back (Android's `Locale.getLanguage()` says `in` for
      * Indonesian, `iw` for Hebrew, `ji` for Yiddish), mapped to the current codes the overlays are tagged with.
