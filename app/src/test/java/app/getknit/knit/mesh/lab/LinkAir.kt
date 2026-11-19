@@ -9,11 +9,14 @@ import java.util.concurrent.atomic.AtomicLongArray
  * writer per direction airs the queue in order: a record waits for its bytes at [bytesPerSecond], and for its share of
  * both ends' radios ([NodeAir]), before the far end has it.
  *
- * - **Frames and custody digests are aired; files are not yet.** A file on an air link lands as on any lab link, at once:
- *   no outing the simulator runs sends one.
+ * - **Frames, custody digests and files are aired**, in one queue a direction as a link's one stream carries them: a file
+ *   waits for its bytes like a frame, a frame queued behind it waits for the file, and the receiver's stack has the file
+ *   whole once its last byte is in. A held or streamed pipe ([LabTransport.hold], an intake stream) keeps its own path.
  * - **Nothing is lost on the way.** An L2CAP link is reliable: a weak link is a slow one or a dropped one, and both are the
  *   radio's to say. A link cut with records still queued loses them, as a torn-down `FramedLink` does
- *   ([LabTransport.aired] counts them), and a relink re-serves what custody holds.
+ *   ([LabTransport.aired] counts them), and a relink re-serves what custody holds. A file cut mid-air is lost whole
+ *   ([AirStats.filesCut]) and asked for again from the start: the partial-blob resume a phone's link keeps is not modelled,
+ *   so a long file across short contacts fares worse here than on a phone.
  * - **Time is the monotonic clock** (`System.nanoTime`), never the lab's jumpable calendar: airtime schedules a delivery,
  *   it decides nothing, and a calendar jump must not stretch it.
  * - **A send no longer means the far end has it.** [LabTransport.awaitInboundDrained] waits out what is on the air toward a
@@ -24,6 +27,11 @@ data class LinkAir(
     val bytesPerSecond: Long,
     /** What a record costs beyond its bytes: `LinkFraming`'s `[type][len32]` header. A sealed door's tag is not charged. */
     val recordOverheadBytes: Int = RECORD_HEADER_BYTES,
+    /**
+     * Whether its records take a share of each end's radio ([NodeAir]): a Bluetooth link's do, all of a phone's links
+     * served from one controller; a Wi-Fi Aware data path's ride a radio of their own and do not.
+     */
+    val sharesNodeAir: Boolean = true,
 ) {
     init {
         require(bytesPerSecond > 0) { "a link airs at a positive rate: $bytesPerSecond" }
@@ -110,6 +118,9 @@ class AirStats {
     val bytes = AtomicLong()
     val records = AtomicLong()
     val cut = AtomicLong()
+
+    /** The files among [cut]: queued or airing when their link went down, so the receiver never had them. */
+    val filesCut = AtomicLong()
     val refused = AtomicLong()
 
     // Every [peaksFromNow] asked so far, each noting from its own start.

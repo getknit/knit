@@ -826,7 +826,12 @@ android {
                 // `knit.meshSimLatp` and `knit.meshSimExcursions` shape `motion=park`'s visitors; `knit.meshSimDmSeconds`,
                 // `knit.meshSimRoomSeconds` and `knit.meshSimGroupSeconds` the mean gaps between one walker's DMs, room
                 // posts and group-chat posts (20, 60 and none unless set), `knit.meshSimBacklog` the messages each walker
-                // sent before the outing (none unless set); `knit.meshSimTrace` a
+                // sent before the outing (none unless set); `knit.meshSimRangeM` and `knit.meshSimDropM` the metres a link
+                // is dialled and held to (25 and 35 unless set; the drop is 1.4 times the range when only the range is);
+                // `knit.meshSimPairs`, `knit.meshSimSpeed`, `knit.meshSimLateralM`, `knit.meshSimPassDms`,
+                // `knit.meshSimPassPictures` and `knit.meshSimPictureKb` shape PassBySimTest's sidewalk;
+                // `knit.meshSimNanRangeM`, `knit.meshSimNanFail` and `knit.meshSimNanDiscoverMs` the `ble1m+nan` radio's
+                // Aware reach, failed data paths and discovery median; `knit.meshSimTrace` a
                 // `.movements` file FieldSimTest replays. `knit.meshSimOut` (an absolute directory) and `knit.meshSimTag` say where the
                 // report goes and what its name ends in. An outing is a measurement, so it runs every time it is asked:
                 // never up to date, never from the cache.
@@ -855,6 +860,17 @@ android {
                             "knit.meshSimRoomSeconds",
                             "knit.meshSimGroupSeconds",
                             "knit.meshSimBacklog",
+                            "knit.meshSimRangeM",
+                            "knit.meshSimDropM",
+                            "knit.meshSimPairs",
+                            "knit.meshSimSpeed",
+                            "knit.meshSimLateralM",
+                            "knit.meshSimPassDms",
+                            "knit.meshSimPassPictures",
+                            "knit.meshSimPictureKb",
+                            "knit.meshSimNanRangeM",
+                            "knit.meshSimNanFail",
+                            "knit.meshSimNanDiscoverMs",
                         )
                     (sizes + shapes + listOf("knit.meshSimOut", "knit.meshSimTag")).forEach { key ->
                         providers.gradleProperty(key).orNull?.let { test.systemProperty(key, it) }

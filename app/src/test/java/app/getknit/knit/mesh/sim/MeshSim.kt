@@ -46,6 +46,12 @@ data class SimScenario(
     val connectM: Double = 25.0,
     val dropM: Double = 35.0,
     val dialMs: Long = 2_000,
+    /** Under `ble1m+nan`: the metres Wi-Fi Aware finds a peer within ([NanRadio]); [connectM] when null. */
+    val nanRangeM: Double? = null,
+    /** Under `ble1m+nan`: the share of Aware data paths that never come up ([NanRadio.FAIL_SHARE] when null). */
+    val nanFailShare: Double? = null,
+    /** Under `ble1m+nan`: the median ms Wi-Fi Aware takes to find a peer in reach ([NanRadio.DISCOVER_MEDIAN_MS] when null). */
+    val nanDiscoverMs: Long? = null,
     val tickMs: Long = 500,
     /** The mean gap between one walker's DMs ([Workload]); 0 sends none. */
     val dmMeanMs: Long = 20_000,
@@ -484,8 +490,7 @@ class MeshSim(
         val positions = nodes.indices.map { mobility.position(it, atMs) }
         val present = BooleanArray(nodes.size) { mobility.present(it, atMs) }
         val changes = radio.step(atMs, positions, present)
-        changes.dropped.map(::ends).forEach { (a, b) -> a.transport.disconnect(b.transport) }
-        changes.raised.map(::ends).forEach { (a, b) -> lab.link(a, b, air = radio.air) }
+        lab.applyLinks(changes, nodes::get, radio)
         // The field is measured over the walk; a walking gather's walk-in is the gather's, not the walk's.
         if (atMs <= scenario.durationMs) field.record(atMs, positions, present, changes, radio.links)
         // Robolectric keeps every log line of the test: a long run would measure that, not the stacks.

@@ -51,6 +51,29 @@ internal object SimProperties {
     /** Messages each walker sends before the outing, as the boot links its party ([SimScenario.backlog]); none when unset. */
     const val BACKLOG = "knit.meshSimBacklog"
 
+    /** The metres a link is dialled within ([SimScenario.connectM]); 25 when unset. */
+    const val RANGE = "knit.meshSimRangeM"
+
+    /** The metres a link holds to ([SimScenario.dropM]); [DROP_PER_RANGE] times [RANGE] when only that is set, else 35. */
+    const val DROP = "knit.meshSimDropM"
+
+    /** [PassBySimTest]'s sidewalk ([PassByScenario]): pairs, speed, the sidewalk's width, and what each walker brings. */
+    const val PAIRS = "knit.meshSimPairs"
+    const val SPEED = "knit.meshSimSpeed"
+    const val LATERAL = "knit.meshSimLateralM"
+    const val PASS_DMS = "knit.meshSimPassDms"
+    const val PASS_PICTURES = "knit.meshSimPassPictures"
+    const val PICTURE_KB = "knit.meshSimPictureKb"
+
+    /** Under `ble1m+nan`: the metres Wi-Fi Aware finds a peer within ([NanRadio]); the Bluetooth range when unset. */
+    const val NAN_RANGE = "knit.meshSimNanRangeM"
+
+    /** Under `ble1m+nan`: the share of Aware data paths that never form ([NanRadio.FAIL_SHARE] when unset). */
+    const val NAN_FAIL = "knit.meshSimNanFail"
+
+    /** Under `ble1m+nan`: the median ms Wi-Fi Aware takes to find a peer ([NanRadio.DISCOVER_MEDIAN_MS] when unset). */
+    const val NAN_DISCOVER = "knit.meshSimNanDiscoverMs"
+
     /** Which [Radio] makes the links ([Radio.NAMES]); `disc` when unset. */
     const val RADIO = "knit.meshSimRadio"
 
@@ -74,6 +97,9 @@ internal object SimProperties {
 
     /** A word the report's file name ends in: the build or the radio a run measured, to tell two runs apart. */
     const val TAG = "knit.meshSimTag"
+
+    /** A link holds this much further than it is dialled, when only [RANGE] is set: today's 35 m over 25 m. */
+    const val DROP_PER_RANGE = 1.4
     const val DEFAULT_WALKERS = 12
     const val DEFAULT_MINUTES = 4
     const val MS_PER_MINUTE = 60_000L
@@ -121,7 +147,47 @@ internal object SimProperties {
         groups = System.getProperty(GROUPS) ?: GroupSizes.FIXED,
         friends = System.getProperty(FRIENDS) ?: Friends.Group.name,
         awayShare = System.getProperty(AWAY_SHARE)?.toDouble() ?: Friends.Circle.DEFAULT_AWAY_SHARE,
-    ).let(::withPark).let(::withWorkload)
+    ).let(::withPark).let(::withWorkload).let(::withRange)
+
+    /**
+     * The sidewalk the properties name ([PassBySimTest]). Its range defaults to [PassByScenario.DEFAULT_RANGE_M], a phone
+     * in a pocket, not the outing's 25 m, and its radio to `ble1m`; [RANGE], [DROP] and [RADIO] set them as for an outing.
+     */
+    fun passBy(seed: Long): PassByScenario {
+        val defaults = PassByScenario(seed)
+        val range = System.getProperty(RANGE)?.toDouble() ?: defaults.connectM
+        return defaults.copy(
+            pairs = System.getProperty(PAIRS)?.toInt() ?: defaults.pairs,
+            speedMps = System.getProperty(SPEED)?.toDouble() ?: defaults.speedMps,
+            lateralM = System.getProperty(LATERAL)?.toDouble() ?: defaults.lateralM,
+            dms = System.getProperty(PASS_DMS)?.toInt() ?: defaults.dms,
+            pictures = System.getProperty(PASS_PICTURES)?.toInt() ?: defaults.pictures,
+            pictureBytes = System.getProperty(PICTURE_KB)?.let { it.toInt() * PassByScenario.BYTES_PER_KB } ?: defaults.pictureBytes,
+            radio = System.getProperty(RADIO) ?: defaults.radio,
+            connectM = range,
+            dropM = System.getProperty(DROP)?.toDouble() ?: (range * DROP_PER_RANGE),
+            nanRangeM = System.getProperty(NAN_RANGE)?.toDouble(),
+            nanFailShare = System.getProperty(NAN_FAIL)?.toDouble(),
+            nanDiscoverMs = System.getProperty(NAN_DISCOVER)?.toLong(),
+        )
+    }
+
+    /** [scenario] with the range [RANGE] and [DROP] set, as [scenario] applies them; its own when neither is. */
+    fun withRange(
+        scenario: SimScenario,
+        rangeM: Double? = System.getProperty(RANGE)?.toDouble(),
+        dropM: Double? = System.getProperty(DROP)?.toDouble(),
+    ): SimScenario {
+        val connect = rangeM ?: scenario.connectM
+        val drop = dropM ?: if (rangeM != null) rangeM * DROP_PER_RANGE else scenario.dropM
+        return scenario.copy(
+            connectM = connect,
+            dropM = drop,
+            nanRangeM = System.getProperty(NAN_RANGE)?.toDouble() ?: scenario.nanRangeM,
+            nanFailShare = System.getProperty(NAN_FAIL)?.toDouble() ?: scenario.nanFailShare,
+            nanDiscoverMs = System.getProperty(NAN_DISCOVER)?.toLong() ?: scenario.nanDiscoverMs,
+        )
+    }
 
     // The park's visitors, as the properties shape them.
     private fun withPark(scenario: SimScenario) =

@@ -1247,10 +1247,48 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
     the run, none lost for good), but a few partitioned ones miss the gather's 180 s and arrive in the settle, which
     then read as stranded. The verdict now judges what the settle left missing, so these outings fail only on
     `unsettled`: 1,344–1,410 live ids, not settled within the 10-minute settle (a longer one not yet run).
-- **What it leaves out.** One plane, no path loss and none of the transports' own dial policies: `LabTransport` stands
-  in for the whole radio, so the topology is the geometry's (and, under `ble1m`, a nearest-first budget's), not what
-  Bluetooth or Wi-Fi Aware would have formed. `disc` has no link budget; `ble1m`'s is a measured rate, not yet a
-  function of distance, and it airs no files. Walkers move in an open square, alone or in groups that never part: no
+- **A sidewalk pass-by** (`PassBy`, `PassBySim`, `PassBySimTest`, 2026-11-19). Pairs on lanes of their own walk past
+  each other from out of reach, each walker bringing `knit.meshSimPassDms` DMs and `knit.meshSimPassPictures` photos
+  (half for the walker it passes, half for a contact at home it carries for). A pass converges when each holds what the
+  other brought for it, and carries what the other brought for its home, within a tick of the drop.
+  - **The knobs:**
+    - `knit.meshSimRangeM` and `knit.meshSimDropM` set any run's range; the drop is 1.4 × range when unset, and 25/35
+      stays the outings' default. The pass-by defaults to 15 m, a phone in a pocket.
+    - Also `knit.meshSimPairs`, `…Speed` (1.3 m/s), `…LateralM` and `…PictureKb` (200).
+  - **Files are aired** (`LinkAir`, phase 2): a photo queues on the link's one stream at its rate, and a cut loses it
+    whole. Partial-blob resume is not modelled, so this errs slow.
+  - **`ble1m+nan`** (`NanRadio`) is Bluetooth as `ble1m` with a Wi-Fi Aware data path beside it.
+    - Discovery is log-normal around `knit.meshSimNanDiscoverMs` (4 s, screen off). The data path comes up 0.7–1.3 s
+      later, or never at `knit.meshSimNanFail` (0.1, a guess). It runs at 1 MB/s on its own radio and lasts at most
+      30 s.
+    - While Aware sees the peer with no path up, a holder of a photo of 128 KiB or more waits up to 10 s for it
+      (`LabTransport.armFile`, as the composite arms).
+    - Aware's range was never measured: `knit.meshSimNanRangeM` defaults to Bluetooth's.
+  - **What it found** (15 m, 1.3 m/s, 20 DMs each, seeds 1–3, 20 pairs a run, so 60 passes a setting;
+    `/media/walter/data/knit-sim/passby/`):
+
+    | Radio | What each brings | Converged in range | Text alone in range | Dial p50 |
+    | --- | --- | --- | --- | --- |
+    | `ble1m` | DMs only | 53/60 (88%) | 88% | 4.0–4.5 s |
+    | `ble1m` | 5 photos | 0/20 (seed 1, before the clock fix) | not measured | 4.0 s |
+    | `ble1m+nan`, 4 s discovery | 5 photos | 38/60 (63%; 75, 75, 40) | 100% | 3.5–4.0 s |
+    | `ble1m+nan`, 1 s discovery | 5 photos | 55/60 (92%; 95, 95, 85) | 100% | 2.0–2.5 s |
+
+    - **Text over Bluetooth is decided by the dial.** Every failure there never linked: its dial outlasted about 10 s
+      in range. Once linked, text crossed by 1.5 s at p90.
+    - **Photos need Aware, and need it before Bluetooth's link.** The passes that fall short are those where
+      Bluetooth linked before Aware found the peer, or Aware never came up. Then the first photo asked for goes over
+      Bluetooth, about 22 s for 200 KB, and the link drops first.
+      - In the lab the photos behind it also wait behind it on the pair's one pipe. On a phone they would go over
+        Aware beside it, but the one on Bluetooth still misses the pass.
+      - Faster discovery (a screen on) moves the share from 63% to 92%.
+    - **The field said always**, with Aware on, at 1.3 m/s, about 20 messages and 5 photos each. That fits the 1 s run
+      better than the 4 s one, so the 4 s screen-off median is the draw to doubt first.
+- **What it leaves out.** One link a pair, no path loss and none of the transports' own dial policies: `LabTransport`
+  stands in for the whole radio, so the topology is the geometry's (and, under `ble1m`, a nearest-first budget's), not
+  what Bluetooth or Wi-Fi Aware would have formed. `ble1m+nan` carries both planes on one pipe at the faster rate, so a
+  file already on Bluetooth holds up the ones behind it. `disc` has no link budget, and `ble1m`'s is a measured rate,
+  not yet a function of distance. Walkers move in an open square, alone or in groups that never part: no
   paths, arrivals, crowds or transit yet.
 
 ## JVM Room/DAO + migration tests (Robolectric)

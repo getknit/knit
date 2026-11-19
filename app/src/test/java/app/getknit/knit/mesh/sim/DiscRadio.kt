@@ -1,5 +1,7 @@
 package app.getknit.knit.mesh.sim
 
+import app.getknit.knit.mesh.BulkRoute
+
 /** A link between two walkers, by index, the lower one first. */
 data class Link(
     val a: Int,
@@ -21,6 +23,10 @@ data class Link(
 data class LinkChanges(
     val raised: List<Link>,
     val dropped: List<Link>,
+    /** Links that stayed up and moved to another rate ([Radio.airOf]): a fast plane coming up beside them or going. */
+    val rerated: List<Link> = emptyList(),
+    /** How a file between a pair would now go ([BulkRoute]), for the pairs whose answer changed this step. */
+    val routes: Map<Link, BulkRoute> = emptyMap(),
 )
 
 /**

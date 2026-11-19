@@ -17,6 +17,9 @@ interface Radio {
     /** The airtime of every link this radio raises ([LinkAir]), or null for links that deliver as they send. */
     val air: LinkAir? get() = null
 
+    /** [link]'s airtime now: [air], unless the radio carries some links on a plane of their own ([NanRadio]). */
+    fun airOf(link: Link): LinkAir? = air
+
     /** Each node's radio, shared by its air links both ways ([app.getknit.knit.mesh.lab.NodeAir]), or null for none. */
     val nodeAirBytesPerSecond: Long? get() = null
 
@@ -38,7 +41,7 @@ interface Radio {
 
     companion object {
         /** Every radio [of] builds, by name. */
-        val NAMES = listOf(DiscRadio.NAME, BleRadio.NAME, BleRadio.SLOW_NAME)
+        val NAMES = listOf(DiscRadio.NAME, BleRadio.NAME, BleRadio.SLOW_NAME, NanRadio.NAME)
 
         /** The radio [scenario] names, with [initial] links up before its first step (the groups that arrived together). */
         fun of(
@@ -63,6 +66,18 @@ interface Radio {
                         linkBytesPerSecond = BleRadio.SLOW_LINK_BYTES_PER_S,
                         nodeBytesPerSecond = BleRadio.SLOW_NODE_BYTES_PER_S,
                         name = BleRadio.SLOW_NAME,
+                    )
+                }
+
+                NanRadio.NAME -> {
+                    NanRadio(
+                        seed = scenario.seed,
+                        connectM = scenario.connectM,
+                        dropM = scenario.dropM,
+                        initial = initial,
+                        nanRangeM = scenario.nanRangeM ?: scenario.connectM,
+                        failShare = scenario.nanFailShare ?: NanRadio.FAIL_SHARE,
+                        discoverMedianMs = scenario.nanDiscoverMs ?: NanRadio.DISCOVER_MEDIAN_MS,
                     )
                 }
 

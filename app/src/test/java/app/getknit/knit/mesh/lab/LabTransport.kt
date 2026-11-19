@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.mesh.ArrivingFile
 import app.getknit.knit.mesh.BulkRoute
+import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.FileFeed
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
@@ -361,7 +362,9 @@ class LabTransport(
         val heldFiles = mutableListOf<HeldFile>()
 
         // This direction's airtime ([LinkAir]), or null for a link with none, as every lab link had before: then nothing
-        // below is used. Set before the pipe is published, never after.
+        // below is used. Set before the pipe is published; on an air pipe [setAir] may change its rate after, which the
+        // writer reads record by record, so a record already airing keeps the slot it was given.
+        @Volatile
         var air: LinkAir? = null
 
         // Under [airLock]: the queue the writer airs, the record it holds while its bytes air ([inHand], where a cut still
@@ -399,6 +402,8 @@ class LabTransport(
         val seq: Long,
         val queuedAtNanos: Long,
         var bytes: Long,
+        // A file the receiver's stack gets whole once its bytes have aired ([enqueueFile]); null for a frame or a digest.
+        val file: ReceivedFile? = null,
     ) {
         var ids: List<String> = emptyList()
     }
@@ -782,6 +787,9 @@ class LabTransport(
     /** Whether this node's link to [other] has airtime. */
     fun airLinkTo(other: LabTransport): Boolean = pipes[other.nodeId]?.air != null
 
+    /** The rate this node's records to [other] air at now ([setAir] may have moved it), or null for no air link. */
+    fun airRateTo(other: LabTransport): Long? = pipes[other.nodeId]?.air?.bytesPerSecond
+
     /** Whether this node has a link to [other] now, with airtime or without. */
     fun linkedTo(other: LabTransport): Boolean = pipes.containsKey(other.nodeId)
 
@@ -983,14 +991,20 @@ class LabTransport(
     /** A linked sender's file streaming in to this node: one parked toward us with its header across. */
     override fun fileArrivingFrom(nodeId: String): Boolean {
         val toMe = pipes[nodeId]?.target?.pipes?.get(this.nodeId) ?: return false
-        return synchronized(toMe.heldFiles) { toMe.heldFiles.any { it.arriving != null } }
+        return synchronized(toMe.heldFiles) { toMe.heldFiles.any { it.arriving != null } } ||
+            synchronized(toMe.airLock) { toMe.inHand?.file != null }
     }
 
     /** Queued on the link: a file parked toward [nodeId] under [key]. An unheld lab file lands at once. */
     override fun fileInFlightTo(
         nodeId: String,
         key: String,
-    ): Boolean = pipes[nodeId]?.let { p -> synchronized(p.heldFiles) { p.heldFiles.any { it.key == key && it.inFlight } } } ?: false
+    ): Boolean =
+        pipes[nodeId]?.let { p ->
+            "$nodeId|$key" in armedFiles ||
+                synchronized(p.heldFiles) { p.heldFiles.any { it.key == key && it.inFlight } } ||
+                synchronized(p.airLock) { (p.airQueue + listOfNotNull(p.inHand)).any { it.file?.key == key } }
+        } ?: false
 
     /**
      * The lab's clock, for [crossings]' window and for how long a held pipe's feed has gone unfed ([fileFeed]); [MeshLab]
@@ -1436,9 +1450,114 @@ class LabTransport(
         val staged = File(target.stagingDir.apply { mkdirs() }, "${meta.key}-${UUID.randomUUID()}")
         file.copyTo(staged, overwrite = true)
         val received = ReceivedFile(nodeId, staged.absolutePath, meta.kind, meta.key, meta.mime)
+        if (arms(pipe, to.nodeId, staged.length(), meta)) return armFile(to.nodeId, received, meta)
+        return land(pipe, received)
+    }
+
+    // Whether a file to [peer] waits for the fast plane first ([armFile]): on an air link the fast plane sees [peer] on
+    // but holds no link to, a fast-only copy whatever its size, else one of `BULK_MIN_BYTES` or more, as the composite arms.
+    private fun arms(
+        pipe: Pipe,
+        peer: String,
+        bytes: Long,
+        meta: FileMeta,
+    ): Boolean =
+        pipe.air != null &&
+            bulkRoutes[peer] == BulkRoute.Reachable &&
+            (meta.fastOnly || bytes >= CompositeMeshTransport.BULK_MIN_BYTES)
+
+    // [received] over [pipe] as a pipe takes a file: parked on a held pipe, queued on an air link, else delivered at once.
+    private suspend fun land(
+        pipe: Pipe,
+        received: ReceivedFile,
+    ): Boolean {
         if (pipe.parkFile(received)) return true
-        deliverFile(target, received)
+        if (pipe.air != null) return enqueueFile(pipe, received)
+        deliverFile(pipe.target, received)
         chaos?.jitter()
+        return true
+    }
+
+    /**
+     * A large attachment toward a peer the fast plane sees but holds no link to, as `CompositeMeshTransport.sendFile` arms
+     * one: the send returns at once, and a waiter gives the fast link up to [CompositeMeshTransport.BULK_GRACE_MS] to come
+     * up ([bulkRoutes] reads [BulkRoute.Linked]) before it lands the file over whatever link toward [peer] is up then
+     * ([land]). A fast-only copy whose fast link never came is dropped instead and [FileMeta.onDropped] told, as
+     * `CompositeMeshTransport.awaitPlaneThenSend` drops it; so is any copy with no link left, and the receiver asks again.
+     * The file counts as in flight from the arm until it is queued or dropped ([fileInFlightTo]), and as on the air toward
+     * the receiver ([awaitInboundDrained]); a waiter cancelled by [detach] drops it too, so no arm outlives it.
+     */
+    private fun armFile(
+        peer: String,
+        received: ReceivedFile,
+        meta: FileMeta,
+    ): Boolean {
+        val armed = "$peer|${received.key}"
+        val target = pipes[peer]?.target
+        armedFiles += armed
+        bulkArmed += peer
+        target?.airInbound?.incrementAndGet()
+        airScope.launch {
+            var landed = false
+            try {
+                withTimeoutOrNull(CompositeMeshTransport.BULK_GRACE_MS) {
+                    while (bulkRoutes[peer] == BulkRoute.Reachable && pipes[peer] != null) delay(ARM_POLL_MS)
+                }
+                val pipe = pipes[peer]
+                val fastCame = bulkRoutes[peer] == BulkRoute.Linked
+                landed = pipe != null && (fastCame || !meta.fastOnly) && land(pipe, received)
+            } finally {
+                armedFiles -= armed
+                target?.airInbound?.decrementAndGet()
+                if (!landed) {
+                    File(received.path).delete()
+                    if (meta.fastOnly) meta.onDropped?.invoke()
+                }
+            }
+        }
+        return true
+    }
+
+    // Large attachments waiting for the fast link ([armFile]), as `peer|key`.
+    private val armedFiles: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * Changes the airtime of the link to [other], both ways, while it stays up: a radio moving the link onto another plane
+     * (Wi-Fi Aware coming up beside Bluetooth, or going away). A record already airing keeps its slot; the next is aired at
+     * [air]. A link with no airtime, or none at all, is left as it is.
+     */
+    fun setAir(
+        other: LabTransport,
+        air: LinkAir,
+    ) {
+        for (pipe in listOfNotNull(pipes[other.nodeId], other.pipes[nodeId])) {
+            synchronized(pipe.airLock) { if (pipe.air != null && !pipe.airClosed) pipe.air = air }
+            pipe.airWake.trySend(Unit)
+        }
+    }
+
+    /**
+     * [received] onto [pipe]'s air queue, behind every record already on it, as `FramedLink.streamFile` writes a file into
+     * the link's one stream: its bytes air at the link's rate and its share of both radios, and the receiver's stack has it
+     * whole once they have. Refused on a pipe already down, its staged copy deleted.
+     */
+    private fun enqueueFile(
+        pipe: Pipe,
+        received: ReceivedFile,
+    ): Boolean {
+        val air = checkNotNull(pipe.air)
+        val staged = File(received.path)
+        val bytes = staged.length() + air.recordOverheadBytes
+        synchronized(pipe.airLock) {
+            if (!airOpen(pipe)) {
+                aired.refused.incrementAndGet()
+                staged.delete()
+                return false
+            }
+            pipe.airQueue.addLast(AirRecord(null, VIA_FILE, ++pipe.enqueuedSeq, System.nanoTime(), bytes, file = received))
+            noteQueued(pipe, bytes)
+        }
+        pipe.airWake.trySend(Unit)
         return true
     }
 
@@ -1715,32 +1834,38 @@ class LabTransport(
      * air lock, so a cut finds it there while its bytes air; it ends once a cut has closed the pipe.
      */
     private suspend fun airWriter(pipe: Pipe) {
-        val air = checkNotNull(pipe.air)
         while (true) {
+            val air = checkNotNull(pipe.air)
             val record =
                 synchronized(pipe.airLock) {
                     if (pipe.airClosed) return
                     pipe.airQueue.removeFirstOrNull()?.also { r ->
                         pipe.inHand = r
-                        if (r.wire == null) {
+                        // A file's header is in once the writer starts on it: the receiver counts it as arriving.
+                        r.file?.let { f ->
+                            val total = r.bytes - air.recordOverheadBytes
+                            pipe.target.markLanding(nodeId, f.key, ArrivingFile(f.key, 0, total = total))
+                        }
+                        if (r.wire == null && r.file == null) {
                             // The digest as it stands now: one sent from here on queues a marker of its own.
                             r.ids = checkNotNull(pipe.pendingDigest)
                             pipe.pendingDigest = null
                             r.bytes = r.ids.sumOf { it.length + 1L } + air.recordOverheadBytes
                         }
-                        pipe.queuedBytes -= if (r.wire == null) 0 else r.bytes
+                        pipe.queuedBytes -= if (r.wire == null && r.file == null) 0 else r.bytes
                     }
                 }
             if (record == null) {
                 if (pipe.airWake.receiveCatching().isClosed) return
                 continue
             }
+            // A plane with its own radio (Wi-Fi Aware beside Bluetooth) takes no share of either end's Bluetooth radio.
             val endNanos =
                 AirLedger.reserve(
                     pipe.airClock,
                     air.bytesPerSecond,
-                    nodeAir,
-                    pipe.target.nodeAir,
+                    nodeAir.takeIf { air.sharesNodeAir },
+                    pipe.target.nodeAir.takeIf { air.sharesNodeAir },
                     record.bytes,
                     System.nanoTime(),
                 )
@@ -1767,6 +1892,16 @@ class LabTransport(
                 if (pipe.airClosed || pipe.inHand !== record || pipes[target.nodeId] !== pipe) return false
                 pipe.inHand = null
                 pipe.airedSeq = record.seq
+                val file = record.file
+                if (file != null) {
+                    aired.bytes.addAndGet(record.bytes)
+                    aired.records.incrementAndGet()
+                    aired.recordWait((System.nanoTime() - record.queuedAtNanos) / NANOS_PER_MS)
+                    target.markLanding(nodeId, file.key, ArrivingFile(file.key, File(file.path).length(), total = null))
+                    check(target._incomingFiles.tryEmit(file)) { "the file buffer refused ${file.key}" }
+                    target.airInbound.decrementAndGet()
+                    return@synchronized false
+                }
                 val wire = record.wire
                 val door = pipe.door
                 val crossed = if (wire == null || door == null) wire else door.cross(wire)
@@ -1805,11 +1940,19 @@ class LabTransport(
             if (pipe.airClosed) return
             pipe.airClosed = true
             val lost = pipe.airQueue.toList() + listOfNotNull(pipe.inHand)
+            val airing = pipe.inHand?.file
             pipe.airQueue.clear()
             pipe.inHand = null
             pipe.pendingDigest = null
             pipe.queuedBytes = 0
             lost.mapNotNullTo(aired.cutKeys) { r -> r.wire?.let { FrameKey.ofSigned(it) } }
+            for (file in lost.mapNotNull { it.file }) {
+                // The airing one's header is in: the receiver stops counting it as arriving. A queued one marked nothing, and
+                // an earlier copy of the same key still landing keeps its mark. Every staged copy goes.
+                if (file === airing) pipe.target.fileTaken(nodeId, file.key)
+                File(file.path).delete()
+                aired.filesCut.incrementAndGet()
+            }
             aired.cut.addAndGet(lost.size.toLong())
             pipe.target.airInbound.addAndGet(-lost.size.toLong())
         }
@@ -1903,6 +2046,8 @@ class LabTransport(
 
         /** An air pipe's custody digest marker ([AirRecord]): never a frame's way, never in [sent]. */
         const val VIA_DIGEST = "digest"
+        const val VIA_FILE = "file"
+        const val ARM_POLL_MS = 50L
         const val NANOS_PER_MS = 1_000_000L
         const val MS_PER_S = 1_000L
 

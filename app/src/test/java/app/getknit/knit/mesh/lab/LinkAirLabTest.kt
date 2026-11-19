@@ -1,5 +1,7 @@
 package app.getknit.knit.mesh.lab
 
+import app.getknit.knit.mesh.BlobExchange
+import app.getknit.knit.mesh.BulkRoute
 import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
@@ -18,6 +20,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import kotlin.random.Random
 
 /**
  * A link with airtime ([LinkAir]): what a node sends it queues, as a phone's `FramedLink` does, and a writer airs the queue
@@ -219,6 +222,130 @@ class LinkAirLabTest {
             }
         }
 
+    /**
+     * Bob sends Alice a picture over a link with airtime. Its bytes reach her no faster than the link airs them: she holds
+     * the picture whole no sooner than its size at the link's rate after the send, and the oracle then agrees.
+     */
+    @Test
+    fun aPictureAirsAtTheLinksRate() =
+        runBlocking {
+            val (alice, bob) = friendsWithASession(AIR)
+            val picture = Random(1).nextBytes(PICTURE_BYTES)
+            val started = System.nanoTime()
+            assertTrue(bob.sendImage(picture, "a picture", to = alice))
+            val id = bob.ownMessageId(bob.dmWith(alice), "a picture")
+            lab.assertConverged(listOf(alice, bob), atLeast = 3, timeoutMs = BURST_AWAIT_MS) { it.dmWith(if (it === alice) bob else alice) }
+            awaitPicture(alice, bob, id, picture)
+            val tookMs = (System.nanoTime() - started) / NANOS_PER_MS
+
+            val minMs = PICTURE_BYTES.toLong() * MS_PER_S / AIR.bytesPerSecond
+            assertTrue("$PICTURE_BYTES bytes at ${AIR.bytesPerSecond} B/s landed in $tookMs ms, under $minMs", tookMs >= minMs - SLACK_MS)
+            assertTrue(
+                "the file's bytes were never counted as aired",
+                bob.transport.aired.bytes
+                    .get() >= PICTURE_BYTES,
+            )
+        }
+
+    /**
+     * The link is cut while Bob's picture airs to Alice. The file is lost whole and counted: she never has it, nothing
+     * counts as arriving any more, and nothing lands after the cut. The next link brings it to her whole.
+     */
+    @Test
+    fun aFileCutMidAirIsLostAndTheNextLinkBringsItWhole() =
+        runBlocking {
+            val (alice, bob) = friendsWithASession(SLOW_AIR)
+            val picture = Random(2).nextBytes(PICTURE_BYTES)
+            val cutBefore =
+                bob.transport.aired.filesCut
+                    .get()
+            assertTrue(bob.sendImage(picture, "a slow picture", to = alice))
+            val id = bob.ownMessageId(bob.dmWith(alice), "a slow picture")
+            // The file is on the air once its header is in: Alice counts it as arriving.
+            lab.await(1, timeoutMs = BURST_AWAIT_MS) { if (alice.transport.arrivingFiles().isNotEmpty()) 1 else 0 }
+
+            // lab-lint: allow direct-disconnect — the cut itself is the subject, and `lab.unlink` refuses an air link
+            bob.transport.disconnect(alice.transport)
+            assertEquals(
+                "the cut lost no file",
+                cutBefore + 1,
+                bob.transport.aired.filesCut
+                    .get(),
+            )
+            assertEquals("a cut file still counts as arriving", emptyMap<String, Any>(), alice.transport.arrivingFiles())
+            // lab-lint: allow sleep-as-sync — a pause before a check that nothing more arrives, never a sync point
+            withContext(Dispatchers.Default) { delay(AFTER_CUT_MS) }
+            assertEquals("the cut file landed", null, alice.attachmentPlain(alice.dmWith(bob), id))
+            alice.transport.awaitNeighborsObserved()
+            bob.transport.awaitNeighborsObserved()
+            // Past Bob's serve memo, which refuses a repeat ask for the copy the cut lost: every ask that crossed is
+            // handled first, both ends drained, so none is answered after the jump and stamps the memo again.
+            withContext(Dispatchers.Default) {
+                alice.transport.awaitInboundDrained()
+                bob.transport.awaitInboundDrained()
+            }
+            val asked = alice.transport.blobAsks.count { it.to == bob.nodeId }
+            lab.await(1) { if (bob.metrics.files().blobAsksHandled >= asked) 1 else 0 }
+            lab.clock.advance(BlobExchange.SERVE_MEMO_MS)
+
+            lab.link(alice, bob, air = AIR)
+            lab.assertConverged(listOf(alice, bob), atLeast = 3, timeoutMs = BURST_AWAIT_MS) { it.dmWith(if (it === alice) bob else alice) }
+            awaitPicture(alice, bob, id, picture)
+        }
+
+    /**
+     * A slow link moved onto a fast plane where it stands ([LabTransport.setAir]): a picture sent after the move airs at
+     * the new rate, far sooner than the old one would carry it, and the link never went down.
+     */
+    @Test
+    fun aLinkMovedToAFastPlaneAirsAtItsRate() =
+        runBlocking {
+            val (alice, bob) = friendsWithASession(SLOW_AIR)
+            val linksBefore = alice.transport.neighbors.value.size
+            bob.transport.setAir(alice.transport, FAST_AIR)
+            val picture = Random(3).nextBytes(PICTURE_BYTES)
+            val started = System.nanoTime()
+            assertTrue(bob.sendImage(picture, "a fast picture", to = alice))
+            val id = bob.ownMessageId(bob.dmWith(alice), "a fast picture")
+            awaitPicture(alice, bob, id, picture)
+            val tookMs = (System.nanoTime() - started) / NANOS_PER_MS
+            lab.assertConverged(listOf(alice, bob), atLeast = 3, timeoutMs = BURST_AWAIT_MS) { it.dmWith(if (it === alice) bob else alice) }
+
+            val slowMs = PICTURE_BYTES.toLong() * MS_PER_S / SLOW_AIR.bytesPerSecond
+            assertTrue("the picture took $tookMs ms, as long as the slow link's $slowMs", tookMs < slowMs / 2)
+            assertEquals("the move took the link down", linksBefore, alice.transport.neighbors.value.size)
+        }
+
+    /**
+     * Bob holds a large picture for Alice while the fast plane sees her but holds no link ([BulkRoute.Reachable]): he arms
+     * it and waits, the file queued on no link, as the composite waits for its data path. When the data path comes up the
+     * file goes at once, at its rate.
+     */
+    @Test
+    fun aLargeFileWaitsForTheFastLinkItWasPromised() =
+        runBlocking {
+            val (alice, bob) = friendsWithASession(AIR)
+            alice.transport.bulkRoutes[bob.nodeId] = BulkRoute.Reachable
+            bob.transport.bulkRoutes[alice.nodeId] = BulkRoute.Reachable
+            val picture = Random(4).nextBytes(LARGE_PICTURE_BYTES)
+            assertTrue(bob.sendImage(picture, "a large picture", to = alice))
+            val id = bob.ownMessageId(bob.dmWith(alice), "a large picture")
+            lab.await(1, timeoutMs = BURST_AWAIT_MS) { if (alice.nodeId in bob.transport.bulkArmed) 1 else 0 }
+            val hash = checkNotNull(bob.attachmentHash(bob.dmWith(alice), id))
+            assertTrue("the armed file is not in flight", bob.transport.fileInFlightTo(alice.nodeId, hash))
+            assertEquals("the armed file went on the slow link", emptyMap<String, Any>(), alice.transport.arrivingFiles())
+
+            bob.transport.setAir(alice.transport, FAST_AIR)
+            alice.transport.bulkRoutes[bob.nodeId] = BulkRoute.Linked
+            bob.transport.bulkRoutes[alice.nodeId] = BulkRoute.Linked
+            val started = System.nanoTime()
+            awaitPicture(alice, bob, id, picture)
+            val tookMs = (System.nanoTime() - started) / NANOS_PER_MS
+            val slowMs = LARGE_PICTURE_BYTES.toLong() * MS_PER_S / AIR.bytesPerSecond
+            assertTrue("the picture took $tookMs ms once the fast link was up, as long as the slow link's $slowMs", tookMs < slowMs / 2)
+            lab.assertConverged(listOf(alice, bob), atLeast = 3, timeoutMs = BURST_AWAIT_MS) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
     /** On a link with no airtime a send still means the far end has the frame, and nothing counts as aired. */
     @Test
     fun aLinkWithNoAirDeliversAsItSends() =
@@ -275,6 +402,16 @@ class LinkAirLabTest {
         return alice to bob
     }
 
+    // Waits until [at] holds the picture [from] sent it as message [id], whole.
+    private suspend fun awaitPicture(
+        at: LabNode,
+        from: LabNode,
+        id: String,
+        picture: ByteArray,
+    ) = lab.await(1, timeoutMs = BURST_AWAIT_MS) {
+        if (at.attachmentPlain(at.dmWith(from), id)?.contentEquals(picture) == true) 1 else 0
+    }
+
     // The [ids] that crossed from [from] so far, in the order its send log has them.
     private fun crossed(
         from: LabNode,
@@ -306,11 +443,20 @@ class LinkAirLabTest {
         /** Fast enough that a scenario takes seconds, slow enough that a burst queues. */
         val AIR = LinkAir(bytesPerSecond = 10_000)
 
+        /** A Wi-Fi Aware data path's rate, on a radio of its own. */
+        val FAST_AIR = LinkAir(bytesPerSecond = 1_000_000, sharesNodeAir = false)
+
         /** Slow enough that a run of sealed DMs is still queued when the cut comes. */
         val SLOW_AIR = LinkAir(bytesPerSecond = 2_000)
 
         /** About 15 KB of cues: over a second and a half at [AIR]. */
         const val BURST = 100
+
+        /** Four seconds at [AIR], twenty at [SLOW_AIR]: a cut finds it airing. */
+        const val PICTURE_BYTES = 40_000
+
+        /** Over `CompositeMeshTransport.BULK_MIN_BYTES`: a holder arms the fast plane for it. Twenty seconds at [AIR]. */
+        const val LARGE_PICTURE_BYTES = 200_000
         const val DM_BURST = 20
         const val AIRED_BEFORE_CUT = 3
         const val CUTS = 5

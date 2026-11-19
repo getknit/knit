@@ -28,6 +28,10 @@ object SimSeeds {
         PARK_UNIT(13),
         GROUP_CHAT(14),
         BACKLOG(15),
+        PASS_START(16),
+        PASS_SPEED(17),
+        PASS_PICTURE(18),
+        NAN_APPROACH(19),
     }
 
     /** A hash of [parts], in order: every input bit moves every output bit, so neighbouring keys draw unrelated streams. */
