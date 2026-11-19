@@ -3,6 +3,7 @@ package app.getknit.knit.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.net.Uri
 import android.util.Log
@@ -11,6 +12,7 @@ import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.io.InputStream
+import java.nio.ByteBuffer
 import kotlin.math.min
 
 /*
@@ -72,6 +74,65 @@ private fun decodeOrientedBounded(
         }
     return rotatedForExif(bitmap, orientation)
 }
+
+/**
+ * [decodeOrientedBounded], refusing a picture that ends before its pixels do. The decode beneath fills what a cut-short
+ * file never reached with blank and answers a photo; the face review shows the person what will be sent, so a photo
+ * that is only partly there is unreadable instead (ADR 2026-10.whkk).
+ */
+internal fun decodeWholeOriented(
+    context: Context,
+    uri: Uri,
+    maxDim: Int,
+): Bitmap? =
+    if (decodesWhole(maxDim) { ImageDecoder.createSource(context.contentResolver, uri) }) {
+        decodeOrientedBounded(context, uri, maxDim)
+    } else {
+        null
+    }
+
+/** The in-memory twin of the [Uri] overload above, for the in-app camera's JPEG. */
+internal fun decodeWholeOriented(
+    bytes: ByteArray,
+    maxDim: Int,
+): Bitmap? =
+    if (decodesWhole(maxDim) { ImageDecoder.createSource(ByteBuffer.wrap(bytes)) }) {
+        decodeOrientedBounded(bytes, maxDim)
+    } else {
+        null
+    }
+
+/**
+ * Whether [source] decodes to its last pixel. [ImageDecoder] throws where the stream runs out unless it is handed a
+ * partial-image listener, and none is: so a truncated JPEG (or PNG, WebP, HEIF) is false, as is one that will not open.
+ * The sample is taken from the header, at least an eighth and enough that neither side passes [maxDim], so a small file
+ * declaring a huge picture costs no more memory here than in the decode after it; the decoder still reads every row.
+ */
+private fun decodesWhole(
+    maxDim: Int,
+    source: () -> ImageDecoder.Source,
+): Boolean =
+    runCatching {
+        ImageDecoder
+            .decodeBitmap(source()) { decoder, info, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                decoder.setTargetSampleSize(maxOf(WHOLE_CHECK_SAMPLE, wholeCheckSample(info.size.width, info.size.height, maxDim)))
+            }.recycle()
+    }.onFailure { Log.w(TAG, "image is not whole: ${it.javaClass.simpleName}") }
+        .isSuccess
+
+/** The smallest power of two that brings both sides to [maxDim] or under. */
+internal fun wholeCheckSample(
+    width: Int,
+    height: Int,
+    maxDim: Int,
+): Int {
+    var sample = 1
+    while (width / sample > maxDim || height / sample > maxDim) sample *= 2
+    return sample
+}
+
+private const val WHOLE_CHECK_SAMPLE = 8
 
 /**
  * [source] opened, or null when it will not open. A content resolver refuses by throwing, not by answering

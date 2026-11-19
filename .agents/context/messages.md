@@ -186,7 +186,7 @@ lines.
 - **When touching `redact/` (`YuNetFaceDetector`, `YuNetDecoder`, `FaceBox`, `FaceDetector`, `Redaction`, `Cover`,
   `FaceRedaction`), `ui/redact/` (`RedactReviewScreenContent`, `ViewTransform`, `FaceSearch`, `PhotoReview`),
   `SettingsStore.coverFacesEnabled`, `AttachmentStore.pictureOf` / `displayName`, `ChatViewModel.pendingReview` / `review` /
-  `offerCovered`, `CoveredCopies`, `TransferFiles.release`, `ModelLoadGuard.FACES`,
+  `offerCovered`, `decodeWholeOriented`, `CoveredCopies`, `TransferFiles.release`, `ModelLoadGuard.FACES`,
   `PHOTO_JPEG_QUALITY` / `PHOTO_MAX_DIMENSION`, `FACE_REDACTION_WIRED` / `faceRedactionModule` / `-PfaceRedaction`,
   `src/faceRedaction/assets/redact/` or `scripts/face-model.py`:** READ ADR 2026-10.whkk (shipped from 2.13.0, its
   2026-11-19 amendment). The whole feature is behind `-PfaceRedaction` (`BuildConfig.FACE_REDACTION`, read once as
@@ -203,7 +203,8 @@ lines.
   no detector ran, never an empty list. A cover is one opaque colour on a copy, the average of what it hides (`Cover.fillColor`), encoded at `AttachmentStore`'s own
   q85 so it passes through; the review screen draws what will be sent. With Cover faces on, every door a still photo
   comes through opens the review first, a direct transfer's included (sent as a covered copy in the cache, at the chat
-  photo's size), and a photo that will not decode is dropped, never sent uncovered. Tests: `YuNetDecoderTest`, `RedactionTest`,
+  photo's size), and a photo that will not decode, or is cut short (`decodeWholeOriented`), is dropped, never sent
+  uncovered. Tests: `ImageDecodeWholeTest`, `YuNetDecoderTest`, `RedactionTest`,
   `ViewTransformTest`, `FaceRedactionTest`, `RedactReviewScreenContentTest`, `PhotoReviewTest`, `ChatViewModelTest`'s
   cover-faces cases; on an emulator
   `YuNetFaceDetectorInstrumentedTest` (not in CI's instrumented packages yet).

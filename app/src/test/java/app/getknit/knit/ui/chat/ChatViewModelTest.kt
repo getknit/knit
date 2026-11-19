@@ -147,6 +147,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -3343,10 +3344,15 @@ class ChatViewModelTest {
             override suspend fun detect(bitmap: Bitmap): List<FaceBox> = listOf(FaceBox(10f, 10f, 40f, 50f, 0.9f))
         }
 
-    /** A real photo, NASA's crew portrait, so the review's decode has something to decode. */
+    /**
+     * A real photo, NASA's crew portrait, so the review's decode has something to decode. A test that decodes it runs
+     * on native graphics: the review asks the platform's ImageDecoder whether the photo is whole, and the legacy
+     * shadow answers no to every real file.
+     */
     private val crewJpeg by lazy { repoFile("app/src/androidTest/assets/redact/crew.jpg").readBytes() }
 
     @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun withCoverFacesOnACapturedPhotoIsReviewedAndStagedOnlyFromTheReviewWhenDone() =
         runTest {
             coverFacesFlow.value = true
@@ -3373,6 +3379,23 @@ class ChatViewModelTest {
         }
 
     @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun withCoverFacesOnAPhotoCutShortIsUnreadableAndNeverReviewed() =
+        runTest {
+            // Its first 30%: the plain decode would answer the top of it with blank below, and the review would send that.
+            coverFacesFlow.value = true
+            val vm = vm("bob", faces = oneFace)
+            val said = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.attachCaptured(crewJpeg.copyOf(crewJpeg.size * 3 / 10))
+
+            assertEquals(R.string.redact_unreadable, said.await())
+            assertNull(vm.pendingReview.value)
+            coVerify(exactly = 0) { attachments.ingest(any<ByteArray>(), any(), any(), any()) }
+        }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun aCancelledReviewStagesNothing() =
         runTest {
             coverFacesFlow.value = true
@@ -3392,6 +3415,7 @@ class ChatViewModelTest {
         }
 
     @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun withCoverFacesOnAPickTheStoreCannotTellApartIsReviewedAndOneThatWillNotDecodeIsNeverSent() =
         runTest {
             // NONE through the photo door: the fail-safe reviews it. Its provider is gone, so the decode throws: the
@@ -3412,6 +3436,7 @@ class ChatViewModelTest {
         }
 
     @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun withCoverFacesOnAPhotoPickedAsAFileIsReviewedNotSentAsAFile() =
         runTest {
             // The file door hands a picture to the image door, so with Cover faces on it is reviewed: here its provider
@@ -3468,6 +3493,7 @@ class ChatViewModelTest {
         }
 
     @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun withCoverFacesOnAPhotoOfferedOverADirectTransferGoesOnlyAsItsCoveredCopy() =
         runTest {
             coverFacesFlow.value = true

@@ -151,3 +151,8 @@ pointer), because a stub would review with no face found, silently. Cover faces 
 starting point (ADR 2026-11.j8pf) supplies it on, through `orPreset(PresetSetting.COVER_FACES)`, and its card says so.
 A switch away from Privacy-first that turns it off lists that first, as it lists the screenshot block. Indonesian, which
 shipped after the experiment, has its strings by hand; native review of every locale's "cover" is still owed.
+
+A photo cut short counts as one that will not decode. The decode under the review fills what a truncated file never
+reached with blank and answers a photo, so the review would have shown and sent its top. Every review door now decodes
+through `decodeWholeOriented`, which first asks the platform's `ImageDecoder` (no partial-image listener, so it throws
+where the stream runs out) and drops the photo with "couldn't be opened" when the answer is no.

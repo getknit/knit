@@ -36,7 +36,7 @@ import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.commons.CommonsEntity
 import app.getknit.knit.data.commons.CommonsRepository
-import app.getknit.knit.data.decodeOrientedBounded
+import app.getknit.knit.data.decodeWholeOriented
 import app.getknit.knit.data.downscale
 import app.getknit.knit.data.draft.Draft
 import app.getknit.knit.data.draft.DraftRepository
@@ -3388,7 +3388,7 @@ class ChatViewModel(
             // decode is dropped by [review], never sent.
             val moving = video || attachments.pictureOf(uri) == AttachmentStore.Picture.MOVING
             if (!moving) {
-                review { decodeOrientedBounded(context, uri, PHOTO_MAX_DIMENSION) }
+                review { decodeWholeOriented(context, uri, PHOTO_MAX_DIMENSION) }
                 return
             }
             _events.tryEmit(R.string.redact_motion_not_covered)
@@ -3633,7 +3633,7 @@ class ChatViewModel(
                     _events.tryEmit(it)
                     return@launch
                 }
-                review { decodeOrientedBounded(context, uri, PHOTO_MAX_DIMENSION) }
+                review { decodeWholeOriented(context, uri, PHOTO_MAX_DIMENSION) }
                 return@launch
             }
             if (picture == AttachmentStore.Picture.MOVING) _events.tryEmit(R.string.redact_motion_not_covered)
@@ -3808,7 +3808,7 @@ class ChatViewModel(
                     val original = withContext(Dispatchers.IO) { attachments.displayName(uri) }
                     // The name's extension is the covered copy's, set once it is encoded ([CoveredCopies.nameFor]).
                     review(PhotoReview.Purpose.Transfer(original.orEmpty())) {
-                        decodeOrientedBounded(context, uri, PHOTO_MAX_DIMENSION)
+                        decodeWholeOriented(context, uri, PHOTO_MAX_DIMENSION)
                     }
                     return@launch
                 }
@@ -4014,7 +4014,7 @@ class ChatViewModel(
             // Cover faces on: the shot is reviewed before it is stored at all, so its uncovered pixels never reach the
             // blob store and are gone with this array (ADR 2026-10.whkk).
             if (FACE_REDACTION_WIRED && settings.coverFacesEnabled.first()) {
-                review { decodeOrientedBounded(jpeg, PHOTO_MAX_DIMENSION) }
+                review { decodeWholeOriented(jpeg, PHOTO_MAX_DIMENSION) }
                 return@launch
             }
             stage(
