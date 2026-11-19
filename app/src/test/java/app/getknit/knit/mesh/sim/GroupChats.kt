@@ -118,6 +118,24 @@ class GroupChats(
         return missing(nodes).also { summary["gather_group_posts_missing"] = it.size }
     }
 
+    /**
+     * What the settle left of [stranded], the posts the gather left missing, read over [nodes], with a line in [lines] and
+     * the count in [summary] when the gather left any.
+     */
+    suspend fun settled(
+        nodes: List<LabNode>,
+        stranded: List<String>,
+        lines: MutableList<String>,
+        summary: SimSummary,
+    ): List<String> {
+        if (stranded.isEmpty()) return stranded
+        val still = missing(nodes)
+        lines += "settle: ${stranded.size - still.size} of the ${stranded.size} group posts missing after the gather " +
+            "reached every member during it"
+        summary["settle_group_posts_still_missing"] = still.size
+        return still
+    }
+
     /** Each post some other member of its party still lacks, by body, read over [nodes]. */
     suspend fun missing(nodes: List<LabNode>): List<String> {
         val held = heldBy(nodes)

@@ -60,6 +60,11 @@ data class SimScenario(
     /** How long after the gather to keep reading custody across the field for parity ([MeshSim.settleLine]); 0 skips it. */
     val settleMs: Long = 0,
     /**
+     * How long the gather waits for every DM to arrive before it reports what is missing: two rounds of the 60 s re-offer
+     * and some, what a frame left in custody needs to cross the gathered field.
+     */
+    val gatherMs: Long = 180_000L,
+    /**
      * Whether everyone gathers after the walk, with the settle and the oracle after it. Without it the outing ends at the
      * walk: a measurement of the walk alone, which checks nothing ([SimReport.checked]).
      */
@@ -80,8 +85,9 @@ data class SimScenario(
 
 /**
  * What a run found. [text] is the whole report; the rest is what the harness asserts on: that the workload was
- * sent ([dmsSent], and [unsent], the sends an overloaded machine let fall past the end of the run), that no DM is
- * still missing after the gather ([neverArrived]), and that the lab's oracle then [converged].
+ * sent ([dmsSent], and [unsent], the sends an overloaded machine let fall past the end of the run), that no DM or group
+ * post is still missing after the gather, or after the settle when the outing has one ([neverArrived]), and that the
+ * lab's oracle then [converged].
  */
 class SimReport(
     val text: String,
@@ -111,6 +117,8 @@ class SimReport(
 class MeshSim(
     private val lab: MeshLab,
     private val scenario: SimScenario,
+    /** A test's hand on the ring gather's links; the outing's own gather by default. */
+    private val seam: GatherSeam = GatherSeam.NONE,
     /** Told where the outing has got to, as it goes: a run that stalls says where. */
     private val progress: (String) -> Unit = {},
 ) {
@@ -334,18 +342,15 @@ class MeshSim(
         val stranded = outcomes.filter { it.latencyMs == null }.map { it.event.body }
         summary["gather_dms_missing"] = stranded.size
         val groupStranded = chats.stranded(nodes, summary)
+        seam.read()
         val settled = settleLine()
         settled?.let { lines += it.text }
+        // What decides the verdict is what never arrived: with a settle, what it left missing too, since a DM the gather's
+        // window missed and the settle delivered did arrive. Read before the lines that name what is lost.
+        val (missing, groupMissing) = if (settled == null) stranded to groupStranded else afterSettle(stranded, groupStranded, lines)
         lines += probes.line(after = if (settled == null) "the gather" else "the settle", walked = GatherBy.walks(scenario), summary)
         sampleFollowed()
         lines += lostLines()
-        if (settled != null) {
-            val still = if (stranded.isEmpty()) 0 else outcomes(Long.MAX_VALUE, ticks = false).count { it.latencyMs == null }
-            if (stranded.isNotEmpty()) {
-                lines += "settle: ${stranded.size - still} of the ${stranded.size} DMs missing after the gather arrived during it"
-            }
-            summary["settle_dms_still_missing"] = still
-        }
         lines += "frames refused over the whole outing: ${drops(nodes).ifEmpty { "none" }}"
         val totals = counterTotals(nodes)
         lines += movedCounters(totals, since = countersAtWalk)
@@ -357,13 +362,34 @@ class MeshSim(
         // is with custody the settle watched not converge for at least as long as the oracle would wait. A shorter settle
         // would call a late field stuck, so then the oracle decides.
         val unsettled = settled?.parity == false && scenario.settleMs >= ORACLE_MS
-        val failure = verdict(stranded, groupStranded, unsettled)
+        val failure = verdict(missing, groupMissing, unsettled)
         lines += "oracle: " + (failure ?: "every DM and group thread converged (messages, ticks, custody parity across the field)")
-        val strandedAll = stranded + groupStranded
+        val strandedAll = missing + groupMissing
         summary["oracle"] = oracleWord(failure, stranded = strandedAll.isNotEmpty(), unsettled = unsettled)
         lines += summary.lines()
         return SimReport(lines.joinToString("\n"), outcomes.size, unsent.get(), strandedAll, converged = failure == null)
     }
+
+    // What the settle left of the DMs and group posts the gather left missing, with a line for each kind it had.
+    private suspend fun afterSettle(
+        stranded: List<String>,
+        groupStranded: List<String>,
+        lines: MutableList<String>,
+    ): Pair<List<String>, List<String>> {
+        // The settle ends at custody parity, which a frame reaches before its row lands (custody is written ahead of the
+        // delivery): poll the rows.
+        if (stranded.isNotEmpty() || groupStranded.isNotEmpty()) awaitArrivals(SETTLE_ARRIVALS_MS)
+        val missing = if (stranded.isEmpty()) stranded else stillMissing()
+        if (stranded.isNotEmpty()) {
+            lines += "settle: ${stranded.size - missing.size} of the ${stranded.size} DMs missing after the gather arrived during it"
+        }
+        summary["settle_dms_still_missing"] = missing.size
+        return missing to chats.settled(nodes, groupStranded, lines, summary)
+    }
+
+    // Every DM not yet arrived, by body, read now.
+    private suspend fun stillMissing(): List<String> =
+        outcomes(Long.MAX_VALUE, ticks = false).filter { it.latencyMs == null }.map { it.event.body }
 
     // The gather, and for what it left undelivered, where the two ends say it is stuck.
     private suspend fun gatherLine(endedAt: Long): String {
@@ -497,13 +523,13 @@ class MeshSim(
      * Everyone walks to one spot: each group whole again, and every walker holding about six links, a phone's
      * budget and not the full mesh no radio would hold. They are laid as a chordal ring (one, a stride and a
      * stride squared along), so the gathered field is a few hops across however big the crowd. Waits for every DM
-     * to arrive, or [GATHER_MS].
+     * to arrive, or [SimScenario.gatherMs].
      */
     private suspend fun gather() {
         walkOver = true
         if (GatherBy.walks(scenario)) {
             walkIn()
-            awaitArrivals(GATHER_MS)
+            awaitArrivals(scenario.gatherMs)
             return
         }
         val stride = ceil(cbrt(scenario.walkers.toDouble())).toInt().coerceAtLeast(2)
@@ -511,11 +537,16 @@ class MeshSim(
             (0 until scenario.walkers).flatMap { a ->
                 listOf(1, stride, stride * stride).map { (a + it) % scenario.walkers }.filter { it != a }.map { Link.of(a, it) }
             }
-        val wanted = (groups.flatMap(::pairs) + ring).toSet() - radio.links
-        lab.linkAll(*wanted.map(::ends).toTypedArray(), air = radio.air)
-        probes.send(wanted)
+        val raised = (groups.flatMap(::pairs) + ring).toSet() - radio.links
+        val wanted = raised.map(::ends)
+        // Connected first and published after the seam has seen them, as `MeshLab.linkAll` does in one go: nothing
+        // crosses a link before its ends are told of it.
+        wanted.forEach { (a, b) -> a.transport.connect(b.transport, publish = false, air = radio.air) }
+        seam.linked(wanted)
+        wanted.flatMap { it.toList() }.distinct().forEach { it.transport.publishNeighbors() }
+        probes.send(raised)
         follow()
-        awaitArrivals(GATHER_MS)
+        awaitArrivals(scenario.gatherMs)
     }
 
     /**
@@ -673,7 +704,7 @@ class MeshSim(
             if (row.pendingKey) parked++
             if (row.id in from.custodyIds()) held++
         }
-        return "gather: ${stranded.size} DMs had not arrived ${GATHER_MS / MS_PER_S} s on " +
+        return "gather: ${stranded.size} DMs had not arrived ${scenario.gatherMs / MS_PER_S} s on " +
             "($parked parked for a key at the sender, $held still in the sender's custody): " +
             stranded.joinToString { "${it.event.body} (${it.reach.name.lowercase()})" }
     }
@@ -713,12 +744,6 @@ class MeshSim(
             "$peak frames held on one node's links at once ${where.ifEmpty { "(sampled)" }}; $pages pages dropped"
     }
 
-    /** How custody across the field stood once the settle ended, and whether every store held the same ids. */
-    private class Settled(
-        val text: String,
-        val parity: Boolean,
-    )
-
     /**
      * After the gather, whether the stores come to hold the same live ids, and how fast the gap closes: a gap that
      * shrinks is late, one that stops shrinking is stuck. Reads every store each [SETTLE_POLL_MS] until they match or
@@ -745,28 +770,7 @@ class MeshSim(
             }
         }
         trail[tookS] = gap.missing
-        val missingTrail = "rows missing: ${trail.entries.joinToString { "+${it.key}s ${it.value}" }}"
-        val described = described(nodes)
-        val kinds =
-            gap.union
-                .groupingBy { described[it]?.get(1) ?: "?" }
-                .eachCount()
-                .entries
-                .sortedByDescending { it.value }
-        // Matching full stores may each have evicted an odd id rather than all received it: the ids gone everywhere
-        // leave no trace here.
-        val cap = if (gap.held.any { it.size >= ForwardRepository.DEFAULT_MAX_ROWS }) ", stores at custody's cap" else ""
-        val held = "the field's ${gap.union.size} ids by type$cap: ${kinds.joinToString { "${it.key} ${it.value}" }}"
-        summary["settle_parity_s"] = if (gap.parity) tookS else null
-        summary["settle_rows_missing_end"] = gap.missing
-        if (gap.parity) {
-            return Settled("settle: every store held the same ids ${tookS}s after the gather ($missingTrail); $held", true)
-        }
-        return Settled(
-            "settle: no parity ${tookS}s after the gather: ${gap.odd.size} ids odd, ${gap.missing} rows missing on " +
-                "${gap.short} of ${nodes.size} stores ($missingTrail); $held\n" + oddLines(gap, described, nodes),
-            false,
-        )
+        return settledReport(gap, trail, tookS, nodes, summary)
     }
 
     // Every DM sent, read off the recipient's own row (when it arrived) and, with [ticks], the sender's (whether its tick
@@ -835,9 +839,10 @@ class MeshSim(
         const val MS_PER_S = 1_000L
         const val LOG_CLEAR_MS = 30_000L
 
-        /** Two rounds of the 60 s re-offer and some: what a frame left in custody needs to cross the gathered field. */
-        const val GATHER_MS = 180_000L
         const val GATHER_POLL_MS = 1_000L
+
+        /** How long past the settle the DMs it delivered may take to show as arrived. */
+        const val SETTLE_ARRIVALS_MS = 30_000L
 
         const val HELD_POLL_MS = 250L
 

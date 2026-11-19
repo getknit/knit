@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.sim
 
+import app.getknit.knit.mesh.lab.LabNode
 import app.getknit.knit.mesh.lab.MeshLab
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -60,6 +61,66 @@ class MeshSimGatherTest {
             assertTrue("a DM never arrived:\n${report.text}", report.neverArrived.isEmpty())
         }
 
+    /**
+     * A gather that delivers nothing in its window: every link it raises is held both ways from before its ends are told
+     * of it ([GatherSeam]) until the gather's report has read what is missing, so every DM is, and the settle then carries
+     * them. What decides the verdict is what never arrived, so the outing goes to the oracle and converges rather than
+     * reading the gather's misses as stranded.
+     */
+    @Test
+    fun aDmTheGathersWindowMissedAndTheSettleCarriedIsNotStranded() =
+        runBlocking {
+            val scenario =
+                SimScenario(
+                    seed = 1,
+                    walkers = WALKERS,
+                    durationMs = BLINK_MS,
+                    fieldM = APART_M,
+                    motion = Motion.GROUPS,
+                    friends = Friends.Circle.NAME,
+                    awayShare = 1.0,
+                    dmMeanMs = DM_MEAN_MS,
+                    gatherMs = 0,
+                    settleMs = SETTLE_MS,
+                )
+            val held = HoldTheGather()
+            val report = MeshSim(lab, scenario, held).play()
+            val summary =
+                report.text
+                    .lineSequence()
+                    .map(String::trim)
+                    .filter { "=" in it }
+                    .associate { it.substringBefore('=') to it.substringAfter('=') }
+            // The premise: the walk linked nobody across the groups, and the gather was read with every DM missing.
+            assertTrue("no DM was sent:\n${report.text}", report.dmsSent > 0)
+            assertEquals("the walk linked the groups:\n${report.text}", "0", summary["contacts_made"])
+            assertTrue("the gather raised no link to hold", held.links.isNotEmpty())
+            assertEquals("the gather was read with DMs in:\n${report.text}", report.dmsSent.toString(), summary["gather_dms_missing"])
+            assertEquals("the settle left a DM missing:\n${report.text}", "0", summary["settle_dms_still_missing"])
+            assertTrue("a DM the settle carried read as stranded:\n${report.text}", report.neverArrived.isEmpty())
+            assertTrue("never converged:\n${report.text}", report.converged)
+        }
+
+    // Holds both ways of every link the ring gather raises, from before a frame can cross, until its report has read.
+    private class HoldTheGather : GatherSeam {
+        var links: List<Pair<LabNode, LabNode>> = emptyList()
+
+        override fun linked(links: List<Pair<LabNode, LabNode>>) {
+            this.links = links
+            links.forEach { (a, b) ->
+                a.transport.hold(b.transport)
+                b.transport.hold(a.transport)
+            }
+        }
+
+        override suspend fun read() {
+            links.forEach { (a, b) ->
+                a.transport.release(b.transport)
+                b.transport.release(a.transport)
+            }
+        }
+    }
+
     private companion object {
         const val WALKERS = 6
 
@@ -72,5 +133,12 @@ class MeshSimGatherTest {
 
         // Small enough that the walk-in takes seconds, not minutes.
         const val FIELD_M = 40.0
+
+        // Gates far past the radio's connect range, so only the gather links the groups.
+        const val APART_M = 1_000.0
+
+        // Long enough for the held DMs to cross on a slow runner, and short of the oracle's wait, so the oracle still
+        // judges custody.
+        const val SETTLE_MS = 60_000L
     }
 }

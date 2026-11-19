@@ -77,6 +77,7 @@ fun SimScenario.summaryValues(): List<Pair<String, Any?>> =
         "inbound_slots" to inboundSlots,
         "gather" to gather,
         "settle_minutes" to settleMs / MS_PER_MINUTE,
+        "gather_s" to gatherMs / MS_PER_SECOND,
         "motion" to motion,
         "groups" to GroupSizes.of(groups, groupSize).name,
         "friends" to friends,

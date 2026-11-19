@@ -1237,12 +1237,16 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
     minute there, and 68–81 rows are a floor of profiles, intros and receipts. The walk uses 0.06–0.27 cores.
   - **A ring gather fills every store.** At a 60 s DM gap the walk-only run stays under the cap, but the gather's
     merged field does not: 45 of 48 stores at the cap a minute in, parity 289 s after it (pass).
-  - **Group chats deliver but never settle.** Posts every 60 s: 100% reached their members by the end, yet the
-    field held 1,011 live ids against the 1,000-row cap, so the stores keep different sets for good (`unsettled`).
+  - **Group chats deliver, and settle once the seen window lapses.** Posts every 60 s: 100% reached their members by
+    the end. The field held 1,011 live ids against the 1,000-row cap. A 10-minute settle ended at the floor (every
+    store 11 short, 22 ids split; `unsettled`). With a 30-minute settle, every store held the same 1,000 at 675 s and
+    the oracle passed. A store refuses a frame it evicted for the router's 10-minute seen window, so the overflow waits
+    that out.
   - **A backlog starts the walk full.** 100 or 300 messages each: 346–1,000 rows at the walk's start, 46 of 48 stores
     at the cap a minute in, the backlog 98–99% of custody and the walk 1.2–1.3 cores. DMs fare as without one (31% in
     the run, none lost for good), but a few partitioned ones miss the gather's 180 s and arrive in the settle, which
-    the verdict counts as stranded, and 1,344–1,410 live ids never settle.
+    then read as stranded. The verdict now judges what the settle left missing, so these outings fail only on
+    `unsettled`: 1,344–1,410 live ids, not settled within the 10-minute settle (a longer one not yet run).
 - **What it leaves out.** One plane, no path loss and none of the transports' own dial policies: `LabTransport` stands
   in for the whole radio, so the topology is the geometry's (and, under `ble1m`, a nearest-first budget's), not what
   Bluetooth or Wi-Fi Aware would have formed. `disc` has no link budget; `ble1m`'s is a measured rate, not yet a
