@@ -172,6 +172,13 @@ class MeshcoreContactsTest {
         assertTrue(MeshcoreNames.forKey(bob).startsWith("Knit "))
         assertFalse("a routed copy is not Knit's record", MeshcoreContacts.isKnitRecord(foreign(bob, outPathLen = 2)))
         assertFalse("another name is not", MeshcoreContacts.isKnitRecord(foreign(bob, name = "Bob Smith")))
+        // ADR 2026-11.f4d3: a peer's own advert names its contact; the routing is what the reconcile and a teach read.
+        assertTrue(
+            "renamed by the peer's advert, it still routes as Knit's",
+            MeshcoreContacts.isKnitRouting(foreign(bob, name = "Bob Smith")),
+        )
+        assertFalse(MeshcoreContacts.isKnitRouting(foreign(bob, outPathLen = 2)))
+        assertFalse(MeshcoreContacts.isKnitRouting(foreign(bob, flags = 0)))
     }
 
     private fun foreign(
@@ -198,12 +205,24 @@ class MeshcoreContactsTest {
         val changed = key()
         val missing = key()
         val stranger = key()
-        val listing = listOf(ContactRecord.knit(kept, MeshcoreNames.forKey(kept)), foreign(changed, name = "Bob"), foreign(stranger))
-        val plan = MeshcoreContacts.plan(listOf(kept, changed, missing), listing, listedCount = 3, capacity = 10)
+        val renamed = key()
+        val listing =
+            listOf(
+                ContactRecord.knit(kept, MeshcoreNames.forKey(kept)),
+                foreign(changed, outPathLen = 2),
+                foreign(stranger),
+                // A taught peer whose own board carries a handle: its advert renamed the contact (lora N4).
+                foreign(renamed, name = "Wren"),
+            )
+        val plan = MeshcoreContacts.plan(listOf(kept, changed, missing, renamed), listing, listedCount = 4, capacity = 10)
         assertEquals(listOf(b64(stranger)), plan.removals.map(::b64))
-        assertEquals(listOf(b64(changed)), plan.overwrites.map(::b64))
+        assertEquals("only a routing change is rewritten", listOf(b64(changed)), plan.overwrites.map(::b64))
         assertEquals(listOf(b64(missing)), plan.teaches.map(::b64))
-        assertEquals(listOf(b64(kept)), plan.verified.map(::b64))
+        assertEquals(
+            "a renamed taught contact is verified, no flash written (ADR 2026-11.f4d3)",
+            listOf(b64(kept), b64(renamed)),
+            plan.verified.map(::b64),
+        )
         assertTrue(plan.contested.isEmpty())
         assertEquals(0, plan.deferred)
     }
@@ -212,7 +231,7 @@ class MeshcoreContactsTest {
     fun theReconcileIsBoundedPerReadySoASecondClientCannotChurnTheFlash() {
         val taught = List(4) { key() }
         val strangers = List(40) { key() }
-        val listing = strangers.map { foreign(it) } + taught.map { foreign(it, name = "renamed") }
+        val listing = strangers.map { foreign(it) } + taught.map { foreign(it, outPathLen = 3) }
         val plan = MeshcoreContacts.plan(taught, listing, listing.size, capacity = 100, maxRemovals = 16, maxOverwrites = 2)
         assertEquals(16, plan.removals.size)
         assertEquals(2, plan.overwrites.size)

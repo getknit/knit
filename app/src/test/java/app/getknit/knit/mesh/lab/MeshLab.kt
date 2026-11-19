@@ -154,6 +154,7 @@ import app.getknit.knit.mesh.lora.meshcore.FakeNusChannel
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreDialer
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreForget
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreForgetResult
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreHooks
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreSession
 import app.getknit.knit.mesh.lora.meshcore.NusChannel
@@ -2538,8 +2539,11 @@ class LabNode internal constructor(
      * The MeshCore room's outbound half (Stage 6), as `di/MeshModule` wires it: this node's own MeshCore plane, and only
      * while a MeshCore board is the bound one ([postToMeshcorePublic]).
      */
-    private suspend fun postToOwnMeshcore(body: String): PublicChannelAnswer =
-        postToMeshcorePublic(settings.boundBoardKind.first(), meshcore?.let { plane -> plane::postPublic }, body)
+    private suspend fun postToOwnMeshcore(
+        body: String,
+        consented: MeshcoreHandle?,
+    ): PublicChannelAnswer =
+        postToMeshcorePublic(settings.boundBoardKind.first(), meshcore?.let { plane -> plane::postPublic }, body, consented)
 
     /** What became of the MeshCore room's queued posts (Stage 6): this boot's plane's ends by row id, or none without one. */
     private fun meshcorePostsEnded(): Flow<PublicPostEnd> = meshcore?.let { meshcorePostEnds(it.publicPostsEnded) } ?: emptyFlow()
@@ -3011,12 +3015,21 @@ class LabNode internal constructor(
 
     /**
      * Posts [text] in a bridged board room ([room], the MeshCore one by default) as its composer does once the consent
-     * sheet is past (`MeshManager.sendPublicPost`): the board's Public channel, and our own row under the post's id.
+     * sheet is past (`MeshManager.sendPublicPost`): the board's Public channel, and our own row under the post's id. The
+     * consent is made under [consented]: the MeshCore board's name as this node's face shows it now, as the composer reads
+     * it (ADR 2026-11.f4d3), unless a scenario says otherwise.
      */
     suspend fun postPublic(
         text: String,
         room: String = Conversations.MESHCORE_PUBLIC,
-    ): PublicPostOutcome = spaced { manager.sendPublicPost(room, text) }
+        consented: MeshcoreHandle? = meshcoreHandle(),
+    ): PublicPostOutcome = spaced { manager.sendPublicPost(room, text, consented) }
+
+    /** The bound MeshCore board's name as this node's plane face shows it ([MeshcoreBoardFace.handle]), or null. */
+    fun meshcoreHandle(): MeshcoreHandle? {
+        val face = meshcore?.status?.value ?: return null
+        return face.meshcore?.handle
+    }
 
     /** The call ids whose end this node's call layer has written to its settings file (C-3.4-3). */
     suspend fun savedCallTombs(): Set<String> = CallTombStore(dataStore).load().mapTo(HashSet()) { it.id }

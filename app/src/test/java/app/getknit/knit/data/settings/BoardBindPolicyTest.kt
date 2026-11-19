@@ -41,6 +41,22 @@ class BoardBindPolicyTest {
     private val loraPrior = intPreferencesKey("lora_prior_node_info_secs")
     private val meshcoreSetup = stringPreferencesKey(SettingsKeys.MESHCORE_SETUP_ADDRESS)
 
+    /**
+     * The custom-name post consent (ADR 2026-11.f4d3) covered one MeshCore board's chosen name: binding another MeshCore board
+     * ends it, rebinding the same one or binding a Meshtastic board does not (security-reviewer).
+     */
+    @Test
+    fun bindingAnotherMeshcoreBoardEndsTheCustomNameConsent() {
+        val customName = booleanPreferencesKey(SettingsKeys.MESHCORE_POST_CONSENT_CUSTOM_NAME)
+        val prefs = mutablePreferencesOf(BoardKeys.MESHCORE.address to "BB:BB", customName to true)
+        BoardBindPolicy.bind(prefs, BoardKind.MESHCORE, address = "BB:BB", name = "MeshCore board")
+        assertEquals("the same board again: kept", true, prefs[customName])
+        BoardBindPolicy.bind(prefs, BoardKind.MESHTASTIC, address = "AA:AA", name = "Meshtastic board")
+        assertEquals("a Meshtastic board posts under no MeshCore name: kept", true, prefs[customName])
+        BoardBindPolicy.bind(prefs, BoardKind.MESHCORE, address = "CC:CC", name = "MeshCore board")
+        assertNull("another MeshCore board: ended", prefs[customName])
+    }
+
     @Test
     fun bindingMeshcoreClearsMeshtasticsIdentityAndNothingShared() {
         val prefs =

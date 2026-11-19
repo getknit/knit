@@ -104,6 +104,16 @@ internal interface BoardTraits {
         knitAead: Boolean,
     ): PacketPrice
 
+    /**
+     * A public post's [price] from a board whose name is [nameBytes] long (null: not known), where the firmware writes the
+     * name before the text (MeshCore's `"%s: "`, ADR 2026-11.f4d3): the bytes it adds and the cap less them. A kind that
+     * writes no name answers [price] as it is.
+     */
+    fun publicPrice(
+        price: PacketPrice,
+        nameBytes: Int?,
+    ): PacketPrice = price
+
     /** The bytes a packet with a [payloadBytes] payload at [price] puts on the air, every header, pad and signature in. */
     fun phyBytes(
         payloadBytes: Int,

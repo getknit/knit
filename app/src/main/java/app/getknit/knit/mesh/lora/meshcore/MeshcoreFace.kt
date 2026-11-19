@@ -14,7 +14,8 @@ private const val MV_PER_VOLT = 1_000f
  * ([lastShares]). The Ready board's firmware (cleaned), radio, default scope and battery — in millivolts, the only reading
  * MeshCore gives — only while it is Ready on the bound address; whether it airs a position as last read there, kept while it
  * is away; and the setup state off this phone's record for the bound address, away too, [BoardSetupState.UNKNOWN] for anything
- * else. Counts and booleans: never a name, a key, a digest or a record's field. Pure; `MeshcoreHooks.statusOf` calls it under
+ * else. Counts and booleans, and the Ready board's own advert name, its owner's handle (ADR 2026-11.f4d3), with its default
+ * and whether it may lead a post: never a key, a digest or a record's field. Pure; `MeshcoreHooks.statusOf` calls it under
  * the core's status lock.
  */
 internal fun meshcoreFaceOf(
@@ -37,5 +38,9 @@ internal fun meshcoreFaceOf(
         batteryMv = battery?.voltage?.takeIf { detail != null }?.let { (it * MV_PER_VOLT).roundToInt() },
         sharesPosition = lastShares?.takeIf { bound != null && it.first == bound }?.second,
         setup = view?.takeIf { bound != null && it.address == bound }?.state ?: BoardSetupState.UNKNOWN,
+        handle = detail?.handle,
+        namedDefault = detail?.namedDefault == true,
+        handleUnpostable = detail != null && !detail.namePostable,
+        defaultName = detail?.let { MeshcoreNames.forKey(it.publicKey) },
     )
 }

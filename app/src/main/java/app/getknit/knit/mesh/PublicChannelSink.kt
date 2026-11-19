@@ -57,11 +57,24 @@ enum class PublicPostRefusal {
     KNIT_ON_PRIMARY,
 
     /**
-     * The board is not set up for Knit on this phone (MeshCore, ADR 2026-11.gsqu's Stage 6 amendment): its name is not
-     * Knit's `Knit xxxx` or this phone holds no consent for it, and the firmware puts the board's own name in front of every
-     * post — which may be the user's real name.
+     * The board is not set up for Knit on this phone (MeshCore, ADR 2026-11.gsqu's Stage 6 amendment): this phone holds no
+     * consent for it. Its name is asked apart since ADR 2026-11.f4d3 ([NAME_CHANGED], [NAME_UNPOSTABLE]).
      */
     NOT_SET_UP,
+
+    /**
+     * The MeshCore board's name is not the one the post was consented under (ADR 2026-11.f4d3): the firmware puts the board's
+     * own name, its owner's handle, in front of every post, and another app renamed it — at the composer's post, or while the
+     * post waited for the air (then it ends at the write, unaired). The composer shows the new name and asks again.
+     */
+    NAME_CHANGED,
+
+    /**
+     * The MeshCore board's name cannot lead a Public post (ADR 2026-11.f4d3): another app wrote one holding `": "`, a
+     * control or bidi override, or bytes that are not UTF-8, which receivers would split or draw as something else. Rename
+     * the board.
+     */
+    NAME_UNPOSTABLE,
 
     /**
      * The board's public slot holds no channel (MeshCore's slot 0 cleared: a post would air under the all-zero key and reach

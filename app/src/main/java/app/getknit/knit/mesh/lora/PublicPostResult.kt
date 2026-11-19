@@ -45,10 +45,16 @@ internal data class PublicPostEnded(
         STALE,
 
         /**
-         * Given up at the write: the board was no longer set up for Knit, slot 0 no longer a channel, the board refused it —
-         * or the write's answer never came, in which case it may have aired after all.
+         * Given up at the write with its fate unknown: the write's answer never came, so it may have aired after all.
          */
         ENDED_AT_WRITE,
+
+        /**
+         * Refused at the write before the board took it, never aired (ADR 2026-11.f4d3's review): the board no longer set up
+         * for Knit, slot 0 no longer a channel, the board's name not the one consented or not postable, or the firmware's
+         * `ERR` on the channel text. Nothing was written to the air and nothing booked.
+         */
+        REFUSED_AT_WRITE,
     }
 }
 

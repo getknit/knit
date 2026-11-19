@@ -1,7 +1,6 @@
 package app.getknit.knit.mesh.lora.meshcore
 
 import app.getknit.knit.mesh.PublicPostRefusal
-import app.getknit.knit.mesh.lora.AirPurpose
 import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.Destination
 import app.getknit.knit.mesh.lora.FragmentOutcome
@@ -28,9 +27,11 @@ import java.util.concurrent.atomic.AtomicLong
  * renders slot 0 on the plane's face ([face]). Made by the hooks, over the same session, core and counters.
  *
  * A heard text is judged ([MeshcorePublicJudge]) and handed to the room as a stranger's, never a hearing. The user's own
- * post leaves only from a board set up for Knit (named `Knit xxxx`, consented: the firmware prefixes the board's own name,
- * which may be the user's real one — lora B1, security B2), under the flood ceiling beside Knit's room posts, one per 30 s,
- * its stamp fixed at enqueue. Nothing about a post is ever logged: counters, sizes and reasons only (security N8).
+ * post leaves only from a board set up for Knit (consented), under the name the user's consent decision saw: the firmware
+ * prefixes the board's own name, which is its owner's handle and may be their real name (ADR 2026-11.f4d3, amending lora B1
+ * / security B2), so a post is refused when the name moved since, or breaks the postable rules. Under the flood ceiling
+ * beside Knit's room posts, one per 30 s, its stamp and the name fixed at enqueue. Nothing about a post is ever logged:
+ * counters, sizes and reasons only (security N8).
  *
  * State: the floor's stamp, an atomic (a post comes from `MeshManager`'s coroutine, the texts from the packet collector);
  * the keys of the posts still queued, under their own monitor (the enqueue on `MeshManager`'s coroutine, the write on the
@@ -125,42 +126,56 @@ internal class MeshcorePublicChannel(
         return PublicChannelFace(
             name = slot.name,
             keyIsPublic = slot.keyIsPublic,
-            postable = setUpForKnit(detail) && !slot.empty && !slot.knit,
+            postable = setUpForKnit() && detail.namePostable && !slot.empty && !slot.knit,
         )
     }
 
     /**
-     * The board is set up for Knit on this phone, by the Ready and this connection's consent: named `Knit xxxx` (so the
-     * firmware's prefix is Knit's 11 B and never a person's name) and consented.
+     * The board is set up for Knit on this phone, by this connection's consent. Its name is the owner's handle and no part of
+     * it since ADR 2026-11.f4d3: [post] asks the name apart (postable, and the one consented).
      */
-    private fun setUpForKnit(detail: MeshcoreDetail): Boolean = detail.namedForKnit && consent() == true
+    private fun setUpForKnit(): Boolean = consent() == true
 
     /**
      * Puts the user's post on the board's slot 0, or says why not, from `MeshManager`'s coroutine. Each guard is asked here,
      * so each refusal is counted and named, in this order:
      * - [PublicPostRefusal.ROOM_OFF]: this plane's room switch (`meshcoreRoomEnabled`);
      * - [PublicPostRefusal.NOT_READY]: no Ready board;
-     * - [PublicPostRefusal.NOT_SET_UP]: the board is not named `Knit xxxx`, or this connection holds no consent for it;
+     * - [PublicPostRefusal.NOT_SET_UP]: this connection holds no consent for the board;
+     * - [PublicPostRefusal.NAME_UNPOSTABLE]: the board's name breaks the postable rules ([MeshcoreNames.check]: another app
+     *   wrote a `": "`, a control or bidi override, or bytes that are not UTF-8) — rename the board;
+     * - [PublicPostRefusal.NAME_CHANGED]: [consented], the name the composer's consent decision saw, is not the board's name
+     *   now (another app renamed it, or the user gave no name): the composer asks again under the new prefix;
      * - [PublicPostRefusal.NO_CHANNEL] / [PublicPostRefusal.KNIT_ON_PRIMARY]: slot 0 holds no channel (it would air under the
      *   all-zero key) or Knit's own (lora B2);
      * - [PublicPostRefusal.TOO_SOON]: inside the per-phone floor;
-     * - [PublicPostRefusal.TOO_LARGE]: over [MeshcoreTraits.PUBLIC_TEXT_CAP], empty once a NUL is dropped (no receiver reads
+     * - [PublicPostRefusal.TOO_LARGE]: over the cap under the board's name ([MeshcoreTraits.publicTextCap]: 160 B less the
+     *   name and `": "`), empty once a NUL is dropped (no receiver reads
      *   past one: `strlen`, `MyMesh.cpp:577`), or more than the flood ceiling of an empty window can ever carry (a
      *   [LoraAirtime.Refusal.NEVER], read once the band's duty is known);
      * - [PublicPostRefusal.NO_AIR]: the window's total or the floods' share would not admit it now, at the price the booking
-     *   will charge ([AirPurpose.PUBLIC_POST]: the 11-B prefix included), or the queue would not take it.
+     *   will charge ([LoraAirtime.publicPrice] at the name's length: the `"<name>: "` prefix included), or the queue would
+     *   not take it.
      *
-     * Then the floor is claimed and the post queued under [MeshcoreTraits.publicCeiling] with the sender timestamp fixed now,
-     * which the frame carries to every write of it. The answer's key is the post as receivers will read it (`"Knit xxxx: "` +
-     * the text), what our own row's id is derived from, so an echo of it dedups by id: never by name. Admission reads only what
+     * Then the floor is claimed and the post queued under [MeshcoreTraits.publicCeiling] with the sender timestamp and the
+     * board's name fixed now, which the frame carries to every write of it (its price reads the name; the write refuses it
+     * when the board reads another). The answer's key is the post as receivers will read it (the name's own bytes, `": "`
+     * and the text — never through a `String`, so a name cut mid-character still matches), what our own row's id is derived
+     * from, so an echo of it dedups by id: never by name. Admission reads only what
      * the window has booked, not what is queued: a post admitted behind queued room posts can still be skipped under the
      * ceiling and wait, while its row reads sent (the amendment's accepted gap).
      */
     @Suppress("ReturnCount", "CyclomaticComplexMethod") // one guard per line, each its own refusal, in the brief's order
-    fun post(body: String): PublicPostResult {
+    fun post(
+        body: String,
+        consented: MeshcoreHandle?,
+    ): PublicPostResult {
         if (core.config?.room == false) return refuse(PublicPostRefusal.ROOM_OFF)
         val detail = session.ready?.detail as? MeshcoreDetail ?: return refuse(PublicPostRefusal.NOT_READY)
-        if (!setUpForKnit(detail)) return refuse(PublicPostRefusal.NOT_SET_UP)
+        if (!setUpForKnit()) return refuse(PublicPostRefusal.NOT_SET_UP)
+        if (!detail.namePostable) return refuse(PublicPostRefusal.NAME_UNPOSTABLE)
+        val name = detail.handle
+        if (consented != name) return refuse(PublicPostRefusal.NAME_CHANGED)
         val slot = detail.publicSlot
         if (slot == null || slot.empty) return refuse(PublicPostRefusal.NO_CHANNEL)
         if (slot.knit) return refuse(PublicPostRefusal.KNIT_ON_PRIMARY)
@@ -168,9 +183,10 @@ internal class MeshcorePublicChannel(
         val last = lastPostAt.get()
         if (last != NEVER && now - last < LoraMeshTransport.PUBLIC_POST_FLOOR_MS) return refuse(PublicPostRefusal.TOO_SOON)
         val text = body.replace(NUL, "").encodeToByteArray()
-        if (text.isEmpty() || text.size > MeshcoreTraits.PUBLIC_TEXT_CAP) return refuse(PublicPostRefusal.TOO_LARGE)
+        if (text.isEmpty() || text.size > MeshcoreTraits.publicTextCap(name.size)) return refuse(PublicPostRefusal.TOO_LARGE)
         val airtime = core.airtime
-        val air = airtime.refusal(MeshcoreTraits.publicCeiling, listOf(text.size), now, airtime.price(AirPurpose.PUBLIC_POST))
+        // At the name's own price, the one the frame's booking reads (OutboundFrame.price over its publicName).
+        val air = airtime.refusal(MeshcoreTraits.publicCeiling, listOf(text.size), now, airtime.publicPrice(name.size))
         // Never on this band, whatever the window: too large, not a wait. On the fallback duty (a board that reported no sane
         // radio) it may fit once a real one lands, so that is air.
         if (air == LoraAirtime.Refusal.NEVER && airtime.dutyKnown()) return refuse(PublicPostRefusal.TOO_LARGE)
@@ -179,13 +195,12 @@ internal class MeshcorePublicChannel(
         // raced this one past the check claims first, and this one is too soon.
         if (!lastPostAt.compareAndSet(last, now)) return refuse(PublicPostRefusal.TOO_SOON)
         val stamp = wallClock() / MS_PER_SECOND
-        if (!core.enqueuePublic(text, LABEL, MeshcoreTraits.publicCeiling, stamp)) {
+        if (!core.enqueuePublic(text, LABEL, MeshcoreTraits.publicCeiling, stamp, name)) {
             lastPostAt.compareAndSet(now, last)
             return refuse(PublicPostRefusal.NO_AIR)
         }
         counters.publicPostsQueued.incrementAndGet()
-        val prefix = (MeshcoreNames.forKey(detail.publicKey) + SEPARATOR).encodeToByteArray()
-        val key = PublicPostKey(stamp, prefix + text)
+        val key = PublicPostKey(stamp, name.bytes + SEPARATOR.encodeToByteArray() + text)
         synchronized(pending) {
             pending[pendingKey(stamp, text)] = key
             while (pending.size > PENDING_MAX) pending.remove(pending.keys.first())
@@ -211,7 +226,13 @@ internal class MeshcorePublicChannel(
         reason: PublicPostEnded.Reason,
     ) {
         counters.publicPostsEnded.incrementAndGet()
-        log(if (reason == PublicPostEnded.Reason.STALE) "lora public post stale at the write" else "lora public post ended at the write")
+        log(
+            when (reason) {
+                PublicPostEnded.Reason.STALE -> "lora public post stale at the write"
+                PublicPostEnded.Reason.REFUSED_AT_WRITE -> "lora public post refused at the write"
+                PublicPostEnded.Reason.ENDED_AT_WRITE -> "lora public post ended at the write"
+            },
+        )
         takeKey(stamp, text)?.let { endedFlow.tryEmit(PublicPostEnded(it, reason)) }
     }
 
@@ -227,8 +248,9 @@ internal class MeshcorePublicChannel(
      * else, or a frame with no stamp, is never written. OWED is back on the queue (a busy board, a session gone under it) and
      * keeps its stamp. A post past its `freshUntil` ([LoraFramePolicy.FRESH_MS] after its stamp, set at enqueue) is never
      * written: kind frames skip the core's stale check, and airing it under an old stamp would file it hours back on a stock
-     * client and new on a Knit one. Every end without airing is reported on [ended]. Never fragmented: one channel text is the
-     * whole post. Called on the pacer.
+     * client and new on a Knit one. Every end without airing is reported on [ended]: a refusal before the board took it
+     * ([FragmentOutcome.REFUSED]: the session's gate, the name, the firmware's `ERR`) as never sent, a write whose answer
+     * never came as one that may have aired. Never fragmented: one channel text is the whole post. Called on the pacer.
      */
     suspend fun send(
         frame: OutboundFrame,
@@ -239,13 +261,17 @@ internal class MeshcorePublicChannel(
         if (frame.destination != Destination.Public || stamp == null) return
         val freshUntil = frame.gate.freshUntil
         if (freshUntil != null && wallClock() > freshUntil) return ended(stamp, message, PublicPostEnded.Reason.STALE)
-        when (send(message, SendPurpose.PublicPost(stamp))) {
+        when (send(message, SendPurpose.PublicPost(stamp, frame.publicName))) {
             FragmentOutcome.OWED -> {
                 return
             }
 
             FragmentOutcome.ENDED -> {
                 ended(stamp, message, PublicPostEnded.Reason.ENDED_AT_WRITE)
+            }
+
+            FragmentOutcome.REFUSED -> {
+                ended(stamp, message, PublicPostEnded.Reason.REFUSED_AT_WRITE)
             }
 
             FragmentOutcome.SENT -> {

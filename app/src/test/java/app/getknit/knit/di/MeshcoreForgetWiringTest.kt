@@ -60,6 +60,7 @@ class MeshcoreForgetWiringTest {
             label: String,
             ceiling: Ceiling,
             timestampSecs: Long,
+            name: app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle,
         ): Boolean = false
 
         override fun limitersMoved() = Unit

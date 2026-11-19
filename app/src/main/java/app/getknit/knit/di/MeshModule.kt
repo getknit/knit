@@ -532,6 +532,14 @@ val meshModule =
                 // is the stores' real state (Room and DataStore flows, combined), never a placeholder: an empty map is a taught
                 // set of nothing, which the Ready reconcile turns into removals (`meshcoreBoardHolders` adds no start value).
                 boardMap = { meshcoreBoardHolders(flow { emitAll(get<MeshManager>().meshcoreBoardMap()) }) },
+                // The custom-name post consent lasts until the board is under its default again (ADR 2026-11.f4d3): watched
+                // on the app's scope for as long as the plane exists, whatever screen is open.
+                onBuilt = { transport ->
+                    val settings = get<SettingsStore>()
+                    get<CoroutineScope>().launch {
+                        meshcoreCustomNameConsentReset(transport.status, settings::clearMeshcoreCustomNameConsent)
+                    }
+                },
             )
             // The Forget (ADR 2026-11.gsqu's Stage 7 amendment): the radio screen's and the bridge's one path, on the app's scope.
             single {
@@ -611,7 +619,7 @@ val meshModule =
                 blobMetered = get<InternetGate>()::isMetered,
                 publicChannel = { body -> get<PublicChannelSink>(loraPlane(BoardKind.MESHTASTIC)).postToPublicChannel(body) },
                 // The MeshCore room's (Stage 6): its own kind's plane, and only while a MeshCore board is the bound one.
-                meshcorePublicChannel = { body ->
+                meshcorePublicChannel = { body, consented ->
                     postToMeshcorePublic(
                         bound = get<SettingsStore>().boundBoardKind.first(),
                         postPublic =
@@ -623,6 +631,7 @@ val meshModule =
                                 null
                             },
                         body = body,
+                        consented = consented,
                     )
                 },
                 // ...and what became of a post it queued: resolved at collection, as the plane is lazy.

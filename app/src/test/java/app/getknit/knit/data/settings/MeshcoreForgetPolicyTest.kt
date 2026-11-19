@@ -32,6 +32,10 @@ class MeshcoreForgetPolicyTest {
     private val meshcoreBind = stringPreferencesKey("meshcore_board_bind")
     private val meshtasticAddress = stringPreferencesKey("lora_device_address")
 
+    // The post consent's custom-name bit (ADR 2026-11.f4d3): a Forget ends it, the consent itself stands.
+    private val consented = booleanPreferencesKey("meshcore_post_consented")
+    private val customName = booleanPreferencesKey("meshcore_post_consent_custom_name")
+
     private fun bound() =
         mutablePreferencesOf(
             meshcoreAddress to "CC:CC",
@@ -50,6 +54,31 @@ class MeshcoreForgetPolicyTest {
         for (key in listOf(meshcoreAddress, meshcoreName, meshcoreKey, meshcoreBind)) assertNull(key.name, prefs[key])
         assertEquals(false, prefs[loraEnabled])
         assertEquals("the DM switch is the user's", false, prefs[loraDmEnabled])
+    }
+
+    /**
+     * Security-reviewer: a consent that covered the forgotten board's chosen name must not cover the next board's, nor this one
+     * once it is set up again under `Knit abcd`. The post consent itself is the user's and stays.
+     */
+    @Test
+    fun aForgetEndsTheCustomNameConsentAndKeepsThePostConsent() {
+        val prefs =
+            bound().apply {
+                this[consented] = true
+                this[customName] = true
+            }
+        assertTrue(MeshcoreForgetPolicy.forget(prefs, "CC:CC", loraEnabled))
+        assertNull(prefs[customName])
+        assertEquals(true, prefs[consented])
+
+        val since =
+            bound().apply {
+                this[customName] = true
+                this[meshcoreAddress] = "DD:DD"
+            }
+        assertFalse(MeshcoreForgetPolicy.forget(since, "CC:CC", loraEnabled))
+        assertEquals("a Forget that did not land ends nothing", true, since[customName])
+        assertFalse("a withdrawal keeps it: the board is still bound", MeshcoreForgetPolicy.withdrawClaim(since, "CC:CC"))
     }
 
     @Test

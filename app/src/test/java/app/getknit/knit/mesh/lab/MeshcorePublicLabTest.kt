@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.lora.GattResult
 import app.getknit.knit.mesh.lora.LoraFramePolicy
+import app.getknit.knit.mesh.lora.MeshcoreRenameResult
 import app.getknit.knit.mesh.lora.meshcore.FakeMeshcoreAir
 import app.getknit.knit.mesh.lora.meshcore.FakeNusChannel
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreNames
@@ -279,6 +280,51 @@ class MeshcorePublicLabTest {
             assertNull("still her own", rows.single().originNode)
             assertEquals(alice.nodeId, rows.single().senderId)
             assertTrue("no line for her own words", alice.meshcoreLines().none { it.body == text })
+            converge(alice, bob)
+        }
+
+    /**
+     * ADR 2026-11.f4d3: the board's name is its owner's handle. Alice names hers in Knit — 31 B, the firmware's longest, an
+     * emoji in it — and posts under it: refused one byte past the name's own cap (127, never 149), taken at 127; Bob mirrors
+     * it as a stranger under exactly that name, under the id Alice's own row took (the name's bytes in the key); and her own
+     * echo, re-aired after her board's ring forgot it, dedups to her one row.
+     */
+    @Test
+    fun aPostUnderTheOwnersHandleKeepsOneIdItsEchoDedupsAndItCarriesTheNamesCap() =
+        runBlocking {
+            val air = lab.meshcoreAir(channel = true)
+            air.meshcoreEdit { repeater("relay", "alice", "bob") }
+            val (alice, bob) = boards(air, "alice", "bob")
+            val handle = "Ana \uD83C\uDF32 from the north ridge!!"
+            assertEquals(31, handle.encodeToByteArray().size)
+            assertEquals(MeshcoreRenameResult.DONE, checkNotNull(alice.meshcore).renameMeshcore(handle))
+            // The rename's Ready reaches the face on the plane's board-state collector, after the call returns: awaited there,
+            // as the composer reads it.
+            assertTrue(
+                "the face never carried the handle",
+                lab.tryAwait(1) { if (alice.meshcoreHandle()?.text == handle) 1 else 0 },
+            )
+            val face = checkNotNull(alice.meshcore).status.value.meshcore
+            assertEquals("the board's name is no longer the default", false, face?.namedDefault)
+            val text = "north gate " + "x".repeat(116)
+            assertEquals(127, text.encodeToByteArray().size)
+
+            assertEquals(PublicPostOutcome.Refused(PublicPostRefusal.TOO_LARGE), alice.postPublic(text + "x"))
+            air.meshcoreEdit { hold("relay") }
+            val handled = alice.meshcorePostsHandled.get()
+            assertEquals(PublicPostOutcome.Queued, alice.postPublic(text))
+            val own = alice.mirrored(text).single()
+            lab.await(1) { air.snapshot { air.parked("relay").count { it.type == "grp_txt" } } }
+            air.meshcoreEdit {
+                evictRing("alice")
+                release("relay")
+            }
+            val heard = awaitMirrored(bob, text)
+            assertEquals("one id for both sides of the post", own.id, heard.id)
+            assertStranger(bob, heard, handle)
+            lab.await(1) { alice.meshcorePostsHandled.get() - handled }
+            assertEquals("her echo is her own row: ${alice.rowsIn(Conversations.MESHCORE_PUBLIC)}", 1, alice.mirrored(text).size)
+            assertNull(alice.mirrored(text).single().originNode)
             converge(alice, bob)
         }
 

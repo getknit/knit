@@ -1051,8 +1051,10 @@ have held it. RADIO stats feed `BoardAir` over a ≥ 60 s ring
   (`GET_CONTACTS` past every `lastmod` is the count read), so overwrite-oldest never evicts the user's own; `readContact`,
   `removeContact`, `resetPath` read back what they did.
 - **Setup and restore** (`MeshcoreSetupRecord`). Reads first; then auto-add (chat and overwrite-oldest off), `[38, 1]`,
-  the `Knit abcd` name and the channel, each read back, the channel last; a failure puts back what it wrote. Restore puts
-  back each value only where the board still shows Knit's, and reports the rest (`leftAsFound`). The radio, the PIN and
+  the `Knit abcd` name (only on a board this phone holds no record for; a re-setup keeps the board's name) and the channel,
+  each read back, the channel last; a failure puts back what it wrote. Restore puts back each value only where the board
+  still shows Knit's, and reports the rest (`leftAsFound`): a handle the user chose stays. `rename` writes
+  `SET_ADVERT_NAME` alone, behind the set-up gate, read back, and never touches the record (ADR 2026-11.f4d3). The radio, the PIN and
   the keys are never touched; the encoder cannot even write them (`MeshcoreProto.ENCODED_COMMANDS`, pinned).
 - **Room posts** are `SEND_CHANNEL_DATA` on the bound slot, flooded, `data_type` `0xFFFF` (`DATA_TYPE_DEV`) until
   MeshCore registers Knit's; the slot is re-read when its last read is over 60 s old and refused when it is not Knit's.
@@ -1238,14 +1240,16 @@ the hooks dropped meanwhile ends `NOT_FOUND`, so the removal they queued behind 
 `meshcoreLiveTeachesWritten` / `…Failed` / `…Deferred`, `meshcoreReconcilesDropped`.
 
 ```
-Ready ──(taught set known, board set up for Knit: Knit slot + `Knit abcd`)──► GET_CONTACTS since 0  (one a Ready)
+Ready ──(taught set known, board set up for Knit: Knit slot + consent)──► GET_CONTACTS since 0  (one a Ready)
    └─ MeshcoreContacts.plan: remove the untaught (≤ 16) → overwrite the changed (≤ 16) → write the missing (room)
         one step a tick; a listed Knit record is pinned as read; a short or failed listing removes nothing
 setup: reads → erase (REMOVE_CONTACT each, clear every slot but 0 and Knit's) → writes → plan from what is left
 restore: remove Knit's contacts (one listing) → slot → name, manual add, autoadd → forget the taught set
 ```
 
-**Nothing of the user's is touched off a board set up for Knit** (Knit's slot and `Knit abcd`): no DM, pin, re-pin,
+**Nothing of the user's is touched off a board set up for Knit** (Knit's slot and consent; since ADR 2026-11.f4d3 the
+board's name is its owner's handle and no part of the gate, so a stock-app rename no longer hands the board back — only
+Restore does): no DM, pin, re-pin,
 teach, path reset or removal (`NO_RECORD` under the send's handle, `ContactWrite.NOT_SET_UP`); only setup's erase and
 Restore's own removals bypass it. The gate also needs this phone's `meshcore_setup` record for the dialled address **and that board's key digest**, not
 pending, on a **bonded** link — the single source of consent, owned by the session's actor: read in the handshake before
@@ -1306,30 +1310,43 @@ section is the plane (6a); the room, its rows and its composer are 6b's.
   secret is `MeshcoreProto.PUBLIC_GROUP_PSK` (`MyMesh.cpp:114`), whether it is empty (unnamed, or the null key) or Knit's;
   never the secret. `MeshcoreHooks.statusOf` renders it as `LoraStatus.publicChannel`, and `LoraStatusRepository` reads a
   MeshCore plane's `primaryChannel`, `primaryKeyIsPublic` and `canPost` from it (posting needs the MeshCore room on, the
-  plane Live, the board named `Knit xxxx` with consent, and slot 0 a channel).
+  plane Live, the board set up with consent, its name postable (`MeshcoreNames.check`), and slot 0 a channel; ADR
+  2026-11.f4d3 took the `Knit xxxx` name out of the condition).
 - **In.** A `CHANNEL_TEXT` on slot 0 routes `KIND` (no hearing on this kind); `onKindPacket` counts it
   (`meshcorePublicHeard`), drops it while `meshcoreRoomEnabled` is off (`…RoomOff`, the plane's own config), judges it
   (`MeshcorePublicJudge`: the companion's `"%s: "` form, `BaseChatMesh.cpp:518-531`; split at the first `": "` behind
   1–31 B) and launches `onPublicPost` with a `MeshcorePublicPost` (name or null, body, `PublicPostKey` of the sender's stamp
   and the raw text, `live`). Replays from the board's 16-frame offline queue are delivered. Data on slot 0 stays discarded.
-- **Out.** `postPublic` (the transport's `postPublic` / `postToPublicChannel`) refuses `ROOM_OFF`, `NOT_READY`,
-  `NOT_SET_UP`, `NO_CHANNEL` / `KNIT_ON_PRIMARY`, `TOO_SOON` (30 s), `TOO_LARGE` (149 B, or what the band's flood ceiling can
-  never carry), `NO_AIR`, in that order; then queues one channel text under `Ceiling.FLOOD` with the wall clock's seconds as
-  its stamp (`OutboundFrame.timestampSecs`) and answers `PublicPostResult.Queued` with the post as receivers read it
-  (`Knit xxxx: ` + the text). At the write the session reads `SELF_INFO` and slot 0 again and refuses a board no longer
-  Knit's or a slot no longer a channel (`MeshcoreRefusal.NOT_SET_UP` / `NO_PUBLIC_SLOT`); a `Busy` retry writes the same
+- **Out.** `postPublic(body, consented)` (the transport's; `postToPublicChannel` carries no consented name and always
+  answers `NAME_CHANGED` on MeshCore) refuses `ROOM_OFF`, `NOT_READY`, `NOT_SET_UP`, `NAME_UNPOSTABLE`, `NAME_CHANGED` (the
+  composer's consented handle is not the board's name now), `NO_CHANNEL` / `KNIT_ON_PRIMARY`, `TOO_SOON` (30 s),
+  `TOO_LARGE` (`publicTextCap`: 160 B less the name and `": "`, 127 B under a 31-B name, or what the band's flood ceiling
+  can never carry), `NO_AIR`, in that order; then queues one channel text under `Ceiling.FLOOD` with the wall clock's
+  seconds as its stamp (`OutboundFrame.timestampSecs`) and the name's bytes (`OutboundFrame.publicName`), and answers
+  `PublicPostResult.Queued` with the post as receivers read it (the name's own bytes + `": "` + the text, never through a
+  `String`). At the write the session reads `SELF_INFO` and slot 0 again and refuses a board no longer Knit's, a name no
+  longer the frame's or no longer postable, or a slot no longer a channel (`MeshcoreRefusal.NOT_SET_UP` / `NAME_CHANGED` /
+  `NAME_UNPOSTABLE` / `NO_PUBLIC_SLOT`). That read and the write are two round trips: a client on the board's other
+  interface can still rename between them, which the firmware gives no way to close. A `Busy` retry writes the same
   stamp, and the refusal republishes the Ready so the face and the enqueue gate follow. A post older than `FRESH_MS` past
   its stamp is never written (`RideGate.freshUntil`, set at enqueue). Every end without airing is reported by key on
-  `LoraMeshTransport.publicPostsEnded` (`PublicPostEnded`: `STALE`, `ENDED_AT_WRITE`). Booked at `phyBytes(PUBLIC_POST)` with the 11-B prefix: 185 B, about 1.16 s, for a 149-B post at SF8 / BW 62.5.
+  `LoraMeshTransport.publicPostsEnded` (`PublicPostEnded`: `STALE` and `REFUSED_AT_WRITE`, which never aired and read "Not
+  sent"; `ENDED_AT_WRITE`, a write with no answer, which may have). Priced from the frame's own name
+  (`OutboundFrame.price` for `Destination.Public`, so admission and booking agree): the prefix is the name + 2 B, and the
+  largest post is always 185 B on air, about 1.16 s at SF8 / BW 62.5, under any name. With no name known it is priced as
+  under a 31-B one.
 - **Oracles.** The MeshCore dump's `meshcorePublicHeard` / `…RoomOff` / `…Refused` / `…Delivered` / `…PostsQueued` /
   `…PostsRefused` / `…PostsSent` / `…PostsEnded`; the lines `lora public post refused: <reason>` (at the enqueue),
-  `lora public post ended at the write` (refused, not set up any more, or unconfirmed), `lora public post stale at the write` and `lora tx public <n>B` (sizes and
+  `lora public post refused at the write` (Knit's gate, the encoder or the firmware refused it: not set up any more, a
+  name changed or unpostable, no slot), `lora public post ended at the write` (unconfirmed), `lora public post stale at the
+  write` and `lora tx public <n>B` (sizes and
   reasons only: no name, text or stamp is ever logged).
 - **Trial recipe** (two V4s at companion v1.18.0, a stock MeshCore client on a third device; not run). Set up board A in
   Knit and enable the MeshCore room. From the stock client post `hello` on Public: A's dump `meshcorePublicDelivered` +1,
-  `meshcorePublicHeard` +1. From Knit post 149 B: the stock client shows `Knit xxxx: <text>` whole, A's `floodUsedMs` rises
-  by about 1.16 s, `lora tx public 149B`. Post again within 30 s: `lora public post refused: TOO_SOON`. Rename A from the
-  stock client over USB, then post: `meshcorePublicPostsEnded` +1 and nothing on the stock client. `grep` logcat for the
+  `meshcorePublicHeard` +1. From Knit post the composer's cap (149 B under `Knit xxxx`, 127 B under a 31-B handle): the
+  stock client shows `<name>: <text>` whole, A's `floodUsedMs` rises by about 1.16 s, `lora tx public <cap>B`. Post again within 30 s: `lora public post refused: TOO_SOON`. Rename A from the
+  stock client over USB, then post: `meshcorePublicPostsEnded` +1, `lora public post refused at the write`, the row reads
+  "Not sent", and nothing on the stock client. `grep` logcat for the
   stock post's words and sender name: zero hits.
 
 ### Stage 7: the radio screen's half (ADR 2026-11.gsqu's Stage 7a amendment)

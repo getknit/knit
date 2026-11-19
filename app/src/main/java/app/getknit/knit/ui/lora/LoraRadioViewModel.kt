@@ -3,6 +3,8 @@ package app.getknit.knit.ui.lora
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.BuildConfig
+import app.getknit.knit.TextLimits
+import app.getknit.knit.clampToUtf16
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.settings.KnitBoardSetup
 import app.getknit.knit.data.settings.SettingsStore
@@ -22,6 +24,7 @@ import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.LoraSlot
 import app.getknit.knit.mesh.lora.LoraStatus
 import app.getknit.knit.mesh.lora.MeshcoreBoardFace
+import app.getknit.knit.mesh.lora.MeshcoreRenameResult
 import app.getknit.knit.mesh.lora.PairingCause
 import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.lora.ProvisionResult
@@ -29,6 +32,11 @@ import app.getknit.knit.mesh.lora.PublicChannelPolicy
 import app.getknit.knit.mesh.lora.ReplaceToken
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreForget
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreForgetResult
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreNameCheck
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreNames
+import app.getknit.knit.moderation.NameScreen
+import app.getknit.knit.moderation.ShownNames
+import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.notifications.Notifier
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -79,12 +87,49 @@ data class MeshcoreRows(
     /** Whether the board may put where it is on the air (null: not read yet); the setup confirmation says so unless false. */
     val sharesPosition: Boolean? = null,
     val setup: MeshcoreSetup = MeshcoreSetup.Unknown,
-)
+    /**
+     * The board's name on the MeshCore network (ADR 2026-11.f4d3), cleaned for one line ([TextLimits.cleanReceived]): the
+     * user's handle, or Knit's `Knit abcd` default. Null while the board is away. Never in a line: [toString] names it not.
+     */
+    val handle: String? = null,
+    /** Whether [handle] is the board's `Knit abcd` default, by its bytes: a lookalike reads as the user's own name. */
+    val namedDefault: Boolean = false,
+    /** Whether [handle] cannot go on the Public channel (another app wrote what `MeshcoreNames.check` refuses). */
+    val handleUnpostable: Boolean = false,
+    /** The board's `Knit abcd` default, which the rename dialog offers back; null while the board is away. */
+    val defaultName: String? = null,
+) {
+    override fun toString(): String =
+        "MeshcoreRows(firmware=$firmware, freqKhz=$freqKhz, spreadFactor=$spreadFactor, bandwidthHz=$bandwidthHz, " +
+            "codingRate=$codingRate, defaultScope=$defaultScope, batteryMv=$batteryMv, sharesPosition=$sharesPosition, " +
+            "setup=$setup, handle=${handle != null}, namedDefault=$namedDefault, handleUnpostable=$handleUnpostable)"
+}
+
+/** Why the rename dialog will not send its draft (ADR 2026-11.f4d3): `MeshcoreNames.check`'s rules, then the name screen. */
+enum class MeshcoreNameProblem { Empty, TooLong, Control, Separator, Flagged }
+
+/** How a rename ended, worth a line under the name row. */
+enum class MeshcoreRenameNotice { Done, Failed, NotReady, NotSetUp }
+
+/**
+ * The open MeshCore rename dialog: the [draft] as typed, its UTF-8 size against the board's limit, and why it can't be sent
+ * yet ([problem]; [MeshcoreNameProblem.Flagged] only once Rename was tapped). Never in a line: [toString] names no draft.
+ */
+data class MeshcoreRenameUi(
+    val draft: String,
+    val bytes: Int,
+    val problem: MeshcoreNameProblem? = null,
+    val running: Boolean = false,
+) {
+    override fun toString(): String = "MeshcoreRenameUi(bytes=$bytes, problem=$problem, running=$running)"
+}
 
 /** What a MeshCore setup would erase, read when its confirmation opens: counts, null for one the board did not answer. */
 data class MeshcoreErase(
     val contacts: Long?,
     val slots: Int?,
+    /** Whether the setup will rename the board `Knit abcd` (a board this phone never set up); a re-setup keeps its name. */
+    val renames: Boolean = true,
 )
 
 /** A MeshCore Forget's answer worth a line: it failed (ask again), or the board was not the one Knit set up. */
@@ -233,6 +278,9 @@ data class LoraRadioUiState(
     /** A MeshCore Forget is running (it may wait on the board's session). */
     val forgetting: Boolean = false,
     val forgetNotice: MeshcoreForgetNotice? = null,
+    /** The MeshCore rename dialog, while open (ADR 2026-11.f4d3). */
+    val meshcoreRename: MeshcoreRenameUi? = null,
+    val meshcoreRenameNotice: MeshcoreRenameNotice? = null,
 )
 
 /**
@@ -251,6 +299,8 @@ internal class LoraRadioViewModel(
     private val meshcore: LoraPlaneStatus? = null,
     /** The one Forget of a bound MeshCore board (`MeshcoreForget`), beside [meshcore]. */
     private val forget: MeshcoreForget? = null,
+    /** The name screen a MeshCore name typed here passes before it is written (ADR 2026-11.y4pc); null skips it, as in rigs. */
+    private val names: ShownNames? = null,
     meshcorePlane: Boolean = BuildConfig.MESHCORE_PLANE,
 ) : ViewModel() {
     /**
@@ -402,6 +452,8 @@ internal class LoraRadioViewModel(
                 wrongFirmware = status.state.wrongFirmware(),
                 erase = provision.erase,
                 eraseLoading = provision.eraseLoading,
+                meshcoreRename = provision.rename.takeIf { meshcoreRows },
+                meshcoreRenameNotice = provision.renameNotice.takeIf { meshcoreRows },
                 confirmReplace = provision.replace != null,
                 forgetPending = provision.forgetPending,
                 forgetting = provision.forgetting,
@@ -426,6 +478,10 @@ internal class LoraRadioViewModel(
                     BoardSetupState.PENDING -> MeshcoreSetup.Pending
                     BoardSetupState.UNKNOWN -> MeshcoreSetup.Unknown
                 },
+            handle = handle?.text?.let(::shownName),
+            namedDefault = handle != null && namedDefault,
+            handleUnpostable = handle != null && handleUnpostable,
+            defaultName = defaultName,
         )
 
     /** The session ended because the board twice showed no service of the bound kind ([PairingCause.NO_SERVICE]). */
@@ -618,7 +674,7 @@ internal class LoraRadioViewModel(
                         runCatching { meshcore?.setupPreview() }
                             .onFailure { if (it is CancellationException) throw it }
                             .getOrNull()
-                    provisionState.update { it.copy(erase = preview?.let { p -> MeshcoreErase(p.contacts, p.slots) }) }
+                    provisionState.update { it.copy(erase = preview?.let { p -> MeshcoreErase(p.contacts, p.slots, p.renames) }) }
                 } finally {
                     provisionState.update { it.copy(eraseLoading = false) }
                 }
@@ -779,10 +835,108 @@ internal class LoraRadioViewModel(
             channelNum = channelNum,
         )
 
-    /** Dismisses the last provisioning outcome banner, and a Forget's notice. */
+    /** Dismisses the last provisioning outcome banner, and a Forget's and a rename's notice. */
     fun dismissProvisionOutcome() {
-        provisionState.update { it.copy(outcome = null, forgetNotice = null) }
+        provisionState.update { it.copy(outcome = null, forgetNotice = null, renameNotice = null) }
     }
+
+    /** Opens the MeshCore rename dialog on the board's current name (ADR 2026-11.f4d3). */
+    fun askRename() {
+        val current =
+            state.value.meshcore
+                ?.handle
+                .orEmpty()
+        provisionState.update { it.copy(rename = draftOf(current), renameNotice = null) }
+    }
+
+    /** The rename dialog's field, as typed (clamped to what the field can hold; the byte rule speaks for the rest). */
+    fun setRenameDraft(value: String) {
+        provisionState.update { p -> p.rename?.takeUnless { it.running }?.let { p.copy(rename = draftOf(value)) } ?: p }
+    }
+
+    fun dismissRename() {
+        provisionState.update { p -> if (p.rename?.running == true) p else p.copy(rename = null) }
+    }
+
+    /** Writes the draft, once it passes the board's rules and the name screen. */
+    fun saveRename() {
+        val open = provisionState.value.rename ?: return
+        if (open.running) return
+        val name = normalizeSingleLine(open.draft)
+        val problem = problemOf(name) ?: MeshcoreNameProblem.Flagged.takeIf { flagged(name) }
+        if (problem != null) {
+            provisionState.update { it.copy(rename = draftOf(name).copy(problem = problem)) }
+            return
+        }
+        rename(name)
+    }
+
+    /** Puts Knit's `Knit abcd` default back (no screen: it is Knit's own name). */
+    fun useDefaultName() {
+        val default = state.value.meshcore?.defaultName ?: return
+        if (provisionState.value.rename?.running == true) return
+        rename(default)
+    }
+
+    private fun rename(name: String) {
+        val plane = meshcore ?: return
+        val default = state.value.meshcore?.defaultName
+        provisionState.update { it.copy(rename = (it.rename ?: draftOf(name)).copy(running = true)) }
+        viewModelScope.launch {
+            val result =
+                runCatching { plane.renameMeshcore(name) }
+                    .onFailure { if (it is CancellationException) throw it }
+                    .getOrDefault(MeshcoreRenameResult.FAILED)
+            // The dialog said where a name of the user's own goes: a post consent given before covers it now (ADR
+            // 2026-11.f4d3). Only once the board has it, and never for Knit's own default.
+            if (result == MeshcoreRenameResult.DONE && name != default) settings.acceptMeshcoreCustomNameDisclosure()
+            provisionState.update {
+                when (result) {
+                    MeshcoreRenameResult.DONE -> {
+                        it.copy(rename = null, renameNotice = MeshcoreRenameNotice.Done)
+                    }
+
+                    MeshcoreRenameResult.INVALID -> {
+                        it.copy(rename = draftOf(name).copy(problem = problemOf(name) ?: MeshcoreNameProblem.Control))
+                    }
+
+                    MeshcoreRenameResult.NOT_READY, MeshcoreRenameResult.NO_BOARD -> {
+                        it.copy(rename = null, renameNotice = MeshcoreRenameNotice.NotReady)
+                    }
+
+                    MeshcoreRenameResult.NOT_SET_UP -> {
+                        it.copy(rename = null, renameNotice = MeshcoreRenameNotice.NotSetUp)
+                    }
+
+                    MeshcoreRenameResult.FAILED -> {
+                        it.copy(rename = null, renameNotice = MeshcoreRenameNotice.Failed)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun draftOf(value: String): MeshcoreRenameUi {
+        val draft = value.clampToUtf16(RENAME_FIELD_MAX)
+        val name = normalizeSingleLine(draft)
+        // A live hint for the board's own rules only; an empty field says nothing until Rename is tapped.
+        return MeshcoreRenameUi(draft, name.encodeToByteArray().size, problemOf(name)?.takeUnless { name.isEmpty() })
+    }
+
+    private fun problemOf(name: String): MeshcoreNameProblem? =
+        when (MeshcoreNames.check(name.encodeToByteArray())) {
+            MeshcoreNameCheck.OK -> null
+            MeshcoreNameCheck.EMPTY -> MeshcoreNameProblem.Empty
+            MeshcoreNameCheck.TOO_LONG -> MeshcoreNameProblem.TooLong
+            MeshcoreNameCheck.CONTROL, MeshcoreNameCheck.INVALID_UTF8 -> MeshcoreNameProblem.Control
+            MeshcoreNameCheck.SEPARATOR -> MeshcoreNameProblem.Separator
+        }
+
+    // Screened as the user's own display name is (ADR 2026-11.y4pc): strangers see it. Fails open, like that one.
+    private fun flagged(name: String): Boolean =
+        runCatching { names?.flagged(name, NameScreen.Audience.PUBLIC) == true }
+            .onFailure { if (it is CancellationException) throw it }
+            .getOrDefault(false)
 
     private fun ProvisionResult.toOutcome(): LoraProvisionOutcome =
         when (this) {
@@ -828,11 +982,19 @@ internal class LoraRadioViewModel(
         /** The board picked while the bound MeshCore one's cleanup could not run: bound after "Forget anyway". */
         val pendingPick: BoardOption? = null,
         val forgetNotice: MeshcoreForgetNotice? = null,
+        val rename: MeshcoreRenameUi? = null,
+        val renameNotice: MeshcoreRenameNotice? = null,
     )
 
     private companion object {
         private const val PERCENT = 100L
 
         const val STOP_TIMEOUT_MS = 5_000L
+
+        /** What the rename field holds: room past the board's 31 bytes, so the counter can say a name is too long. */
+        const val RENAME_FIELD_MAX = 64
     }
+
+    /** A name another app wrote, made safe to draw on one line (ADR 2026-11.f4d3, security-reviewer). */
+    private fun shownName(raw: String): String = TextLimits.cleanReceived(raw, TextLimits.DISPLAY_NAME)
 }

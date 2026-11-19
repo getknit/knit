@@ -23,6 +23,7 @@ import app.getknit.knit.mesh.lora.GattResult
 import app.getknit.knit.mesh.lora.KnitChannel
 import app.getknit.knit.mesh.lora.LinkState
 import app.getknit.knit.mesh.lora.LoraContactPolicy
+import app.getknit.knit.mesh.lora.MeshcoreRenameResult
 import app.getknit.knit.mesh.lora.PacketIdSource
 import app.getknit.knit.mesh.lora.PacketOutcome
 import app.getknit.knit.mesh.lora.PairingCause
@@ -360,7 +361,7 @@ internal class MeshcoreSession(
      */
     override suspend fun setup(): MeshcoreSetupResult =
         call({ MeshcoreSetupResult.NotReady }, { MeshcoreSetupResult.Failed(TIMED_OUT, left = null) }, setupDeadlineMs) { c ->
-            runSetup(c, replace = null).also { refreshSetup(c, c.address) }
+            edit(c) { runSetup(c, replace = null) }.also { refreshSetup(c, c.address) }
         }
 
     /**
@@ -371,13 +372,14 @@ internal class MeshcoreSession(
      */
     override suspend fun setupReplacing(token: ReplaceToken): MeshcoreSetupResult =
         call({ MeshcoreSetupResult.NotReady }, { MeshcoreSetupResult.Failed(TIMED_OUT, left = null) }, setupDeadlineMs) { c ->
-            runSetup(c, replace = token).also { refreshSetup(c, c.address) }
+            edit(c) { runSetup(c, replace = token) }.also { refreshSetup(c, c.address) }
         }
 
     /**
      * What a setup would erase, read fresh on the actor (ADR 2026-11.gsqu's Stage 7 amendment): the board's contact count
      * (`GET_CONTACTS` past every `lastmod`, the count alone) and the slots in use besides Public and Knit's, each slot read
-     * again. Counts only, each null when the board did not answer it; nothing written. Null when the board is not Ready.
+     * again. Counts only, each null when the board did not answer it; and whether the setup would rename the board. Nothing
+     * written. Null when the board is not Ready.
      */
     override suspend fun setupPreview(): SetupPreview? =
         call({ null }, { null }) { c ->
@@ -392,7 +394,12 @@ internal class MeshcoreSession(
                 }
                 if (!slot.empty && !slot.knit) slots = slots?.plus(1)
             }
-            SetupPreview(contacts = contacts, slots = slots)
+            // Whether the confirmation says the board is renamed (ADR 2026-11.f4d3): what the setup's own reads would decide.
+            // Unknown (the board or the record unread) reads as a rename, the dialog's safe half.
+            val self = selfOf(c)
+            val entry = readEntry(c.address)
+            val renames = self == null || entry == null || renamesAt(entry.getOrNull(), self)
+            SetupPreview(contacts = contacts, slots = slots, renames = renames)
         }
 
     /**
@@ -405,6 +412,34 @@ internal class MeshcoreSession(
             { MeshcoreRestoreResult.Done(false, emptyList(), listOf(TIMED_OUT)) },
             setupDeadlineMs,
         ) { c -> restoreOwn(c).also { refreshSetup(c, c.address) } }
+
+    /**
+     * Renames the board [name], its owner's handle (ADR 2026-11.f4d3): refused [MeshcoreRenameResult.INVALID] with nothing
+     * written unless the name passes the postable rules ([MeshcoreNames.check], the one rule the Public post asks too), and
+     * [MeshcoreRenameResult.NOT_SET_UP] off a board this connection does not consent for. One flash write, believed only once
+     * `SELF_INFO` reads the name back ([MeshcoreRenameResult.FAILED] otherwise), then the Ready published with it. The setup
+     * record is never touched: Restore puts the name from before Knit back only while the board still reads `Knit abcd`, so a
+     * handle is left as the owner chose it. The BLE name follows at the board's next boot (`main.cpp:209`); nothing is
+     * advertised (the companion never adverts on its own).
+     */
+    override suspend fun rename(name: String): MeshcoreRenameResult {
+        val bytes = name.encodeToByteArray()
+        if (MeshcoreNames.check(bytes) != MeshcoreNameCheck.OK) return MeshcoreRenameResult.INVALID
+        return call({ MeshcoreRenameResult.NOT_READY }, { MeshcoreRenameResult.FAILED }) { c ->
+            edit(c) { runRename(c, bytes) }.also { log("meshcore rename ${it.name.lowercase()}") }
+        }
+    }
+
+    private suspend fun runRename(
+        c: Conn,
+        name: ByteArray,
+    ): MeshcoreRenameResult {
+        if (!knitBoard(c)) return MeshcoreRenameResult.NOT_SET_UP
+        val write = MeshcoreProto.setAdvertName(name) ?: return MeshcoreRenameResult.INVALID
+        if (!writeVerified(c, write) { selfOf(c)?.name?.contentEquals(name) == true }) return MeshcoreRenameResult.FAILED
+        publishReady(c)
+        return MeshcoreRenameResult.DONE
+    }
 
     /**
      * Writes [key] as a Knit contact (zero-hop, favourite, `Knit xxxx`), only into a free slot (the count the Ready's listing
@@ -1571,11 +1606,11 @@ internal class MeshcoreSession(
                 freqKhz = if (radio != null) self.freqKhz else null,
                 contactCapacity = info.maxContactsHalf * 2,
                 slots = c.slots,
-                namedForKnit = self.name.contentEquals(MeshcoreNames.forKey(self.key).encodeToByteArray()),
                 manualAdd = self.manualAdd,
                 dialled = c.address,
                 publicSlot = c.publicSlot,
                 sharesPosition = self.sharesPosition,
+                advertName = self.name,
             )
         val ready =
             BoardState.Ready(
@@ -2153,7 +2188,7 @@ internal class MeshcoreSession(
 
                     // A Public post is written under the timestamp fixed when it was queued (Stage 6): none, none written.
                     is SendPurpose.PublicPost -> {
-                        purpose.timestampSecs?.let { sendPublic(c, payload, it, handle) } ?: unsupported()
+                        purpose.timestampSecs?.let { sendPublic(c, payload, it, purpose.name, handle) } ?: unsupported()
                     }
 
                     // The bridge's raw payload (Stage 7): the room post's write, on a board this connection consents for only.
@@ -2242,8 +2277,9 @@ internal class MeshcoreSession(
      * A post on the board's Public slot (0) as a channel text, under the sender [timestampSecs] fixed when it was queued (ADR
      * 2026-11.gsqu's Stage 6 amendment). The firmware prefixes the board's own `node_name` (`BaseChatMesh.cpp:523`), so the
      * gate the hooks asked at enqueue is asked again here, on this connection, at the write (lora B1, security B2): the board
-     * set up for Knit ([knitBoard]: its Knit slot, its name `Knit xxxx` as this connection last read it, and consent), and slot
-     * 0 holding a channel that is not Knit's. Both are read again first (`SELF_INFO` and slot 0's `CHANNEL_INFO`, two round
+     * set up for Knit ([knitBoard]: its Knit slot and consent), slot 0 holding a channel that is not Knit's, and the board's
+     * name the one the post's frame carries ([consented], what the user consented and the frame was priced under) and
+     * postable (ADR 2026-11.f4d3). Both are read again first (`SELF_INFO` and slot 0's `CHANNEL_INFO`, two round
      * trips a post, a post at most every 30 s): a companion serves BLE, USB and Wi-Fi clients at once
      * (`MultiSerialInterface`, `main.cpp:15-70`), so another client can rename the board or clear or re-key slot 0 under this
      * connection, and a Restore on our own actor moves the name too. No answer is `Busy`: the post is owed, never written
@@ -2255,6 +2291,7 @@ internal class MeshcoreSession(
         c: Conn,
         payload: ByteArray,
         timestampSecs: Long,
+        consented: MeshcoreHandle?,
         handle: UInt,
     ): SendResult {
         // A board with no free packet is asked nothing: its retries must not cost two reads each.
@@ -2273,6 +2310,10 @@ internal class MeshcoreSession(
             return SendResult.Rejected(handle, MeshcoreRefusal.NO_PUBLIC_SLOT)
         }
         val name = requireNotNull(c.self).name
+        // The name the post was consented and priced under, carried by its frame (ADR 2026-11.f4d3): another client may have
+        // renamed the board while it waited, and the firmware would put the new name in front of it. The `SELF_INFO` read just
+        // above already published the Ready with the new name ([takeSelf]), so the composer re-asks from it; nothing aired.
+        nameRefusal(name, consented)?.let { return SendResult.Rejected(handle, it) }
         val bytes = MeshcoreProto.sendChannelText(PUBLIC_SLOT, timestampSecs, payload, name) ?: return SendResult.TooLarge
         val judged = writeJudged(c, bytes)
         return when (judged.answer) {
@@ -2281,6 +2322,20 @@ internal class MeshcoreSession(
             Answer.NONE -> SendResult.Timeout(handle)
         }
     }
+
+    /**
+     * Why a Public post may not go out under the board's [name] as just read (ADR 2026-11.f4d3), or null: it is not the
+     * [consented] name the post was queued under, or it breaks the postable rules.
+     */
+    private fun nameRefusal(
+        name: ByteArray,
+        consented: MeshcoreHandle?,
+    ): Int? =
+        when {
+            consented == null || !consented.matches(name) -> MeshcoreRefusal.NAME_CHANGED
+            MeshcoreNames.check(name) != MeshcoreNameCheck.OK -> MeshcoreRefusal.NAME_UNPOSTABLE
+            else -> null
+        }
 
     private fun queued(handle: UInt): SendResult =
         SendResult.Queued(handle, QueueInfo(lastHeadroom ?: MeshcoreHeadroom.POOL, MeshcoreHeadroom.POOL, now()))
@@ -2563,7 +2618,8 @@ internal class MeshcoreSession(
         val existing = MeshcorePins.addrOf(key)?.let { readContactOn(c, key) } ?: return ContactWrite.FAILED
         val record = existing.record ?: return teachFresh(c, key)
         // A board set up for Knit is Knit's: a contact on a taught key is made Knit's record. Any other board's is the user's.
-        val overwrite = knitBoard(c) && pins.teaches(key) && !MeshcoreContacts.isKnitRecord(record)
+        // By its routing alone (ADR 2026-11.f4d3): a peer's own advert renames its contact, which is no reason to rewrite it.
+        val overwrite = knitBoard(c) && pins.teaches(key) && !MeshcoreContacts.isKnitRouting(record)
         return if (overwrite) writeKnitRecord(c, key, fresh = false) else ContactWrite.ALREADY_PRESENT
     }
 
@@ -2686,14 +2742,15 @@ internal class MeshcoreSession(
         return if (gone) ContactWrite.WRITTEN else ContactWrite.FAILED
     }
 
-    /** Whether the connected board is set up for Knit: Knit's slot on it, and its own name Knit's (`Knit abcd`). */
+    /**
+     * Whether the connected board is set up for Knit: Knit's slot on it, and this connection's consent (this phone's setup
+     * record for the address and the board's key digest, proven). The board's name is no part of it since ADR 2026-11.f4d3:
+     * it is the owner's handle, which they may change in any app, and it stood in for nothing the slot and the record miss.
+     */
     private fun knitBoard(c: Conn): Boolean = knitLooking(c) && c.consent
 
-    /** The board reads as Knit's (its Knit slot and `Knit abcd` name): a claim any client on it can write, never consent alone. */
-    private fun knitLooking(c: Conn): Boolean {
-        val self = c.self ?: return false
-        return c.knitSlot != null && self.name.contentEquals(MeshcoreNames.forKey(self.key).encodeToByteArray())
-    }
+    /** The board reads as Knit's (identified, its Knit slot on it): a claim any client on it can write, never consent alone. */
+    private fun knitLooking(c: Conn): Boolean = c.self != null && c.knitSlot != null
 
     // --- the reconcile at Ready (Stage 5b-2): one listing, then one step a tick ---
 
@@ -2985,7 +3042,7 @@ internal class MeshcoreSession(
                 SetupStep("manual add", record.priorManualAdd != null, MeshcoreProto.setManualAdd(MANUAL_ADD_ON)) {
                     selfOf(c)?.manualAdd == MANUAL_ADD_ON
                 },
-                SetupStep("name", record.priorName != null, MeshcoreProto.setAdvertName(plan.name)) {
+                SetupStep("name", plan.renames, MeshcoreProto.setAdvertName(plan.name)) {
                     selfOf(c)?.name?.contentEquals(nameBytes) == true
                 },
                 SetupStep("channel", record.slotWritten, MeshcoreProto.setChannel(slot, KnitChannel.NAME, KnitChannel.PSK)) {
@@ -3097,6 +3154,8 @@ internal class MeshcoreSession(
         val record: MeshcoreSetupRecord,
         val name: String,
         val wantAutoadd: Int,
+        /** Whether the name step runs ([renamesAt]). */
+        val renames: Boolean,
     )
 
     private sealed interface SetupRead {
@@ -3126,16 +3185,34 @@ internal class MeshcoreSession(
                 ?: c.slots.firstOrNull { it.index != PUBLIC_SLOT }?.index
                 ?: return SetupRead.Refused(MeshcoreSetupResult.NoFreeSlot)
         val name = MeshcoreNames.forKey(self.key)
+        // A board this phone already set up keeps its name: it is the owner's handle now (ADR 2026-11.f4d3), and its record
+        // already holds the name from before Knit, which [merge] keeps. Only a first setup writes the default.
+        val entry = readEntry(c.address) ?: return SetupRead.Refused(setupFailed("setup record"))
+        val renames = renamesAt(entry.getOrNull(), self)
         val wantAutoadd = autoadd.config and KNIT_AUTOADD_OFF.inv()
         val record =
             MeshcoreSetupRecord(
                 slot = slot,
                 slotWritten = existing == null,
-                priorName = self.name.takeUnless { it.contentEquals(name.encodeToByteArray()) },
+                priorName = self.name.takeIf { renames },
                 priorManualAdd = self.manualAdd.takeIf { it != MANUAL_ADD_ON },
                 priorAutoadd = autoadd.config.takeIf { it != wantAutoadd },
             )
-        return SetupRead.Planned(SetupPlan(record, name, wantAutoadd))
+        return SetupRead.Planned(SetupPlan(record, name, wantAutoadd, renames))
+    }
+
+    /**
+     * Whether a setup of the board reading [self] renames it `Knit abcd` (ADR 2026-11.f4d3): only when this phone holds no
+     * standing record of that board at the address ([entry]: the same key's digest, not pending) — a re-setup keeps the
+     * owner's handle — and the board does not already carry the default. A pending record is no setup that finished: a
+     * re-setup over it renames, and [merge] keeps the name the first one recorded.
+     */
+    private fun renamesAt(
+        entry: MeshcoreSetupEntry?,
+        self: McFrame.SelfInfo,
+    ): Boolean {
+        val held = entry?.consents(MeshcoreHooks.digest(self.key)) == true
+        return !held && !MeshcoreNames.isDefault(self.name, self.key)
     }
 
     /** [this] record cut to the setup steps up to [step] (autoadd, manual add, name, channel). */
@@ -3205,7 +3282,44 @@ internal class MeshcoreSession(
         c.self = self
         // Another client turned the board's position on or off (Stage 7): the face and the consent sheet read the Ready.
         val ready = (_state.value as? BoardState.Ready)?.detail as? MeshcoreDetail
-        if (moved && ready?.dialled == c.address && ready.sharesPosition != self.sharesPosition) publishReady(c)
+        if (moved && ready?.dialled == c.address && ready.sharesPosition != self.sharesPosition) {
+            publishReady(c)
+        } else if (c.edits == 0) {
+            republishIfRenamed(c)
+        }
+    }
+
+    /**
+     * Publishes the Ready again when the board's name is not the one it carries (ADR 2026-11.f4d3): another client renamed
+     * the board under this connection (a companion serves BLE, USB and Wi-Fi clients at once), so the face, the composer's
+     * cap and its consent read the handle the firmware will prefix. Never inside a setup, Restore or rename ([edit]): those
+     * publish their own Ready, so a name step's read-back lands no Ready, and no `lora ready` line, of its own.
+     */
+    private fun republishIfRenamed(c: Conn) {
+        val self = c.self ?: return
+        val ready = (_state.value as? BoardState.Ready)?.detail as? MeshcoreDetail ?: return
+        if (ready.dialled == c.address && !ready.handle.matches(self.name)) publishReady(c)
+    }
+
+    /**
+     * Runs [block] as one of the actor's board transactions (a setup, a Restore or a cleanup, a rename): no `SELF_INFO` read
+     * inside it publishes a Ready on a name change ([takeSelf]); once the outermost one ends, a name it left different from the
+     * last published Ready is published once.
+     */
+    private suspend fun <T> edit(
+        c: Conn,
+        block: suspend () -> T,
+    ): T {
+        c.edits++
+        val result =
+            try {
+                block()
+            } finally {
+                c.edits--
+            }
+        // Only after a transaction that returned: one that ended the session publishes nothing.
+        if (c.edits == 0 && _state.value is BoardState.Ready) republishIfRenamed(c)
+        return result
     }
 
     private suspend fun autoaddIs(
@@ -3220,6 +3334,12 @@ internal class MeshcoreSession(
      * setup's rollback) Knit's contacts go first ([removeKnitContacts]) and the taught set is forgotten.
      */
     private suspend fun runRestore(
+        c: Conn,
+        record: MeshcoreSetupRecord,
+        clearContacts: Boolean,
+    ): MeshcoreRestoreResult = edit(c) { restoreRun(c, record, clearContacts) }
+
+    private suspend fun restoreRun(
         c: Conn,
         record: MeshcoreSetupRecord,
         clearContacts: Boolean,
@@ -3467,6 +3587,9 @@ internal class MeshcoreSession(
 
         /** A pending record of this board, to clean up as the connection's first job (bonded only). */
         var cleanup: MeshcoreSetupRecord? = null
+
+        /** How deep the actor is in a board transaction ([edit]): a setup, a Restore or cleanup, a rename. */
+        var edits = 0
 
         /** The reconcile's steps, one a tick. */
         val steps = ArrayDeque<Step>()

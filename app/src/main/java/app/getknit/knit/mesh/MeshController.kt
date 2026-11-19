@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh
 
 import app.getknit.knit.data.AttachmentStore
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
 import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
@@ -240,10 +241,15 @@ interface MeshController {
      * off `recipientId`/`group`, so a room id handed to it would be taken for a peer node id and minted as a
      * DM addressed to nobody. The default refuses with [PublicPostRefusal.NO_BOARD], which is what a fake and
      * a build without the LoRa plane both want; so does any other thread.
+     *
+     * [consented] is the MeshCore board name the composer's consent decision was made under (the face's `handle`, ADR
+     * 2026-11.f4d3): the MeshCore room refuses [PublicPostRefusal.NAME_CHANGED] unless it is the board's name now, since the
+     * firmware puts that name in front of the post. The Meshtastic room ignores it.
      */
     suspend fun sendPublicPost(
         conversationId: String,
         text: String,
+        consented: MeshcoreHandle? = null,
     ): PublicPostOutcome = PublicPostOutcome.Refused(PublicPostRefusal.NO_BOARD)
 
     /**

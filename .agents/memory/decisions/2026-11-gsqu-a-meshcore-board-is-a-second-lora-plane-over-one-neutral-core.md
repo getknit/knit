@@ -10,7 +10,9 @@ topics: [lora, meshcore, crypto, airtime]
 
 Status: Proposed (2026-11-12). Stages 1-4 are built (2026-11-13): the board-neutral seam with Meshtastic unchanged, the
 per-kind scaffolding, the MeshCore client (not wired) and the sealed `meshcoreKey`. The five bench checks were answered on the firmware itself in a simulator (2026-11-13,
-below); only the BLE half of the first is still owed, on boards.
+below); only the BLE half of the first is still owed, on boards. Amended by ADR 2026-11.f4d3 (2026-11-18): the board's
+name is its owner's handle, so setup's `Knit abcd` write, the name half of `knitBoard` and Stage 6's "only under Knit's
+name" (lora B1, security B2) give way to post consent that follows the name.
 
 It amends four ADRs:
 

@@ -374,7 +374,8 @@ internal class MeshtasticHooks(
         // the reconnect is counted sent then, once (#307). Should it never air, the pacer's shed counts it
         // `loraDroppedQueue`, as it does any frame; the refusal counters are for what the board refused.
         if (outcome == FragmentOutcome.OWED) return
-        if (outcome == FragmentOutcome.ENDED) {
+        // A refusal before the board took it is counted as every other refusal here: Meshtastic's counters never told them apart.
+        if (outcome == FragmentOutcome.ENDED || outcome == FragmentOutcome.REFUSED) {
             if (reply) metrics.onAutoReplyRefused(AutoReplyRefusal.NAK.name) else metrics.onPublicPostRefused(PublicPostRefusal.NAK.name)
             return
         }

@@ -75,7 +75,6 @@ class MeshcoreFlushSwitchTest {
                         freqKhz = 869_525,
                         contactCapacity = 100,
                         slots = emptyList(),
-                        namedForKnit = true,
                         manualAdd = 1,
                         dialled = ADDRESS,
                     ),

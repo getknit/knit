@@ -1,6 +1,7 @@
 package app.getknit.knit.ui.lora
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -42,6 +43,9 @@ class LoraRadioMeshcoreScreenTest {
                     onDismissReplace = { calls += "dismissReplace" },
                     onKeepBoard = { calls += "keep" },
                     onForgetAnyway = { calls += "forgetAnyway" },
+                    onAskRename = { calls += "askRename" },
+                    onSaveRename = { calls += "saveRename" },
+                    onUseDefaultName = { calls += "useDefault" },
                 )
             }
         }
@@ -167,7 +171,8 @@ class LoraRadioMeshcoreScreenTest {
         compose.onNodeWithTag("lora_provision_outcome").performScrollTo().assertIsDisplayed()
         compose
             .onNodeWithText(
-                "Board restored to its own name and settings. The contacts and channels the setup erased stay gone. " +
+                "Board restored to its own settings, and to its old name unless you renamed it since. The contacts and " +
+                    "channels the setup erased stay gone. " +
                     "LoRa is switched off until you set a board up again.",
             ).assertIsDisplayed()
     }
@@ -209,5 +214,81 @@ class LoraRadioMeshcoreScreenTest {
                     "screen shows or the one it was set to.",
             ).performScrollTo()
             .assertIsDisplayed()
+    }
+
+    // --- The board's name, its owner's handle (ADR 2026-11.f4d3) ----------------------------------------------------------
+
+    private val named = rows.copy(handle = "Sam 🧶", defaultName = "Knit 312b")
+
+    @Test
+    fun aSetUpBoardShowsItsNameAndOffersTheRename() {
+        render(bound(meshcore = named))
+        compose.onNodeWithTag("lora_meshcore_name").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Sam 🧶").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("lora_meshcore_name_unpostable").assertDoesNotExist()
+        compose.onNodeWithTag("lora_meshcore_rename").performScrollTo().performClick()
+        assertEquals(listOf("askRename"), calls)
+    }
+
+    @Test
+    fun theDefaultNameSaysItIsKnits() {
+        render(bound(meshcore = named.copy(handle = "Knit 312b", namedDefault = true)))
+        compose.onNodeWithText("Knit 312b (Knit's default)").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun aNameThePublicChannelCannotCarrySaysKnitWillNotPost() {
+        render(bound(meshcore = named.copy(handle = "Sam: hi", handleUnpostable = true)))
+        compose.onNodeWithTag("lora_meshcore_name_unpostable").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun anAwayBoardOffersNoRename() {
+        render(bound(connection = LoraConnState.Reconnecting, meshcore = named.copy(handle = null)))
+        compose.onNodeWithTag("lora_meshcore_name_away").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("lora_meshcore_rename").assertDoesNotExist()
+    }
+
+    /** The dialog says where the name goes before it is sent: the Bluetooth name, adverts, every post, and a position. */
+    @Test
+    fun theRenameDialogSaysWhereTheNameGoesAndCountsItsBytes() {
+        render(bound(meshcore = named).copy(meshcoreRename = MeshcoreRenameUi(draft = "Sam 🧶", bytes = 8)))
+        compose.onNodeWithTag("lora_meshcore_rename_dialog").assertIsDisplayed()
+        compose.onNodeWithText("Bytes: 8 / 31").assertIsDisplayed()
+        for (line in listOf("Bluetooth name", "in the board's adverts", "every post on the Public channel", "Servers that listen")) {
+            compose.onNodeWithText(line, substring = true).performScrollTo().assertIsDisplayed()
+        }
+        compose.onNodeWithTag("lora_meshcore_rename_position").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("lora_meshcore_rename_default").performScrollTo().performClick()
+        compose.onNodeWithTag("lora_meshcore_rename_save").performClick()
+        assertEquals(listOf("useDefault", "saveRename"), calls)
+    }
+
+    @Test
+    fun theRenameDialogNamesWhatTheBoardWouldRefuse() {
+        render(
+            bound(meshcore = named.copy(sharesPosition = false))
+                .copy(meshcoreRename = MeshcoreRenameUi(draft = "Sam: hi", bytes = 7, problem = MeshcoreNameProblem.Separator)),
+        )
+        compose.onNodeWithText("A name can't contain “: ”", substring = true).assertIsDisplayed()
+        compose.onNodeWithTag("lora_meshcore_rename_position").assertDoesNotExist()
+    }
+
+    /** A re-setup keeps the name the board carries (ADR 2026-11.f4d3): its confirmation never says it renames the board. */
+    @Test
+    fun aReSetupsConfirmationSaysTheBoardKeepsItsName() {
+        render(
+            bound(meshcore = rows.copy(setup = MeshcoreSetup.None))
+                .copy(confirmSetup = true, erase = MeshcoreErase(contacts = 12, slots = 2, renames = false)),
+        )
+        compose.onNodeWithText("The board keeps its name.", substring = true).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("renames the board “Knit”", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun aRunningRenameTakesNoSecondTap() {
+        render(bound(meshcore = named).copy(meshcoreRename = MeshcoreRenameUi(draft = "Sam", bytes = 3, running = true)))
+        compose.onNodeWithTag("lora_meshcore_rename_save").assertIsNotEnabled()
+        compose.onNodeWithTag("lora_meshcore_rename_default").performScrollTo().assertIsNotEnabled()
     }
 }

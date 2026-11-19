@@ -25,7 +25,8 @@ import java.nio.ByteBuffer
  *   memo. A contact deleted from another app is taught again at the next Ready, or by the session's targeted re-teach on
  *   its `0x8F`: there is no deletion-respect rule.
  * - **The reconcile at Ready** ([plan]): one `GET_CONTACTS` listing, then every contact on a key Knit does not teach is
- *   removed, every taught key's contact that is not Knit's record ([isKnitRecord]) is overwritten to it, and a taught key
+ *   removed, every taught key's contact that does not route as Knit's ([isKnitRouting]: its name is the peer's own advert's
+ *   since ADR 2026-11.f4d3) is overwritten to Knit's record, and a taught key
  *   missing is written while the board has room — both counted and bounded per Ready ([MAX_REMOVALS_PER_READY],
  *   [MAX_OVERWRITES_PER_READY]), so a second client that keeps rewriting the table cannot make Knit churn the board's
  *   flash without limit. A taught key whose prefix a listed contact of another key shares is written only once that
@@ -267,10 +268,21 @@ internal class MeshcoreContacts(
 
         private fun rankOf(rank: MeshcoreRank): Int = MeshcoreRank.entries.size - rank.ordinal
 
-        /** Whether [record] is exactly the contact Knit writes for its key: a CHAT favourite, `Knit xxxx`, pinned zero-hop. */
-        fun isKnitRecord(record: ContactRecord): Boolean =
+        /**
+         * Whether [record] is exactly the contact Knit writes for its key: a CHAT favourite, `Knit xxxx`, pinned zero-hop. What
+         * Restore identifies Knit's contacts by, what the setup's erase keeps and what a teach's read-back believes.
+         */
+        fun isKnitRecord(record: ContactRecord): Boolean = isKnitRouting(record) && record.named(MeshcoreNames.forKey(record.key))
+
+        /**
+         * Whether [record] routes as Knit's does — a CHAT favourite pinned zero-hop — whatever its name: what the reconcile's
+         * overwrite and verify, and a teach's overwrite decision, read (ADR 2026-11.f4d3, the plan's §5). A heard advert
+         * rewrites a contact's name to the peer's own (lora N4: `BaseChatMesh.cpp:191-193`), and with handles every peer's
+         * board may carry one, so the name would cost a flash write per taught peer a Ready for nothing it routes by.
+         */
+        fun isKnitRouting(record: ContactRecord): Boolean =
             record.type == MeshcoreProto.ADV_TYPE_CHAT && record.flags == MeshcoreProto.CONTACT_FLAG_FAVOURITE &&
-                record.outPathLen == 0 && record.named(MeshcoreNames.forKey(record.key))
+                record.outPathLen == 0
 
         /**
          * One Ready's reconcile over the board's own [listing] ([listedCount] the count its `CONTACTS_START` gave, which a
@@ -294,9 +306,9 @@ internal class MeshcoreContacts(
             val foreign = listing.filter { ByteBuffer.wrap(it.key) !in keptKeys }
             val removals = foreign.take(maxRemovals.coerceAtLeast(0)).map { it.key.copyOf() }
             val removed = removals.map(ByteBuffer::wrap).toSet()
-            val overwriteWanted = kept.filter { key -> listed[ByteBuffer.wrap(key)]?.let { !isKnitRecord(it) } == true }
+            val overwriteWanted = kept.filter { key -> listed[ByteBuffer.wrap(key)]?.let { !isKnitRouting(it) } == true }
             val overwrites = overwriteWanted.take(maxOverwrites.coerceAtLeast(0))
-            val verified = kept.filter { key -> listed[ByteBuffer.wrap(key)]?.let(::isKnitRecord) == true }
+            val verified = kept.filter { key -> listed[ByteBuffer.wrap(key)]?.let(::isKnitRouting) == true }
             val blockedBy = HashMap<ByteBuffer, ByteArray>()
             val contested = ArrayList<ByteArray>()
             kept.forEach { key ->

@@ -5,8 +5,10 @@ import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.BoardPacket
 import app.getknit.knit.mesh.lora.BoardTraits
 import app.getknit.knit.mesh.lora.Ceiling
+import app.getknit.knit.mesh.lora.Destination
 import app.getknit.knit.mesh.lora.LoraAirtime
 import app.getknit.knit.mesh.lora.LoraBand
+import app.getknit.knit.mesh.lora.OutboundFrame
 import app.getknit.knit.mesh.lora.PacketOutcome
 import app.getknit.knit.mesh.lora.PacketPrice
 import app.getknit.knit.mesh.lora.RadioParams
@@ -79,29 +81,88 @@ class MeshcoreTraitsTest {
         assertEquals("eleven: two", 1 + 4 + 1 + 2 + 2 + 32, phy(AirPurpose.PATH_RETURN, MeshcoreTraits.pathReturnPlaintext(11, signed)))
         // The hash size rides path_len's top bits: three 2-byte hashes are six path bytes.
         assertEquals(1 + 6 + 1 + 6, MeshcoreTraits.pathReturnPlaintext((1 shl 6) or 3, plain))
-        // Stage 6: the board writes its 11-B `Knit xxxx: ` in front of the text (BaseChatMesh.cpp:523), priced too.
-        assertEquals("GRP_TXT: timestamp + flags + prefix + 11 B = 27, two blocks, flooded", 9 + 32, phy(AirPurpose.PUBLIC_POST, 11))
-        assertEquals("5 + 11 + 16 = 32: still two blocks", 9 + 32, phy(AirPurpose.PUBLIC_POST, 16))
-        assertEquals("the largest post, 149 B: 165 of plaintext in 176 of AES, 185 on the air", 185, phy(AirPurpose.PUBLIC_POST, 149))
+        // Stage 6: the board writes its `<name>: ` in front of the text (BaseChatMesh.cpp:523), priced too: 11 B under Knit's
+        // default name, the name's own length since ADR 2026-11.f4d3.
+        assertEquals("GRP_TXT: timestamp + flags + prefix + 11 B = 27, two blocks, flooded", 9 + 32, publicPhy(9, 11))
+        assertEquals("5 + 11 + 16 = 32: still two blocks", 9 + 32, publicPhy(9, 16))
+        assertEquals("the largest post, 149 B: 165 of plaintext in 176 of AES, 185 on the air", 185, publicPhy(9, 149))
+        assertEquals("no name known: the longest name's price, 5 + 33 + 1 = 39, three blocks", 9 + 48, phy(AirPurpose.PUBLIC_POST, 1))
+    }
+
+    private fun publicPhy(
+        nameBytes: Int?,
+        payload: Int,
+    ): Int = traits.phyBytes(payload, traits.publicPrice(traits.price(AirPurpose.PUBLIC_POST, SigningFacts(), false, false), nameBytes))
+
+    /**
+     * ADR 2026-11.f4d3: the prefix is the board's name and `": "`, so the cap and the price follow the name's length — at 1, 9
+     * (`Knit abcd`) and 31 B (the firmware's longest) — and the largest post is 185 B on the air whatever the name. The cap is
+     * the encoder's own at that name; no name known prices the longest, the composer's floor of 127.
+     */
+    @Test
+    fun aPublicPostsPrefixCapAndPriceFollowTheBoardsNameLength() {
+        for ((nameBytes, cap) in listOf(1 to 157, 9 to 149, 31 to 127)) {
+            assertEquals("prefix at $nameBytes B", nameBytes + 2, MeshcoreTraits.publicPrefixBytes(nameBytes))
+            assertEquals("cap at $nameBytes B", cap, MeshcoreTraits.publicTextCap(nameBytes))
+            assertEquals("the encoder agrees at $nameBytes B", cap, MeshcoreProto.channelTextCap(ByteArray(nameBytes) { 0x41 }))
+            val price = traits.publicPrice(traits.price(AirPurpose.PUBLIC_POST, SigningFacts(), false, false), nameBytes)
+            assertEquals(cap, price.cap)
+            assertEquals("the largest post at $nameBytes B", 185, publicPhy(nameBytes, cap))
+            assertEquals("one byte of text at $nameBytes B", 9 + aes(5 + nameBytes + 2 + 1), publicPhy(nameBytes, 1))
+        }
+        assertEquals(127, MeshcoreTraits.PUBLIC_TEXT_CAP)
+        assertEquals(MeshcoreTraits.publicTextCap(null), MeshcoreTraits.PUBLIC_TEXT_CAP)
+        assertEquals(MeshcoreTraits.PUBLIC_TEXT_CAP, traits.price(AirPurpose.PUBLIC_POST, SigningFacts(), false, false).cap)
+        assertEquals(
+            "any other purpose is left as it is",
+            traits.price(AirPurpose.ROOM_FLOOD, SigningFacts(), false, false),
+            traits.publicPrice(traits.price(AirPurpose.ROOM_FLOOD, SigningFacts(), false, false), 9),
+        )
+    }
+
+    private fun aes(plain: Int): Int = (plain + 15) / 16 * 16
+
+    /**
+     * A queued post is priced from the name its own frame carries, never the board's name now (ADR 2026-11.f4d3): a rename
+     * while it waits moves the ledger's live name, and admission and the booking at `onTaken` still read one figure.
+     */
+    @Test
+    fun aQueuedPostIsPricedFromItsOwnNameWhateverTheBoardIsCalledNow() {
+        val air = LoraAirtime(traits = MeshcoreTraits)
+        air.onRadio(RadioParams(8, 62_500, 5), MeshcoreTraits.dutyPolicy(869_525, 62_500))
+        val long = MeshcoreHandle(ByteArray(31) { 0x41 })
+        val frame =
+            OutboundFrame(
+                listOf(ByteArray(100) { 0x42 }),
+                "public",
+                ceiling = Ceiling.FLOOD,
+                destination = Destination.Public,
+                timestampSecs = 1L,
+                publicName = long,
+            )
+        air.onPublicName(9)
+        val admitted = frame.price(air)
+        assertEquals("the frame's own name, not the board's new one", air.publicPrice(31), admitted)
+        assertTrue("a longer name costs more", air.timeOnAirMs(100, admitted) > air.timeOnAirMs(100, air.publicPrice(9)))
+        air.onPublicName(1)
+        assertEquals("booking reads what admission read", admitted, frame.price(air))
+        air.record(100, 0, frame.price(air), frame.ceiling)
+        assertEquals(air.timeOnAirMs(100, admitted), air.snapshot(0).floodUsedMs)
     }
 
     /**
-     * Stage 6 (lora B1 / N3): a Public post leaves only from a board named `Knit xxxx`, so the prefix is a constant 11 B and the
-     * cap 160 less it, the encoder's own refusal at that name; admitted under the flood ceiling, never `HALF`.
+     * Stage 6 (lora B1 / N3): under Knit's default name the prefix is 11 B and the cap 160 less it, the encoder's own refusal
+     * at that name; admitted under the flood ceiling, never `HALF`.
      */
     @Test
     fun aPublicPostIsPricedWithTheKnitPrefixCappedAt149AndAdmittedAsAFlood() {
         val name = MeshcoreNames.forKey(ByteArray(32) { 0x5A })
-        assertEquals(MeshcoreTraits.PUBLIC_PREFIX_BYTES, "$name: ".encodeToByteArray().size)
-        assertEquals(149, MeshcoreTraits.PUBLIC_TEXT_CAP)
+        assertEquals(MeshcoreTraits.publicPrefixBytes(9), "$name: ".encodeToByteArray().size)
+        assertEquals(149, MeshcoreTraits.publicTextCap(9))
         assertEquals(
             "the encoder's own cap at Knit's name",
-            MeshcoreTraits.PUBLIC_TEXT_CAP,
+            MeshcoreTraits.publicTextCap(9),
             MeshcoreProto.channelTextCap(name.encodeToByteArray()),
-        )
-        assertEquals(
-            MeshcoreTraits.PUBLIC_TEXT_CAP,
-            traits.price(AirPurpose.PUBLIC_POST, SigningFacts(), primaryAead = false, knitAead = false).cap,
         )
         assertEquals(
             "a room flood keeps channel data's cap",
@@ -120,15 +181,20 @@ class MeshcoreTraitsTest {
     @Test
     fun whatAPublicPostCanEverCarryIsTheCapLessWhatTheFloodCeilingNeverAdmits() {
         val air = LoraAirtime(traits = MeshcoreTraits)
+        assertEquals("no name known: the floor under the longest name", 127, air.publicPostBytes())
+        air.onPublicName(9)
         assertEquals("no duty known: the cap", 149, air.publicPostBytes())
         val radio = RadioParams(8, 62_500, 5)
         air.onRadio(radio, MeshcoreTraits.dutyPolicy(869_525, 62_500))
         assertEquals("a 10 % band carries the whole post", 149, air.publicPostBytes())
         assertEquals(149, air.snapshot(0).publicPostBytes)
+        air.onPublicName(31)
+        assertEquals("a 31-B name leaves 127", 127, air.snapshot(0).publicPostBytes)
+        air.onPublicName(9)
         air.onRadio(radio, MeshcoreTraits.dutyPolicy(868_100, 62_500))
         val fits = air.publicPostBytes()
         assertTrue("a 1 % band carries less: $fits", fits in 1 until 149)
-        val price = air.price(AirPurpose.PUBLIC_POST)
+        val price = air.publicPrice(9)
         assertEquals(null, air.refusal(Ceiling.FLOOD, listOf(fits), 0, price))
         assertEquals(LoraAirtime.Refusal.NEVER, air.refusal(Ceiling.FLOOD, listOf(fits + 1), 0, price))
     }

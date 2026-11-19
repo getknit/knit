@@ -15,6 +15,7 @@ import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.isPresenceEvidence
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.link.FragReassembler
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -286,6 +287,7 @@ internal class LoraMeshTransport(
                 label: String,
                 ceiling: Ceiling,
                 timestampSecs: Long,
+                name: MeshcoreHandle,
             ): Boolean =
                 this@LoraMeshTransport.enqueue(
                     OutboundFrame(
@@ -298,6 +300,7 @@ internal class LoraMeshTransport(
                         // it at the write (kind frames skip [staleReason]).
                         gate = RideGate(freshUntil = timestampSecs * PUBLIC_STAMP_MS + LoraFramePolicy.FRESH_MS),
                         timestampSecs = timestampSecs,
+                        publicName = name,
                     ),
                 )
 
@@ -924,6 +927,8 @@ internal class LoraMeshTransport(
     override suspend fun provisionReplacing(token: ReplaceToken): ProvisionResult = hooks.provisionReplacing(token)
 
     override suspend fun setupPreview(): SetupPreview? = hooks.setupPreview()
+
+    override suspend fun renameMeshcore(name: String): MeshcoreRenameResult = hooks.renameMeshcore(name)
 
     // --- outbound (fast plane only) ---
 
@@ -2154,7 +2159,10 @@ internal class LoraMeshTransport(
      * MeshCore the timestamp fixed at enqueue and the prefixed text a receiver reads, what the room's own row id is derived
      * from (ADR 2026-11.gsqu's Stage 6 amendment). Called from `MeshManager`'s coroutine.
      */
-    suspend fun postPublic(body: String): PublicPostResult = hooks.postPublic(body)
+    suspend fun postPublic(
+        body: String,
+        consented: MeshcoreHandle? = null,
+    ): PublicPostResult = hooks.postPublic(body, consented)
 
     /**
      * A post [postPublic] queued with a key that ended without airing — stale at the write, or given up there
@@ -2369,12 +2377,23 @@ internal class LoraMeshTransport(
             }
 
             else -> {
+                val unaired = refusedUnaired(frame, result)
                 log("lora tx ${frame.label} gave up: $result")
                 abandon(frame)
-                FragmentOutcome.ENDED
+                if (unaired) FragmentOutcome.REFUSED else FragmentOutcome.ENDED
             }
         }
     }
+
+    /**
+     * Whether [result] refused [frame] before the board took it and no earlier fragment of the frame flew: nothing of it
+     * aired ([FragmentOutcome.REFUSED]). A Meshtastic frame refused at its second part already put its first on the air,
+     * which is an end.
+     */
+    private fun refusedUnaired(
+        frame: OutboundFrame,
+        result: SendResult,
+    ): Boolean = frame.sentParts == 0 && (result is SendResult.Rejected || result == SendResult.TooLarge)
 
     /** The handle of a send the board refused at once, or null for a result that refused nothing. */
     private fun refusedHandle(result: SendResult): UInt? =

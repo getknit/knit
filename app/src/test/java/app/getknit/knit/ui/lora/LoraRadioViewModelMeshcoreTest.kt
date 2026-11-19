@@ -12,13 +12,17 @@ import app.getknit.knit.mesh.lora.LinkState
 import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.LoraStatus
 import app.getknit.knit.mesh.lora.MeshcoreBoardFace
+import app.getknit.knit.mesh.lora.MeshcoreRenameResult
 import app.getknit.knit.mesh.lora.PairingCause
 import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.lora.ProvisionResult
 import app.getknit.knit.mesh.lora.ReplaceToken
 import app.getknit.knit.mesh.lora.SetupPreview
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreForget
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreUnbind
+import app.getknit.knit.moderation.NameScreen
+import app.getknit.knit.moderation.ShownNames
 import app.getknit.knit.notifications.Notifier
 import io.mockk.coVerify
 import io.mockk.coVerifyOrder
@@ -90,7 +94,9 @@ class LoraRadioViewModelMeshcoreTest {
     private var previews = 0
     private var provisionResult: ProvisionResult = ProvisionResult.NotReady(LinkState.Idle)
     private val replaceResult: ProvisionResult = ProvisionResult.Provisioned(index = 1, alreadyPresent = false)
-    private val preview: SetupPreview? = SetupPreview(contacts = 12, slots = 2)
+
+    // A first setup: this phone holds no record for the board, so the setup names it `Knit abcd` (ADR 2026-11.f4d3).
+    private val preview: SetupPreview? = SetupPreview(contacts = 12, slots = 2, renames = true)
     private val meshcore =
         object : LoraPlaneStatus {
             override val status: StateFlow<LoraStatus> = meshcoreStatus
@@ -113,7 +119,19 @@ class LoraRadioViewModelMeshcoreTest {
                 previews++
                 return preview
             }
+
+            override suspend fun renameMeshcore(name: String): MeshcoreRenameResult {
+                renames += name
+                return renameResult
+            }
         }
+
+    // The names the radio screen asked the board to take, and what the plane answers (ADR 2026-11.f4d3).
+    private val renames = mutableListOf<String>()
+    private var renameResult = MeshcoreRenameResult.DONE
+
+    // The shipped screen's shape over a one-word list: a name typed here is screened as a display name is (ADR 2026-11.y4pc).
+    private val names = ShownNames(NameScreen(emptyList(), listOf("fuck"), emptyList(), emptyList(), emptyList()))
 
     // The Forget's session answer, scripted per call: the first unbind's, then each later one's.
     private val unbinds = ArrayDeque<MeshcoreUnbind>()
@@ -158,7 +176,7 @@ class LoraRadioViewModelMeshcoreTest {
     }
 
     private fun TestScope.start(meshcorePlane: Boolean = true): LoraRadioViewModel {
-        val vm = LoraRadioViewModel(settings, meshtastic, boards, notifier, meshcore, forget(), meshcorePlane)
+        val vm = LoraRadioViewModel(settings, meshtastic, boards, notifier, meshcore, forget(), names, meshcorePlane)
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
         advanceUntilIdle()
         return vm
@@ -372,7 +390,7 @@ class LoraRadioViewModelMeshcoreTest {
             advanceUntilIdle()
             assertTrue(vm.state.value.confirmSetup)
             assertEquals(1, previews)
-            assertEquals(MeshcoreErase(contacts = 12, slots = 2), vm.state.value.erase)
+            assertEquals(MeshcoreErase(contacts = 12, slots = 2, renames = true), vm.state.value.erase)
             assertFalse(vm.state.value.eraseLoading)
 
             vm.dismissSetup()
@@ -421,5 +439,164 @@ class LoraRadioViewModelMeshcoreTest {
             assertEquals(LoraProvisionOutcome.Restored, vm.state.value.provisionOutcome)
             coVerify(exactly = 1) { settings.setLoraEnabled(false) }
             coVerify(exactly = 0) { settings.clearLoraBoardSetup() }
+        }
+
+    // --- The board's name, its owner's handle (ADR 2026-11.f4d3) ----------------------------------------------------------
+
+    private fun named(
+        name: String,
+        default: Boolean = false,
+        unpostable: Boolean = false,
+    ) = face.copy(
+        handle = MeshcoreHandle(name.encodeToByteArray()),
+        namedDefault = default,
+        handleUnpostable = unpostable,
+        defaultName = "Knit 312b",
+    )
+
+    @Test
+    fun `the name row shows the handle cleaned and marks the default by its bytes alone`() =
+        runTest {
+            meshcoreStatus.value = LoraStatus(state = ready, meshcore = named("Sam\u202E 🧶\nx"))
+            val vm = start()
+            val rows = vm.state.value.meshcore!!
+            assertEquals("drawn cleaned, on one line", "Sam 🧶 x", rows.handle)
+            assertFalse(rows.namedDefault)
+            assertEquals("Knit 312b", rows.defaultName)
+            assertFalse("the rows never print the handle", rows.toString().contains("Sam"))
+
+            meshcoreStatus.value = LoraStatus(state = ready, meshcore = named("Knit 312b", default = true))
+            advanceUntilIdle()
+            assertTrue(
+                vm.state.value.meshcore!!
+                    .namedDefault,
+            )
+
+            meshcoreStatus.value = LoraStatus(state = ready, meshcore = named("Sam: hi", unpostable = true))
+            advanceUntilIdle()
+            assertTrue(
+                vm.state.value.meshcore!!
+                    .handleUnpostable,
+            )
+
+            meshcoreStatus.value = LoraStatus(meshcore = face)
+            advanceUntilIdle()
+            assertNull(
+                "away: no name",
+                vm.state.value.meshcore!!
+                    .handle,
+            )
+        }
+
+    @Test
+    fun `the rename dialog says what the board will refuse before anything is written`() =
+        runTest {
+            meshcoreStatus.value = LoraStatus(state = ready, meshcore = named("Knit 312b", default = true))
+            val vm = start()
+            vm.askRename()
+            assertEquals(
+                "prefilled with the board's name",
+                "Knit 312b",
+                vm.state.value.meshcoreRename!!
+                    .draft,
+            )
+
+            vm.setRenameDraft("Riverside Community Radio Club 2")
+            assertEquals(
+                32,
+                vm.state.value.meshcoreRename!!
+                    .bytes,
+            )
+            assertEquals(
+                MeshcoreNameProblem.TooLong,
+                vm.state.value.meshcoreRename!!
+                    .problem,
+            )
+            vm.setRenameDraft("Sam: hi")
+            assertEquals(
+                MeshcoreNameProblem.Separator,
+                vm.state.value.meshcoreRename!!
+                    .problem,
+            )
+            vm.saveRename()
+            advanceUntilIdle()
+            assertEquals(
+                MeshcoreNameProblem.Separator,
+                vm.state.value.meshcoreRename!!
+                    .problem,
+            )
+
+            vm.setRenameDraft("   ")
+            assertNull(
+                "an empty field says nothing until Rename",
+                vm.state.value.meshcoreRename!!
+                    .problem,
+            )
+            vm.saveRename()
+            advanceUntilIdle()
+            assertEquals(
+                MeshcoreNameProblem.Empty,
+                vm.state.value.meshcoreRename!!
+                    .problem,
+            )
+
+            vm.setRenameDraft("fuck off")
+            vm.saveRename()
+            advanceUntilIdle()
+            assertEquals(
+                "screened as a display name is",
+                MeshcoreNameProblem.Flagged,
+                vm.state.value.meshcoreRename!!
+                    .problem,
+            )
+
+            assertTrue("nothing reached the board", renames.isEmpty())
+            coVerify(exactly = 0) { settings.acceptMeshcoreCustomNameDisclosure() }
+        }
+
+    @Test
+    fun `a name the board took covers the post consent and the default never does`() =
+        runTest {
+            meshcoreStatus.value = LoraStatus(state = ready, meshcore = named("Knit 312b", default = true))
+            val vm = start()
+            vm.askRename()
+            vm.setRenameDraft("  Sam 🧶  ")
+            vm.saveRename()
+            advanceUntilIdle()
+            assertEquals("trimmed to one line", listOf("Sam 🧶"), renames)
+            assertNull(vm.state.value.meshcoreRename)
+            assertEquals(MeshcoreRenameNotice.Done, vm.state.value.meshcoreRenameNotice)
+            // The dialog carried the post sheet's disclosure: a consent given before covers the name now.
+            coVerify(exactly = 1) { settings.acceptMeshcoreCustomNameDisclosure() }
+
+            vm.askRename()
+            vm.useDefaultName()
+            advanceUntilIdle()
+            assertEquals(listOf("Sam 🧶", "Knit 312b"), renames)
+            coVerify(exactly = 1) { settings.acceptMeshcoreCustomNameDisclosure() }
+        }
+
+    @Test
+    fun `a rename the board did not take records nothing and says why`() =
+        runTest {
+            meshcoreStatus.value = LoraStatus(state = ready, meshcore = named("Knit 312b", default = true))
+            val vm = start()
+            val notices =
+                mapOf(
+                    MeshcoreRenameResult.FAILED to MeshcoreRenameNotice.Failed,
+                    MeshcoreRenameResult.NOT_READY to MeshcoreRenameNotice.NotReady,
+                    MeshcoreRenameResult.NO_BOARD to MeshcoreRenameNotice.NotReady,
+                    MeshcoreRenameResult.NOT_SET_UP to MeshcoreRenameNotice.NotSetUp,
+                )
+            for ((result, notice) in notices) {
+                renameResult = result
+                vm.askRename()
+                vm.setRenameDraft("Sam")
+                vm.saveRename()
+                advanceUntilIdle()
+                assertNull(result.name, vm.state.value.meshcoreRename)
+                assertEquals(result.name, notice, vm.state.value.meshcoreRenameNotice)
+            }
+            coVerify(exactly = 0) { settings.acceptMeshcoreCustomNameDisclosure() }
         }
 }

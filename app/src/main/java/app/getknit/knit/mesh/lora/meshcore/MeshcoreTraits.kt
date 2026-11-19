@@ -178,13 +178,32 @@ internal object MeshcoreTraits : BoardTraits {
 
     override fun refusalOf(result: SendResult): RefusalClass? = MeshcoreRefusal.classOf(result)
 
-    /** A MeshCore price is its purpose: no signature, no extra bytes; [phyBytes] frames it. */
+    /**
+     * A MeshCore price is its purpose: no signature; [phyBytes] frames it. A Public post's carries the firmware's name
+     * prefix as its extra bytes, at the longest name until [publicPrice] names the board's (ADR 2026-11.f4d3).
+     */
     override fun price(
         purpose: AirPurpose,
         facts: SigningFacts,
         primaryAead: Boolean,
         knitAead: Boolean,
-    ): PacketPrice = PacketPrice(LoraAirtime.UNSIGNED, 0, capOf(purpose), purpose)
+    ): PacketPrice =
+        PacketPrice(LoraAirtime.UNSIGNED, if (purpose == AirPurpose.PUBLIC_POST) publicPrefixBytes(null) else 0, capOf(purpose), purpose)
+
+    /**
+     * A Public post from a board named in [nameBytes] bytes (ADR 2026-11.f4d3): the `"<name>: "` prefix the firmware writes
+     * (`BaseChatMesh.cpp:523`) as the price's extra bytes, and [publicTextCap] as its cap. Null is the longest name
+     * ([MeshcoreNames.MAX_NAME_BYTES]), so an unknown name never under-prices. Any other purpose is left as it is.
+     */
+    override fun publicPrice(
+        price: PacketPrice,
+        nameBytes: Int?,
+    ): PacketPrice =
+        if (price.purpose != AirPurpose.PUBLIC_POST) {
+            price
+        } else {
+            price.copy(extraBytes = publicPrefixBytes(nameBytes), cap = publicTextCap(nameBytes))
+        }
 
     /**
      * The bytes on the air for a [payloadBytes] payload, by the price's purpose (a price with none is a room flood):
@@ -197,7 +216,7 @@ internal object MeshcoreTraits : BoardTraits {
      * - a PATH return, flooded: header, transport codes, path length, the two hashes, MAC, and AES over [payloadBytes] of
      *   path plaintext ([pathReturnPlaintext]);
      * - a public post (`GRP_TXT` on slot 0, flooded): as a room flood, over the timestamp, the flags and the board's
-     *   `"Knit xxxx: "` prefix ([PUBLIC_PREFIX_BYTES], `BaseChatMesh.cpp:523`) before the text.
+     *   `"<name>: "` prefix (the price's extra bytes, [publicPrefixBytes], `BaseChatMesh.cpp:523`) before the text.
      */
     override fun phyBytes(
         payloadBytes: Int,
@@ -221,7 +240,7 @@ internal object MeshcoreTraits : BoardTraits {
             }
 
             AirPurpose.PUBLIC_POST -> {
-                FLOOD_HEAD + HASH_BYTES + MAC_BYTES + aesPadded(TEXT_HEADER + PUBLIC_PREFIX_BYTES + payloadBytes)
+                FLOOD_HEAD + HASH_BYTES + MAC_BYTES + aesPadded(TEXT_HEADER + price.extraBytes + payloadBytes)
             }
         }
 
@@ -323,17 +342,27 @@ internal object MeshcoreTraits : BoardTraits {
     const val ROOM_PART_LIMIT = 2
 
     /**
-     * The `"%s: "` the firmware writes before a Public post's text from the board's own name (`BaseChatMesh.cpp:523`): a
-     * constant 11 B, since a post leaves only from a board named `Knit xxxx` (9 B, `MeshcoreNames.forKey`; ADR 2026-11.gsqu's
-     * Stage 6 amendment, lora B1 / security B2).
+     * The `"%s: "` the firmware writes before a Public post's text from the board's own name (`BaseChatMesh.cpp:523`): the
+     * name's [nameBytes] and 2, since the name is the owner's handle (ADR 2026-11.f4d3, amending ADR 2026-11.gsqu's Stage 6
+     * constant 11 B). Null is the longest name the firmware keeps, 31 B: 33.
      */
-    const val PUBLIC_PREFIX_BYTES = 11
+    fun publicPrefixBytes(nameBytes: Int?): Int = (nameBytes ?: MeshcoreNames.MAX_NAME_BYTES) + PUBLIC_SEPARATOR_BYTES
 
     /**
-     * The most text one Public post carries untrimmed: `MAX_TEXT_LEN` less the prefix (`BaseChatMesh.cpp:527` trims the
-     * whole to 160 silently), 149 B — 185 B on the air, about 1.16 s at the companion default.
+     * The most text one Public post from a board named in [nameBytes] bytes carries untrimmed: `MAX_TEXT_LEN` less the
+     * prefix (`BaseChatMesh.cpp:527` trims the whole to 160 silently) — 149 B under `Knit abcd` (185 B on the air, about
+     * 1.16 s at the companion default), [PUBLIC_TEXT_CAP] under the longest name. Never under 0.
      */
-    const val PUBLIC_TEXT_CAP = MeshcoreProto.MAX_TEXT_LEN - PUBLIC_PREFIX_BYTES
+    fun publicTextCap(nameBytes: Int?): Int = (MeshcoreProto.MAX_TEXT_LEN - publicPrefixBytes(nameBytes)).coerceAtLeast(0)
+
+    /**
+     * The floor of [publicTextCap]: the most text a Public post carries whatever the board is named (31 B), 127 B. What the
+     * composer offers before it knows the board's name (ADR 2026-11.f4d3), and the cap a price with no name reads.
+     */
+    const val PUBLIC_TEXT_CAP = MeshcoreProto.MAX_TEXT_LEN - MeshcoreNames.MAX_NAME_BYTES - 2
+
+    /** The `": "` between the name and the text. */
+    private const val PUBLIC_SEPARATOR_BYTES = 2
 
     /**
      * The per-packet term on top of the formula: the uncertainty of Q5's 60-send measurement at 181 B (±17 ms), for the

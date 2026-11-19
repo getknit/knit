@@ -102,6 +102,7 @@ import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.lora.PublicPostPolicy
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreTraits
 import app.getknit.knit.mesh.meshNodeLabel
 import app.getknit.knit.mesh.protocol.DeclaredLangs
@@ -662,9 +663,19 @@ data class ChatUiState(
     // True when this bridged room is the **MeshCore room** (ADR 2026-11.gsqu's Stage 6 amendment): its own copy wherever
     // the Meshtastic room's words do not fit (no signature, a name never verified, a board set up for Knit, its own sheet).
     val isMeshcoreRoom: Boolean = false,
-    // The bound MeshCore board's own name (`Knit xxxx`), which goes on the front of every post — what the MeshCore room's
-    // consent sheet names (security B3). Null outside that room, or with none known yet.
+    // The bound MeshCore board's own name, its owner's handle (ADR 2026-11.f4d3), cleaned for drawing: it goes on the front
+    // of every post, so the MeshCore room's consent sheet and the composer's "Posting as" line name it (security B3). Null
+    // outside that room, or while the board is away.
     val meshcoreBoardName: String? = null,
+    // Whether [meshcoreBoardName] is a name the owner chose rather than Knit's `Knit abcd` default, byte for byte: a consent
+    // given on a sheet that showed the default does not cover it, and accepting a sheet that showed it records so.
+    val meshcoreBoardCustom: Boolean = false,
+    // The board's name as raw bytes, from the same state that decided [needsPublicConsent]: what a post carries down to the
+    // plane, which refuses it (`NAME_CHANGED`) if the board's name is no longer this one. Never prints.
+    val meshcoreHandle: MeshcoreHandle? = null,
+    // Whether that name, written by another app, breaks the postable rules (`MeshcoreNames.check`): a post is refused
+    // before the sheet, as the plane would refuse it.
+    val meshcoreNameUnpostable: Boolean = false,
     // Whether the bound MeshCore board may put where it is on the air (null: not read yet): the MeshCore room's consent sheet
     // says so unless it is known not to (ADR 2026-11.gsqu's Stage 7 amendment). Null outside that room.
     val meshcoreSharesPosition: Boolean? = null,
@@ -677,6 +688,18 @@ data class ChatUiState(
     // hundreds — so the screen shows a bubble skeleton for that gap instead. Defaults false so every real
     // combine emission — and the previews — render content; only the seed passes true.
     val isLoading: Boolean = false,
+)
+
+/**
+ * The bound MeshCore board's name as the MeshCore room reads it off its plane's face (ADR 2026-11.f4d3): the raw [handle]
+ * a post carries down to the plane, whether it is Knit's `Knit abcd` default for the board's key byte for byte
+ * ([namedDefault]: a lookalike reads as chosen), and whether another app left it unpostable ([unpostable]). Its
+ * [handle] never prints, so neither does this.
+ */
+data class MeshcoreNaming(
+    val handle: MeshcoreHandle,
+    val namedDefault: Boolean,
+    val unpostable: Boolean,
 )
 
 /**
@@ -767,9 +790,12 @@ class ChatViewModel(
     // kind's, never the bound kind's aggregate (ADR 2026-11.gsqu's Stage 6 amendment, lora N5). Null, as in the test rigs,
     // reads [loraFacts] as its own kind's alone. A plain parameter, read by the initializers alone.
     loraRooms: Flow<Map<BoardKind, LoraFacts>>? = null,
-    // The bound MeshCore board's own name, `Knit xxxx` (`MeshcoreNames.forKey` over the claimed key), or null with none
-    // known: what the MeshCore room's consent sheet shows and the name-clash marker compares (security B3, N2).
+    // Knit's default name for the claimed MeshCore board, `Knit xxxx` (`MeshcoreNames.forKey` over the claimed key), or null
+    // with none known: the name-clash marker compares it beside the live handle (security N2), as the board carried it.
     meshcoreBoardName: Flow<String?> = flowOf(null),
+    // The bound MeshCore board's live name off its plane's face (ADR 2026-11.f4d3), null while it is away: what the consent
+    // sheet and the composer line show, what decides whether a consent still counts, and what a post carries.
+    meshcoreNaming: Flow<MeshcoreNaming?> = flowOf(null),
     // Whether the bound MeshCore board may share where it is (`MeshcoreBoardFace.sharesPosition`), null while not read: the
     // MeshCore room's consent sheet says so, and asks again when a board that does was consented without that line.
     meshcoreSharesPosition: Flow<Boolean?> = flowOf(null),
@@ -1586,32 +1612,50 @@ class ChatViewModel(
         val commonsRoom: CommonsEntity?,
         val commonsMembers: List<String>,
         val directLinksOn: Boolean,
-        // The MeshCore board's own `Knit xxxx`, in the MeshCore room alone (null elsewhere).
-        val boardName: String? = null,
+        // The MeshCore board's live name and its default, in the MeshCore room alone (null elsewhere).
+        val naming: MeshcoreNaming? = null,
+        val defaultName: String? = null,
         // Whether that board may share where it is, in the MeshCore room alone (null elsewhere or not read yet).
         val sharesPosition: Boolean? = null,
-    )
+    ) {
+        /** The board's live name cleaned for drawing, null while it is away or cleans to nothing. */
+        val boardName: String? =
+            naming
+                ?.handle
+                ?.text
+                ?.let { TextLimits.cleanReceived(it, TextLimits.DISPLAY_NAME) }
+                ?.takeIf { it.isNotEmpty() }
+    }
 
     /** A room's post consent as its sheet needs it: given or not, and the MeshCore board's name and position policy. */
     private data class RoomConsent(
         val consented: Boolean,
-        val boardName: String? = null,
+        val naming: MeshcoreNaming? = null,
+        val defaultName: String? = null,
         val sharesPosition: Boolean? = null,
     )
 
     // The room's own kind's consent, never the other's (security N13): the Meshtastic sheet never posts through a MeshCore
     // board. Ridden with the board's name, which only the MeshCore room reads. A MeshCore consent given without the position
     // line counts only while the board is known not to share where it is: unknown asks again, as the sheet shows the line for
-    // it (ADR 2026-11.gsqu's Stage 7b amendment, security-reviewer).
+    // it (ADR 2026-11.gsqu's Stage 7b amendment, security-reviewer). Likewise a consent given on a sheet that showed Knit's
+    // `Knit abcd` default counts only while the board still carries it: a name the owner chose asks again, under that name,
+    // until a sheet or Knit's rename dialog showed one (ADR 2026-11.f4d3). Away (null), it counts: no post leaves then.
     private val publicConsent: Flow<RoomConsent> =
         if (isMeshcoreRoom) {
             combine(
-                settings.meshcorePostConsented,
-                settings.meshcorePostConsentPosition,
+                combine(
+                    settings.meshcorePostConsented,
+                    settings.meshcorePostConsentPosition,
+                    settings.meshcorePostConsentCustomName,
+                    ::Triple,
+                ),
+                meshcoreNaming,
                 meshcoreBoardName,
                 meshcoreSharesPosition,
-            ) { consented, withPosition, board, shares ->
-                RoomConsent(consented && (shares == false || withPosition), board, shares)
+            ) { (consented, withPosition, withCustomName), naming, defaultName, shares ->
+                val named = naming == null || naming.namedDefault || withCustomName
+                RoomConsent(consented && (shares == false || withPosition) && named, naming, defaultName, shares)
             }
         } else {
             settings.meshtasticPostConsented.map { RoomConsent(it) }
@@ -1625,7 +1669,7 @@ class ChatViewModel(
             if (isCommons) commons?.observeMemberIds(conversationId) ?: flowOf(emptyList()) else flowOf(emptyList()),
             directLinksOn,
         ) { name, consent, room, roster, linksOn ->
-            PublicInputs(name, consent.consented, room, roster, linksOn, consent.boardName, consent.sharesPosition)
+            PublicInputs(name, consent.consented, room, roster, linksOn, consent.naming, consent.defaultName, consent.sharesPosition)
         }
 
     // The peer directory, read once for this screen: the thread state and the pinned bar both name senders from it, and
@@ -1700,10 +1744,11 @@ class ChatViewModel(
             fun label(nodeId: String) = labels.getOrPut(nodeId) { directory.label(nodeId) }
             val selfLabel = context.getString(R.string.chat_self_name)
             // The names a MeshCore room post's claimed name gets the bubble's clash line for (security N2): "You", ours, our own
-            // board's `Knit xxxx`, and every person's name as stored and as the screens render it. Empty elsewhere.
+            // board's live name and its `Knit xxxx` default (ADR 2026-11.f4d3), and every person's name as stored and as the
+            // screens render it. Empty elsewhere.
             val clashKeys =
                 if (isMeshcoreRoom) {
-                    meshcoreRoomClashKeys(context, listOf(myName, publicId.boardName), directory, me)
+                    meshcoreRoomClashKeys(context, listOf(myName, publicId.boardName, publicId.defaultName), directory, me)
                 } else {
                     emptySet()
                 }
@@ -1948,8 +1993,9 @@ class ChatViewModel(
                 // client convention.
                 publicPostBudget =
                     when {
-                        // MeshCore's own budget (Stage 6): 149 B, less where the band's flood ceiling can never carry that
-                        // much — never Meshtastic's signing cliff. Unknown (no ledger yet) takes the cap.
+                        // MeshCore's own budget (Stage 6): what the board's name leaves of the firmware's 160 B (ADR
+                        // 2026-11.f4d3), less where the band's flood ceiling can never carry that much — never Meshtastic's
+                        // signing cliff. Unknown (no ledger yet) takes the floor, the cap under the longest name.
                         isMeshcoreRoom -> mesh.lora.room.publicPostBytes ?: MeshcoreTraits.PUBLIC_TEXT_CAP
 
                         isBridged -> PublicPostPolicy.onAirBudget(mesh.lora.room.roomSignedUpTo)
@@ -1960,6 +2006,9 @@ class ChatViewModel(
                 needsPublicConsent = isBridged && !publicConsented,
                 isMeshcoreRoom = isMeshcoreRoom,
                 meshcoreBoardName = publicId.boardName.takeIf { isMeshcoreRoom },
+                meshcoreBoardCustom = isMeshcoreRoom && publicId.naming?.namedDefault == false,
+                meshcoreHandle = publicId.naming?.handle.takeIf { isMeshcoreRoom },
+                meshcoreNameUnpostable = isMeshcoreRoom && publicId.naming?.unpostable == true,
                 meshcoreSharesPosition = publicId.sharesPosition.takeIf { isMeshcoreRoom },
                 isBlocked = isPeerThread && conversationId in blocked,
                 canCall = calls?.liveEnabled == true && callable && offers(Protocol.CAP_CALL),
@@ -2610,26 +2659,37 @@ class ChatViewModel(
      * never silently goes nowhere — the failure the whole room is designed around.
      */
     private fun postPublic(text: String) {
-        if (state.value.publicPostGate != PublicPostGate.Open) {
+        // One state for every check below and for the name the post carries: the consent decision and the handle it was
+        // made under must be the same reading (ADR 2026-11.f4d3).
+        val now = state.value
+        if (now.publicPostGate != PublicPostGate.Open) {
             _events.tryEmit(R.string.chat_mesh_post_not_connected)
             return
         }
-        if (state.value.needsPublicConsent) {
+        // A name the plane would refuse to post under: asking consent for it would be a question about nothing.
+        if (now.meshcoreNameUnpostable) {
+            _events.tryEmit(R.string.chat_meshcore_post_name_unpostable)
+            return
+        }
+        if (now.needsPublicConsent) {
             _showPublicConsent.value = true
             return
         }
         // Shared text skips the composer's cap. Queued as it stands, the board would air only what fits while the
         // user's own row showed all of it, so the draft stays and the counter says how much has to go.
-        if (state.value.publicPostBudget?.let { LoraSizeHint.utf8Length(text) > it } == true) {
+        if (now.publicPostBudget?.let { LoraSizeHint.utf8Length(text) > it } == true) {
             _events.tryEmit(R.string.chat_mesh_post_too_large)
             return
         }
         if (_isSending.value) return
         _isSending.value = true
+        // The MeshCore board's name this consent counted under, which the plane holds the board to at enqueue and at the
+        // write (`NAME_CHANGED`); null outside the MeshCore room, where the Meshtastic board signs as Knit.
+        val consented = now.meshcoreHandle.takeIf { isMeshcoreRoom }
         viewModelScope.launch {
             var accepted = false
             try {
-                when (val outcome = meshManager.sendPublicPost(conversationId, text)) {
+                when (val outcome = meshManager.sendPublicPost(conversationId, text, consented)) {
                     PublicPostOutcome.Queued -> {
                         accepted = true
                         // The same clean slate an accepted chat send leaves: nothing is ever staged here,
@@ -2677,6 +2737,16 @@ class ChatViewModel(
                 R.string.chat_meshcore_post_not_set_up
             }
 
+            // The MeshCore board's name moved since the consent decision (ADR 2026-11.f4d3): the sheet asks again under it.
+            PublicPostRefusal.NAME_CHANGED -> {
+                R.string.chat_meshcore_post_name_changed
+            }
+
+            // The MeshCore board's name, written by another app, cannot lead a post (ADR 2026-11.f4d3).
+            PublicPostRefusal.NAME_UNPOSTABLE -> {
+                R.string.chat_meshcore_post_name_unpostable
+            }
+
             // A MeshCore board whose slot 0 holds no channel: a post would air under the all-zero key and reach nobody.
             PublicPostRefusal.NO_CHANNEL -> {
                 R.string.chat_meshcore_post_no_channel
@@ -2714,13 +2784,17 @@ class ChatViewModel(
      * button that said "Post" on a sheet, not on their message, and making one tap do both would mean the
      * words went out in the same motion as the decision to allow them to.
      */
-    fun acceptPublicConsent(positionShown: Boolean = false) {
+    fun acceptPublicConsent(
+        positionShown: Boolean = false,
+        customNameShown: Boolean = false,
+    ) {
         viewModelScope.launch {
             // The room's own kind's answer, never the other's (security N13). [positionShown] is whether the MeshCore sheet the
             // user accepted showed its position line, as that sheet rendered it: never read back from the state at the tap,
-            // which may have moved since (security-reviewer, Stage 7b).
+            // which may have moved since (security-reviewer, Stage 7b). [customNameShown] is the same for the board's name:
+            // whether the sheet named a name the owner chose rather than the `Knit abcd` default (ADR 2026-11.f4d3).
             if (isMeshcoreRoom) {
-                settings.acceptMeshcorePostConsent(withPosition = positionShown)
+                settings.acceptMeshcorePostConsent(withPosition = positionShown, withCustomName = customNameShown)
             } else {
                 settings.acceptMeshtasticPostConsent()
             }

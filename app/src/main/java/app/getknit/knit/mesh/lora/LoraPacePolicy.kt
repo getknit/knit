@@ -1,5 +1,7 @@
 package app.getknit.knit.mesh.lora
 
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
+
 /**
  * The outbound pacer for the LoRa plane: a bounded queue with a minimum inter-packet gap and a NAK
  * back-off, all pure and clock-driven by the caller (the transport owns the actual `delay`). LoRa is a
@@ -715,6 +717,12 @@ internal class OutboundFrame(
      * retry is the same post and our own row's id matches what receivers read. Null on every other frame.
      */
     val timestampSecs: Long? = null,
+    /**
+     * The board name a public post's packet goes out under, read at enqueue (MeshCore's Public post, ADR 2026-11.f4d3): the
+     * firmware writes it and `": "` before the text, so it is part of the price ([price]: admission and the booking read one
+     * figure) and the write refuses the frame when the board reads another. Null on every other frame.
+     */
+    val publicName: MeshcoreHandle? = null,
 ) {
     /**
      * A frame addressed by a Meshtastic node number, [MeshtasticProto.BROADCAST] for the channel: the form before
@@ -813,7 +821,8 @@ internal class OutboundFrame(
      * that is not in ham mode (ADR 2026-10.x9fa's PKI amendment), channel-encrypted and signed by the firmware's rule on
      * one that is (ADR 2026-10.aajj).
      */
-    fun price(airtime: LoraAirtime): PacketPrice = airtime.price(purpose)
+    fun price(airtime: LoraAirtime): PacketPrice =
+        publicName?.takeIf { destination == Destination.Public }?.let { airtime.publicPrice(it.size) } ?: airtime.price(purpose)
 
     /**
      * What this frame is on the air, for the kind's price hook ([BoardTraits.price], ADR 2026-11.gsqu's Stage 5a-1

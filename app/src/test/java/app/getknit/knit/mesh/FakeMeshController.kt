@@ -77,6 +77,9 @@ class FakeMeshController : MeshController {
 
     /** The room each of [sentPublicPosts] was posted in, in order (ADR 2026-11.gsqu's Stage 6: routed by room). */
     val sentPublicPostRooms = mutableListOf<String>()
+
+    /** The MeshCore name each of [sentPublicPosts] was consented under, in order (ADR 2026-11.f4d3); null outside that room. */
+    val sentPublicPostHandles = mutableListOf<app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle?>()
     val sentGroupUpdates = mutableListOf<GroupInfo>()
     val sentGroupLeaves = mutableListOf<String>()
     val sentReactions = mutableListOf<Pair<String, String>>()
@@ -166,9 +169,11 @@ class FakeMeshController : MeshController {
     override suspend fun sendPublicPost(
         conversationId: String,
         text: String,
+        consented: app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle?,
     ): PublicPostOutcome {
         sentPublicPosts += text
         sentPublicPostRooms += conversationId
+        sentPublicPostHandles += consented
         return publicPostOutcome
     }
 

@@ -353,6 +353,53 @@ class MeshcoreDirectLabTest {
         }
 
     /**
+     * ADR 2026-11.f4d3 (the P9, 2026-11-18): each owner renames their board in another app — a second client on the board's
+     * other interface, as the stock MeshCore app is. The name is the owner's handle, not a gate: alice's next Ready (a
+     * restart) reconciles rather than dropping it, the names are never written over, and a DM crosses with its ✓✓ back over
+     * the air.
+     */
+    @Test
+    fun boardsRenamedInAnotherAppStayKnitsAndCarryADm() =
+        runBlocking {
+            val air = lab.meshcoreAir()
+            val (alice, bob) = pair(air)
+            bob.accept(bob.dmWith(alice))
+            val aliceBoard = checkNotNull(alice.meshcoreBoard)
+            val bobBoard = checkNotNull(bob.meshcoreBoard)
+
+            suspend fun namesWritten() =
+                (alice.meshcoreWritesEver() + bob.meshcoreWritesEver()).count { it[0].toInt() == MeshcoreProto.CMD_SET_ADVERT_NAME }
+            val setups = namesWritten()
+            air.meshcoreEdit {
+                FakeForeignClient(aliceBoard).send(checkNotNull(MeshcoreProto.setAdvertName("Ana's radio")))
+                FakeForeignClient(bobBoard).send(checkNotNull(MeshcoreProto.setAdvertName("Wren")))
+            }
+
+            alice.restart()
+            val c = checkNotNull(alice.meshcoreSession).counters
+            assertTrue(
+                "the Ready never reconciled: skipped=${c.reconcilesSkipped} dropped=${c.reconcilesDropped}\n" +
+                    alice.loraLog.joinToString("\n"),
+                lab.tryAwait(1) { (c.reconciles.get() + c.reconcilesSkipped.get()).toInt() },
+            )
+            assertEquals("the reconcile was dropped: ${alice.loraLog}", 0L, c.reconcilesDropped.get())
+            assertTrue(
+                "the face never carried the new name",
+                lab.tryAwait(1) { if (alice.meshcoreHandle()?.text == "Ana's radio") 1 else 0 },
+            )
+
+            assertTrue(alice.sendDm(bob, "under my own name"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "under my own name")
+            lab.await(1) { holds(bob, alice, dm) }
+            assertEquals(DeliveryPlane.LoRa, bob.receivedVia(bob.dmWith(alice), dm))
+            assertEquals("its ✓✓ came back over the board", DeliveryPlane.LoRa, lab.awaitReceipt(alice, dm, bob))
+            assertEquals("Ana's radio", air.snapshot { aliceBoard.advertName.decodeToString() })
+            assertEquals("Wren", air.snapshot { bobBoard.advertName.decodeToString() })
+            assertEquals("Knit wrote a name since the setups' own", setups, namesWritten())
+            converge(alice, bob, atLeast = 1)
+        }
+
+    /**
      * Security (d)/(f): a DM that is not Knit's — the user's own MeshCore app on Bob's very board, writing alice a plain
      * text — lifts nothing. Alice's board marked Bob unreachable first (her DMs went unheard); the foreign DM is counted and
      * discarded (`meshcoreForeignDms`, awaited), and only then is the mark read: it stands, and no hearing was logged.

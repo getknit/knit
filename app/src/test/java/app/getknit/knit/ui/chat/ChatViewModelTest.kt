@@ -70,6 +70,7 @@ import app.getknit.knit.mesh.lora.LoraAirtime
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.lora.PublicPostPolicy
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
 import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.LinkCard
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
@@ -205,6 +206,11 @@ class ChatViewModelTest {
     private val loraRoomsFlow = MutableStateFlow<Map<BoardKind, LoraFacts>>(emptyMap())
     private val meshcoreBoardNameFlow = MutableStateFlow<String?>("Knit 1a2b")
 
+    // The board's live name off its face, and whether a consent was given on a sheet that named a chosen one (ADR
+    // 2026-11.f4d3). The board carries its default unless a test renames it.
+    private val meshcoreNamingFlow = MutableStateFlow<MeshcoreNaming?>(meshcoreNaming("Knit 1a2b", default = true))
+    private val meshcoreCustomNameConsentFlow = MutableStateFlow(false)
+
     // Whether the MeshCore consent was given with its position line, and whether the board shares where it is (Stage 7).
     private val meshcorePositionConsentFlow = MutableStateFlow(false)
     private val meshcoreSharesFlow = MutableStateFlow<Boolean?>(null)
@@ -238,6 +244,7 @@ class ChatViewModelTest {
         every { groups.observeGroup(Conversations.MESHCORE_PUBLIC) } returns groupFlow
         every { settings.meshcorePostConsented } returns meshcoreConsentFlow
         every { settings.meshcorePostConsentPosition } returns meshcorePositionConsentFlow
+        every { settings.meshcorePostConsentCustomName } returns meshcoreCustomNameConsentFlow
         every { peers.observeDirectory() } returns peersFlow.map { directoryOf(it) }
         every { settings.displayName } returns nameFlow
         // Same trap as the relay flows below: this one is combined with displayName to build the state, so a
@@ -359,6 +366,7 @@ class ChatViewModelTest {
         outsideUris = OutsideUris.of(context),
         loraRooms = loraRooms,
         meshcoreBoardName = meshcoreBoardNameFlow,
+        meshcoreNaming = meshcoreNamingFlow,
         meshcoreSharesPosition = meshcoreSharesFlow,
     )
 
@@ -1136,6 +1144,30 @@ class ChatViewModelTest {
         }
 
     /**
+     * The owner's chosen handle is ours too (ADR 2026-11.f4d3): a stranger posting under it, or under the board's `Knit xxxx`
+     * default it no longer carries, gets the marker; the handle is compared as the screens draw it, cleaned.
+     */
+    @Test
+    fun aMeshcoreNameThatReadsAsOurBoardsHandleOrItsDefaultCarriesTheMarker() =
+        runTest {
+            meshcoreNamingFlow.value = meshcoreNaming("Sam 🧶")
+            val vm = vm(Conversations.MESHCORE_PUBLIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value =
+                listOf(
+                    meshcoreHeard("handle", "sam 🧶"),
+                    meshcoreHeard("default", "Knit 1a2b"),
+                    meshcoreHeard("stranger", "Sam"),
+                )
+            advanceUntilIdle()
+
+            val clash =
+                vm.state.value.rows
+                    .associate { it.id to it.origin?.nameClash }
+            assertEquals(mapOf("handle" to true, "default" to true, "stranger" to false), clash)
+        }
+
+    /**
      * Security review round 2: the bubble's clash set holds every name the screens render for a person, not only the raw
      * stored one — a namesake's disambiguated label ("Alice (QuietOtter)"), the alias a blank name shows, and our own.
      */
@@ -1330,7 +1362,7 @@ class ChatViewModelTest {
 
             assertEquals("no MeshCore board bound: history, and a refusal", PublicPostGate.NoRadio, vm.state.value.publicPostGate)
             assertEquals(context.getString(R.string.meshcore_title), vm.state.value.title)
-            assertEquals("the cap before any ledger", 149, vm.state.value.publicPostBudget)
+            assertEquals("the floor before any ledger: the cap under the longest name", 127, vm.state.value.publicPostBudget)
 
             loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive)
             advanceUntilIdle()
@@ -1476,6 +1508,8 @@ class ChatViewModelTest {
             val expected =
                 mapOf(
                     PublicPostRefusal.NOT_SET_UP to R.string.chat_meshcore_post_not_set_up,
+                    PublicPostRefusal.NAME_CHANGED to R.string.chat_meshcore_post_name_changed,
+                    PublicPostRefusal.NAME_UNPOSTABLE to R.string.chat_meshcore_post_name_unpostable,
                     PublicPostRefusal.NO_CHANNEL to R.string.chat_meshcore_post_no_channel,
                     PublicPostRefusal.ROOM_OFF to R.string.chat_meshcore_post_room_off,
                     PublicPostRefusal.TOO_SOON to R.string.chat_mesh_post_too_soon,
@@ -1487,6 +1521,107 @@ class ChatViewModelTest {
                 assertEquals(reason.name, string, events.last())
             }
             assertEquals(List(expected.size) { Conversations.MESHCORE_PUBLIC }, mesh.sentPublicPostRooms)
+            assertEquals("each carries the name it was consented under", List(expected.size) { boardHandle }, mesh.sentPublicPostHandles)
+        }
+
+    /**
+     * Post consent follows the board's name (ADR 2026-11.f4d3): a consent given on a sheet that named the `Knit abcd` default
+     * does not cover a name the owner chose, so the room asks again under that name. Accepting the sheet that showed it
+     * records so, and the post then carries exactly that name down to the plane. A move between chosen names is not asked
+     * again (the maintainer's accepted residual: the composer line names it), and back to the default never is.
+     */
+    @Test
+    fun aMeshcoreConsentGivenUnderTheDefaultAsksAgainForAChosenName() =
+        runTest {
+            meshcoreConsentFlow.value = true
+            meshcoreSharesFlow.value = false
+            val vm = vm(Conversations.MESHCORE_PUBLIC, loraRooms = loraRoomsFlow)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive)
+            advanceUntilIdle()
+            assertFalse("the default, consented: it holds", vm.state.value.needsPublicConsent)
+            assertFalse(vm.state.value.meshcoreBoardCustom)
+
+            meshcoreNamingFlow.value = meshcoreNaming("Sam 🧶")
+            advanceUntilIdle()
+            assertTrue("renamed in another app: ask again", vm.state.value.needsPublicConsent)
+            assertEquals("the sheet names the handle", "Sam 🧶", vm.state.value.meshcoreBoardName)
+            assertTrue(vm.state.value.meshcoreBoardCustom)
+
+            vm.send("hello mesh")
+            advanceUntilIdle()
+            assertTrue(vm.showPublicConsent.value)
+            assertTrue(mesh.sentPublicPosts.isEmpty())
+            vm.acceptPublicConsent(positionShown = false, customNameShown = true)
+            advanceUntilIdle()
+            coVerify(exactly = 1) { settings.acceptMeshcorePostConsent(withPosition = false, withCustomName = true) }
+            meshcoreCustomNameConsentFlow.value = true
+            advanceUntilIdle()
+            assertFalse("a sheet named a chosen name: the consent covers it", vm.state.value.needsPublicConsent)
+
+            vm.send("hello mesh")
+            advanceUntilIdle()
+            vm.onInputCleared()
+            meshcoreNamingFlow.value = meshcoreNaming("Alex")
+            advanceUntilIdle()
+            assertFalse("chosen to chosen: not asked again", vm.state.value.needsPublicConsent)
+            vm.send("hello again")
+            advanceUntilIdle()
+            vm.onInputCleared()
+            meshcoreNamingFlow.value = meshcoreNaming("Knit 1a2b", default = true)
+            meshcoreCustomNameConsentFlow.value = false
+            advanceUntilIdle()
+            assertFalse("the default never asks again", vm.state.value.needsPublicConsent)
+
+            assertEquals(listOf("hello mesh", "hello again"), mesh.sentPublicPosts)
+            assertEquals(
+                "each post carries the name its consent decision saw",
+                listOf(meshcoreNaming("Sam 🧶").handle, meshcoreNaming("Alex").handle),
+                mesh.sentPublicPostHandles,
+            )
+        }
+
+    /** A sheet that named the default records no chosen name, whatever the board is called by the time of the tap. */
+    @Test
+    fun aMeshcoreConsentOnTheDefaultsSheetDoesNotCoverAChosenName() =
+        runTest {
+            meshcoreSharesFlow.value = false
+            val vm = vm(Conversations.MESHCORE_PUBLIC, loraRooms = loraRoomsFlow)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive)
+            advanceUntilIdle()
+            vm.send("hello mesh")
+            advanceUntilIdle()
+            assertTrue(vm.showPublicConsent.value)
+
+            meshcoreNamingFlow.value = meshcoreNaming("Sam 🧶")
+            advanceUntilIdle()
+            vm.acceptPublicConsent(positionShown = false, customNameShown = false)
+            advanceUntilIdle()
+            coVerify(exactly = 1) { settings.acceptMeshcorePostConsent(withPosition = false, withCustomName = false) }
+            meshcoreConsentFlow.value = true
+            advanceUntilIdle()
+            assertTrue("consented on the default's sheet, now a chosen name: ask again", vm.state.value.needsPublicConsent)
+        }
+
+    /** A name another app left unpostable is refused before any sheet, as the plane would refuse it (ADR 2026-11.f4d3). */
+    @Test
+    fun anUnpostableMeshcoreNameIsRefusedBeforeTheSheet() =
+        runTest {
+            meshcoreNamingFlow.value = meshcoreNaming("Sam: hi", unpostable = true)
+            val vm = vm(Conversations.MESHCORE_PUBLIC, loraRooms = loraRoomsFlow)
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive)
+            advanceUntilIdle()
+            assertTrue(vm.state.value.meshcoreNameUnpostable)
+
+            vm.send("hello mesh")
+            advanceUntilIdle()
+            assertEquals(listOf(R.string.chat_meshcore_post_name_unpostable), events)
+            assertFalse("no sheet for a name that cannot post", vm.showPublicConsent.value)
+            assertTrue(mesh.sentPublicPosts.isEmpty())
         }
 
     @Test
@@ -5149,3 +5284,13 @@ class ChatViewModelTest {
             assertEquals(mapOf(host to true), consent.value)
         }
 }
+
+/** A MeshCore board's live name as its plane's face carries it (ADR 2026-11.f4d3). */
+private fun meshcoreNaming(
+    name: String,
+    default: Boolean = false,
+    unpostable: Boolean = false,
+) = MeshcoreNaming(MeshcoreHandle(name.encodeToByteArray()), namedDefault = default, unpostable = unpostable)
+
+/** The board's default name as the rig's face carries it. */
+private val boardHandle = MeshcoreHandle("Knit 1a2b".encodeToByteArray())

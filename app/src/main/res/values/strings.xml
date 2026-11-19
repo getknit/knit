@@ -1912,6 +1912,7 @@
     <string name="lora_meshcore_state_unknown">Couldn\'t check whether this board is set up for Knit.</string>
     <string name="lora_meshcore_setup_body">Setting the board up hands it to Knit: Knit erases its contacts and its other channels, adds its own channel and renames the board. Its Public channel stays.</string>
     <string name="lora_meshcore_setup_confirm_body">Knit erases every contact and every channel on this board except Public, adds its own channel and renames the board “Knit” followed by a short code. From then on Knit manages the board\'s contacts, so use the board with Knit alone. Your Knit contacts can tell the board is yours.</string>
+    <string name="lora_meshcore_setup_confirm_body_keeps_name">Knit erases every contact and every channel on this board except Public and adds its own channel. The board keeps its name. From then on Knit manages the board\'s contacts, so use the board with Knit alone. Your Knit contacts can tell the board is yours.</string>
     <string name="lora_meshcore_setup_erase">This can\'t be undone, not even by undoing the setup.</string>
     <plurals name="lora_meshcore_erase_contacts">
         <item quantity="one">The board holds about %d contact.</item>
@@ -1931,7 +1932,27 @@
     <string name="lora_meshcore_forget_anyway">Forget anyway</string>
     <string name="lora_meshcore_forget_failed">Couldn\'t forget the board. Try again.</string>
     <string name="lora_meshcore_forget_mismatch">Board forgotten. It was reset or replaced since Knit set it up, so Knit left it as it is.</string>
-    <string name="lora_meshcore_restored">Board restored to its own name and settings. The contacts and channels the setup erased stay gone. LoRa is switched off until you set a board up again.</string>
+    <string name="lora_meshcore_restored">Board restored to its own settings, and to its old name unless you renamed it since. The contacts and channels the setup erased stay gone. LoRa is switched off until you set a board up again.</string>
+    <!-- The MeshCore board's name on the MeshCore network (ADR 2026-11.f4d3): the user's handle, or Knit's default. -->
+    <string name="lora_meshcore_name_title">Name on the MeshCore network</string>
+    <string name="lora_meshcore_name_default">%1$s (Knit\'s default)</string>
+    <string name="lora_meshcore_name_change">Change name</string>
+    <string name="lora_meshcore_name_away">Connect the board to see or change its name.</string>
+    <string name="lora_meshcore_name_unpostable">This name can\'t go on the Public channel, so Knit won\'t post there until you rename the board.</string>
+    <string name="lora_meshcore_rename_title">Rename your board</string>
+    <string name="lora_meshcore_rename_label">Name</string>
+    <string name="lora_meshcore_rename_counter">Bytes: %1$d / %2$d</string>
+    <string name="lora_meshcore_rename_disclosure">Other people see this name. It isn\'t encrypted: anyone nearby sees it as the board\'s Bluetooth name once the board restarts, any MeshCore radio in range reads it in the board\'s adverts (sent when you press its button or another app asks), and it goes in front of every post on the Public channel. Servers that listen to the radio keep it. Use a name you\'re happy for strangers to see.</string>
+    <string name="lora_meshcore_rename_use_default">Use %1$s</string>
+    <string name="lora_meshcore_rename_save">Rename</string>
+    <string name="lora_meshcore_rename_empty">Enter a name.</string>
+    <string name="lora_meshcore_rename_too_long">That name is too long for the board.</string>
+    <string name="lora_meshcore_rename_control">That name has characters the board can\'t show.</string>
+    <string name="lora_meshcore_rename_separator">A name can\'t contain “: ”. Other radios would read part of it as your post.</string>
+    <string name="lora_meshcore_rename_done">Board renamed.</string>
+    <string name="lora_meshcore_rename_failed">Couldn\'t rename the board. Try again.</string>
+    <string name="lora_meshcore_rename_not_ready">Connect the board to rename it.</string>
+    <string name="lora_meshcore_rename_not_set_up">Set the board up for Knit first.</string>
     <string name="lora_airtime">Airtime %1$d%% of the current budget</string>
     <string name="lora_radio_config">Radio %1$s</string>
     <string name="lora_public_channel">Primary channel %1$s</string>
@@ -2244,15 +2265,20 @@
     <string name="chat_meshcore_room_body">This room shows the Public channel of the MeshCore board paired to this phone. Knit\'s encryption does not reach it: nothing here is end-to-end encrypted, and on the standard Public channel the key is public, so anyone with a radio can read it. Anyone in range can post under any name, and Knit never checks one: a name here is never your contact, even one that reads like them. Nothing in this room ever enters Knit\'s own mesh.</string>
     <string name="chat_meshcore_no_radio">Connect a MeshCore board to post here. This room is your own board\'s Public channel.</string>
     <string name="chat_meshcore_channel_unusable">This board can\'t post here: it isn\'t set up for Knit on this phone, or its first channel is empty.</string>
-    <string name="chat_meshcore_post_not_set_up">Not posted — this board isn\'t set up for Knit on this phone, so it would post under its own name</string>
+    <string name="chat_meshcore_post_not_set_up">Not posted — this board isn\'t set up for Knit on this phone. Set it up on the radio screen.</string>
     <string name="chat_meshcore_post_no_channel">Not posted — this board\'s first channel is empty, so nobody would hear it</string>
+    <string name="chat_meshcore_post_name_changed">Your board\'s name changed. Check how your post will be signed and send it again.</string>
+    <string name="chat_meshcore_post_name_unpostable">Your board\'s name can\'t go on the Public channel. Rename the board on the radio screen.</string>
+    <!-- Above the MeshCore room's composer: the name every post goes out under (ADR 2026-11.f4d3). %1$s is that name. -->
+    <string name="chat_meshcore_posting_as">Posting as “%1$s”</string>
     <string name="chat_meshcore_post_room_off">Not posted — the MeshCore room is switched off in LoRa settings</string>
     <!-- The MeshCore room's first-use disclosure (security B3): its own words, since a MeshCore post carries the board's
-         name in front of every line and its key is public. %1$s is the board's own name, “Knit” and four characters. -->
+         name in front of every line and its key is public. %1$s is the board's own name: the user's handle, or “Knit” and
+         four characters by default (ADR 2026-11.f4d3). -->
     <string name="chat_meshcore_consent_can_body">Anyone with a MeshCore radio in range. The channel\'s key is public, so anyone listening can read and keep what you post, and some radios pass it on to the Internet.</string>
     <string name="chat_meshcore_consent_name_title">Your board\'s name goes with it</string>
     <string name="chat_meshcore_consent_name_body">Every post goes out as “%1$s: …”. That name is the same on every post and identifies your board, so people who have you as a contact, or who know your board, can tell it is you.</string>
-    <string name="chat_meshcore_consent_name_body_unknown">Every post goes out under your board\'s name, “Knit” and four characters. That name is the same on every post and identifies your board, so people who have you as a contact, or who know your board, can tell it is you.</string>
+    <string name="chat_meshcore_consent_name_body_unknown">Every post goes out under your board\'s name. That name is the same on every post and identifies your board, so people who have you as a contact, or who know your board, can tell it is you.</string>
     <string name="chat_meshcore_consent_rules">A post can\'t be taken back. Anyone can post under any name, yours included. MeshCore users who message your board directly get no answer: Knit doesn\'t read those messages.</string>
     <string name="chat_meshcore_consent_position">Your board may also share where it is, in its adverts or with contacts who ask. Turn location sharing off in your MeshCore app if you don\'t want your posts tied to a place.</string>
     <string name="chat_commons_subtitle">Everyone on this relay</string>

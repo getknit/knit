@@ -5,13 +5,18 @@ import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.group.toGroupInfo
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.di.loraPlane
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.PublicPostRefusal
+import app.getknit.knit.mesh.lora.BoardKind
+import app.getknit.knit.mesh.lora.LoraPlaneStatus
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
 import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleSpan
+import org.koin.core.context.GlobalContext
 
 /**
  * Sends a text into any thread by its id, routing on the thread's kind exactly as `ChatViewModel.send` does: the
@@ -114,7 +119,10 @@ internal object DebugSend {
                 // A bridged board room (Meshtastic's, MeshCore's) posts through this phone's own board of its kind, and the
                 // outcome says why not.
                 ConversationKind.MESHTASTIC, ConversationKind.MESHCORE -> {
-                    return when (val outcome = mesh.sendPublicPost(conversation, text)) {
+                    // A MeshCore post goes out only under the name a consent saw (ADR 2026-11.f4d3). The bridge stands in for
+                    // the composer, past its sheet as before, so it hands the board's live name as the composer would.
+                    val consented = if (Conversations.kindFor(conversation) == ConversationKind.MESHCORE) meshcoreHandle() else null
+                    return when (val outcome = mesh.sendPublicPost(conversation, text, consented)) {
                         PublicPostOutcome.Queued -> Outcome.Queued
                         PublicPostOutcome.Blocked -> Outcome.Blocked
                         is PublicPostOutcome.Refused -> Outcome.Refused(outcome.reason)
@@ -127,4 +135,14 @@ internal object DebugSend {
             false -> Outcome.Blocked
         }
     }
+
+    /** The bound MeshCore board's live name off its plane's face, or null with no plane or no Ready board. */
+    private fun meshcoreHandle(): MeshcoreHandle? =
+        GlobalContext
+            .getOrNull()
+            ?.getOrNull<LoraPlaneStatus>(loraPlane(BoardKind.MESHCORE))
+            ?.status
+            ?.value
+            ?.meshcore
+            ?.handle
 }

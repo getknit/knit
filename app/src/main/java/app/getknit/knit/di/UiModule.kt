@@ -47,6 +47,7 @@ import app.getknit.knit.ui.addcontact.AddContactViewModel
 import app.getknit.knit.ui.backup.BackupViewModel
 import app.getknit.knit.ui.blocked.BlockedUsersViewModel
 import app.getknit.knit.ui.chat.ChatViewModel
+import app.getknit.knit.ui.chat.MeshcoreNaming
 import app.getknit.knit.ui.chat.MessageDetailsViewModel
 import app.getknit.knit.ui.chatlist.ChatListViewModel
 import app.getknit.knit.ui.commons.CommonsDetailsViewModel
@@ -118,6 +119,20 @@ val uiModule =
                 // Each bridged room by its own kind's facts, and the MeshCore board's own name (ADR 2026-11.gsqu, Stage 6).
                 loraRooms = get<LoraStatusRepository>().perKind,
                 meshcoreBoardName = get<MeshcoreClaimStore>().boardKey.map(::meshcoreBoardName),
+                // The board's live name, its owner's handle, off its plane's face (ADR 2026-11.f4d3), where the build carries it.
+                meshcoreNaming =
+                    if (BuildConfig.MESHCORE_PLANE) {
+                        getOrNull<LoraPlaneStatus>(loraPlane(BoardKind.MESHCORE))
+                            ?.status
+                            ?.map { status ->
+                                status.meshcore?.let { face ->
+                                    face.handle?.let { MeshcoreNaming(it, face.namedDefault, face.handleUnpostable) }
+                                }
+                            }?.distinctUntilChanged()
+                            ?: flowOf(null)
+                    } else {
+                        flowOf(null)
+                    },
                 // Whether the bound MeshCore board may share where it is, off its plane's status, where the build carries it.
                 meshcoreSharesPosition =
                     if (BuildConfig.MESHCORE_PLANE) {
@@ -321,6 +336,7 @@ val uiModule =
                 notifier = get(),
                 meshcore = if (BuildConfig.MESHCORE_PLANE) getOrNull<LoraPlaneStatus>(loraPlane(BoardKind.MESHCORE)) else null,
                 forget = if (BuildConfig.MESHCORE_PLANE) getOrNull<MeshcoreForget>() else null,
+                names = if (BuildConfig.MESHCORE_PLANE) get() else null,
             )
         }
         // What MainActivity opens on a worker before KnitApp composes — exactly what KnitApp's first composition

@@ -2,6 +2,7 @@ package app.getknit.knit.data.settings
 
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import app.getknit.knit.mesh.lora.BoardKind
@@ -89,6 +90,8 @@ internal object BoardBindPolicy {
     ) {
         BoardKind.entries.filter { it != kind }.forEach { other -> BoardKeys.of(other).identity.forEach { prefs.remove(it) } }
         val own = BoardKeys.of(kind)
+        // Another MeshCore board: a consent that covered the last one's chosen name never covers this one's (ADR 2026-11.f4d3).
+        if (kind == BoardKind.MESHCORE && prefs[own.address] != address) prefs.remove(MESHCORE_CUSTOM_NAME_CONSENT)
         own.reported.forEach { prefs.remove(it) }
         prefs[own.address] = address
         // A MeshCore board's BLE name is `MeshCore-` and its advert name, which before Knit's setup renames it is the user's
@@ -119,6 +122,8 @@ internal object MeshcoreForgetPolicy {
         if (prefs[BoardKeys.MESHCORE.address] != address) return false
         BoardKeys.MESHCORE.identity.forEach { prefs.remove(it) }
         prefs[loraEnabled] = false
+        // A consent that covered the forgotten board's chosen name covers no later board's (ADR 2026-11.f4d3).
+        prefs.remove(MESHCORE_CUSTOM_NAME_CONSENT)
         return true
     }
 
@@ -136,3 +141,9 @@ internal object MeshcoreForgetPolicy {
         return true
     }
 }
+
+/**
+ * The MeshCore post consent's custom-name bit (`SettingsStore.meshcorePostConsentCustomName`, ADR 2026-11.f4d3): a bind of
+ * another MeshCore board and a Forget clear it, so a chosen name one board carried is never a consent for the next.
+ */
+private val MESHCORE_CUSTOM_NAME_CONSENT = booleanPreferencesKey(SettingsKeys.MESHCORE_POST_CONSENT_CUSTOM_NAME)

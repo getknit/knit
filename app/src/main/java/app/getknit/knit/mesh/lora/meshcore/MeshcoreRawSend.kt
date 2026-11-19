@@ -103,12 +103,16 @@ internal class MeshcoreRawSend(
             when {
                 freshUntil != null && wallClock() > freshUntil -> STALE
                 slot == null || slot == MeshcoreSession.PUBLIC_SLOT -> NO_SLOT
-                else -> send(message, SendPurpose.Debug(slot)).name
+                else -> sentName(send(message, SendPurpose.Debug(slot)))
             }
         if (outcome == FragmentOutcome.OWED.name) return
         log("lora debug tx $outcome")
         synchronized(lock) { pending?.takeIf { it.first == frame.label } }?.second?.complete(outcome)
     }
+
+    /** The bridge's reply keeps the three words it always had: a refusal at the write is an end. */
+    private fun sentName(outcome: FragmentOutcome): String =
+        if (outcome == FragmentOutcome.REFUSED) FragmentOutcome.ENDED.name else outcome.name
 
     companion object {
         /**

@@ -358,8 +358,9 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   connection; its attempts 0..2 keep the timestamp and change `attempt`; its outcome carries the exact count that flew
   (`flown`), which the core's refund reads instead of the elapsed-time guess (Meshtastic leaves it null). The ack table is
   the board's circular eight, filled by every client. Teaching writes only into a confirmed free slot; setup reads first,
-  erases (Stage 5b-2, the next entry), then writes `[38, 1]`, auto-add off, `Knit abcd` and the channel, each read back;
-  restore touches only what still reads as Knit's. The encoder's command set is pinned (`MeshcoreProtoTest`): never a key export or import, a PIN, the radio, a raw
+  erases (Stage 5b-2, the next entry), then writes `[38, 1]`, auto-add off, `Knit abcd` (only on a board this phone holds
+  no record for: a re-setup keeps the name the board carries, ADR 2026-11.f4d3) and the channel, each read back;
+  restore touches only what still reads as Knit's, so a handle is left. The encoder's command set is pinned (`MeshcoreProtoTest`): never a key export or import, a PIN, the radio, a raw
   packet or the CLI. Room posts ride `DATA_TYPE_DEV` until registered, and a release build may not ship on it. Pinned
   against the real firmware's frames (`src/test/resources/meshcore/`) and, through `MeshcoreFakeVsSimTest`, the fake.
   The Android half (Stage 3c, `mesh/bluetooth/meshcore/MeshcoreGatt` over the shared `BoardGatt`) is routed in
@@ -497,9 +498,21 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   launch that registers it, whichever side takes it processing it. A refusal and an implicit ack are never held; a stale
   record never settles a reused handle.
 
+- **When touching the MeshCore handle — `MeshcoreHandle`, `MeshcoreNames.check` / `isDefault` / `MeshcoreNameCheck`,
+  `MeshcoreSession.rename`, `MeshcoreRenameResult`, `LoraPlaneStatus.renameMeshcore`, `MeshcoreDetail.namedDefault`,
+  `MeshcoreBoardFace.handle` / `namedDefault` / `handleUnpostable`, `PublicPostRefusal.NAME_CHANGED` / `NAME_UNPOSTABLE`,
+  `SettingsStore.meshcorePostConsentCustomName` / `clearMeshcoreCustomNameConsent`, `meshcoreCustomNameConsentReset`,
+  `MeshcoreNaming`, `ChatUiState.meshcoreHandle` / `meshcoreBoardCustom`,
+  `ChatViewModel.acceptPublicConsent`'s `customNameShown`, or the radio screen's name row:** READ ADR 2026-11.f4d3. The board's
+  name is its owner's: setup writes `Knit abcd` only on a board this phone holds no record for, Knit never writes over a
+  name it did not write, and the name is no part of the set-up gate. Post consent counts only while the live name is the
+  default or `meshcorePostConsentCustomName` is set (the sheet or Knit's rename dialog, never an outside rename; cleared
+  when the board is under its default again, at a Forget and at a bind of another MeshCore board); the
+  composer's name rides to `post` and the frame, and a mismatch at either is `NAME_CHANGED`. The handle is memory-only:
+  never DataStore, a backup, a log line or the bridge's reply (`named: default|custom|unpostable`).
 - **Before touching MeshCore's Public mirror — `MeshcorePublicJudge`, `MeshcorePublicPost`, `MeshcorePublicSlot` /
-  `MeshcoreDetail.publicSlot`, `MeshcoreProto.PUBLIC_GROUP_PSK`, `MeshcoreTraits.PUBLIC_PREFIX_BYTES` / `PUBLIC_TEXT_CAP` /
-  `publicCeiling`, `BoardTraits.publicCeiling`, `MeshcoreHooks.postPublic` / `onKindPacket` / `sendKindFrame` / `publicFace`,
+  `MeshcoreDetail.publicSlot`, `MeshcoreProto.PUBLIC_GROUP_PSK`, `MeshcoreTraits.publicPrefixBytes` / `publicTextCap` /
+  `PUBLIC_TEXT_CAP` / `publicCeiling`, `BoardTraits.publicCeiling`, `MeshcoreHooks.postPublic` / `onKindPacket` / `sendKindFrame` / `publicFace`,
   `meshcorePlane`'s `onPublicPost`, `MeshcoreSession.sendPublic`, `MeshcoreBoardOps.ready`, `MeshcoreRefusal.NOT_SET_UP` /
   `NO_PUBLIC_SLOT`, `BoardKindHooks.postPublic`, `LoraMeshTransport.postPublic`, `PublicPostResult` / `PublicPostKey`,
   `SendPurpose.PublicPost.timestampSecs`, `OutboundFrame.timestampSecs`, `PlaneCore.enqueuePublic` / `faceMoved`,
@@ -508,14 +521,17 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `LoraMeshTransport.publicPostsEnded` / `BoardKindHooks.publicPostsEnded`, `MeshcorePublicChannel`, `OrderedRoomSink`,
   `InboundPipeline.heardStamp`, `MESH_POST_ROOM_BACKLOG`, or the `meshcorePublic*` counters
   (`meshcorePublicBacklogDropped` among them):** READ ADR
-  2026-11.gsqu's Stage 6 amendment (6a; 6b and 6c amend it), then "MeshCore's Public channel" in `lora-bridge.md`. Debug
+  2026-11.gsqu's Stage 6 amendment (6a; 6b and 6c amend it) and ADR 2026-11.f4d3, then "MeshCore's Public channel" in
+  `lora-bridge.md`. Debug
   builds only. Heard posts reach either bridged room in the order the board handed them over (`OrderedRoomSink`, one
   per plane, bounded and counted; stamps strictly increasing under `heardPostLock`), never a launch per post. Slot 0 is whatever it holds, read off the Ready (never a constant `Public`); a heard text there is judged
   (split at the first `": "` behind 1–31 B, cleaned, keyed on the sender's stamp and the raw bytes) and handed to the room as
   a stranger's, never a hearing, never a Knit frame, dropped where it lands while `meshcoreRoomEnabled` is off. A post leaves
-  only from a board named `Knit xxxx` with consent on this connection, re-read at the write (`SELF_INFO` and slot 0: a
-  companion serves several clients at once), under `Ceiling.FLOOD` beside Knit's room posts, priced with its 11-B prefix,
-  one per 30 s, its stamp fixed at enqueue and carried by the frame so our own row's id matches what receivers read, fresh for
+  only from a board set up for Knit (slot and consent; the name is no gate, ADR 2026-11.f4d3) whose live name passes
+  `MeshcoreNames.check` (`NAME_UNPOSTABLE`) and equals the one the composer's consent saw (`NAME_CHANGED`), re-read at the
+  write (`SELF_INFO` and slot 0: a companion serves several clients at once), under `Ceiling.FLOOD` beside Knit's room
+  posts, priced and capped from the name bytes the frame carries (`"<name>: "`, never a constant), one per 30 s, its
+  stamp fixed at enqueue and carried by the frame so our own row's id matches what receivers read, fresh for
   `FRESH_MS` past it (never written later); a refusal at the write republishes the Ready, and every end without airing is
   reported by key on `publicPostsEnded`; never refused or deduped by name. Nothing about a post in a line: counters only. Regression: `MeshcorePublicJudgeTest`,
   `MeshcorePublicPostTest`, `MeshcoreHooksTest`'s Stage 6 block, `MeshcoreSessionTest`'s Public write block,

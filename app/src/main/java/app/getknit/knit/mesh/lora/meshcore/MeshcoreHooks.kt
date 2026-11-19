@@ -26,6 +26,7 @@ import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPlaneSnapshot
 import app.getknit.knit.mesh.lora.LoraStatus
 import app.getknit.knit.mesh.lora.MeshcoreLawStamp
+import app.getknit.knit.mesh.lora.MeshcoreRenameResult
 import app.getknit.knit.mesh.lora.OutboundFrame
 import app.getknit.knit.mesh.lora.PacketRoute
 import app.getknit.knit.mesh.lora.PlaneCore
@@ -79,7 +80,7 @@ import java.util.concurrent.atomic.AtomicLong
  * [lock], which is never held across a call into the core; the contact policy is `@Synchronized`; counters and the Public
  * post's floor are atomics; the setup record, the board map and the board's facts are volatile.
  */
-@Suppress("TooManyFunctions") // one seam per kind: every behaviour the core calls, grouped as BoardKindHooks groups it
+@Suppress("TooManyFunctions", "LargeClass") // one seam per kind: every behaviour the core calls, as BoardKindHooks groups it
 internal class MeshcoreHooks(
     private val session: MeshcoreBoardOps,
     private val core: PlaneCore,
@@ -418,10 +419,17 @@ internal class MeshcoreHooks(
 
     // --- the kind's own public channel: Stage 6 ---
 
+    /** The sink's form carries no consented name, so on MeshCore it is always refused `NAME_CHANGED` (ADR 2026-11.f4d3). */
     override suspend fun postToPublicChannel(body: String): PublicPostRefusal? = postPublic(body).refusal
 
-    /** The user's post on slot 0 ([MeshcorePublicChannel.post]: the refusals in order, the stamp fixed at enqueue). */
-    override suspend fun postPublic(body: String): PublicPostResult = public.post(body)
+    /**
+     * The user's post on slot 0 ([MeshcorePublicChannel.post]: the refusals in order, the stamp fixed at enqueue), refused
+     * unless [consented] is the board's name now (ADR 2026-11.f4d3).
+     */
+    override suspend fun postPublic(
+        body: String,
+        consented: MeshcoreHandle?,
+    ): PublicPostResult = public.post(body, consented)
 
     /** Queued Public posts that ended without airing ([MeshcorePublicChannel.ended]). */
     override val publicPostsEnded: Flow<PublicPostEnded> get() = public.ended
@@ -626,6 +634,8 @@ internal class MeshcoreHooks(
         val detail = ready.detail as? MeshcoreDetail
         multiAcks = detail?.multiAcks ?: 0
         detail?.dialled?.let { lastShares = it to detail.sharesPosition }
+        // The composer's Public budget is priced from the board's own name (ADR 2026-11.f4d3), before it reads this Ready.
+        core.airtime.onPublicName(detail?.handle?.size)
         val radio = ready.radio
         val freq = detail?.freqKhz
         val duty = if (radio != null && freq != null) MeshcoreTraits.dutyPolicy(freq, radio.bandwidthHz) else null
@@ -751,6 +761,9 @@ internal class MeshcoreHooks(
 
     /** What a setup would erase, read fresh on the session's actor (Stage 7). */
     override suspend fun setupPreview(): SetupPreview? = session.setupPreview()
+
+    /** Renames the board, its owner's handle, on the session's actor (ADR 2026-11.f4d3); the Ready it publishes moves the face. */
+    override suspend fun renameMeshcore(name: String): MeshcoreRenameResult = session.rename(name)
 
     private fun setupResult(r: MeshcoreSetupResult): ProvisionResult =
         when (r) {

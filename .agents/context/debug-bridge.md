@@ -301,7 +301,11 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   answers `contacts` and `slots` (counts, null unanswered); `--es prov forget [--ez anyway true]` runs `MeshcoreForget` and
   answers `result` (`CLEARED`, `PENDING`, `FORGOTTEN_PENDING`, `MISMATCH`, `FAILED`, `NOT_BOUND`), `bound` and `claimed`; the
   dump adds `setup` (`BoardSetupState`), `sharesPosition`, `batteryMv` and the counters `meshcoreDifferentBoards`,
-  `meshcoreClaimsFenced`. `…debug.LORATX --es kind meshcore --es text <s>` is MeshCore's raw send through the plane's own
+  `meshcoreClaimsFenced`. Since ADR 2026-11.f4d3: `--es prov name --es name <s>` renames the board (the radio screen's
+  rename, without its name screen) and `--es prov name --ez default true` puts back its `Knit abcd`; the reply carries
+  `result` (`MeshcoreRenameResult`: `DONE`, `INVALID`, `NOT_SET_UP`, `NOT_READY`, `FAILED`, `NO_BOARD`) and `named`, and the
+  dump adds `named` (`default`, `custom`, `unpostable`, null while the board is away) — the class of the name, never the
+  name: a reply is logged whole. `…debug.LORATX --es kind meshcore --es text <s>` is MeshCore's raw send through the plane's own
   path (`lora-bridge.md`, "Stage 7: the radio screen's half"): `result`, `slot`, `bookedMs`, `law`; never the text. Keys: `built`, `enabled`, `dms`, `bound`, `state`, `version`
   (cleaned), `versionCode`, `slot` (the board's Knit slot), `radio`, `multiAcks`, `defaultScope`, `queued`, `queueFree`,
   `heard` (fresh-frame authors at any hop count, unverified), `boardsHeard` (radios counted by verified pinned zero-hop author:

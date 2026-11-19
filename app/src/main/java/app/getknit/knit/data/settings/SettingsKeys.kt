@@ -154,6 +154,11 @@ object SettingsKeys {
     // board that shares where it is asks again until it was. Rides a backup with the consent it qualifies.
     const val MESHCORE_POST_CONSENT_POSITION = "meshcore_post_consent_position"
 
+    // The MeshCore post consent was given with a custom name shown, on the sheet or in Knit's rename dialog (ADR
+    // 2026-11.f4d3): a board whose name is not its `Knit abcd` default asks again until it was. Holds no name. Rides a backup
+    // with the consent it qualifies.
+    const val MESHCORE_POST_CONSENT_CUSTOM_NAME = "meshcore_post_consent_custom_name"
+
     // The sealed profile's MeshCore claim (ADR 2026-11.gsqu, Stage 4, `MeshcoreClaimStore`): the version a claim change
     // was published under and a fingerprint of what it published (never the key). Both ride a backup, as the badge's
     // pair does, since a restored phone must never publish below a version its peers hold.

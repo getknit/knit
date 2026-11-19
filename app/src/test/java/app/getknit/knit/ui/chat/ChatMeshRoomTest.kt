@@ -82,6 +82,9 @@ class ChatMeshRoomTest {
     // Whether the accepted sheet said it showed the MeshCore position line (the consent records exactly that).
     private var acceptedWithPosition: Boolean? = null
 
+    // Whether the accepted sheet said it named a board name its owner chose (ADR 2026-11.f4d3): the consent records that too.
+    private var acceptedWithCustomName: Boolean? = null
+
     /** Held rather than made inline, so a test can seed a draft and read back what the field kept of it. */
     private val inputState = TextFieldState("")
 
@@ -130,9 +133,10 @@ class ChatMeshRoomTest {
                     onOpenGroupDetails = {},
                     onSend = {},
                     showPublicConsent = showConsent,
-                    onAcceptPublicConsent = { shown ->
+                    onAcceptPublicConsent = { shown, custom ->
                         consentAccepted = true
                         acceptedWithPosition = shown
+                        acceptedWithCustomName = custom
                     },
                     onAttachClick = {},
                     onClearAttachment = {},
@@ -511,6 +515,7 @@ class ChatMeshRoomTest {
         gate: PublicPostGate = PublicPostGate.Open,
         keyIsPublic: Boolean = true,
         boardName: String? = "Knit 1a2b",
+        boardCustom: Boolean = false,
         sharesPosition: Boolean? = null,
     ) = render(
         Conversations.MESHCORE_PUBLIC,
@@ -520,6 +525,7 @@ class ChatMeshRoomTest {
             isBridged = true,
             isMeshcoreRoom = true,
             meshcoreBoardName = boardName,
+            meshcoreBoardCustom = boardCustom,
             meshcoreSharesPosition = sharesPosition,
             canSendFile = false,
             publicPostBudget = 149,
@@ -605,8 +611,37 @@ class ChatMeshRoomTest {
 
     @Test
     fun theMeshcoreDisclosureStillSaysWhatTheNameIsBeforeTheBoardIsKnown() {
-        renderMeshcore(listOf(row(origin = meshcoreOrigin)), showConsent = true, boardName = null)
-        compose.onNodeWithText("“Knit” and four characters", substring = true).performScrollTo().assertIsDisplayed()
+        renderMeshcore(listOf(row(origin = meshcoreOrigin)), showConsent = true, boardName = null, boardCustom = true)
+        compose.onNodeWithText("under your board's name", substring = true).performScrollTo().assertIsDisplayed()
+        // A sheet that named no name never records one the owner chose, whatever the state says behind it.
+        compose.onNodeWithTag("chat_mesh_consent_accept").performScrollTo().performClick()
+        assertEquals(false, acceptedWithCustomName)
+    }
+
+    /**
+     * A board whose owner named it (ADR 2026-11.f4d3): the sheet names that handle as the prefix, and its accept says it
+     * showed one, so the consent covers it. A sheet that showed the default says it did not.
+     */
+    @Test
+    fun aSheetNamingTheOwnersHandleAcceptsWithIt() {
+        renderMeshcore(listOf(row(origin = meshcoreOrigin)), showConsent = true, boardName = "Sam 🧶", boardCustom = true)
+        compose.onNodeWithText("Every post goes out as “Sam 🧶: …”", substring = true).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("chat_mesh_consent_accept").performScrollTo().performClick()
+        assertEquals(true, acceptedWithCustomName)
+    }
+
+    @Test
+    fun aSheetNamingTheDefaultAcceptsWithoutACustomName() {
+        renderMeshcore(listOf(row(origin = meshcoreOrigin)), showConsent = true)
+        compose.onNodeWithTag("chat_mesh_consent_accept").performScrollTo().performClick()
+        assertEquals(false, acceptedWithCustomName)
+    }
+
+    /** The composer says whose name a post goes out under, every time: the mitigation for an outside rename (ADR 2026-11.f4d3). */
+    @Test
+    fun theMeshcoreComposerSaysWhichNameAPostGoesOutUnder() {
+        renderMeshcore(listOf(row(origin = meshcoreOrigin)), boardName = "Sam 🧶", boardCustom = true)
+        compose.onNodeWithText("Posting as “Sam 🧶”", substring = true).assertIsDisplayed()
     }
 
     @Test

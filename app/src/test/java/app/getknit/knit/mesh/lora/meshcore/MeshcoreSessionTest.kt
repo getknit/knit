@@ -13,6 +13,7 @@ import app.getknit.knit.mesh.lora.GattResult
 import app.getknit.knit.mesh.lora.KnitChannel
 import app.getknit.knit.mesh.lora.LinkState
 import app.getknit.knit.mesh.lora.LoraContactPolicy
+import app.getknit.knit.mesh.lora.MeshcoreRenameResult
 import app.getknit.knit.mesh.lora.PacketIdSource
 import app.getknit.knit.mesh.lora.PacketOutcome
 import app.getknit.knit.mesh.lora.PairingCause
@@ -143,6 +144,9 @@ class MeshcoreSessionTest {
         backgroundScope.launch(collect) { session.consent.collect { it?.let(consents::add) } }
         return Rig(air, alice, bob, dialer, session, outcomes, packets, airs, headroom, logs, records, consents, nonces)
     }
+
+    /** The board's name now, as a consent decision would have seen it (ADR 2026-11.f4d3). */
+    private fun Rig.named(): MeshcoreHandle = MeshcoreHandle(alice.advertName)
 
     private fun TestScope.up(r: Rig) {
         r.session.start("AA:BB")
@@ -728,8 +732,9 @@ class MeshcoreSessionTest {
             val r = rig()
             up(r)
             val cap = MeshcoreProto.channelTextCap(r.alice.advertName)
-            assertEquals(SendResult.TooLarge, r.session.send(ByteArray(cap + 1) { 0x41 }, SendPurpose.PublicPost(PUBLIC_STAMP)).result)
-            assertTrue(r.session.send(ByteArray(cap) { 0x41 }, SendPurpose.PublicPost(PUBLIC_STAMP)).result is SendResult.Queued)
+            val purpose = SendPurpose.PublicPost(PUBLIC_STAMP, r.named())
+            assertEquals(SendResult.TooLarge, r.session.send(ByteArray(cap + 1) { 0x41 }, purpose).result)
+            assertTrue(r.session.send(ByteArray(cap) { 0x41 }, purpose).result is SendResult.Queued)
         }
 
     // --- the Public post at the write (Stage 6, ADR 2026-11.gsqu's Stage 6 amendment; lora B1, security B2) ---
@@ -743,7 +748,8 @@ class MeshcoreSessionTest {
             val r = rig()
             up(r)
             val before = r.ch.writes.size
-            assertTrue(r.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP)).result is SendResult.Queued)
+            val post = SendPurpose.PublicPost(PUBLIC_STAMP, r.named())
+            assertTrue(r.session.send("hello".encodeToByteArray(), post).result is SendResult.Queued)
             val written = r.ch.writes.drop(before)
             // SELF_INFO and slot 0 again (another client may have renamed the board or cleared the slot), then the text.
             assertEquals(listOf(MeshcoreProto.CMD_APP_START, MeshcoreProto.CMD_GET_CHANNEL), written.take(2).map { it[0].toInt() })
@@ -763,11 +769,35 @@ class MeshcoreSessionTest {
             // Another client on the board's other interface renames it: the firmware would prefix this name.
             FakeForeignClient(r.alice).send(requireNotNull(MeshcoreProto.setAdvertName("Ana's radio")))
             runCurrent()
-            val result = r.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP)).result
-            assertEquals(MeshcoreRefusal.NOT_SET_UP, (result as SendResult.Rejected).res)
+            // Consented and priced under Knit's name, queued before the rename landed (ADR 2026-11.f4d3).
+            val consented = MeshcoreHandle(MeshcoreNames.forKey(r.alice.key).encodeToByteArray())
+            val readies = r.logs.count { it.startsWith("meshcore ready") }
+            val result = r.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP, consented)).result
+            assertEquals(MeshcoreRefusal.NAME_CHANGED, (result as SendResult.Rejected).res)
             assertTrue("nothing aired under another name", r.publicWrites().isEmpty())
-            // The refusal reaches the face: the Ready is published again with the name just read (the 6a review).
-            assertFalse((r.ready.detail as MeshcoreDetail).namedForKnit)
+            // The write's SELF_INFO read put the new name on the face, once (the 6a review): the composer asks again from it.
+            val detail = r.ready.detail as MeshcoreDetail
+            assertFalse(detail.namedDefault)
+            assertArrayEquals("Ana's radio".encodeToByteArray(), detail.handle.bytes)
+            assertEquals("one Ready for the rename", readies + 1, r.logs.count { it.startsWith("meshcore ready") })
+            // The board stays set up: the next post, consented under the new name, goes out under it.
+            val next = r.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP, r.named())).result
+            assertTrue("$next", next is SendResult.Queued)
+            assertEquals(1, r.publicWrites().size)
+        }
+
+    /** An outside name receivers would split, or that is no UTF-8, never leads a post (ADR 2026-11.f4d3). */
+    @Test
+    fun anUnpostableNameRefusesAtTheWrite() =
+        runTest {
+            val r = rig()
+            up(r)
+            FakeForeignClient(r.alice).send(requireNotNull(MeshcoreProto.setAdvertName("Ana: hi")))
+            runCurrent()
+            val result = r.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP, r.named())).result
+            assertEquals(MeshcoreRefusal.NAME_UNPOSTABLE, (result as SendResult.Rejected).res)
+            assertTrue(r.publicWrites().isEmpty())
+            assertFalse((r.ready.detail as MeshcoreDetail).namePostable)
         }
 
     @Test
@@ -777,12 +807,12 @@ class MeshcoreSessionTest {
             up(r)
             FakeForeignClient(r.alice).send(MeshcoreProto.clearChannel(0))
             runCurrent()
-            val cleared = r.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP)).result
+            val cleared = r.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP, r.named())).result
             assertEquals(MeshcoreRefusal.NO_PUBLIC_SLOT, (cleared as SendResult.Rejected).res)
             assertTrue("the Ready says so now", requireNotNull((r.ready.detail as MeshcoreDetail).publicSlot).empty)
             val stock = rig(consented = false)
             up(stock)
-            val unconsented = stock.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP)).result
+            val unconsented = stock.session.send("hello".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP, stock.named())).result
             assertEquals(MeshcoreRefusal.NOT_SET_UP, (unconsented as SendResult.Rejected).res)
             assertTrue(r.publicWrites().isEmpty() && stock.publicWrites().isEmpty())
             assertEquals("both refusals are no key's", RefusalClass.OTHER, MeshcoreRefusal.classOf(cleared))
@@ -1119,7 +1149,7 @@ class MeshcoreSessionTest {
                 if (frame[0].toInt() == MeshcoreProto.CMD_SEND_CHANNEL_TXT_MSG) r.ch.inject(byteArrayOf(0))
                 GattResult.Ok(Unit)
             }
-            val result = r.session.send("hi".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP)).result
+            val result = r.session.send("hi".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP, r.named())).result
             assertTrue("$result", result is SendResult.Timeout)
             assertEquals(
                 1L,
@@ -1127,7 +1157,8 @@ class MeshcoreSessionTest {
                     .get(),
             )
             r.ch.writeResult = { GattResult.Ok(Unit) }
-            assertTrue(r.session.send("hi".encodeToByteArray(), SendPurpose.PublicPost(PUBLIC_STAMP)).result is SendResult.Queued)
+            val post = SendPurpose.PublicPost(PUBLIC_STAMP, r.named())
+            assertTrue(r.session.send("hi".encodeToByteArray(), post).result is SendResult.Queued)
         }
 
     @Test
@@ -3590,6 +3621,145 @@ class MeshcoreSessionTest {
             // The next SELF_INFO this connection reads (a Public post's gate, a setup) carries it to the Ready.
             assertTrue(r.session.setup() is MeshcoreSetupResult.Done)
             assertTrue((r.ready.detail as MeshcoreDetail).sharesPosition)
+        }
+
+    // --- the board's name is its owner's handle (ADR 2026-11.f4d3) ---
+
+    private fun Rig.readies(): Int = logs.count { it.startsWith("meshcore ready") }
+
+    /** The P9's 2026-11-18 rename: an outside name no longer drops the reconcile or refuses a DM or a teach. */
+    @Test
+    fun anOutsideRenameLeavesTheBoardSetUpForKnit() =
+        runTest {
+            val r = rig()
+            r.alice.advertName = "Ana's radio".encodeToByteArray()
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            val counters = r.session.counters
+            assertEquals("the reconcile ran", 0L, counters.reconcilesDropped.get())
+            assertTrue(r.logs.none { it.contains("reconcile dropped") })
+            assertEquals(1, r.listings())
+            assertTrue(r.dm() is SendResult.Queued)
+            val dave = r.air.board("dave").key
+            r.teachable(dave)
+            assertEquals(ContactWrite.WRITTEN, r.session.teach(dave))
+            assertEquals("never written over", "Ana's radio", r.alice.advertName.decodeToString())
+            val detail = r.ready.detail as MeshcoreDetail
+            assertFalse(detail.namedDefault)
+            assertTrue(detail.namePostable)
+            assertTrue("no rename written", r.ch.codes.none { it == MeshcoreProto.CMD_SET_ADVERT_NAME })
+        }
+
+    /** Every outcome of the rename op, and the record never touched. */
+    @Test
+    fun aRenameIsWrittenReadBackAndPublishedOrRefusedWithNothingWritten() =
+        runTest {
+            val idle = rig()
+            assertEquals("no session", MeshcoreRenameResult.NOT_READY, idle.session.rename("Wren"))
+            val r = rig()
+            up(r)
+            for (bad in listOf("", "a".repeat(32), "Wren: hi", "Wr\u0000en", "\u202Eneyrw", "\u0085x", "Wr\u200Ben", "\u200F")) {
+                assertEquals("refused: ${bad.length} ch", MeshcoreRenameResult.INVALID, r.session.rename(bad))
+            }
+            assertTrue(r.ch.codes.none { it == MeshcoreProto.CMD_SET_ADVERT_NAME })
+            val readies = r.readies()
+            val name = "Wren \uD83D\uDC26 of the north ridge!!!" // 31 B with the emoji
+            assertEquals(31, name.encodeToByteArray().size)
+            assertEquals(MeshcoreRenameResult.DONE, r.session.rename(name))
+            assertArrayEquals(name.encodeToByteArray(), r.alice.advertName)
+            val detail = r.ready.detail as MeshcoreDetail
+            assertArrayEquals(name.encodeToByteArray(), detail.handle.bytes)
+            assertEquals("one Ready, the rename's own: its read-back published none", readies + 1, r.readies())
+            assertArrayEquals(
+                "the record keeps the name from before Knit",
+                SETUP_RECORD.priorName,
+                requireNotNull(r.records.entryOf("AA:BB")).record.priorName,
+            )
+            assertTrue(r.logs.none { it.contains("Wren") })
+            assertEquals("the default back", MeshcoreRenameResult.DONE, r.session.rename(MeshcoreNames.forKey(r.alice.key)))
+            assertTrue((r.ready.detail as MeshcoreDetail).namedDefault)
+
+            val stock = rig(consented = false)
+            up(stock)
+            assertEquals(MeshcoreRenameResult.NOT_SET_UP, stock.session.rename("Wren"))
+            assertTrue(stock.ch.codes.none { it == MeshcoreProto.CMD_SET_ADVERT_NAME })
+
+            r.ch.swallow = { it[0].toInt() == MeshcoreProto.CMD_SET_ADVERT_NAME }
+            assertEquals("the board never took it", MeshcoreRenameResult.FAILED, r.session.rename("Wren"))
+        }
+
+    /** The design pass's finding: a re-setup of a board this phone set up keeps the owner's handle and the first prior. */
+    @Test
+    fun aReSetupKeepsTheHandleAndTheNameFromBeforeKnit() =
+        runTest {
+            val r = rig()
+            up(r)
+            FakeForeignClient(r.alice).send(requireNotNull(MeshcoreProto.setAdvertName("Wren")))
+            runCurrent()
+            assertEquals("the confirmation says no rename", false, r.session.setupPreview()?.renames)
+            val done = r.session.setup() as MeshcoreSetupResult.Done
+            assertEquals("Wren", r.alice.advertName.decodeToString())
+            assertNull("nothing recorded over the first prior", done.record.priorName)
+            val kept = requireNotNull(r.records.entryOf("AA:BB")).record
+            assertArrayEquals(SETUP_RECORD.priorName, kept.priorName)
+            assertTrue(r.ch.codes.none { it == MeshcoreProto.CMD_SET_ADVERT_NAME })
+        }
+
+    /** A first setup still writes the privacy default (ADR 049's), says so first, and lands one Ready, not one per read-back. */
+    @Test
+    fun aFirstSetupWritesTheDefaultNameAndPublishesOneReady() =
+        runTest {
+            val r = rig(knitSlot = false)
+            up(r)
+            assertEquals(true, r.session.setupPreview()?.renames)
+            val readies = r.readies()
+            val done = r.session.setup() as MeshcoreSetupResult.Done
+            assertEquals(MeshcoreNames.forKey(r.alice.key), r.alice.advertName.decodeToString())
+            assertEquals("alice", done.record.priorName?.decodeToString())
+            assertEquals("the setup's own Ready alone", readies + 1, r.readies())
+            assertEquals("set up now: a re-setup renames nothing", false, r.session.setupPreview()?.renames)
+        }
+
+    /** A taught peer's advert renames its contact (lora N4): Restore still removes it as Knit's, by the taught set. */
+    @Test
+    fun aRenamedTaughtContactIsStillKnitsToRestore() =
+        runTest {
+            val r = rig()
+            up(r)
+            advanceTimeBy(30_000)
+            runCurrent()
+            val renamed =
+                ContactRecord(
+                    key = r.bob.key,
+                    type = MeshcoreProto.ADV_TYPE_CHAT,
+                    flags = MeshcoreProto.CONTACT_FLAG_FAVOURITE,
+                    outPathLen = 0,
+                    outPath = ByteArray(MeshcoreProto.PATH_FIELD),
+                    nameField = "Wren".encodeToByteArray().copyOf(MeshcoreProto.NAME_FIELD),
+                    lastAdvert = 0,
+                    position = ByteArray(8),
+                )
+            FakeForeignClient(r.alice).send(MeshcoreProto.addUpdateContact(renamed, withPosition = false))
+            runCurrent()
+            val listed = requireNotNull(r.alice.contact(r.bob.key)).name
+            assertEquals("Wren", listed.decodeToString().trimEnd('\u0000'))
+            val back = r.session.restore() as MeshcoreRestoreResult.Done
+            assertTrue(back.failed.isEmpty())
+            assertNull(r.alice.contact(r.bob.key))
+        }
+
+    /** Restore puts the name from before Knit back only while the board reads the default: a handle is left, and said so. */
+    @Test
+    fun restoreLeavesAHandleTheOwnerChoseInKnit() =
+        runTest {
+            val r = rig(knitSlot = false)
+            up(r)
+            assertTrue(r.session.setup() is MeshcoreSetupResult.Done)
+            assertEquals(MeshcoreRenameResult.DONE, r.session.rename("Wren"))
+            val back = r.session.restore() as MeshcoreRestoreResult.Done
+            assertEquals(listOf("name"), back.leftAsFound)
+            assertEquals("Wren", r.alice.advertName.decodeToString())
         }
 
     private companion object {

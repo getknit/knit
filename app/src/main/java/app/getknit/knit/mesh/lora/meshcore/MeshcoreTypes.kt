@@ -3,6 +3,7 @@ package app.getknit.knit.mesh.lora.meshcore
 import app.getknit.knit.mesh.lora.BoardSetupState
 import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.LinkState
+import app.getknit.knit.mesh.lora.MeshcoreRenameResult
 import app.getknit.knit.mesh.lora.PairingCause
 import app.getknit.knit.mesh.lora.RefusalClass
 import app.getknit.knit.mesh.lora.ReplaceToken
@@ -114,6 +115,9 @@ internal interface MeshcoreBoardOps {
     /** What a setup would erase on the Ready board, read fresh on the actor (Stage 7); null when it is not Ready. */
     suspend fun setupPreview(): SetupPreview? = null
 
+    /** Renames the Ready board, its owner's handle (ADR 2026-11.f4d3), read back; never the setup record. */
+    suspend fun rename(name: String): MeshcoreRenameResult = MeshcoreRenameResult.NOT_READY
+
     /**
      * Whether this phone set the bound board up (Stage 7): read off its record at start and moved by the actor's own reads and
      * writes, so the screen shows it while the board is away too. Null before anything was read.
@@ -172,8 +176,9 @@ internal data class MeshcoreSlotReading(
 )
 
 /**
- * A Ready MeshCore board's own facts: the `detail` of its `BoardState.Ready`. Counts and own-board facts only — never
- * the advert name (which may be a person's), a foreign slot's name, a position, or the BLE PIN `DEVICE_INFO` carries.
+ * A Ready MeshCore board's own facts: the `detail` of its `BoardState.Ready`. Counts and own-board facts, and the board's
+ * own advert name as raw bytes ([advertName], the owner's handle since ADR 2026-11.f4d3, which may be a person's: never
+ * printed) — never a foreign slot's name, a position, or the BLE PIN `DEVICE_INFO` carries.
  */
 internal class MeshcoreDetail(
     publicKey: ByteArray,
@@ -193,8 +198,6 @@ internal class MeshcoreDetail(
     val contactCapacity: Int,
     /** Every channel slot the board has, as the handshake read them. */
     val slots: List<MeshcoreSlot>,
-    /** Whether the board is already named as Knit names it (`Knit abcd`). */
-    val namedForKnit: Boolean,
     /** `manual_add_contacts` as the board reported it. */
     val manualAdd: Int,
     /**
@@ -210,11 +213,26 @@ internal class MeshcoreDetail(
     val publicSlot: MeshcorePublicSlot? = null,
     /** Whether the board airs a position (`SELF_INFO`, [MeshcoreProto.sharesPosition], Stage 7): never the position itself. */
     val sharesPosition: Boolean = false,
+    /**
+     * The board's advert name as `SELF_INFO` reported it, raw (ADR 2026-11.f4d3): the handle the firmware puts in front of
+     * every Public post. Defaults to Knit's own `Knit abcd` for a test's detail.
+     */
+    advertName: ByteArray = MeshcoreNames.forKey(publicKey).encodeToByteArray(),
 ) {
     private val key = publicKey.copyOf()
+    private val name = advertName.copyOf()
 
     /** A copy of the board's 32-byte Ed25519 public key, what the profile will advertise as `meshcoreKey` (Stage 5). */
     val publicKey: ByteArray get() = key.copyOf()
+
+    /** The board's name, the owner's handle: what a Public post goes out under. Never in a line. */
+    val handle: MeshcoreHandle get() = MeshcoreHandle(name)
+
+    /** Whether the board carries Knit's default name for its key (`Knit abcd`, byte for byte): for display and the bridge. */
+    val namedDefault: Boolean get() = MeshcoreNames.isDefault(name, key)
+
+    /** Whether a Public post may leave under the name ([MeshcoreNames.check]): another app may have written one that may not. */
+    val namePostable: Boolean get() = MeshcoreNames.check(name) == MeshcoreNameCheck.OK
 
     override fun toString(): String = "MeshcoreDetail(v=$versionCode, slots=${slots.size}, scope=$defaultScope)"
 }
@@ -527,12 +545,21 @@ internal object MeshcoreRefusal {
 
     /**
      * A Public post off a board not set up for Knit at the write (ADR 2026-11.gsqu's Stage 6 amendment): no consent on this
-     * connection, or its name is no longer `Knit xxxx` — the firmware would put that name in front of the post.
+     * connection, or no Knit slot. The name is checked apart ([NAME_CHANGED], [NAME_UNPOSTABLE], ADR 2026-11.f4d3).
      */
     const val NOT_SET_UP = -14
 
     /** A Public post to a slot 0 that holds no channel, or Knit's own, at the write (Stage 6). */
     const val NO_PUBLIC_SLOT = -15
+
+    /**
+     * A Public post whose board reads another name at the write than the one it was consented and priced under (ADR
+     * 2026-11.f4d3): another client renamed the board while it waited. Never written under a name the user did not see.
+     */
+    const val NAME_CHANGED = -16
+
+    /** A Public post from a board whose name breaks the postable rules at the write ([MeshcoreNames.check]). */
+    const val NAME_UNPOSTABLE = -17
 
     /**
      * What a synchronous refusal means: our own board without the destination's contact — no record, a pin that failed,
@@ -559,9 +586,88 @@ internal object MeshcoreNames {
     private const val TAG_BYTES = 2
     private const val BYTE_MASK = 0xFF
 
-    /** `Knit abcd`: the first two bytes of [key] in lower-case hex — the board's own name, and a taught contact's. */
+    /** `Knit abcd`: the first two bytes of [key] in lower-case hex — the board's default name, and a taught contact's. */
     fun forKey(key: ByteArray): String =
         PREFIX + key.take(TAG_BYTES).joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and BYTE_MASK) }
+
+    /**
+     * Whether [name] is the default Knit writes for [key] ([forKey]), byte for byte (ADR 2026-11.f4d3): a lookalike of
+     * `Knit abcd` — another tag, a homoglyph, a trailing space — is a custom name, and is asked for consent as one.
+     */
+    fun isDefault(
+        name: ByteArray,
+        key: ByteArray,
+    ): Boolean = name.contentEquals(forKey(key).encodeToByteArray())
+
+    /** The longest advert name the firmware keeps: `char node_name[32]`, NUL-terminated (`NodePrefs.h:17`). */
+    const val MAX_NAME_BYTES = MeshcoreProto.NAME_FIELD - 1
+
+    /**
+     * Whether [name] may be a board's handle (ADR 2026-11.f4d3): one rule for Knit's own rename and for whether a post may
+     * leave under a name another app wrote. Receivers split a Public post at the first `": "` behind 1–31 B
+     * (`MeshcorePublicJudge`), so a name holding one would split early and put part of it in the body; a control or bidi
+     * override would draw the prefix as something else on a stock client; and a name that is not UTF-8 decodes to
+     * replacement characters there. Checked in this order: [MeshcoreNameCheck.EMPTY], [MeshcoreNameCheck.TOO_LONG],
+     * [MeshcoreNameCheck.INVALID_UTF8], [MeshcoreNameCheck.CONTROL], [MeshcoreNameCheck.SEPARATOR].
+     */
+    @Suppress("ReturnCount") // one rule a line, in the documented order
+    fun check(name: ByteArray): MeshcoreNameCheck {
+        if (name.isEmpty()) return MeshcoreNameCheck.EMPTY
+        if (name.size > MAX_NAME_BYTES) return MeshcoreNameCheck.TOO_LONG
+        val text = strictUtf8(name) ?: return MeshcoreNameCheck.INVALID_UTF8
+        if (text.codePoints().anyMatch(::isControl)) return MeshcoreNameCheck.CONTROL
+        if (text.contains(SEPARATOR)) return MeshcoreNameCheck.SEPARATOR
+        return MeshcoreNameCheck.OK
+    }
+
+    private const val SEPARATOR = ": "
+
+    /**
+     * What `TextLimits.cleanReceived` would change in a name, so the consent sheet and "Posting as" would show other text
+     * than the bytes that air (security, the f4d3 review): every C0 and C1 control and DEL (it removes those outside regex
+     * `\s` and rewrites the rest as a space), the bidi controls it removes (ALM, LRM, RLM, the embeddings and overrides,
+     * the isolates), and the line and paragraph separators its single-line rule rewrites; and the two invisible characters
+     * that would show as nothing at all, U+200B and U+FEFF. ZWJ, ZWNJ and the tag characters are allowed: the cleaner keeps
+     * them, and an emoji sequence, a subdivision flag or a Persian or Indic name needs them (lora-reviewer, the f4d3 review).
+     */
+    @Suppress("MagicNumber") // the code points are the definition, as TextLimits' own
+    private fun isControl(cp: Int): Boolean =
+        Character.isISOControl(cp) ||
+            when (cp) {
+                0x061C, 0x200E, 0x200F, in 0x202A..0x202E, in 0x2066..0x2069 -> true
+                0x2028, 0x2029, 0x200B, 0xFEFF -> true
+                else -> false
+            }
+
+    private fun strictUtf8(bytes: ByteArray): String? =
+        runCatching {
+            Charsets.UTF_8
+                .newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(bytes))
+                .toString()
+        }.getOrNull()
+}
+
+/** What [MeshcoreNames.check] found of a name: [OK], or the first rule it breaks. */
+internal enum class MeshcoreNameCheck {
+    OK,
+
+    /** No bytes at all. */
+    EMPTY,
+
+    /** Over 31 bytes of UTF-8: the firmware's field holds no more. */
+    TOO_LONG,
+
+    /** A control, a bidi control, a line or paragraph separator, U+200B or U+FEFF: what Knit's cleaner would change or hide. */
+    CONTROL,
+
+    /** Contains `": "`, where every receiver splits the name from the post. */
+    SEPARATOR,
+
+    /** Not well-formed UTF-8. */
+    INVALID_UTF8,
 }
 
 /**

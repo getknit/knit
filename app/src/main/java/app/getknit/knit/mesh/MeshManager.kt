@@ -92,6 +92,7 @@ import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.lora.OpenedDirect
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
 import app.getknit.knit.mesh.protocol.BadgeEntry
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.ChatContent
@@ -415,7 +416,8 @@ class MeshManager(
     // The MeshCore room's outbound half (ADR 2026-11.gsqu's Stage 6 amendment): a bound MeshCore board's Public channel,
     // answering with the id our own row takes ([PublicChannelAnswer.Queued.rowId], what the post's receivers key it on).
     // Late-bound for publicChannel's reason; the default refuses with NO_BOARD, as every test and board-less build wants.
-    private val meshcorePublicChannel: suspend (body: String) -> PublicChannelAnswer = {
+    // [consented] is the board name the composer's consent saw (ADR 2026-11.f4d3), which the plane checks against the board's.
+    private val meshcorePublicChannel: suspend (body: String, consented: MeshcoreHandle?) -> PublicChannelAnswer = { _, _ ->
         PublicChannelAnswer.Refused(PublicPostRefusal.NO_BOARD)
     },
     // The MeshCore room's posts that the board queued and then gave up without airing ([PublicPostEnd]), by row id: our own
@@ -6838,6 +6840,7 @@ class MeshManager(
     override suspend fun sendPublicPost(
         conversationId: String,
         text: String,
+        consented: MeshcoreHandle?,
     ): PublicPostOutcome {
         // Routed by the room, never by the bound board (security N13): each room posts through its own kind's sink, and the
         // MeshCore sink refuses unless a MeshCore board is the bound one, so neither room's consent ever posts through the
@@ -6850,9 +6853,11 @@ class MeshManager(
                 FrameId.new()
             } else {
                 // MeshCore (ADR 2026-11.gsqu's Stage 6 amendment): the row takes the id the post's receivers key it on —
-                // the stamp fixed at enqueue and `"Knit xxxx: "` + the text — so an echo of it, re-aired after the board's
-                // seen ring forgot it, lands here and dedups ([InboundPipeline.deliverMeshcorePost]), never by name.
-                when (val answer = meshcorePublicChannel(text)) {
+                // the stamp fixed at enqueue and the board name's own bytes, `": "` and the text (ADR 2026-11.f4d3: the name
+                // read at enqueue, never a `String` round trip) — so an echo of it, re-aired after the board's seen ring forgot
+                // it, lands here and dedups ([InboundPipeline.deliverMeshcorePost]), never by name. Refused unless [consented]
+                // is the board's name now.
+                when (val answer = meshcorePublicChannel(text, consented)) {
                     is PublicChannelAnswer.Refused -> return PublicPostOutcome.Refused(answer.reason)
                     is PublicChannelAnswer.Queued -> answer.rowId
                 }

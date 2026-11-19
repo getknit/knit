@@ -2834,6 +2834,8 @@ class DebugBridgeReceiver :
             .put("setup", status.meshcore?.setup?.name ?: JSONObject.NULL)
             .put("sharesPosition", status.meshcore?.sharesPosition ?: JSONObject.NULL)
             .put("batteryMv", status.meshcore?.batteryMv ?: JSONObject.NULL)
+            // The board's name on its network (ADR 2026-11.f4d3) as a class only: the reply is logged whole, so never the name.
+            .put("named", status.meshcore?.namedClass() ?: JSONObject.NULL)
             .put("queued", status.queued)
             .put("queueFree", status.queueFree ?: JSONObject.NULL)
             .put("heard", status.heard)
@@ -3022,11 +3024,46 @@ class DebugBridgeReceiver :
                 result.put("prov", "unbind").put("result", r.name)
             }
 
+            // The radio screen's rename (ADR 2026-11.f4d3): `--es name <s>`, or `--ez default true` for the board's `Knit abcd`.
+            // The radio screen's name screen is not run here (a debug build's own input). The reply names the result and the
+            // class of the name now on the board, never a name: the reply is logged whole.
+            "name" -> {
+                val name =
+                    if (intent.getBooleanExtra("default", false)) {
+                        plane.status
+                            .first()
+                            .meshcore
+                            ?.defaultName ?: return reply("error", "no Ready MeshCore board")
+                    } else {
+                        intent.getStringExtra("name") ?: return reply("error", "--es name <name> or --ez default true")
+                    }
+                val r = plane.renameMeshcore(name)
+                result
+                    .put("prov", "name")
+                    .put("result", r.name)
+                    .put(
+                        "named",
+                        plane.status
+                            .first()
+                            .meshcore
+                            ?.namedClass() ?: JSONObject.NULL,
+                    )
+            }
+
             else -> {
-                reply("error", "--es prov setup|preview|restore|unbind|forget")
+                reply("error", "--es prov setup|preview|restore|unbind|forget|name")
             }
         }
     }
+
+    /** The class of a MeshCore board's name (ADR 2026-11.f4d3), for a reply that is logged whole: never the name itself. */
+    private fun app.getknit.knit.mesh.lora.MeshcoreBoardFace.namedClass(): String? =
+        when {
+            handle == null -> null
+            handleUnpostable -> "unpostable"
+            namedDefault -> "default"
+            else -> "custom"
+        }
 
     /**
      * Sends a raw UTF-8 payload straight to the board on the configured channel (bypassing the frame

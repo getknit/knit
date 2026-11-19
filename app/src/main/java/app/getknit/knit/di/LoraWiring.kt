@@ -39,11 +39,13 @@ import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPlaneStatus
+import app.getknit.knit.mesh.lora.LoraStatus
 import app.getknit.knit.mesh.lora.PublicPostEnded
 import app.getknit.knit.mesh.lora.PublicPostKey
 import app.getknit.knit.mesh.lora.PublicPostResult
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreContacts
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreForget
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreHooks
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreNames
 import app.getknit.knit.mesh.lora.meshcore.MeshcorePublicPost
@@ -53,6 +55,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -178,6 +181,8 @@ internal fun Module.loraPlaneOf(
     config: (SettingsStore) -> Flow<LoraConfig?>,
     boardMap: Scope.() -> LoraBoardMap?,
     face: Scope.() -> LoraPlaneStatus? = { null },
+    // Runs once on the transport this single builds, before anything reads it: a kind's own app-side watcher of its face.
+    onBuilt: Scope.(LoraMeshTransport) -> Unit = {},
 ) {
     single(loraPlane(kind)) {
         val settings = get<SettingsStore>()
@@ -228,7 +233,7 @@ internal fun Module.loraPlaneOf(
                         loraAuthorIds(get<PeerRepository>().observePeers(), getOrNull<DirectContacts>()?.observe() ?: flowOf(emptySet())),
                     )
                 },
-        )
+        ).also { transport -> onBuilt(transport) }
     }
     // Where MeshManager offers the compact copy of a DM it sealed (ADR 2026-10.x9fa), resolved late by the router, since the
     // transport and the manager construct each other.
@@ -271,15 +276,17 @@ internal fun meshcoreHeard(post: MeshcorePublicPost): MeshcorePost =
  * board is not bound shows its history and refuses, and never posts through another kind's board. Queued, the own row
  * takes the id the post's receivers key it on ([meshcoreRowId]); a kind that hands back no key (none does here) gets a
  * fresh id. [postPublic] is the MeshCore plane's `LoraMeshTransport.postPublic`, or null in a build that makes no MeshCore
- * plane: a seam, so the bound-kind gate is tested against a plane that would answer.
+ * plane: a seam, so the bound-kind gate is tested against a plane that would answer. [consented] is the board name the
+ * composer's consent decision saw, which the plane refuses `NAME_CHANGED` unless it is the board's now (ADR 2026-11.f4d3).
  */
 internal suspend fun postToMeshcorePublic(
     bound: BoardKind?,
-    postPublic: (suspend (String) -> PublicPostResult)?,
+    postPublic: (suspend (String, MeshcoreHandle?) -> PublicPostResult)?,
     body: String,
+    consented: MeshcoreHandle?,
 ): PublicChannelAnswer {
     if (bound != BoardKind.MESHCORE || postPublic == null) return PublicChannelAnswer.Refused(PublicPostRefusal.NO_BOARD)
-    return when (val result = postPublic(body)) {
+    return when (val result = postPublic(body, consented)) {
         is PublicPostResult.Queued -> PublicChannelAnswer.Queued(result.key?.let(::meshcoreRowId) ?: FrameId.new())
         is PublicPostResult.Refused -> PublicChannelAnswer.Refused(result.reason)
     }
@@ -287,18 +294,36 @@ internal suspend fun postToMeshcorePublic(
 
 /**
  * The MeshCore plane's ended posts ([PublicPostEnded]) as the room reads them (ADR 2026-11.gsqu's Stage 6 amendment): by
- * the own row's id, `STALE` as never sent and every end at the write as one that may have aired.
+ * the own row's id. `STALE` and `REFUSED_AT_WRITE` (refused before the board took it, ADR 2026-11.f4d3's review) are
+ * never sent; only `ENDED_AT_WRITE`, a write whose answer never came, may have aired.
  */
 internal fun meshcorePostEnds(ended: Flow<PublicPostEnded>): Flow<PublicPostEnd> =
-    ended.map { PublicPostEnd(meshcoreRowId(it.key), neverSent = it.reason == PublicPostEnded.Reason.STALE) }
+    ended.map { PublicPostEnd(meshcoreRowId(it.key), neverSent = it.reason != PublicPostEnded.Reason.ENDED_AT_WRITE) }
 
 /**
- * The bound MeshCore board's own name, `Knit xxxx` ([MeshcoreNames.forKey]), from the key its claim holds
+ * The bound MeshCore board's default name, `Knit xxxx` ([MeshcoreNames.forKey]), from the key its claim holds
  * ([MeshcoreClaimStore.boardKey]: written only while this phone's setup record consents for that board), or null with
- * none or one that is no key. The name every MeshCore room post goes out under, since a post leaves only from a board
- * named so (ADR 2026-11.gsqu's Stage 6 amendment): what the room's consent sheet shows and the bubble's clash set holds.
+ * none or one that is no key. Since ADR 2026-11.f4d3 a post goes out under the board's own name, its owner's handle
+ * (`MeshcoreBoardFace.handle`), which may differ: this is the default a clash set still holds beside it.
  */
 internal fun meshcoreBoardName(key: String?): String? = key?.let(MeshcoreKey::bytesOrNull)?.let(MeshcoreNames::forKey)
+
+/**
+ * Clears the MeshCore post consent's custom-name bit each time the bound board is seen under its `Knit abcd` default again
+ * ([status]'s face, `MeshcoreBoardFace.namedDefault`, ADR 2026-11.f4d3): Knit's own "Use Knit abcd", a setup that names a
+ * new board, or another app's rename back. The bit covers a chosen name only until then, so the next name away from the
+ * default asks again (security-reviewer). Never returns while [status] lives; one [clear] per arrival at the default.
+ */
+internal suspend fun meshcoreCustomNameConsentReset(
+    status: Flow<LoraStatus>,
+    clear: suspend () -> Unit,
+) {
+    status
+        .map { it.meshcore?.namedDefault == true }
+        .distinctUntilChanged()
+        .filter { it }
+        .collect { clear() }
+}
 
 /**
  * The MeshCore Forget as the app wires it (ADR 2026-11.gsqu's Stage 7 amendment): the radio screen's and the debug bridge's

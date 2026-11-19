@@ -1009,7 +1009,7 @@ internal fun ChatScreenContent(
     // has been accepted, so the draft the user already wrote is what gets sent once they accept.
     showPublicConsent: Boolean = false,
     // Whether the MeshCore sheet accepted showed its position line (false for the Meshtastic sheet, which has none).
-    onAcceptPublicConsent: (positionShown: Boolean) -> Unit = {},
+    onAcceptPublicConsent: (positionShown: Boolean, customNameShown: Boolean) -> Unit = { _, _ -> },
     onDismissPublicConsent: () -> Unit = {},
     // "Send location": the composer's staged position, the first-use disclosure, and the overflow item's
     // and tile's actions. All defaulted so the previews and the content tests need not name them.
@@ -1694,94 +1694,99 @@ internal fun ChatScreenContent(
                     }
 
                     else -> {
-                        MessageInput(
-                            state = inputState,
-                            isSending = isSending,
-                            pendingAttachment = pendingAttachment,
-                            stagedAttachmentRelay = stagedAttachmentRelay,
-                            relayIsCommons = state.isCommons,
-                            candidates = state.mentionCandidates,
-                            everyone = state.everyoneMentions,
-                            replyingTo = replyingTo,
-                            myNodeId = state.myNodeId,
-                            onCancelReply = onCancelReply,
-                            mentions = mentions,
-                            onMentionAdded = onMentionAdded,
-                            onMentionsAdded = onMentionsAdded,
-                            onAttachClick = onAttachClick,
-                            onCameraClick = onCameraClick,
-                            // Files are DM/group only, for the reason voice notes are: nothing on the device can screen
-                            // one, and the room floods unencrypted to everyone in range. See docs/CONTENT_MODERATION.md §7.
-                            fileEnabled = state.canSendFile,
-                            // The staged position's tile. The offer itself lives in the top bar's overflow, which is
-                            // absent from the bridged room (a channel of one line of text), so no tile can be staged there.
-                            locationScopeIsRoom = state.isRoom,
-                            stagedLocation = stagedLocation,
-                            onClearLocation = onClearLocation,
-                            onRefreshLocation = onRefreshLocation,
-                            onOpenLocationSettings = onOpenLocationSettings,
-                            // Naming the author in the hint is the whole of the ADR 049 exception's visible surface:
-                            // everywhere else on the radio this user is "Knit abcd", and here they are themselves.
-                            hint =
-                                when {
-                                    !state.isBridged -> {
-                                        null
-                                    }
+                        Column {
+                            // The name every MeshCore post goes out under (ADR 2026-11.f4d3), standing above the field so a
+                            // rename made outside Knit is in front of the user while they write, whatever the consent covered.
+                            state.meshcoreBoardName?.takeIf { state.isMeshcoreRoom }?.let { name -> MeshcorePostingAs(name) }
+                            MessageInput(
+                                state = inputState,
+                                isSending = isSending,
+                                pendingAttachment = pendingAttachment,
+                                stagedAttachmentRelay = stagedAttachmentRelay,
+                                relayIsCommons = state.isCommons,
+                                candidates = state.mentionCandidates,
+                                everyone = state.everyoneMentions,
+                                replyingTo = replyingTo,
+                                myNodeId = state.myNodeId,
+                                onCancelReply = onCancelReply,
+                                mentions = mentions,
+                                onMentionAdded = onMentionAdded,
+                                onMentionsAdded = onMentionsAdded,
+                                onAttachClick = onAttachClick,
+                                onCameraClick = onCameraClick,
+                                // Files are DM/group only, for the reason voice notes are: nothing on the device can screen
+                                // one, and the room floods unencrypted to everyone in range. See docs/CONTENT_MODERATION.md §7.
+                                fileEnabled = state.canSendFile,
+                                // The staged position's tile. The offer itself lives in the top bar's overflow, which is
+                                // absent from the bridged room (a channel of one line of text), so no tile can be staged there.
+                                locationScopeIsRoom = state.isRoom,
+                                stagedLocation = stagedLocation,
+                                onClearLocation = onClearLocation,
+                                onRefreshLocation = onRefreshLocation,
+                                onOpenLocationSettings = onOpenLocationSettings,
+                                // Naming the author in the hint is the whole of the ADR 049 exception's visible surface:
+                                // everywhere else on the radio this user is "Knit abcd", and here they are themselves.
+                                hint =
+                                    when {
+                                        !state.isBridged -> {
+                                            null
+                                        }
 
-                                    // A link that flaps on every Bluetooth reconnect: keep the field (and the keyboard)
-                                    // and let the hint say why a send would be refused.
-                                    state.publicPostGate == PublicPostGate.RadioDown -> {
-                                        stringResource(R.string.chat_mesh_radio_down)
-                                    }
+                                        // A link that flaps on every Bluetooth reconnect: keep the field (and the keyboard)
+                                        // and let the hint say why a send would be refused.
+                                        state.publicPostGate == PublicPostGate.RadioDown -> {
+                                            stringResource(R.string.chat_mesh_radio_down)
+                                        }
 
-                                    state.publicChannelKeyIsPublic -> {
-                                        stringResource(R.string.chat_mesh_hint)
-                                    }
+                                        state.publicChannelKeyIsPublic -> {
+                                            stringResource(R.string.chat_mesh_hint)
+                                        }
 
-                                    else -> {
-                                        stringResource(R.string.chat_mesh_hint_keyed)
-                                    }
-                                },
-                            onFileClick = onFileClick,
-                            onClearAttachment = onClearAttachment,
-                            onReceiveImage = onReceiveImage,
-                            onSend = onSend,
-                            onTyping = onTyping,
-                            onDraftChanged = onDraftChanged,
-                            formatting = !state.isBridged,
-                            draftTranslate = draftTranslate,
-                            onTranslateDraft = onTranslateDraft,
-                            onUndoDraftTranslation = onUndoDraftTranslation,
-                            onDraftNotThisLanguage = onDraftNotThisLanguage,
-                            linkPreviewLoading = linkPreviewLoading,
-                            videoEncoding = videoEncoding,
-                            onCancelVideo = onCancelVideo,
-                            loraBudget =
-                                loraBudgetFor(
-                                    state.loraCarry,
-                                    replying = replyingTo != null,
-                                    attached = pendingAttachment != null,
-                                    direct = state.loraDirectBudget,
-                                    room = state.loraRoomBudget,
-                                )
-                                    // A staged position rides the body, so its bytes come off the same budget.
-                                    ?.let { if (stagedLocation != null) (it - GeoUri.RESERVE_BYTES).coerceAtLeast(0) else it },
-                            loraHint = loraHintFor(state.loraCarry),
-                            maxBytes = state.publicPostBudget,
-                            // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
-                            // no on-device model can screen speech, so it is the one place unscreenable audio is not
-                            // offered. See docs/CONTENT_MODERATION.md.
-                            attachEnabled = !state.isBridged && !state.commonsTextOnly,
-                            voiceEnabled = !state.isRoom && !state.isBridged && !state.commonsTextOnly,
-                            voiceRecording = voiceRecording,
-                            voicePlayback = voicePlayback,
-                            onStartVoice = onStartVoice,
-                            onLockVoice = onLockVoice,
-                            onStopVoice = onStopVoice,
-                            onCancelVoice = onCancelVoice,
-                            onVoicePlay = onVoicePlay,
-                            onVoiceSeek = onVoiceSeek,
-                        )
+                                        else -> {
+                                            stringResource(R.string.chat_mesh_hint_keyed)
+                                        }
+                                    },
+                                onFileClick = onFileClick,
+                                onClearAttachment = onClearAttachment,
+                                onReceiveImage = onReceiveImage,
+                                onSend = onSend,
+                                onTyping = onTyping,
+                                onDraftChanged = onDraftChanged,
+                                formatting = !state.isBridged,
+                                draftTranslate = draftTranslate,
+                                onTranslateDraft = onTranslateDraft,
+                                onUndoDraftTranslation = onUndoDraftTranslation,
+                                onDraftNotThisLanguage = onDraftNotThisLanguage,
+                                linkPreviewLoading = linkPreviewLoading,
+                                videoEncoding = videoEncoding,
+                                onCancelVideo = onCancelVideo,
+                                loraBudget =
+                                    loraBudgetFor(
+                                        state.loraCarry,
+                                        replying = replyingTo != null,
+                                        attached = pendingAttachment != null,
+                                        direct = state.loraDirectBudget,
+                                        room = state.loraRoomBudget,
+                                    )
+                                        // A staged position rides the body, so its bytes come off the same budget.
+                                        ?.let { if (stagedLocation != null) (it - GeoUri.RESERVE_BYTES).coerceAtLeast(0) else it },
+                                loraHint = loraHintFor(state.loraCarry),
+                                maxBytes = state.publicPostBudget,
+                                // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
+                                // no on-device model can screen speech, so it is the one place unscreenable audio is not
+                                // offered. See docs/CONTENT_MODERATION.md.
+                                attachEnabled = !state.isBridged && !state.commonsTextOnly,
+                                voiceEnabled = !state.isRoom && !state.isBridged && !state.commonsTextOnly,
+                                voiceRecording = voiceRecording,
+                                voicePlayback = voicePlayback,
+                                onStartVoice = onStartVoice,
+                                onLockVoice = onLockVoice,
+                                onStopVoice = onStopVoice,
+                                onCancelVoice = onCancelVoice,
+                                onVoicePlay = onVoicePlay,
+                                onVoiceSeek = onVoiceSeek,
+                            )
+                        }
                     }
                 }
             },
@@ -2172,12 +2177,13 @@ internal fun ChatScreenContent(
                 if (state.isMeshcoreRoom) {
                     MeshcorePostConsentBody(
                         boardName = state.meshcoreBoardName,
+                        boardCustom = state.meshcoreBoardCustom,
                         sharesPosition = state.meshcoreSharesPosition,
                         onAccept = onAcceptPublicConsent,
                         onDecline = onDismissPublicConsent,
                     )
                 } else {
-                    PublicPostConsentBody(onAccept = { onAcceptPublicConsent(false) }, onDecline = onDismissPublicConsent)
+                    PublicPostConsentBody(onAccept = { onAcceptPublicConsent(false, false) }, onDecline = onDismissPublicConsent)
                 }
             }
         }
@@ -2623,7 +2629,8 @@ private fun PublicPostConsentBody(
 /**
  * The MeshCore room's first-use disclosure (ADR 2026-11.gsqu's Stage 6 amendment, security B3), its own words wherever
  * the Meshtastic sheet's do not fit: a MeshCore board writes its own name in front of every post, so the sheet names it
- * ([boardName], `Knit xxxx`; the generic wording while it is not known yet) and says what that name gives away; the
+ * ([boardName]: `Knit xxxx` or the handle its owner chose, ADR 2026-11.f4d3; the generic wording while it is not known
+ * yet) and says what that name gives away; the
  * channel key is public, so anyone listening keeps what is posted; a post cannot be taken back; anyone can post under any
  * name; and a MeshCore user's DM to the board gets no answer. What does not go out is the Meshtastic sheet's, word for
  * word. Decline first, accept second, as there.
@@ -2631,10 +2638,12 @@ private fun PublicPostConsentBody(
 @Composable
 private fun MeshcorePostConsentBody(
     boardName: String?,
+    // Whether [boardName] is a name the owner chose rather than Knit's `Knit abcd` default (ADR 2026-11.f4d3).
+    boardCustom: Boolean,
     // Whether the board may share where it is (null: not read yet): the position line shows unless it is known not to.
     sharesPosition: Boolean?,
-    // Called with whether this rendering showed the position line: what the consent records.
-    onAccept: (positionShown: Boolean) -> Unit,
+    // Called with whether this rendering showed the position line and a chosen name: what the consent records.
+    onAccept: (positionShown: Boolean, customNameShown: Boolean) -> Unit,
     onDecline: () -> Unit,
 ) {
     // Scrolls: it says more than the Meshtastic sheet, and every line of it must be reachable on a small screen.
@@ -2683,7 +2692,7 @@ private fun MeshcorePostConsentBody(
             TextButton(onClick = onDecline) { Text(stringResource(R.string.chat_mesh_consent_decline)) }
             Spacer(Modifier.width(8.dp))
             Button(
-                onClick = { onAccept(positionShown) },
+                onClick = { onAccept(positionShown, boardName != null && boardCustom) },
                 modifier = Modifier.testTag("chat_mesh_consent_accept"),
             ) { Text(stringResource(R.string.chat_mesh_consent_accept)) }
         }
@@ -2790,6 +2799,27 @@ private fun DirectTransferConsentBody(
             ) { Text(stringResource(R.string.chat_transfer_consent_accept)) }
         }
     }
+}
+
+/**
+ * The MeshCore room's line above its composer (ADR 2026-11.f4d3): the board's name, cleaned, that the firmware writes in
+ * front of every post. It stands while the user types — never the field's placeholder, which goes with the first
+ * character — because a rename made in another app is not asked about again once a chosen name was consented to.
+ */
+@Composable
+private fun MeshcorePostingAs(name: String) {
+    Text(
+        text = stringResource(R.string.chat_meshcore_posting_as, name),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+                .testTag("chat_meshcore_posting_as"),
+    )
 }
 
 /**

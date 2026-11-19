@@ -20,6 +20,7 @@ import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.PublicPostEnded
 import app.getknit.knit.mesh.lora.PublicPostKey
 import app.getknit.knit.mesh.lora.PublicPostResult
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
 import app.getknit.knit.mesh.lora.meshcore.MeshcorePublicPost
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.Protocol
@@ -213,29 +214,33 @@ class LoraPlaneWiringTest {
         runTest {
             val key = PublicPostKey(1_763_200_000, "Knit 1a2b: hi".encodeToByteArray())
             val asked = mutableListOf<String>()
-            val plane: suspend (String) -> PublicPostResult = { body ->
+            val consents = mutableListOf<MeshcoreHandle?>()
+            val handle = MeshcoreHandle("Wren".encodeToByteArray())
+            val plane: suspend (String, MeshcoreHandle?) -> PublicPostResult = { body, consented ->
                 asked += body
+                consents += consented
                 PublicPostResult.Queued(key)
             }
             for (bound in listOf(null, BoardKind.MESHTASTIC)) {
                 assertEquals(
                     "$bound",
                     PublicChannelAnswer.Refused(PublicPostRefusal.NO_BOARD),
-                    postToMeshcorePublic(bound, postPublic = plane, body = "hi"),
+                    postToMeshcorePublic(bound, postPublic = plane, body = "hi", consented = handle),
                 )
             }
             assertEquals("a plane asked while another kind's board is bound", emptyList<String>(), asked)
             assertEquals(
                 "no plane built",
                 PublicChannelAnswer.Refused(PublicPostRefusal.NO_BOARD),
-                postToMeshcorePublic(BoardKind.MESHCORE, postPublic = null, body = "hi"),
+                postToMeshcorePublic(BoardKind.MESHCORE, postPublic = null, body = "hi", consented = handle),
             )
 
             assertEquals(
                 PublicChannelAnswer.Queued(meshcoreRowId(key)),
-                postToMeshcorePublic(BoardKind.MESHCORE, postPublic = plane, body = "hi"),
+                postToMeshcorePublic(BoardKind.MESHCORE, postPublic = plane, body = "hi", consented = handle),
             )
             assertEquals("asked once, with the body", listOf("hi"), asked)
+            assertEquals("and the name the consent saw (ADR 2026-11.f4d3)", listOf<MeshcoreHandle?>(handle), consents)
         }
 
     /** Both sides of one post meet on one row: a heard post's id and our own's are [FrameId.forMeshcorePost] over its key. */
@@ -250,10 +255,19 @@ class LoraPlaneWiringTest {
 
             val ends =
                 meshcorePostEnds(
-                    flowOf(PublicPostEnded(key, PublicPostEnded.Reason.STALE), PublicPostEnded(key, PublicPostEnded.Reason.ENDED_AT_WRITE)),
+                    flowOf(
+                        PublicPostEnded(key, PublicPostEnded.Reason.STALE),
+                        PublicPostEnded(key, PublicPostEnded.Reason.ENDED_AT_WRITE),
+                        // Refused before the board took it (a name changed or unpostable, ADR 2026-11.f4d3): nothing aired.
+                        PublicPostEnded(key, PublicPostEnded.Reason.REFUSED_AT_WRITE),
+                    ),
                 ).toList()
             assertEquals(
-                listOf(PublicPostEnd(meshcoreRowId(key), neverSent = true), PublicPostEnd(meshcoreRowId(key), neverSent = false)),
+                listOf(
+                    PublicPostEnd(meshcoreRowId(key), neverSent = true),
+                    PublicPostEnd(meshcoreRowId(key), neverSent = false),
+                    PublicPostEnd(meshcoreRowId(key), neverSent = true),
+                ),
                 ends,
             )
         }

@@ -692,7 +692,7 @@ class MeshManagerTest {
                     publicPosts += body
                     publicChannelRefusal
                 },
-                meshcorePublicChannel = { body ->
+                meshcorePublicChannel = { body, _ ->
                     meshcorePosts += body
                     meshcoreAnswer
                 },

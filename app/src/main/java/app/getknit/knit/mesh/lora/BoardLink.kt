@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
@@ -127,6 +128,11 @@ internal sealed interface SendPurpose {
      */
     data class PublicPost(
         val timestampSecs: Long? = null,
+        /**
+         * The board name the post was consented and priced under, where the firmware prefixes one (MeshCore, ADR
+         * 2026-11.f4d3): the write refuses it when the board reads another. Null on the Meshtastic room.
+         */
+        val name: MeshcoreHandle? = null,
     ) : SendPurpose
 
     /** The fixed answer to a stock user's DM, to board [to], unacknowledged. */
@@ -231,10 +237,13 @@ internal interface BoardKindHooks {
     /**
      * [postToPublicChannel] with what a queued post is on the air where the kind can say ([PublicPostResult.Queued.key]:
      * MeshCore's timestamp and prefixed text, what a mirrored row's id is derived from). A kind that cannot say answers its
-     * refusal, or a queued post with no key.
+     * refusal, or a queued post with no key. [consented] is the board name the composer's consent decision saw (MeshCore,
+     * ADR 2026-11.f4d3: refused unless it is the board's name now); a kind whose board prefixes no name ignores it.
      */
-    suspend fun postPublic(body: String): PublicPostResult =
-        postToPublicChannel(body)?.let { PublicPostResult.Refused(it) } ?: PublicPostResult.Queued(key = null)
+    suspend fun postPublic(
+        body: String,
+        consented: MeshcoreHandle? = null,
+    ): PublicPostResult = postToPublicChannel(body)?.let { PublicPostResult.Refused(it) } ?: PublicPostResult.Queued(key = null)
 
     /**
      * Queued posts with a [PublicPostResult.Queued.key] that ended without airing ([PublicPostEnded]); none on a kind that
@@ -319,6 +328,9 @@ internal interface BoardKindHooks {
 
     /** What a setup would erase, read fresh off the Ready board (MeshCore's, Stage 7); null on a kind that erases nothing. */
     suspend fun setupPreview(): SetupPreview? = null
+
+    /** Renames the Ready board (MeshCore's handle, ADR 2026-11.f4d3); a kind with no such rename answers NO_BOARD. */
+    suspend fun renameMeshcore(name: String): MeshcoreRenameResult = MeshcoreRenameResult.NO_BOARD
 
     /** True while [provision] runs: nothing is taught to the board inside its admin transaction. */
     val provisioning: Boolean
@@ -416,6 +428,15 @@ internal enum class FragmentOutcome {
 
     /** Ended: a NAK, a broadcast's timeout or another give-up. Abandoned unless a fragment already flew. */
     ENDED,
+
+    /**
+     * Ended before the board took any of it: its first fragment refused at the write ([SendResult.Rejected],
+     * [SendResult.TooLarge] — the session's own gate, the encoder, or the firmware's `ERR`), so nothing of the frame was
+     * queued or booked, and it never aired. A refusal after a fragment flew is [ENDED]. Abandoned
+     * as [ENDED] is; told apart so a kind can say "not sent" rather than "may have gone out" (MeshCore's Public post, the
+     * ADR 2026-11.f4d3 review). A write whose answer never came is [ENDED], never this.
+     */
+    REFUSED,
 }
 
 /**
@@ -478,13 +499,16 @@ internal interface PlaneCore {
      * Queues the user's post on the board's public channel as one room-class packet at [ceiling], carrying the sender
      * timestamp [timestampSecs] fixed now (MeshCore, ADR 2026-11.gsqu's Stage 6 amendment): every write of the frame, a
      * `Busy` retry included, airs that one stamp — and fresh until `LoraFramePolicy.FRESH_MS` past it (`RideGate.freshUntil`,
-     * which the kind asks at the write). True when it is in the queue now. A core that cannot carry the stamp queues nothing.
+     * which the kind asks at the write). The board's [name], read at enqueue, rides the frame too (ADR 2026-11.f4d3): its
+     * price and the write's name check read it. True when it is in the queue now. A core that cannot carry the stamp queues
+     * nothing.
      */
     fun enqueuePublic(
         text: ByteArray,
         label: String,
         ceiling: Ceiling,
         timestampSecs: Long,
+        name: MeshcoreHandle,
     ): Boolean = false
 
     /** A persisted limiter moved: the core saves the plane state behind its debounce. */

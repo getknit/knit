@@ -114,6 +114,8 @@ class SettingsSnapshotTest {
             "meshcore_post_consented",
             // Whether that consent was given with the sheet's position line (Stage 7): it qualifies the consent it rides with.
             SettingsKeys.MESHCORE_POST_CONSENT_POSITION,
+            // Whether it was given with a custom name shown (ADR 2026-11.f4d3): it qualifies the consent too.
+            SettingsKeys.MESHCORE_POST_CONSENT_CUSTOM_NAME,
             "lora_board_key",
             "lora_board_node",
             "lora_room_enabled",

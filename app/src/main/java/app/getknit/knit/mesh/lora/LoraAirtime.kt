@@ -301,6 +301,28 @@ internal class LoraAirtime(
     }
 
     /**
+     * The length of the bound board's name, in bytes, where the kind's firmware writes it before a public post (MeshCore,
+     * ADR 2026-11.f4d3): what [publicPostBytes] and the snapshot price the composer's budget from. Null before a board said,
+     * priced at the kind's longest name. A queued post is priced from the name its own frame carries
+     * (`OutboundFrame.publicName`), never from this.
+     */
+    private var publicNameBytes: Int? = null
+
+    /** The board reported its name's length [bytes] (MeshCore's Ready, ADR 2026-11.f4d3); null forgets it. */
+    @Synchronized
+    fun onPublicName(bytes: Int?) {
+        publicNameBytes = bytes
+    }
+
+    /**
+     * What a public post costs past its text from a board whose name is [nameBytes] long ([BoardTraits.publicPrice]: on
+     * MeshCore the `"<name>: "` prefix, and the cap less it; Meshtastic's is [price] of [AirPurpose.PUBLIC_POST] as ever).
+     * Null prices the kind's longest name: never under the post's real cost.
+     */
+    @Synchronized
+    fun publicPrice(nameBytes: Int?): PacketPrice = traits.publicPrice(price(AirPurpose.PUBLIC_POST), nameBytes)
+
+    /**
      * Records how the bound board signs, off its handshake at `Ready` (#243): [facts] — firmware, `has_xeddsa`, the
      * `packet_signature_policy`, ham mode — and whether slot 0 ([primaryAead]) and the bound Knit slot ([knitAead]) are
      * AEAD channels. Every later [price] reads this one snapshot, so admission and booking cannot disagree. Asked again
@@ -652,12 +674,17 @@ internal class LoraAirtime(
      * The most text the user's public-channel post can ever carry here: the kind's cap for it ([PacketPrice.cap] of
      * [AirPurpose.PUBLIC_POST]), less where its own ceiling ([BoardTraits.publicCeiling]) of an empty window could never
      * admit that much — the [Refusal.NEVER] test [refusal] makes, so the composer's budget and the enqueue's refusal are one
-     * rule (ADR 2026-11.gsqu's Stage 6 amendment, lora-reviewer N3). 0 where not one byte ever fits; the cap until the
+     * rule (ADR 2026-11.gsqu's Stage 6 amendment, lora-reviewer N3) — priced from the bound board's name as it last reported
+     * it ([onPublicName], ADR 2026-11.f4d3). 0 where not one byte ever fits; the cap until the
      * board's duty is known (a post on the fallback is refused for air at the enqueue, never for its size).
      */
     @Synchronized
-    fun publicPostBytes(): Int {
-        val price = price(AirPurpose.PUBLIC_POST)
+    fun publicPostBytes(): Int = publicPostBytes(publicNameBytes)
+
+    /** [publicPostBytes] for a board whose name is [nameBytes] long (null: the kind's longest, ADR 2026-11.f4d3). */
+    @Synchronized
+    fun publicPostBytes(nameBytes: Int?): Int {
+        val price = publicPrice(nameBytes)
         if (duty == null) return price.cap
         val ceiling = ceilingMs(traits.publicCeiling)
         // The cost grows with the size, so the largest that fits is found by halving: a handful of formula reads a call.

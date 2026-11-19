@@ -2,7 +2,6 @@ package app.getknit.knit.mesh.lora.meshcore
 
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.TransportHealth
-import app.getknit.knit.mesh.lora.AirPurpose
 import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.BoardAir
 import app.getknit.knit.mesh.lora.BoardBattery
@@ -47,7 +46,9 @@ import org.junit.Test
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class MeshcorePublicPostTest {
-    private class FakeBoard : BoardLink {
+    private class FakeBoard(
+        name: ByteArray = MeshcoreNames.forKey(KEY).encodeToByteArray(),
+    ) : BoardLink {
         val ready =
             BoardState.Ready(
                 own = BoardAddr.MeshCore(KEY.copyOf(MeshcoreProto.PREFIX_BYTES)),
@@ -65,10 +66,10 @@ class MeshcorePublicPostTest {
                         freqKhz = 869_525,
                         contactCapacity = 100,
                         slots = emptyList(),
-                        namedForKnit = true,
                         manualAdd = 1,
                         dialled = ADDRESS,
                         publicSlot = MeshcorePublicSlot("Public", keyIsPublic = true, empty = false, knit = false),
+                        advertName = name,
                     ),
             )
         override val state = MutableStateFlow<BoardState>(BoardState.Down(TransportHealth.Unavailable, MeshcoreLinkState.Idle))
@@ -146,8 +147,8 @@ class MeshcorePublicPostTest {
         val hooks: () -> MeshcoreHooks,
     )
 
-    private fun TestScope.node(): Node {
-        val board = FakeBoard()
+    private fun TestScope.node(name: ByteArray = DEFAULT_NAME): Node {
+        val board = FakeBoard(name)
         val ops = Ops(board)
         var made: MeshcoreHooks? = null
         val transport =
@@ -181,22 +182,29 @@ class MeshcorePublicPostTest {
         return Node(transport, board, { requireNotNull(made) })
     }
 
-    /** What a [bytes]-byte Public post books, priced off the same board on a ledger of its own. */
-    private fun priceOf(bytes: Int): Long {
+    /** What a [bytes]-byte Public post from a board named in [nameBytes] books, priced on a ledger of its own. */
+    private fun priceOf(
+        bytes: Int,
+        nameBytes: Int = DEFAULT_NAME.size,
+    ): Long {
         val air = LoraAirtime(traits = MeshcoreTraits)
         air.onRadio(RADIO, MeshcoreTraits.dutyPolicy(869_525, RADIO.bandwidthHz))
-        return air.timeOnAirMs(bytes, air.price(AirPurpose.PUBLIC_POST))
+        return air.timeOnAirMs(bytes, air.publicPrice(nameBytes))
     }
+
+    /** The composer's consent, as made under the board's name now. */
+    private fun Node.consented(): MeshcoreHandle = (board.ready.detail as MeshcoreDetail).handle
 
     @Test
     fun aPostRidesTheQueueUnderItsStampAndIsBookedAsAFloodWithItsPrefix() =
         runTest {
             val n = node()
-            val result = n.transport.postPublic("north gate") as PublicPostResult.Queued
+            val result = n.transport.postPublic("north gate", n.consented()) as PublicPostResult.Queued
             runCurrent()
             val (payload, purpose) = n.board.sent.single()
             assertArrayEquals("the words alone: the board writes the name", "north gate".encodeToByteArray(), payload)
             val stamp = (purpose as SendPurpose.PublicPost).timestampSecs!!
+            assertEquals("the frame carries the name it was consented under", n.consented(), purpose.name)
             assertEquals(PublicPostKey(stamp, "${MeshcoreNames.forKey(KEY)}: north gate".encodeToByteArray()), result.key)
             val air = requireNotNull(n.transport.status.value.airtime)
             assertEquals("the 11-B prefix priced in", priceOf(10), air.usedMs)
@@ -217,7 +225,7 @@ class MeshcorePublicPostTest {
             val n = node()
             n.board.answers += SendResult.Busy
             n.board.answers += SendResult.Busy
-            val result = n.transport.postPublic("north gate") as PublicPostResult.Queued
+            val result = n.transport.postPublic("north gate", n.consented()) as PublicPostResult.Queued
             runCurrent()
             repeat(30) {
                 advanceTimeBy(5_000)
@@ -245,7 +253,7 @@ class MeshcorePublicPostTest {
                 n.transport.publicPostsEnded.collect { ends += it }
             }
             // Queued the instant the link drops: the pacer parks on the link, the frame waits out the outage.
-            val result = n.transport.postPublic("north gate") as PublicPostResult.Queued
+            val result = n.transport.postPublic("north gate", n.consented()) as PublicPostResult.Queued
             n.board.state.value = BoardState.Down(TransportHealth.Unavailable, MeshcoreLinkState.Idle)
             advanceTimeBy(app.getknit.knit.mesh.lora.LoraFramePolicy.FRESH_MS + 60_000)
             runCurrent()
@@ -268,11 +276,115 @@ class MeshcorePublicPostTest {
             )
         }
 
+    /**
+     * The f4d3 review: a post the write refused before the board took it — the session's own gate (here the name moved since
+     * the consent), the encoder, the firmware's `ERR` — is never sent and books nothing; only a write whose answer never came
+     * may have aired.
+     */
+    @Test
+    fun aPostRefusedAtTheWriteIsNeverSentAndOneUnansweredMayHaveAired() =
+        runTest {
+            val n = node()
+            val ends = mutableListOf<app.getknit.knit.mesh.lora.PublicPostEnded>()
+            backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
+                n.transport.publicPostsEnded.collect { ends += it }
+            }
+            n.board.answers += SendResult.Rejected(7u, MeshcoreRefusal.NAME_CHANGED)
+            val refused = n.transport.postPublic("north gate", n.consented()) as PublicPostResult.Queued
+            runCurrent()
+            advanceTimeBy(LoraMeshTransport.PUBLIC_POST_FLOOR_MS + 1)
+            n.board.answers += SendResult.Timeout(8u)
+            val unanswered = n.transport.postPublic("south gate", n.consented()) as PublicPostResult.Queued
+            runCurrent()
+            assertEquals(
+                listOf(
+                    app.getknit.knit.mesh.lora.PublicPostEnded(
+                        refused.key!!,
+                        app.getknit.knit.mesh.lora.PublicPostEnded.Reason.REFUSED_AT_WRITE,
+                    ),
+                    app.getknit.knit.mesh.lora.PublicPostEnded(
+                        unanswered.key!!,
+                        app.getknit.knit.mesh.lora.PublicPostEnded.Reason.ENDED_AT_WRITE,
+                    ),
+                ),
+                ends,
+            )
+            val status = n.transport.status.value
+            assertEquals("nothing booked for either", 0L, requireNotNull(status.airtime).usedMs)
+        }
+
+    /**
+     * ADR 2026-11.f4d3: the board's name is its owner's handle. A custom name posts under its own bytes, keyed from them,
+     * never a `String` — priced and capped at its length, so a 31-B name carries 127 B and is booked at the 33-B prefix. (A
+     * name cut mid-character is not UTF-8, and so never leads a post: [anUnpostableNameRefusesAndTheFaceIsNotPostable].)
+     */
+    @Test
+    fun aCustomNamedBoardPostsUnderItsOwnBytesPricedAndCappedAtItsLength() =
+        runTest {
+            // 30 B of "é" (two bytes each) and an "A": the firmware's longest name, 31 B.
+            val name = "ééééééééééééééé".encodeToByteArray() + byteArrayOf(0x41)
+            assertEquals(31, name.size)
+            val n = node(name)
+            val text = "x".repeat(127)
+            val result = n.transport.postPublic(text, n.consented()) as PublicPostResult.Queued
+            runCurrent()
+            assertArrayEquals(name + ": ".encodeToByteArray() + text.encodeToByteArray(), result.key!!.raw)
+            val air = requireNotNull(n.transport.status.value.airtime)
+            assertEquals("booked at the 33-B prefix", priceOf(127, nameBytes = 31), air.usedMs)
+            assertEquals("the composer's budget under a 31-B name", 127, air.publicPostBytes)
+            advanceTimeBy(LoraMeshTransport.PUBLIC_POST_FLOOR_MS + 1)
+            assertEquals(
+                "one byte past the name's cap",
+                PublicPostResult.Refused(app.getknit.knit.mesh.PublicPostRefusal.TOO_LARGE),
+                n.transport.postPublic("x".repeat(128), n.consented()),
+            )
+        }
+
+    /** ADR 2026-11.f4d3 (the design pass's Blocking finding): a post goes out only under the name its consent saw. */
+    @Test
+    fun aPostWhoseConsentSawAnotherNameIsRefusedBeforeTheQueue() =
+        runTest {
+            val n = node("Wren".encodeToByteArray())
+            assertEquals(
+                PublicPostResult.Refused(app.getknit.knit.mesh.PublicPostRefusal.NAME_CHANGED),
+                n.transport.postPublic("north gate", MeshcoreHandle(DEFAULT_NAME)),
+            )
+            assertEquals(
+                "no name at all is no consent",
+                PublicPostResult.Refused(app.getknit.knit.mesh.PublicPostRefusal.NAME_CHANGED),
+                n.transport.postPublic("north gate", null),
+            )
+            runCurrent()
+            assertTrue("nothing queued", n.board.sent.isEmpty())
+            assertEquals("the floor is not claimed", true, n.transport.postPublic("north gate", n.consented()) is PublicPostResult.Queued)
+        }
+
+    /** A name another app wrote that receivers would split or misdraw refuses before the queue, and the face says so. */
+    @Test
+    fun anUnpostableNameRefusesAndTheFaceIsNotPostable() =
+        runTest {
+            val unpostable =
+                listOf("Wren: hi", "\u202Eneyrw", "\u200B").map { it.encodeToByteArray() } + listOf("é".encodeToByteArray().copyOf(1))
+            for (name in unpostable) {
+                val n = node(name)
+                assertEquals(
+                    PublicPostResult.Refused(app.getknit.knit.mesh.PublicPostRefusal.NAME_UNPOSTABLE),
+                    n.transport.postPublic("north gate", n.consented()),
+                )
+                runCurrent()
+                assertTrue(n.board.sent.isEmpty())
+                val status = n.transport.status.value
+                assertEquals(false, status.publicChannel?.postable)
+                assertEquals(true, status.meshcore?.handleUnpostable)
+            }
+        }
+
     private companion object {
         const val ADDRESS = "AA:1"
         const val KNIT_SLOT = 1
         const val WALL = 1_790_000_000_000L
         val KEY = ByteArray(32) { (0xB0 + it).toByte() }
         val RADIO = RadioParams(8, 62_500, 5)
+        val DEFAULT_NAME = MeshcoreNames.forKey(KEY).encodeToByteArray()
     }
 }

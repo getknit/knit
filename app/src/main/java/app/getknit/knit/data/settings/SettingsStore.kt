@@ -407,7 +407,7 @@ class SettingsStore(
 
     /**
      * Whether the user has read, and accepted, the disclosure behind posting into the **MeshCore room** (ADR
-     * 2026-11.gsqu's Stage 6 amendment, security B3): the board's own `Knit xxxx` goes on the front of every post and
+     * 2026-11.gsqu's Stage 6 amendment, security B3): the board's own name goes on the front of every post and
      * identifies the board, people who know it can tell the post is theirs, the channel key is public so anyone can keep
      * what is posted, a post cannot be taken back, anyone can post under any name, and a MeshCore user's DM to the board
      * goes unread. Its own answer, never [meshtasticPostConsented]'s: the two sheets say different things, and the
@@ -420,6 +420,14 @@ class SettingsStore(
      * a board that shares where it is (`MeshcoreBoardFace.sharesPosition`) asks again until it was.
      */
     val meshcorePostConsentPosition: Flow<Boolean> = dataStore.data.map { it[KEY_MESHCORE_POST_CONSENT_POSITION] ?: false }
+
+    /**
+     * Whether [meshcorePostConsented] was given with a custom name shown (ADR 2026-11.f4d3): on the sheet, or in Knit's
+     * rename dialog, which carries the same disclosure. A board whose name is not its `Knit abcd` default
+     * (`MeshcoreBoardFace.namedDefault`) asks again until it was; a rename made outside Knit never sets it. Holds no name.
+     */
+    val meshcorePostConsentCustomName: Flow<Boolean> =
+        dataStore.data.map { it[KEY_MESHCORE_POST_CONSENT_CUSTOM_NAME] ?: false }
 
     /**
      * Whether the user has read, and accepted, the disclosure behind the composer's "Send location" pin —
@@ -1143,11 +1151,27 @@ class SettingsStore(
      * Records that the user accepted the disclosure behind [meshcorePostConsented], in one edit with whether its position line
      * was shown ([meshcorePostConsentPosition]); a consent without the line never clears one given with it.
      */
-    suspend fun acceptMeshcorePostConsent(withPosition: Boolean = false) =
-        dataStore.edit {
-            it[KEY_MESHCORE_POST_CONSENTED] = true
-            if (withPosition) it[KEY_MESHCORE_POST_CONSENT_POSITION] = true
-        }
+    suspend fun acceptMeshcorePostConsent(
+        withPosition: Boolean = false,
+        withCustomName: Boolean = false,
+    ) = dataStore.edit {
+        it[KEY_MESHCORE_POST_CONSENTED] = true
+        if (withPosition) it[KEY_MESHCORE_POST_CONSENT_POSITION] = true
+        if (withCustomName) it[KEY_MESHCORE_POST_CONSENT_CUSTOM_NAME] = true
+    }
+
+    /**
+     * Records that the user saw the custom-name disclosure in Knit's rename dialog (ADR 2026-11.f4d3), so a consent already
+     * given covers the new name; it gives no consent of its own (the sheet still asks one who never posted).
+     */
+    suspend fun acceptMeshcoreCustomNameDisclosure() = dataStore.edit { it[KEY_MESHCORE_POST_CONSENT_CUSTOM_NAME] = true }
+
+    /**
+     * Ends what [meshcorePostConsentCustomName] covered (ADR 2026-11.f4d3, security-reviewer): the bound board is under its
+     * `Knit abcd` default again, so the next name away from it — Knit's or any other app's — asks again, as the first did.
+     * The post consent itself stands. DataStore skips the write when the bit is already clear.
+     */
+    suspend fun clearMeshcoreCustomNameConsent() = dataStore.edit { it.remove(KEY_MESHCORE_POST_CONSENT_CUSTOM_NAME) }
 
     /** Records that the user accepted the disclosure behind [locationShareConsented]. */
     suspend fun acceptLocationShareConsent() = dataStore.edit { it[KEY_LOCATION_SHARE_CONSENTED] = true }
@@ -1404,6 +1428,7 @@ class SettingsStore(
         val KEY_MESHCORE_ROOM_ENABLED = booleanPreferencesKey(SettingsKeys.MESHCORE_ROOM_ENABLED)
         val KEY_MESHCORE_POST_CONSENTED = booleanPreferencesKey(SettingsKeys.MESHCORE_POST_CONSENTED)
         val KEY_MESHCORE_POST_CONSENT_POSITION = booleanPreferencesKey(SettingsKeys.MESHCORE_POST_CONSENT_POSITION)
+        val KEY_MESHCORE_POST_CONSENT_CUSTOM_NAME = booleanPreferencesKey(SettingsKeys.MESHCORE_POST_CONSENT_CUSTOM_NAME)
         val KEY_RECENT_REACTIONS = stringPreferencesKey("recent_reactions")
     }
 }

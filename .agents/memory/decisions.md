@@ -318,6 +318,7 @@ carries; never renumber an old one.
 | [2026-11.b37x](decisions/2026-11-b37x-hiding-a-known-node-is-presentation-only.md) | Hiding a known node is presentation only | contacts, diagnostics, ui |
 | [2026-11.dgj2](decisions/2026-11-dgj2-a-restore-carries-each-dm-scope-so-its-reset-reaches-a-relay-only-contact.md) | a restore carries each DM scope so its reset reaches a relay-only contact | backup, spool, ratchet |
 | [2026-11.ejn8](decisions/2026-11-ejn8-translation-models-go-phone-to-phone-over-a-direct-transfer.md) | Translation models go phone to phone over a direct transfer | transfer, ml, wire, privacy |
+| [2026-11.f4d3](decisions/2026-11-f4d3-a-meshcore-board-s-name-is-its-owner-s-handle-and-post-consent-follows-it.md) | a MeshCore board's name is its owner's handle and post consent follows it | lora, meshcore, privacy |
 | [2026-11.f8pg](decisions/2026-11-f8pg-an-update-of-knit-restarts-the-mesh-like-a-reboot-does.md) | An update of Knit restarts the mesh like a reboot does | reliability, service, android |
 | [2026-11.gsqu](decisions/2026-11-gsqu-a-meshcore-board-is-a-second-lora-plane-over-one-neutral-core.md) | a MeshCore board is a second LoRa plane over one neutral core | lora, meshcore, crypto, airtime |
 | [2026-11.j8pf](decisions/2026-11-j8pf-an-onboarding-starting-point-supplies-the-defaults.md) | An onboarding starting point supplies the defaults, and the person's own values outrank it | settings, onboarding, privacy, battery |

@@ -1,5 +1,8 @@
 package app.getknit.knit.mesh.lora
 
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreNames
+
 /**
  * A snapshot of the LoRa plane for the settings/diagnostics row — the board it is bound to, the live
  * link state, the last signal reading, and the running counters. Derived purely from the transport's
@@ -102,7 +105,51 @@ internal data class MeshcoreBoardFace(
      */
     val sharesPosition: Boolean? = null,
     val setup: BoardSetupState = BoardSetupState.UNKNOWN,
-)
+    /**
+     * The Ready board's advert name, its owner's handle (ADR 2026-11.f4d3): raw bytes, which may be a person's name — clean
+     * it before drawing it (`TextLimits.cleanReceived`), and never log it. Null while the board is away.
+     */
+    val handle: MeshcoreHandle? = null,
+    /** Whether [handle] is Knit's default for the board's key, byte for byte ([MeshcoreNames.isDefault]); false while away. */
+    val namedDefault: Boolean = false,
+    /**
+     * Whether [handle] breaks the postable rules ([MeshcoreNames.check]: a `": "`, a control or bidi override, invalid UTF-8,
+     * empty or too long), which another app may have written: Public posts are refused (`NAME_UNPOSTABLE`) until it is renamed.
+     */
+    val handleUnpostable: Boolean = false,
+    /** Knit's default name for the Ready board's key (`Knit abcd`, [MeshcoreNames.forKey]): what "Use Knit abcd" renames to. */
+    val defaultName: String? = null,
+) {
+    /** Counts and booleans only: never the handle or the default name, which names the board's key. */
+    override fun toString(): String =
+        "MeshcoreBoardFace(firmware=$firmware, freqKhz=$freqKhz, sf=$spreadFactor, bw=$bandwidthHz, cr=$codingRate, " +
+            "scope=$defaultScope, batteryMv=$batteryMv, sharesPosition=$sharesPosition, setup=$setup, " +
+            "handle=${handle != null}, namedDefault=$namedDefault, unpostable=$handleUnpostable)"
+}
+
+/**
+ * What a MeshCore rename ([LoraPlaneStatus.renameMeshcore], ADR 2026-11.f4d3) came to. Nothing about the name itself: the
+ * debug bridge's reply carries this alone, and is logged whole.
+ */
+internal enum class MeshcoreRenameResult {
+    /** Written, read back as the name asked for, and the Ready published with it. */
+    DONE,
+
+    /** The name breaks the postable rules ([MeshcoreNames.check]): nothing written. */
+    INVALID,
+
+    /** The board is not set up for Knit on this phone (no consent on this connection, or no Knit slot): nothing written. */
+    NOT_SET_UP,
+
+    /** The bound board is not Ready. */
+    NOT_READY,
+
+    /** The write was not answered, or the board read back another name. */
+    FAILED,
+
+    /** No MeshCore plane in this build, or no MeshCore board bound. */
+    NO_BOARD,
+}
 
 /**
  * Whether this phone set the bound MeshCore board up for Knit (ADR 2026-11.gsqu's Stage 7 amendment), read from its setup
@@ -131,6 +178,11 @@ internal enum class BoardSetupState {
 internal data class SetupPreview(
     val contacts: Long?,
     val slots: Int?,
+    /**
+     * Whether the setup's name step will run (ADR 2026-11.f4d3): the board will be renamed `Knit abcd`. False for a board
+     * this phone already set up (a re-setup keeps its handle) and for one already carrying the default name.
+     */
+    val renames: Boolean = false,
 )
 
 /**
@@ -143,8 +195,8 @@ internal data class PublicChannelFace(
     /** Whether its key is the firmware's published Public key, which every radio and every uploader holds. */
     val keyIsPublic: Boolean,
     /**
-     * Whether a post may leave through it now: the board is set up for Knit on this phone (its name is `Knit xxxx` and the
-     * connection consents, so no post leads with anybody's real name) and the slot holds a channel (not empty, not Knit's).
+     * Whether a post may leave through it now: the board is set up for Knit on this phone (the connection consents, and its
+     * name passes the postable rules, ADR 2026-11.f4d3) and the slot holds a channel (not empty, not Knit's).
      * Structural: the room switch, the floor and the air are answered per post.
      */
     val postable: Boolean,

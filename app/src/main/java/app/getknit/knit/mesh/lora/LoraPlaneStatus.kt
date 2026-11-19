@@ -50,6 +50,13 @@ internal interface LoraPlaneStatus : BoardKindSource {
      */
     suspend fun setupPreview(): SetupPreview? = null
 
+    /**
+     * Renames the Ready MeshCore board [name], its owner's handle on the MeshCore network (ADR 2026-11.f4d3), written and read
+     * back on the session's actor. The UI validates first (`TextLimits`, the name screen); the plane re-checks the postable
+     * byte rules ([MeshcoreRenameResult.INVALID]). [MeshcoreRenameResult.NO_BOARD] on a plane that is not MeshCore's.
+     */
+    suspend fun renameMeshcore(name: String): MeshcoreRenameResult = MeshcoreRenameResult.NO_BOARD
+
     /** The plane in a build that does not ship it: idle forever, and never provisions. */
     object Dark : LoraPlaneStatus {
         override val status: StateFlow<LoraStatus> = MutableStateFlow(LoraStatus())

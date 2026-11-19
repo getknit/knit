@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -25,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -41,12 +43,14 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.mesh.lora.BoardBattery
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreNames
 import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.util.countText
@@ -88,6 +92,11 @@ fun LoraRadioScreen(onBack: () -> Unit) {
         onDismissReplace = viewModel::dismissReplace,
         onKeepBoard = viewModel::keepBoard,
         onForgetAnyway = viewModel::forgetAnyway,
+        onAskRename = viewModel::askRename,
+        onRenameDraft = viewModel::setRenameDraft,
+        onSaveRename = viewModel::saveRename,
+        onUseDefaultName = viewModel::useDefaultName,
+        onDismissRename = viewModel::dismissRename,
     )
 }
 
@@ -116,6 +125,12 @@ internal fun LoraRadioScreenContent(
     onDismissReplace: () -> Unit = {},
     onKeepBoard: () -> Unit = {},
     onForgetAnyway: () -> Unit = {},
+    // The MeshCore board's name on its network (ADR 2026-11.f4d3): the rename dialog's actions.
+    onAskRename: () -> Unit = {},
+    onRenameDraft: (String) -> Unit = {},
+    onSaveRename: () -> Unit = {},
+    onUseDefaultName: () -> Unit = {},
+    onDismissRename: () -> Unit = {},
 ) {
     val context = LocalContext.current
     Scaffold(
@@ -229,6 +244,14 @@ internal fun LoraRadioScreenContent(
                     onRestore = onRestore,
                     onDismissProvision = onDismissProvision,
                 )
+                if (meshcore.setup == MeshcoreSetup.SetUp) {
+                    MeshcoreNameSection(
+                        state = state,
+                        meshcore = meshcore,
+                        onAskRename = onAskRename,
+                        onDismissNotice = onDismissProvision,
+                    )
+                }
             } else {
                 SetupSection(
                     state = state,
@@ -246,6 +269,7 @@ internal fun LoraRadioScreenContent(
             if (state.confirmSetup) {
                 if (meshcore != null) {
                     MeshcoreSetupConfirmDialog(
+                        renames = state.erase?.renames != false,
                         erase = state.erase,
                         eraseLoading = state.eraseLoading,
                         sharesPosition = meshcore.sharesPosition,
@@ -258,6 +282,18 @@ internal fun LoraRadioScreenContent(
             }
             if (state.confirmReplace) MeshcoreReplaceDialog(onConfirm = onReplace, onDismiss = onDismissReplace)
             if (state.forgetPending) MeshcoreForgetPendingDialog(onKeep = onKeepBoard, onForgetAnyway = onForgetAnyway)
+            val rename = state.meshcoreRename
+            if (meshcore != null && rename != null) {
+                MeshcoreRenameDialog(
+                    rename = rename,
+                    defaultName = meshcore.defaultName,
+                    sharesPosition = meshcore.sharesPosition,
+                    onDraft = onRenameDraft,
+                    onSave = onSaveRename,
+                    onUseDefault = onUseDefaultName,
+                    onDismiss = onDismissRename,
+                )
+            }
         }
     }
 }
@@ -725,6 +761,153 @@ private fun SetupConfirmDialog(
 }
 
 /**
+ * The bound MeshCore board's name on its network (ADR 2026-11.f4d3), on a board set up for Knit: the name every Public post
+ * goes out under — the user's handle, or Knit's `Knit abcd` default — and, while the board is Ready, the way to change it.
+ * A name another app wrote that the Public channel can't carry says so: Knit posts nothing there until it is renamed.
+ */
+@Composable
+private fun MeshcoreNameSection(
+    state: LoraRadioUiState,
+    meshcore: MeshcoreRows,
+    onAskRename: () -> Unit,
+    onDismissNotice: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(stringResource(R.string.lora_meshcore_name_title), style = MaterialTheme.typography.titleMedium)
+        val handle = meshcore.handle
+        if (state.connection == LoraConnState.Ready && handle != null) {
+            Text(
+                text = if (meshcore.namedDefault) stringResource(R.string.lora_meshcore_name_default, handle) else handle,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.testTag("lora_meshcore_name"),
+            )
+            if (meshcore.handleUnpostable) {
+                Text(
+                    text = stringResource(R.string.lora_meshcore_name_unpostable),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.testTag("lora_meshcore_name_unpostable"),
+                )
+            }
+            OutlinedButton(
+                onClick = onAskRename,
+                enabled = !state.provisioning && state.meshcoreRename == null,
+                modifier = Modifier.testTag("lora_meshcore_rename"),
+            ) {
+                Text(stringResource(R.string.lora_meshcore_name_change))
+            }
+        } else {
+            Text(
+                text = stringResource(R.string.lora_meshcore_name_away),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("lora_meshcore_name_away"),
+            )
+        }
+        state.meshcoreRenameNotice?.let { notice ->
+            OutcomeLine(
+                message =
+                    when (notice) {
+                        MeshcoreRenameNotice.Done -> R.string.lora_meshcore_rename_done
+                        MeshcoreRenameNotice.Failed -> R.string.lora_meshcore_rename_failed
+                        MeshcoreRenameNotice.NotReady -> R.string.lora_meshcore_rename_not_ready
+                        MeshcoreRenameNotice.NotSetUp -> R.string.lora_meshcore_rename_not_set_up
+                    },
+                isError = notice != MeshcoreRenameNotice.Done,
+                tag = "lora_meshcore_rename_notice",
+                onDismiss = onDismissNotice,
+            )
+        }
+    }
+}
+
+/**
+ * Renaming the MeshCore board (ADR 2026-11.f4d3): the name, its size against the board's 31 bytes, why it can't be sent yet,
+ * and where it goes — the board's Bluetooth name, its adverts and every Public post, all in the clear — with the position
+ * line unless the board is known not to share one. Saving a name of the user's own covers a post consent already given.
+ */
+@Composable
+private fun MeshcoreRenameDialog(
+    rename: MeshcoreRenameUi,
+    defaultName: String?,
+    sharesPosition: Boolean?,
+    onDraft: (String) -> Unit,
+    onSave: () -> Unit,
+    onUseDefault: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("lora_meshcore_rename_dialog"),
+        title = { Text(stringResource(R.string.lora_meshcore_rename_title)) },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = rename.draft,
+                    onValueChange = onDraft,
+                    enabled = !rename.running,
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.lora_meshcore_rename_label)) },
+                    isError = rename.problem != null,
+                    supportingText = {
+                        Text(
+                            text =
+                                rename.problem?.let { stringResource(it.message()) }
+                                    ?: stringResource(R.string.lora_meshcore_rename_counter, rename.bytes, MeshcoreNames.MAX_NAME_BYTES),
+                            modifier = Modifier.testTag("lora_meshcore_rename_hint"),
+                        )
+                    },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    modifier = Modifier.fillMaxWidth().testTag("lora_meshcore_rename_field"),
+                )
+                Text(
+                    text = stringResource(R.string.lora_meshcore_rename_disclosure),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag("lora_meshcore_rename_disclosure"),
+                )
+                if (sharesPosition != false) {
+                    Text(
+                        text = stringResource(R.string.lora_meshcore_position),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.testTag("lora_meshcore_rename_position"),
+                    )
+                }
+                if (defaultName != null) {
+                    TextButton(
+                        onClick = onUseDefault,
+                        enabled = !rename.running,
+                        modifier = Modifier.testTag("lora_meshcore_rename_default"),
+                    ) {
+                        Text(stringResource(R.string.lora_meshcore_rename_use_default, defaultName))
+                    }
+                }
+                if (rename.running) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onSave, enabled = !rename.running, modifier = Modifier.testTag("lora_meshcore_rename_save")) {
+                Text(stringResource(R.string.lora_meshcore_rename_save))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !rename.running) { Text(stringResource(R.string.action_cancel)) }
+        },
+    )
+}
+
+private fun MeshcoreNameProblem.message(): Int =
+    when (this) {
+        MeshcoreNameProblem.Empty -> R.string.lora_meshcore_rename_empty
+        MeshcoreNameProblem.TooLong -> R.string.lora_meshcore_rename_too_long
+        MeshcoreNameProblem.Control -> R.string.lora_meshcore_rename_control
+        MeshcoreNameProblem.Separator -> R.string.lora_meshcore_rename_separator
+        MeshcoreNameProblem.Flagged -> R.string.moderation_name_refused
+    }
+
+/**
  * A MeshCore setup's confirmation (ADR 2026-11.gsqu's Stage 7 amendment): what Knit does to the board, that the erase can't
  * be undone, how much it erases once the board has said, and — unless the board is known not to — that the board may share
  * where it is, which Knit's setup ties to the user. Scrolls: the lines can outgrow a small screen.
@@ -732,6 +915,8 @@ private fun SetupConfirmDialog(
 @Composable
 private fun MeshcoreSetupConfirmDialog(
     erase: MeshcoreErase?,
+    /** Whether this setup renames the board `Knit abcd`: not a re-setup, which keeps the name the board carries. */
+    renames: Boolean = true,
     eraseLoading: Boolean,
     sharesPosition: Boolean?,
     onConfirm: () -> Unit,
@@ -746,7 +931,11 @@ private fun MeshcoreSetupConfirmDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(stringResource(R.string.lora_meshcore_setup_confirm_body))
+                Text(
+                    stringResource(
+                        if (renames) R.string.lora_meshcore_setup_confirm_body else R.string.lora_meshcore_setup_confirm_body_keeps_name,
+                    ),
+                )
                 Text(
                     text = stringResource(R.string.lora_meshcore_setup_erase),
                     color = MaterialTheme.colorScheme.error,
@@ -1070,5 +1259,105 @@ fun LoraRadioScreenPreview() =
                 ),
             onBack = {},
             onToggle = {},
+        )
+    }
+
+/**
+ * The MeshCore name row on a board set up for Knit (ADR 2026-11.f4d3), alone so it is not below the fold: a name of the
+ * user's own, Knit's default, and a name another app wrote that the Public channel cannot carry.
+ */
+@Preview(showBackground = true)
+@Composable
+fun LoraRadioMeshcoreNamePreview() =
+    KnitPreview {
+        val state =
+            LoraRadioUiState(
+                enabled = true,
+                meshcoreBound = true,
+                connection = LoraConnState.Ready,
+                boardSetUp = true,
+                anyKind = true,
+            )
+        val rows = MeshcoreRows(setup = MeshcoreSetup.SetUp, handle = "Sam 🧶", defaultName = "Knit 312b")
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+            MeshcoreNameSection(state = state, meshcore = rows, onAskRename = {}, onDismissNotice = {})
+            MeshcoreNameSection(
+                state = state,
+                meshcore = rows.copy(handle = "Knit 312b", namedDefault = true),
+                onAskRename = {},
+                onDismissNotice = {},
+            )
+            MeshcoreNameSection(
+                state = state,
+                meshcore = rows.copy(handle = "Sam: hi", handleUnpostable = true),
+                onAskRename = {},
+                onDismissNotice = {},
+            )
+        }
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun MeshcoreRenameDialogPreview() =
+    KnitPreview {
+        MeshcoreRenameDialog(
+            rename = MeshcoreRenameUi(draft = "Knit 312b", bytes = 9),
+            defaultName = "Knit 312b",
+            sharesPosition = false,
+            onDraft = {},
+            onSave = {},
+            onUseDefault = {},
+            onDismiss = {},
+        )
+    }
+
+/** A name of the user's own on a board that may share where it is: the position line joins the disclosure. */
+@Preview(showBackground = true)
+@Composable
+fun MeshcoreRenameDialogPositionPreview() =
+    KnitPreview {
+        MeshcoreRenameDialog(
+            rename = MeshcoreRenameUi(draft = "Sam 🧶", bytes = 8),
+            defaultName = "Knit 312b",
+            sharesPosition = true,
+            onDraft = {},
+            onSave = {},
+            onUseDefault = {},
+            onDismiss = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun MeshcoreRenameDialogTooLongPreview() =
+    KnitPreview {
+        MeshcoreRenameDialog(
+            rename =
+                MeshcoreRenameUi(
+                    draft = "Riverside Community Radio Club 2",
+                    bytes = 32,
+                    problem = MeshcoreNameProblem.TooLong,
+                ),
+            defaultName = "Knit 312b",
+            sharesPosition = false,
+            onDraft = {},
+            onSave = {},
+            onUseDefault = {},
+            onDismiss = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun MeshcoreRenameDialogFlaggedPreview() =
+    KnitPreview {
+        MeshcoreRenameDialog(
+            rename = MeshcoreRenameUi(draft = "Radio Rex", bytes = 9, problem = MeshcoreNameProblem.Flagged),
+            defaultName = "Knit 312b",
+            sharesPosition = false,
+            onDraft = {},
+            onSave = {},
+            onUseDefault = {},
+            onDismiss = {},
         )
     }
