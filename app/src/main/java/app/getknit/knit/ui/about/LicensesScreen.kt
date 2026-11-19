@@ -32,6 +32,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
+import app.getknit.knit.di.FACE_REDACTION_WIRED
 import app.getknit.knit.di.LIVE_CALLS_WIRED
 import app.getknit.knit.di.STT_WIRED
 import app.getknit.knit.di.TRANSLATE_WIRED
@@ -53,7 +54,13 @@ fun LicensesScreen(
     onOpenLicense: (License) -> Unit,
 ) {
     LicensesScreenContent(
-        notices = ThirdPartyNotices.shipped(liveCalls = LIVE_CALLS_WIRED, translate = TRANSLATE_WIRED, stt = STT_WIRED),
+        notices =
+            ThirdPartyNotices.shipped(
+                liveCalls = LIVE_CALLS_WIRED,
+                translate = TRANSLATE_WIRED,
+                stt = STT_WIRED,
+                faceRedaction = FACE_REDACTION_WIRED,
+            ),
         onBack = onBack,
         onOpenLicense = onOpenLicense,
     )
@@ -167,7 +174,7 @@ private fun NoticeRow(
 fun LicensesScreenPreview() =
     KnitPreview {
         LicensesScreenContent(
-            notices = ThirdPartyNotices.shipped(liveCalls = true, translate = false, stt = false),
+            notices = ThirdPartyNotices.shipped(liveCalls = true, translate = false, stt = false, faceRedaction = false),
             onBack = {},
             onOpenLicense = {},
         )

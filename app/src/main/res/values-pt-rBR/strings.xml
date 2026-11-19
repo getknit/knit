@@ -115,6 +115,7 @@
     <string name="preset_private_translation">Tradução desativada, para que suas mensagens não revelem em que idioma estão.</string>
     <string name="preset_private_offline">Sem retransmissores pela internet e sem prévias de links.</string>
     <string name="preset_private_screenshots">Capturas de tela do Knit saem em branco.</string>
+    <string name="preset_private_faces">Os rostos das fotos que você envia são cobertos, e você confere cada uma antes de sair.</string>
     <string name="preset_battery_title">Economizar bateria</string>
     <string name="preset_battery_summary">Pegue mais leve com a bateria. Fotos e arquivos demoram mais para chegar.</string>
     <string name="preset_battery_aware">Wi-Fi Aware desligado. O Bluetooth mantém a mesh, e as mensagens continuam chegando.</string>
@@ -938,6 +939,8 @@
     <string name="settings_typing_indicators_subtitle">As pessoas com quem você conversa veem quando você está digitando, por perto ou por um retransmissor, e você vê quando elas estão. Desativado, o Knit não envia nem mostra quem está digitando.</string>
     <string name="settings_read_receipts_title">Confirmações de leitura</string>
     <string name="settings_read_receipts_subtitle">As pessoas com quem você conversa veem quando você leu as mensagens delas, e você vê quando elas leram as suas. Desativado, o Knit não envia nem mostra confirmações de leitura.</string>
+    <string name="settings_cover_faces_title">Cobrir rostos nas fotos que você envia</string>
+    <string name="settings_cover_faces_subtitle">Antes de uma foto sair, o Knit encontra os rostos nela neste celular e os cobre, e você confere cada uma. Vídeos e animações vão como estão.</string>
     <string name="settings_low_power_title">Modo de baixo consumo</string>
     <string name="settings_low_power_subtitle">Desliga o Wi-Fi Aware para economizar bateria. O Bluetooth mantém você na mesh, então as mensagens continuam chegando, mas fotos e arquivos demoram mais. Também fica ativo junto com a Economia de bateria.</string>
     <string name="settings_low_power_subtitle_saver">Ativo agora porque a Economia de bateria está ativada. O Wi-Fi Aware está desligado, e o Bluetooth mantém você na mesh.</string>
@@ -1034,6 +1037,21 @@
     <string name="camera_capture_failed">Não foi possível tirar a foto. Tente de novo.</string>
     <string name="camera_capturing">Tirando foto</string>
     <string name="camera_switch_lens">Trocar câmera</string>
+    <string name="redact_looking">Procurando rostos…</string>
+    <string name="redact_none_found">Nenhum rosto encontrado. Toque em qualquer rosto que você vir para cobri-lo.</string>
+    <string name="redact_unavailable">Não foi possível procurar rostos neste celular. Toque em cada rosto para cobri-lo.</string>
+    <plurals name="redact_covered">
+        <item quantity="one">%d rosto coberto</item>
+        <item quantity="many">%d rostos cobertos</item>
+        <item quantity="other">%d rostos cobertos</item>
+    </plurals>
+    <string name="redact_hint">Toque em um rosto para cobri-lo ou descobri-lo. Arraste para cobrir uma área. Use dois dedos para dar zoom.</string>
+    <string name="redact_photo">Foto para enviar</string>
+    <string name="redact_face">Rosto %1$d</string>
+    <string name="redact_face_covered">Coberto</string>
+    <string name="redact_face_uncovered">Não coberto</string>
+    <string name="redact_motion_not_covered">Rostos não são cobertos em vídeos nem em animações.</string>
+    <string name="redact_unreadable">Não foi possível abrir esta foto para cobrir os rostos, então ela não foi anexada.</string>
     <string name="diagnostics_title">Diagnóstico</string>
     <string name="diagnostics_reports">Relatórios e registros</string>
     <string name="diagnostics_debug_section">Opções de depuração</string>

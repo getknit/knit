@@ -100,6 +100,7 @@ internal val BUILD_FLAGS: List<Pair<String, Boolean>> =
         "MESH_CALLS" to BuildConfig.MESH_CALLS,
         "STT" to BuildConfig.STT,
         "TRANSLATE" to BuildConfig.TRANSLATE,
+        "FACE_REDACTION" to BuildConfig.FACE_REDACTION,
         "KNIT_ANYWHERE" to BuildConfig.KNIT_ANYWHERE,
         "SEED_DEMO" to BuildConfig.SEED_DEMO,
         "DEMO_DIRECTOR" to BuildConfig.DEMO_DIRECTOR,

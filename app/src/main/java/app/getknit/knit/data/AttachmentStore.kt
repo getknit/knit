@@ -290,6 +290,30 @@ class AttachmentStore(
             )
         }
 
+    /** What a pick is as a picture, for face redaction (ADR 2026-10.whkk), which covers a still one only. */
+    enum class Picture { STILL, MOVING, NONE }
+
+    /**
+     * What [uri] is as a picture: [Picture.MOVING] when its bytes animate (a GIF, an animated WebP or APNG), [Picture.STILL]
+     * for any other image, by its own bytes or, failing them, the provider's type, and [Picture.NONE] for anything else.
+     * Read the way [ingest] reads it, bounded. A source too large to read whole is typed by its first bytes
+     * ([HEAD_BYTES]), then the provider's type, and taken as still unless it is a GIF: with Cover faces on, a large photo
+     * whose provider names no type is reviewed, never sent as it is. Ask [isVideo] first: a video is read here as
+     * nothing, after up to [MAX_BYTES] of it.
+     */
+    suspend fun pictureOf(uri: Uri): Picture =
+        withContext(Dispatchers.IO) {
+            val declared = runCatching { context.contentResolver.getType(uri) }.getOrNull()
+            val raw = readBounded(uri)
+            val sniffed = (raw ?: readHead(uri))?.let(FileTypes::imageMimeOf)
+            val image = (sniffed ?: declared)?.startsWith("image/") == true
+            when {
+                !image -> Picture.NONE
+                raw?.let(AnimatedImage::isAnimated) ?: ((sniffed ?: declared) == "image/gif") -> Picture.MOVING
+                else -> Picture.STILL
+            }
+        }
+
     /**
      * Whether a pick from the photo picker or the share sheet is a video, which takes [ingestVideo] rather than the
      * image door: the provider's type when it names one, else the container's own signature
@@ -457,8 +481,8 @@ class AttachmentStore(
         )
     }
 
-    /** The provider's display name for [uri], or null when it offers none. */
-    private fun displayName(uri: Uri): String? =
+    /** The provider's display name for [uri], or null when it offers none. A query: call it off the main thread. */
+    fun displayName(uri: Uri): String? =
         runCatching {
             context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else null
@@ -482,6 +506,22 @@ class AttachmentStore(
     private fun readBounded(uri: Uri): ByteArray? =
         runCatching {
             context.contentResolver.openInputStream(uri)?.use { stream -> readBounded(stream) }
+        }.getOrNull()
+
+    /** The first [HEAD_BYTES] of [uri], or fewer at its end; null when it cannot be opened. */
+    private fun readHead(uri: Uri): ByteArray? =
+        runCatching {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                // A loop rather than `readNBytes(int)`, which is API 33.
+                val head = ByteArray(HEAD_BYTES)
+                var filled = 0
+                while (filled < HEAD_BYTES) {
+                    val read = stream.read(head, filled, HEAD_BYTES - filled)
+                    if (read < 0) break
+                    filled += read
+                }
+                head.copyOf(filled)
+            }
         }.getOrNull()
 
     private fun readBounded(stream: InputStream): ByteArray? {
@@ -679,8 +719,8 @@ class AttachmentStore(
     private companion object {
         const val TAG = "AttachmentStore"
         const val WEBP = "image/webp"
-        const val MAX_DIMENSION = 1280
-        const val JPEG_QUALITY = 85
+        const val MAX_DIMENSION = PHOTO_MAX_DIMENSION
+        const val JPEG_QUALITY = PHOTO_JPEG_QUALITY
 
         /**
          * The re-encode ladder [fitted] walks, (long edge, quality): quality first at full size, then smaller. Measured
@@ -689,7 +729,7 @@ class AttachmentStore(
          * KB). The 640 px q50 floor came to 32–59 KB, inside any `am` of two chunks; a screenshot is far under at q85.
          */
         val FIT_STEPS = listOf(1280 to 75, 1280 to 65, 1280 to 55, 1024 to 60, 800 to 55, 640 to 50)
-        const val WEBP_QUALITY = 85
+        const val WEBP_QUALITY = PHOTO_WEBP_QUALITY
 
         /**
          * How far over [JPEG_QUALITY] a JPEG's estimated quality may sit and still pass through untouched: the
@@ -738,5 +778,8 @@ class AttachmentStore(
         const val DEFAULT_MIME = "application/octet-stream"
 
         const val READ_CHUNK = 64 * 1024
+
+        // What [pictureOf] reads of a source too large to read whole: enough for every signature [FileTypes] knows.
+        const val HEAD_BYTES = 4 * 1024
     }
 }

@@ -66,7 +66,10 @@ before changing behaviour — this file is the map, they are the reasoning.
   the host answers that with CANCEL.
 - **Retry reads the record's `sourceUri`, and the chat checks it before drawing the button.** The picker's grant is
   taken as persistable in `AndroidTransferFiles.openSource`, so it outlives a reboot. It is never released, and
-  Retry depends on it.
+  Retry depends on it. A photo sent with Cover faces on is offered as a `file://` copy of its covered bytes in the
+  cache (`redact/CoveredCopies`, ADR 2026-10.whkk). `TransferFiles.release` deletes it once the transfer cannot be
+  retried (Done, or declined by its receiver), and a copy older than a week goes when a chat opens: Retry after that
+  finds the source gone.
 - **Once every byte is out, the verdict decides the sender's card** (ADR 2026-11.ejn8, the maintainer's rule). The
   receiver writes its verdict before it commits, so a failed commit's CANCEL used to race the sender's Done.
   `awaitingVerdict` goes up as the last chunk leaves, before the trailer, and a CANCEL that lands then is kept

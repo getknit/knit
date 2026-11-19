@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.R
 import app.getknit.knit.data.settings.Preset
+import app.getknit.knit.di.FACE_REDACTION_WIRED
 import app.getknit.knit.di.STT_WIRED
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.relay.RelayConsentText
@@ -83,6 +84,7 @@ internal fun presetLines(
                 R.string.preset_private_translation.takeIf { BuildConfig.TRANSLATE },
                 R.string.preset_private_offline.takeIf { internetPlane },
                 R.string.preset_private_screenshots,
+                R.string.preset_private_faces.takeIf { FACE_REDACTION_WIRED },
             )
         }
 

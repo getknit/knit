@@ -7,7 +7,9 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
 import android.database.MatrixCursor
+import android.graphics.Bitmap
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.R
@@ -16,6 +18,7 @@ import app.getknit.knit.call.CallKind
 import app.getknit.knit.call.CallManager
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
+import app.getknit.knit.data.FileTypes
 import app.getknit.knit.data.GallerySaver
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.LinkCardStore
@@ -49,6 +52,7 @@ import app.getknit.knit.data.relay.RelayReach
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.legal.repoFile
 import app.getknit.knit.linkpreview.LinkPreviewService
 import app.getknit.knit.location.FakeLocationSource
 import app.getknit.knit.location.GeoPoint
@@ -90,6 +94,8 @@ import app.getknit.knit.mesh.spool.TicketKeyJournal
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.moderation.ShippedWordList
 import app.getknit.knit.notifications.Notifier
+import app.getknit.knit.redact.FaceBox
+import app.getknit.knit.redact.FaceDetector
 import app.getknit.knit.transfer.OfferOutcome
 import app.getknit.knit.transfer.TransferManager
 import app.getknit.knit.transfer.TransferRefusal
@@ -98,6 +104,8 @@ import app.getknit.knit.ui.directoryOf
 import app.getknit.knit.ui.msg
 import app.getknit.knit.ui.peer
 import app.getknit.knit.ui.reaction
+import app.getknit.knit.ui.redact.FaceSearch
+import app.getknit.knit.ui.redact.PhotoReview
 import app.getknit.knit.ui.share.OutsideUris
 import app.getknit.knit.ui.share.OwnFile
 import app.getknit.knit.ui.voice.VoicePlayer
@@ -199,6 +207,7 @@ class ChatViewModelTest {
     private val typingIndicatorsFlow = MutableStateFlow(true)
     private val readCountsFlow = MutableStateFlow(emptyMap<String, Int>())
     private val readReceiptsFlow = MutableStateFlow(true)
+    private val coverFacesFlow = MutableStateFlow(false)
     private val publicConsentFlow = MutableStateFlow(false)
 
     // The MeshCore room's own consent, per-kind facts and board name (ADR 2026-11.gsqu's Stage 6 amendment).
@@ -266,6 +275,8 @@ class ChatViewModelTest {
         every { settings.linkPreviewsEnabled } returns linkPreviewsEnabledFlow
         // An arm of the mesh-status combine: a relaxed mock's silent flow would stall every state assertion.
         every { settings.typingIndicatorsEnabled } returns typingIndicatorsFlow
+        // Read with first() at every attach: a relaxed mock's flow would end empty and throw there.
+        every { settings.coverFacesEnabled } returns coverFacesFlow
         every { settings.locationShareConsented } returns locationConsentFlow
         every { settings.directTransferConsented } returns transferConsentFlow
         every { transfers.states } returns transfersFlow
@@ -330,6 +341,7 @@ class ChatViewModelTest {
         directLinksOn: Flow<Boolean> = flowOf(false),
         // Each kind's own facts: null, as the production default for a rig, reads [loraFactsFlow] as its kind's alone.
         loraRooms: Flow<Map<BoardKind, LoraFacts>>? = null,
+        faces: FaceDetector? = null,
     ) = ChatViewModel(
         conversationId,
         messages,
@@ -368,6 +380,7 @@ class ChatViewModelTest {
         meshcoreBoardName = meshcoreBoardNameFlow,
         meshcoreNaming = meshcoreNamingFlow,
         meshcoreSharesPosition = meshcoreSharesFlow,
+        faces = faces,
     )
 
     // --- Pinned messages (#42, ADR 2026-10.2r7e) ---------------------------------------------------------------------
@@ -3322,6 +3335,223 @@ class ChatViewModelTest {
             coVerify { attachments.ingest(jpeg, "image/jpeg", true) }
         }
 
+    // --- Cover faces (ADR 2026-10.whkk) ------------------------------------------------------------------------------
+
+    /** A detector that finds one face, wherever it is asked. */
+    private val oneFace =
+        object : FaceDetector {
+            override suspend fun detect(bitmap: Bitmap): List<FaceBox> = listOf(FaceBox(10f, 10f, 40f, 50f, 0.9f))
+        }
+
+    /** A real photo, NASA's crew portrait, so the review's decode has something to decode. */
+    private val crewJpeg by lazy { repoFile("app/src/androidTest/assets/redact/crew.jpg").readBytes() }
+
+    @Test
+    fun withCoverFacesOnACapturedPhotoIsReviewedAndStagedOnlyFromTheReviewWhenDone() =
+        runTest {
+            coverFacesFlow.value = true
+            val ingested = AttachmentStore.Ingested(hash = "hc", mime = "image/jpeg")
+            coEvery { attachments.ingest(any<ByteArray>(), any(), any(), any()) } returns
+                AttachmentStore.IngestResult.Success(ingested, flagged = false)
+            val vm = vm("bob", faces = oneFace)
+
+            vm.attachCaptured(crewJpeg)
+            val review = vm.pendingReview.first { it?.search == FaceSearch.Done }!!
+
+            assertEquals(1, review.redaction.coveredCount)
+            coVerify(exactly = 0) { attachments.ingest(any<ByteArray>(), any(), any(), any()) }
+            assertNull(vm.pendingAttachment.value)
+
+            vm.finishReview()
+
+            // The encode runs off the main thread, so the staging is awaited, not stepped to.
+            coVerify(
+                timeout = AWAIT_MS,
+            ) { attachments.ingest(match<ByteArray> { !it.contentEquals(crewJpeg) }, "image/jpeg", false, any()) }
+            coVerify(exactly = 0) { attachments.ingest(crewJpeg, any(), any(), any()) }
+            assertNull(vm.pendingReview.value)
+        }
+
+    @Test
+    fun aCancelledReviewStagesNothing() =
+        runTest {
+            coverFacesFlow.value = true
+            val vm = vm("bob", faces = oneFace)
+            vm.attachCaptured(crewJpeg)
+            vm.pendingReview.first { it?.search == FaceSearch.Done }
+
+            vm.cancelReview()
+            // Read before the finish: Main is unconfined, so the cancel has landed, and no encode on another thread
+            // can be the one that cleared it.
+            assertNull(vm.pendingReview.value)
+            vm.finishReview()
+            advanceUntilIdle()
+
+            assertNull(vm.pendingReview.value)
+            coVerify(exactly = 0) { attachments.ingest(any<ByteArray>(), any(), any(), any()) }
+        }
+
+    @Test
+    fun withCoverFacesOnAPickTheStoreCannotTellApartIsReviewedAndOneThatWillNotDecodeIsNeverSent() =
+        runTest {
+            // NONE through the photo door: the fail-safe reviews it. Its provider is gone, so the decode throws: the
+            // photo is dropped with a word, and nothing at all is staged.
+            coverFacesFlow.value = true
+            // A provider that serves no files: opening the pick throws, as one whose document has gone does.
+            Robolectric.buildContentProvider(PresentDocuments::class.java).create("gone")
+            val uri = Uri.parse("content://gone/photo")
+            coEvery { attachments.isVideo(uri) } returns false
+            coEvery { attachments.pictureOf(uri) } returns AttachmentStore.Picture.NONE
+            val vm = vm("bob", faces = oneFace)
+            val said = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.attach(uri)
+
+            assertEquals(R.string.redact_unreadable, said.await())
+            coVerify(exactly = 0) { attachments.ingest(any<Uri>(), any(), any()) }
+        }
+
+    @Test
+    fun withCoverFacesOnAPhotoPickedAsAFileIsReviewedNotSentAsAFile() =
+        runTest {
+            // The file door hands a picture to the image door, so with Cover faces on it is reviewed: here its provider
+            // has gone, so it is dropped with a word, and the file door's own ingest is never reached.
+            coverFacesFlow.value = true
+            coEvery { peers.find("bob") } returns peer("bob", "Bob", capabilities = Protocol.CAP_FILES)
+            Robolectric.buildContentProvider(PresentDocuments::class.java).create("gone")
+            val uri = Uri.parse("content://gone/photo.jpg")
+            coEvery { attachments.isVideo(uri) } returns false
+            coEvery { attachments.pictureOf(uri) } returns AttachmentStore.Picture.STILL
+            val vm = vm("bob", faces = oneFace)
+            val said = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.attachFile(uri)
+
+            assertEquals(R.string.redact_unreadable, said.await())
+            coVerify(exactly = 0) { attachments.ingestFile(any(), any()) }
+        }
+
+    @Test
+    fun aPhotoPickedAsAFileForAPeerThatTakesNoFilesIsRefusedBeforeItsReview() =
+        runTest {
+            coverFacesFlow.value = true
+            coEvery { peers.find("bob") } returns peer("bob", "Bob", capabilities = Protocol.CAP_E2E)
+            val uri = Uri.parse("content://docs/photo.jpg")
+            coEvery { attachments.isVideo(uri) } returns false
+            coEvery { attachments.pictureOf(uri) } returns AttachmentStore.Picture.STILL
+            val vm = vm("bob", faces = oneFace)
+            val said = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.attachFile(uri)
+
+            assertEquals(R.string.chat_file_peer_too_old, said.await())
+            assertNull(vm.pendingReview.value)
+            coVerify(exactly = 0) { attachments.ingestFile(any(), any()) }
+        }
+
+    @Test
+    fun withCoverFacesOnAnAnimationGoesAsItIsWithANotice() =
+        runTest {
+            coverFacesFlow.value = true
+            val uri = Uri.parse("content://images/animated")
+            coEvery { attachments.isVideo(uri) } returns false
+            coEvery { attachments.pictureOf(uri) } returns AttachmentStore.Picture.MOVING
+            val vm = vm("bob", faces = oneFace)
+            val said = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.attach(uri)
+            advanceUntilIdle()
+
+            assertEquals(R.string.redact_motion_not_covered, said.await())
+            coVerify { attachments.ingest(uri, false, any()) }
+            assertNull(vm.pendingReview.value)
+        }
+
+    @Test
+    fun withCoverFacesOnAPhotoOfferedOverADirectTransferGoesOnlyAsItsCoveredCopy() =
+        runTest {
+            coverFacesFlow.value = true
+            stubDm("bob")
+            coEvery { peers.find("bob") } returns peer("bob", "Bob", capabilities = Protocol.LOCAL_CAPABILITIES)
+            mesh.neighbors.value = setOf(Peer("bob"))
+            Robolectric.buildContentProvider(CrewPhoto::class.java).create("crew")
+            val uri = Uri.parse("content://crew/IMG_0001.png")
+            coEvery { attachments.pictureOf(uri) } returns AttachmentStore.Picture.STILL
+            every { attachments.displayName(uri) } returns "IMG_0001.png"
+            val offered = slot<String>()
+            coEvery { transfers.offer("bob", any()) } returns OfferOutcome.Started("t1")
+            val vm = vm("bob", faces = oneFace)
+
+            vm.offerTransfer(uri)
+            val review = vm.pendingReview.first { it?.search == FaceSearch.Done }!!
+
+            assertEquals(PhotoReview.Purpose.Transfer("IMG_0001.png"), review.purpose)
+            assertEquals(1, review.redaction.coveredCount)
+            coVerify(exactly = 0) { transfers.offer(any(), any()) }
+
+            vm.finishReview()
+
+            // The encode and the copy's write run off the main thread, so the offer is awaited, not stepped to.
+            // Captured by the verify, on this thread: a stub's capture runs after the call is recorded, on the offer's own.
+            coVerify(timeout = AWAIT_MS) { transfers.offer("bob", capture(offered)) }
+            val copy = File(checkNotNull(Uri.parse(offered.captured).path))
+            assertEquals("IMG_0001.jpg", copy.name)
+            val sent = copy.readBytes()
+            assertEquals("image/jpeg", FileTypes.imageMimeOf(sent))
+            assertFalse("the original went", sent.contentEquals(crewJpeg))
+            coVerify(exactly = 0) { transfers.offer("bob", uri.toString()) }
+            assertNull(vm.pendingReview.value)
+        }
+
+    @Test
+    fun withCoverFacesOnAnAnimationOfferedOverADirectTransferGoesAsItIsWithANotice() =
+        runTest {
+            coverFacesFlow.value = true
+            stubDm("bob")
+            coEvery { peers.find("bob") } returns peer("bob", "Bob", capabilities = Protocol.LOCAL_CAPABILITIES)
+            mesh.neighbors.value = setOf(Peer("bob"))
+            val uri = Uri.parse("content://docs/animated.gif")
+            coEvery { attachments.pictureOf(uri) } returns AttachmentStore.Picture.MOVING
+            coEvery { transfers.offer("bob", uri.toString()) } returns OfferOutcome.Started("t1")
+            val vm = vm("bob", faces = oneFace)
+            val said = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.offerTransfer(uri)
+            advanceUntilIdle()
+
+            assertEquals(R.string.redact_motion_not_covered, said.await())
+            coVerify { transfers.offer("bob", uri.toString()) }
+            assertNull(vm.pendingReview.value)
+        }
+
+    @Test
+    fun theMeshtasticRoomRefusesAPhotoBeforeItsReviewNotAfter() =
+        runTest {
+            coverFacesFlow.value = true
+            val vm = vm(Conversations.MESHTASTIC, faces = oneFace)
+            val said = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.attachCaptured(crewJpeg)
+
+            assertEquals(R.string.chat_mesh_text_only, said.await())
+            assertNull(vm.pendingReview.value)
+        }
+
+    @Test
+    fun withCoverFacesOffACapturedPhotoIsStagedAsItWasWithNoReview() =
+        runTest {
+            val ingested = AttachmentStore.Ingested(hash = "ho", mime = "image/jpeg")
+            coEvery { attachments.ingest(crewJpeg, "image/jpeg", any()) } returns
+                AttachmentStore.IngestResult.Success(ingested, flagged = false)
+            val vm = vm("bob", faces = oneFace)
+
+            vm.attachCaptured(crewJpeg)
+            advanceUntilIdle()
+
+            assertEquals(ingested, vm.pendingAttachment.value)
+            assertNull(vm.pendingReview.value)
+        }
+
     @Test
     fun theBridgedRoomTakesNoAttachmentByAnyRoute() =
         runTest {
@@ -3440,6 +3670,40 @@ class ChatViewModelTest {
             vm.attachShared(picture, "image/jpeg")
             advanceUntilIdle()
             assertEquals(ingested, vm.pendingAttachment.value)
+        }
+
+    /**
+     * #284 against the face review (ADR 2026-10.whkk): with Cover faces on, a URI naming Knit's own files is refused at
+     * every door before the review could decode or show it, so the review never becomes a way to read Knit's files.
+     */
+    @Test
+    fun withCoverFacesOnAUriNamingKnitsOwnFilesNeverReachesTheReview() =
+        runTest {
+            coverFacesFlow.value = true
+            val ownFile = Uri.fromFile(File(context.filesDir, "datastore/knit_settings.preferences_pb"))
+            val ownCrash = Uri.parse("content://${context.packageName}.fileprovider/crash/report.txt")
+            coEvery { peers.find("bob") } returns peer("bob", "Bob", capabilities = Protocol.LOCAL_CAPABILITIES)
+            stubDm("bob")
+            mesh.neighbors.value = setOf(Peer("bob"))
+            val vm = vm("bob")
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+
+            vm.attach(ownFile)
+            vm.attachShared(ownCrash, "image/jpeg")
+            vm.attachFile(ownCrash)
+            vm.offerTransfer(ownFile)
+            advanceUntilIdle()
+
+            assertNull(vm.pendingReview.value)
+            coVerify(exactly = 0) { attachments.pictureOf(any()) }
+            coVerify(exactly = 0) { attachments.isVideo(any()) }
+            coVerify(exactly = 0) { attachments.displayName(any()) }
+            coVerify(exactly = 0) { transfers.offer(any(), any()) }
+            assertEquals(
+                listOf(R.string.chat_image_capture_failed, R.string.chat_transfer_unreadable, R.string.chat_transfer_unreadable),
+                events,
+            )
         }
 
     /** #284: the direct transfer reads its file minutes later, as Knit, so one naming Knit's own files is never offered. */
@@ -3624,6 +3888,45 @@ class ChatViewModelTest {
             assertEquals(listOf(pending), asked)
             coVerify(exactly = 0) { blobs.forgetSavedCopy(any()) }
         }
+
+    /** A provider serving the crew portrait at every URI, so a picked photo can be decoded for its review. */
+    class CrewPhoto : ContentProvider() {
+        override fun onCreate() = true
+
+        override fun openFile(
+            uri: Uri,
+            mode: String,
+        ): ParcelFileDescriptor =
+            ParcelFileDescriptor.open(repoFile("app/src/androidTest/assets/redact/crew.jpg"), ParcelFileDescriptor.MODE_READ_ONLY)
+
+        override fun query(
+            uri: Uri,
+            projection: Array<out String>?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+            sortOrder: String?,
+        ): Cursor? = null
+
+        override fun getType(uri: Uri): String = "image/jpeg"
+
+        override fun insert(
+            uri: Uri,
+            values: ContentValues?,
+        ): Uri? = null
+
+        override fun delete(
+            uri: Uri,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ) = 0
+
+        override fun update(
+            uri: Uri,
+            values: ContentValues?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ) = 0
+    }
 
     /** A documents provider that still has every document it is asked about. */
     class PresentDocuments : ContentProvider() {
@@ -3956,6 +4259,9 @@ class ChatViewModelTest {
 
     private companion object {
         const val GROUP = "g-trailhead"
+
+        /** A bound for work on real threads, sized for the one-vCPU runner (testing.md, flake shape 7). */
+        const val AWAIT_MS = 10_000L
         const val GONE_GROUP = "g-deleted"
         const val BOB = "bob"
         const val PEER_CALL = "callpeer7u3xqz5w2kcmvbdyrh4a"

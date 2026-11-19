@@ -57,7 +57,7 @@ possible, both had to find several switches on several screens.
    start's first frames never reach a running recorder.
 
 **The table** (`Preset`). Everyday: relays and link previews on, Bluetooth asks above 5 MB. Privacy-first: read
-receipts, typing indicators and translation off. Battery saver: Wi-Fi Aware and call transcripts off. Everything else is
+receipts, typing indicators and translation off, Block screenshots and Cover faces on (ADR 2026-10.whkk). Battery saver: Wi-Fi Aware and call transcripts off. Everything else is
 `STANDARD`. Direct links, LoRa, open to chat, the field log and watch status stay opt-in in every preset. Content
 filtering stays on, since it only governs what this phone shows. One-way consents are never written by a preset, except
 the relay consent above.

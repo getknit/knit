@@ -46,12 +46,17 @@ class ThirdPartyNoticesSyncTest {
     }
 
     @Test
+    fun faceDetectorTableMatchesTheFaceRedactionNotices() {
+        assertSectionMatches("Face detector", NoticeKind.DATA, Packaging.FACE_REDACTION)
+    }
+
+    @Test
     fun aBuildShowsOnlyThePackagedRuntimesRows() {
-        val gated = listOf(Packaging.LIVE_CALLS, Packaging.TRANSLATE, Packaging.STT)
+        val gated = listOf(Packaging.LIVE_CALLS, Packaging.TRANSLATE, Packaging.STT, Packaging.FACE_REDACTION)
         gated.forEach { packaging -> assertTrue("no $packaging row", ThirdPartyNotices.ALL.any { it.packaging == packaging }) }
         assertEquals(
             ThirdPartyNotices.ALL.filter { it.packaging == Packaging.ALWAYS },
-            ThirdPartyNotices.shipped(liveCalls = false, translate = false, stt = false),
+            ThirdPartyNotices.shipped(liveCalls = false, translate = false, stt = false, faceRedaction = false),
         )
         // Each flag on its own adds exactly its own rows, so a swapped or ignored flag fails here.
         gated.forEach { on ->
@@ -62,10 +67,14 @@ class ThirdPartyNoticesSyncTest {
                     liveCalls = on == Packaging.LIVE_CALLS,
                     translate = on == Packaging.TRANSLATE,
                     stt = on == Packaging.STT,
+                    faceRedaction = on == Packaging.FACE_REDACTION,
                 ),
             )
         }
-        assertEquals(ThirdPartyNotices.ALL, ThirdPartyNotices.shipped(liveCalls = true, translate = true, stt = true))
+        assertEquals(
+            ThirdPartyNotices.ALL,
+            ThirdPartyNotices.shipped(liveCalls = true, translate = true, stt = true, faceRedaction = true),
+        )
     }
 
     @Test

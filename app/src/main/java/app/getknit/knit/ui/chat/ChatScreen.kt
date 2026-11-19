@@ -152,6 +152,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
@@ -244,6 +245,7 @@ import app.getknit.knit.data.relay.marksNotRelayed
 import app.getknit.knit.data.video.VideoAttachment
 import app.getknit.knit.demo.DemoComposeCommand
 import app.getknit.knit.demo.DemoComposer
+import app.getknit.knit.di.FACE_REDACTION_WIRED
 import app.getknit.knit.di.TRANSLATE_WIRED
 import app.getknit.knit.identity.PeerLabel
 import app.getknit.knit.location.GeoUri
@@ -281,6 +283,7 @@ import app.getknit.knit.ui.openLocationSettings
 import app.getknit.knit.ui.openUrl
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
+import app.getknit.knit.ui.redact.RedactReviewScreenContent
 import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.theme.KnitMotion
 import app.getknit.knit.ui.theme.knitColors
@@ -637,6 +640,26 @@ fun ChatScreen(
     }
     val clipboard = LocalClipboard.current
     val copyScope = rememberCoroutineScope()
+
+    // A photo under review takes over the screen the same way, its faces covered before anything is staged (ADR
+    // 2026-10.whkk). Back is Cancel: the photo is staged nowhere. Never in a build without face redaction.
+    val pendingReview = if (FACE_REDACTION_WIRED) viewModel.pendingReview.collectAsStateWithLifecycle().value else null
+    pendingReview?.let { review ->
+        BackHandler(onBack = viewModel::cancelReview)
+        val photo = remember(review.photo) { review.photo.asImageBitmap() }
+        RedactReviewScreenContent(
+            photo = photo,
+            redaction = review.redaction,
+            search = review.search,
+            onTap = viewModel::reviewTap,
+            onDraw = viewModel::reviewDraw,
+            onToggle = viewModel::reviewToggle,
+            onDone = viewModel::finishReview,
+            onCancel = viewModel::cancelReview,
+            sending = review.sending,
+        )
+        return
+    }
 
     // The camera takes over the whole screen rather than launching an Activity — same in-place shape
     // as the QR scanner, see [app.getknit.knit.ui.camera.PhotoCapture] and ADR 015.

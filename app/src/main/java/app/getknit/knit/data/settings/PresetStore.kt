@@ -84,6 +84,8 @@ class PresetStore(
             callTranscripts = prefs.orPreset(PresetSetting.CALL_TRANSCRIPTS),
             bluetoothDownloadLimit = BluetoothDownloadLimit.of(prefs.orPreset(PresetSetting.BLUETOOTH_DOWNLOAD_LIMIT)),
             secureScreens = prefs.orPreset(PresetSetting.SECURE_SCREENS),
+            // Folded with the build as the review is: a build without face redaction never covers, whatever is stored.
+            coverFaces = BuildConfig.FACE_REDACTION && prefs.orPreset(PresetSetting.COVER_FACES),
         )
 
     private fun relaysOn(prefs: Preferences): Boolean = BuildConfig.INTERNET_PLANE && prefs[SPOOL_ENABLED] == true

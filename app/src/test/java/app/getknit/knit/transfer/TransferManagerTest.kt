@@ -237,6 +237,9 @@ class TransferManagerTest {
                     b.manager.states.value
                         .isEmpty()
             }
+            // Delivered, the source is no Retry's: alice lets it go (a covered photo's copy is deleted); bob sent nothing.
+            await("alice lets the source go") { a.files.released == listOf("uri:clip") }
+            assertTrue(b.files.released.isEmpty())
             // Credentials never reach a row on either side.
             val ready = a.signals.sent.first { it.phase == TransferPayload.PHASE_READY }
             (a.rows + b.rows).forEach { row ->
@@ -289,6 +292,8 @@ class TransferManagerTest {
             assertEquals(TransferPhase.Declined, b.record(id)!!.phase)
             assertTrue(a.log.events.none { it == "host" })
             assertTrue(a.wifi.released.isEmpty())
+            // Declined by its receiver, the offer is never retried, so its source is let go.
+            await("alice lets the source go") { a.files.released == listOf("uri:clip") }
         }
 
     @Test
@@ -563,6 +568,8 @@ class TransferManagerTest {
             await("the half-written file is thrown away") { sink.discarded }
             assertFalse(sink.committed)
             await("both release") { a.wifi.released.isNotEmpty() && b.wifi.released.isNotEmpty() }
+            // A failed transfer can be retried, so it keeps its source.
+            assertTrue(a.files.released.isEmpty())
         }
 
     @Test

@@ -19,7 +19,7 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
- * Settings › Chats: four store-backed settings, and the language messages are translated into where translation is
+ * Settings › Chats: five store-backed settings, and the language messages are translated into where translation is
  * wired ([reader] non-null), each persisted the moment it is touched.
  */
 class ChatSettingsViewModel(
@@ -35,6 +35,11 @@ class ChatSettingsViewModel(
     val readReceiptsEnabled: StateFlow<Boolean> =
         settings.readReceiptsEnabled
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    /** Whether a photo this phone sends has its faces covered first (off by default — see the store's KDoc). */
+    val coverFacesEnabled: StateFlow<Boolean> =
+        settings.coverFacesEnabled
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     /** Whether links this device sends carry a preview card (off by default — see the store's KDoc). */
     val linkPreviewsEnabled: StateFlow<Boolean> =
@@ -85,6 +90,10 @@ class ChatSettingsViewModel(
 
     fun setReadReceiptsEnabled(value: Boolean) {
         viewModelScope.launch { settings.setReadReceiptsEnabled(value) }
+    }
+
+    fun setCoverFacesEnabled(value: Boolean) {
+        viewModelScope.launch { settings.setCoverFacesEnabled(value) }
     }
 
     fun setLinkPreviewsEnabled(value: Boolean) {

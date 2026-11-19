@@ -121,6 +121,7 @@
     <string name="preset_private_translation">Переклад вимкнено, тож ваші повідомлення не видають, якою мовою вони написані.</string>
     <string name="preset_private_offline">Без інтернет-ретрансляторів і попереднього перегляду посилань.</string>
     <string name="preset_private_screenshots">Знімки екрана Knit виходять порожніми.</string>
+    <string name="preset_private_faces">Обличчя на фото, які ви надсилаєте, закриваються, і ви перевіряєте кожне фото перед надсиланням.</string>
     <string name="preset_battery_title">Заощадження батареї</string>
     <string name="preset_battery_summary">Бережіть заряд батареї. Фото й файли йдуть довше.</string>
     <string name="preset_battery_aware">Wi-Fi Aware вимкнено. Bluetooth підтримує mesh-мережу, і повідомлення все одно надходять.</string>
@@ -952,6 +953,8 @@
     <string name="settings_typing_indicators_subtitle">Люди, з якими ви листуєтеся, бачать, коли ви пишете, поруч або через ретранслятор, а ви бачите, коли пишуть вони. Якщо вимкнено, Knit не надсилає й не показує, хто пише.</string>
     <string name="settings_read_receipts_title">Звіти про прочитання</string>
     <string name="settings_read_receipts_subtitle">Люди, з якими ви листуєтеся, бачать, коли ви прочитали їхні повідомлення, а ви бачите, коли вони прочитали ваші. Якщо вимкнено, Knit не надсилає й не показує звіти про прочитання.</string>
+    <string name="settings_cover_faces_title">Закривати обличчя на фото, які ви надсилаєте</string>
+    <string name="settings_cover_faces_subtitle">Перш ніж фото буде надіслано, Knit знаходить на ньому обличчя на цьому телефоні й закриває їх, а ви перевіряєте кожне фото. Відео й анімації надсилаються як є.</string>
     <string name="settings_low_power_title">Режим енергозбереження</string>
     <string name="settings_low_power_subtitle">Вимикає Wi-Fi Aware, щоб заощадити батарею. Bluetooth тримає вас у mesh-мережі, тож повідомлення надходять, але фото й файли йдуть довше. Також увімкнено, коли ввімкнено Енергозбереження.</string>
     <string name="settings_low_power_subtitle_saver">Увімкнено, бо ввімкнено Енергозбереження. Wi-Fi Aware вимкнено, а Bluetooth тримає вас у mesh-мережі.</string>
@@ -1049,6 +1052,22 @@
     <string name="camera_capture_failed">Не вдалося зробити фото. Спробуйте ще раз.</string>
     <string name="camera_capturing">Фотографування</string>
     <string name="camera_switch_lens">Перемкнути камеру</string>
+    <string name="redact_looking">Пошук облич…</string>
+    <string name="redact_none_found">Облич не знайдено. Натисніть будь-яке обличчя, яке бачите, щоб закрити його.</string>
+    <string name="redact_unavailable">На цьому телефоні неможливо шукати обличчя. Натисніть кожне обличчя, щоб закрити його.</string>
+    <plurals name="redact_covered">
+        <item quantity="one">%d обличчя закрито</item>
+        <item quantity="few">%d обличчя закрито</item>
+        <item quantity="many">%d облич закрито</item>
+        <item quantity="other">%d облич закрито</item>
+    </plurals>
+    <string name="redact_hint">Натисніть обличчя, щоб закрити або відкрити його. Проведіть пальцем, щоб закрити ділянку. Масштабуйте двома пальцями.</string>
+    <string name="redact_photo">Фото для надсилання</string>
+    <string name="redact_face">Обличчя %1$d</string>
+    <string name="redact_face_covered">Закрито</string>
+    <string name="redact_face_uncovered">Не закрито</string>
+    <string name="redact_motion_not_covered">На відео й анімаціях обличчя не закриваються.</string>
+    <string name="redact_unreadable">Не вдалося відкрити це фото, щоб закрити обличчя, тож його не прикріплено.</string>
     <string name="diagnostics_title">Діагностика</string>
     <string name="diagnostics_reports">Звіти та журнали</string>
     <string name="diagnostics_debug_section">Параметри налагодження</string>

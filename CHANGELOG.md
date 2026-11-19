@@ -34,6 +34,8 @@ document:
   defaults such as relays, read receipts and Wi-Fi Aware, and Settings › Starting point switches it later.
 - A new Block screenshots switch in Settings makes screenshots and screen recordings of Knit come out blank,
   and hides its preview in recent apps. Privacy-first turns it on.
+- Knit can cover the faces in a photo before you send it. It finds them on your phone, and you check the photo
+  before it goes: tap a face to uncover it, or drag to cover more. Turn it on in Settings › Chats.
 
 ### Changed
 

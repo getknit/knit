@@ -209,6 +209,15 @@ class SettingsStore(
     val translateTarget: Flow<String?> = dataStore.data.map { it[KEY_TRANSLATE_TARGET] }
 
     /**
+     * Cover faces in photos I send (ADR 2026-10.whkk): a still photo attached in any chat opens the review screen, with the
+     * faces this phone finds in it covered, before it is staged. **Off by default**, or as the [Preset] has it (on for
+     * Privacy-first). Videos and animations go as they are, with a notice. A choice the person made, so it rides a backup.
+     * Read only where face redaction is wired (`FACE_REDACTION_WIRED`).
+     */
+    val coverFacesEnabled: Flow<Boolean> =
+        dataStore.data.map { it.orPreset(PresetSetting.COVER_FACES) }
+
+    /**
      * Relay all calls (experimental, docs/VOICE_CALLS.md C-3.7-3): every call goes through a relay's TURN server and
      * nothing this phone sends a callee names its own address, so the peer never learns it. Off by default, read by
      * `CallManager` as each call opens its media, and shown only by a build that wires live calls (`LIVE_CALLS_WIRED`). A choice
@@ -901,6 +910,8 @@ class SettingsStore(
     suspend fun setTranslateTarget(code: String?) =
         dataStore.edit { if (code == null) it.remove(KEY_TRANSLATE_TARGET) else it[KEY_TRANSLATE_TARGET] = code }
 
+    suspend fun setCoverFacesEnabled(value: Boolean) = dataStore.edit { it[KEY_COVER_FACES] = value }
+
     suspend fun setCallsRelayAll(value: Boolean) = dataStore.edit { it[KEY_CALLS_RELAY_ALL] = value }
 
     suspend fun setFieldLogEnabled(value: Boolean) = dataStore.edit { it[KEY_FIELD_LOG] = value }
@@ -1366,6 +1377,7 @@ class SettingsStore(
         val KEY_READ_RECEIPTS = PresetSetting.READ_RECEIPTS.key
         val KEY_TRANSLATE_TARGET = stringPreferencesKey("translate_target")
         val KEY_TRANSLATION_ENABLED = PresetSetting.TRANSLATION.key
+        val KEY_COVER_FACES = PresetSetting.COVER_FACES.key
         val KEY_CALLS_RELAY_ALL = booleanPreferencesKey("calls_relay_all")
         val KEY_FIELD_LOG = booleanPreferencesKey("field_log_enabled")
         val KEY_WEAR_STATUS = booleanPreferencesKey("wear_status_enabled")

@@ -11,7 +11,9 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import androidx.core.net.toUri
+import app.getknit.knit.di.FACE_REDACTION_WIRED
 import app.getknit.knit.mesh.protocol.AttachmentName
+import app.getknit.knit.redact.CoveredCopies
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -56,6 +58,15 @@ class AndroidTransferFiles(
             val target = runCatching { resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) }.getOrNull()
             target?.let { DownloadSink(resolver, it) }
         }
+
+    override suspend fun release(uri: String) {
+        // Only a covered photo's copy is ever released, and a build without face redaction writes none.
+        if (!FACE_REDACTION_WIRED) return
+        val parsed = uri.toUri()
+        if (parsed.scheme != ContentResolver.SCHEME_FILE) return
+        val path = parsed.path ?: return
+        withContext(Dispatchers.IO) { runCatching { CoveredCopies.discard(app.cacheDir, File(path)) } }
+    }
 
     override fun freeBytes(): Long =
         runCatching { app.getSystemService(StorageManager::class.java)?.getAllocatableBytes(StorageManager.UUID_DEFAULT) }

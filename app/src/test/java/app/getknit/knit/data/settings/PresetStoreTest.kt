@@ -47,6 +47,7 @@ class PresetStoreTest {
         assertTrue(standard.callTranscripts)
         assertEquals(BluetoothDownloadLimit.MB_1, standard.bluetoothDownloadLimit)
         assertFalse(standard.secureScreens)
+        assertFalse(standard.coverFaces)
     }
 
     @Test
@@ -71,8 +72,10 @@ class PresetStoreTest {
             assertFalse(settings.typingIndicatorsEnabled.first())
             assertFalse(settings.translationEnabled.first())
             assertTrue(settings.secureScreens.first())
+            assertTrue(settings.coverFacesEnabled.first())
 
             presets.apply(Preset.BATTERY, resetOverrides = true)
+            assertFalse(settings.coverFacesEnabled.first())
             assertFalse(settings.secureScreens.first())
             assertFalse(aware.on.first())
             assertFalse(transcripts.enabled.first())
@@ -186,18 +189,22 @@ class PresetStoreTest {
             val switches = reset.map { it.switch to it.on }
             // Leaving Privacy-first turns read receipts, typing and the language tag back on, and the screenshot block
             // off: each is named, ahead of what shares nothing.
+            // Covering faces is named only where the build can cover them.
+            val faces = listOfNotNull((PresetChange.Switch.COVER_FACES to false).takeIf { BuildConfig.FACE_REDACTION })
             assertEquals(
                 listOf(
                     PresetChange.Switch.READ_RECEIPTS to true,
                     PresetChange.Switch.TYPING_INDICATORS to true,
                     PresetChange.Switch.TRANSLATION to true,
                     PresetChange.Switch.SECURE_SCREENS to false,
-                    PresetChange.Switch.WIFI_AWARE to false,
-                    PresetChange.Switch.TRANSCRIPTS to false,
-                ),
+                ) + faces +
+                    listOf(
+                        PresetChange.Switch.WIFI_AWARE to false,
+                        PresetChange.Switch.TRANSCRIPTS to false,
+                    ),
                 switches,
             )
-            assertTrue(reset.takeWhile { it.weakensPrivacy }.size == 4)
+            assertEquals(4 + faces.size, reset.takeWhile { it.weakensPrivacy }.size)
 
             // With the person's own read receipts kept, Keep my changes does not list them.
             settings.setReadReceiptsEnabled(false)

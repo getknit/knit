@@ -38,6 +38,7 @@ object SettingsKeys {
     const val BLUETOOTH_DOWNLOAD_LIMIT = "bluetooth_download_limit"
     const val CALL_TRANSCRIPTS = "calls_transcripts"
     const val SECURE_SCREENS = "secure_screens"
+    const val COVER_FACES = "cover_faces_enabled"
 
     // The relay plane's switch and its disclosure (`SettingsStore.spoolEnabled` / `spoolConsented`), here because
     // `PresetStore` writes both in the preset's one edit, as `acceptSpoolConsent` does.

@@ -16,3 +16,12 @@ internal fun lossyWebpFormat(): Bitmap.CompressFormat =
     } else {
         Bitmap.CompressFormat.WEBP
     }
+
+/**
+ * The long edge a still photo is sent at, and the qualities it is encoded at: `AttachmentStore`'s, and what face
+ * redaction encodes a covered photo at, so that `AttachmentStore.passThrough` sends the covered photo as its own bytes
+ * rather than encoding it a second time.
+ */
+internal const val PHOTO_MAX_DIMENSION = 1280
+internal const val PHOTO_JPEG_QUALITY = 85
+internal const val PHOTO_WEBP_QUALITY = 85

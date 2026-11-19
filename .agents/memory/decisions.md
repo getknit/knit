@@ -295,6 +295,7 @@ carries; never renumber an old one.
 | [2026-10.vy27](decisions/2026-10-vy27-a-dm-photo-its-recipient-provably-holds-never-goes-up-to-a-spool.md) | A DM photo its recipient provably holds never goes up to a spool | spool, attachments |
 | [2026-10.w3dw](decisions/2026-10-w3dw-a-phone-that-cannot-survive-hosting-a-wi-fi-direct-group-never-hosts-one.md) | A phone that cannot survive hosting a Wi-Fi Direct group never hosts one | wifi-direct, transfer, calls, reliability |
 | [2026-10.wbua](decisions/2026-10-wbua-calls-register-with-telecom-through-core-telecom.md) | Calls register with Telecom through core-telecom, which owns their audio route | calls, audio |
+| [2026-10.whkk](decisions/2026-10-whkk-faces-in-a-photo-being-sent-are-found-on-the-phone-by-yunet.md) | faces in a photo being sent are found on the phone by YuNet, at the photo's own size | privacy, ml, attachments |
 | [2026-10.wk3m](decisions/2026-10-wk3m-a-customer-key-s-requests-carry-a-keystore-device-proof.md) | a customer key's requests carry a Keystore device proof | anywhere, tickets, keystore, privacy |
 | [2026-10.wqu2](decisions/2026-10-wqu2-one-spool-runs-several-commons-rooms.md) | One spool runs several commons rooms, each named in HELLO by a one-way tag | spool, commons |
 | [2026-10.wtyc](decisions/2026-10-wtyc-a-cut-attachment-resumes-from-the-bytes-the-receiver-kept.md) | A cut attachment resumes from the bytes the receiver kept | mesh, attachments, wire, blob-exchange |

@@ -49,4 +49,10 @@ interface TransferFiles {
 
     /** Bytes this device can still take for a received file. */
     fun freeBytes(): Long
+
+    /**
+     * [uri] will not be read again: its transfer can no longer be retried. A source Knit wrote for the transfer (a
+     * covered photo's copy, ADR 2026-10.whkk) is deleted; anything else, a picked document above all, is left alone.
+     */
+    suspend fun release(uri: String) = Unit
 }

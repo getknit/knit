@@ -55,8 +55,10 @@ class KoinGraphVerifyTest {
         val calls = listOfNotNull(callModule()).toTypedArray()
         // And the developer view's (di/DevViewWiring, ADR 2026-10.s7wg) where this variant wires it.
         val devView = listOfNotNull(devViewModule()).toTypedArray()
+        // And the face detector's (di/FaceRedactionWiring, ADR 2026-10.whkk) where this variant wires it.
+        val faceRedaction = listOfNotNull(faceRedactionModule()).toTypedArray()
         module {
-            includes(appModule, meshModule, moderationModule, uiModule, *calls, *devView)
+            includes(appModule, meshModule, moderationModule, uiModule, *calls, *devView, *faceRedaction)
         }.verify(extraTypes = extraTypes + noLiveCalls)
     }
 

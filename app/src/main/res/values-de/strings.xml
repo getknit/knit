@@ -109,6 +109,7 @@
     <string name="preset_private_translation">Übersetzung aus, damit deine Nachrichten nicht verraten, in welcher Sprache sie verfasst sind.</string>
     <string name="preset_private_offline">Keine Internet-Relays und keine Linkvorschauen.</string>
     <string name="preset_private_screenshots">Screenshots von Knit bleiben leer.</string>
+    <string name="preset_private_faces">Gesichter auf Fotos, die du sendest, werden abgedeckt, und du prüfst jedes Foto, bevor es rausgeht.</string>
     <string name="preset_battery_title">Akku schonen</string>
     <string name="preset_battery_summary">Schone deinen Akku. Fotos und Dateien brauchen länger, bis sie ankommen.</string>
     <string name="preset_battery_aware">Wi-Fi Aware aus. Das Mesh läuft über Bluetooth, und Nachrichten kommen weiter an.</string>
@@ -924,6 +925,8 @@
     <string name="settings_typing_indicators_subtitle">Die Personen, mit denen du chattest, sehen, wenn du schreibst – in der Nähe oder über ein Relay –, und du siehst, wenn sie schreiben. Wenn aus, sendet und zeigt Knit keine Tippindikatoren.</string>
     <string name="settings_read_receipts_title">Lesebestätigungen</string>
     <string name="settings_read_receipts_subtitle">Die Personen, mit denen du chattest, sehen, wenn du ihre Nachrichten gelesen hast, und du siehst, wenn sie deine gelesen haben. Wenn aus, sendet und zeigt Knit keine Lesebestätigungen.</string>
+    <string name="settings_cover_faces_title">Gesichter in gesendeten Fotos abdecken</string>
+    <string name="settings_cover_faces_subtitle">Bevor ein Foto rausgeht, findet Knit die Gesichter darin auf diesem Smartphone und deckt sie ab, und du prüfst jedes Foto. Videos und Animationen gehen so raus, wie sie sind.</string>
     <string name="settings_low_power_title">Stromsparmodus</string>
     <string name="settings_low_power_subtitle">Schaltet Wi-Fi Aware aus, um Akku zu sparen. Über Bluetooth bleibst du im Mesh, Nachrichten kommen also weiter an, aber Fotos und Dateien brauchen länger. Auch aktiv, solange der Energiesparmodus an ist.</string>
     <string name="settings_low_power_subtitle_saver">Jetzt aktiv, weil der Energiesparmodus an ist. Wi-Fi Aware ist aus, und über Bluetooth bleibst du im Mesh.</string>
@@ -1019,6 +1022,20 @@
     <string name="camera_capture_failed">Das Foto konnte nicht aufgenommen werden. Versuche es noch einmal.</string>
     <string name="camera_capturing">Foto wird aufgenommen</string>
     <string name="camera_switch_lens">Kamera wechseln</string>
+    <string name="redact_looking">Gesichter werden gesucht…</string>
+    <string name="redact_none_found">Keine Gesichter gefunden. Tippe auf jedes Gesicht, das du siehst, um es abzudecken.</string>
+    <string name="redact_unavailable">Auf diesem Smartphone können keine Gesichter gesucht werden. Tippe auf jedes Gesicht, um es abzudecken.</string>
+    <plurals name="redact_covered">
+        <item quantity="one">%d Gesicht abgedeckt</item>
+        <item quantity="other">%d Gesichter abgedeckt</item>
+    </plurals>
+    <string name="redact_hint">Tippe auf ein Gesicht, um es abzudecken oder wieder freizugeben. Ziehe, um einen Bereich abzudecken. Zoome mit zwei Fingern.</string>
+    <string name="redact_photo">Zu sendendes Foto</string>
+    <string name="redact_face">Gesicht %1$d</string>
+    <string name="redact_face_covered">Abgedeckt</string>
+    <string name="redact_face_uncovered">Nicht abgedeckt</string>
+    <string name="redact_motion_not_covered">In Videos und Animationen werden Gesichter nicht abgedeckt.</string>
+    <string name="redact_unreadable">Dieses Foto konnte nicht geöffnet werden, um die Gesichter abzudecken, daher wurde es nicht angehängt.</string>
     <string name="diagnostics_title">Diagnose</string>
     <string name="diagnostics_reports">Berichte und Protokolle</string>
     <string name="diagnostics_debug_section">Debug-Optionen</string>

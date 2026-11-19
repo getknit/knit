@@ -103,6 +103,7 @@
     <string name="preset_private_translation">Terjemahan nonaktif, jadi pesan Anda tidak mengungkap bahasa yang dipakainya.</string>
     <string name="preset_private_offline">Tanpa relai internet dan tanpa pratinjau tautan.</string>
     <string name="preset_private_screenshots">Tangkapan layar Knit tampil kosong.</string>
+    <string name="preset_private_faces">Wajah di foto yang Anda kirim ditutupi, dan Anda memeriksa setiap foto sebelum dikirim.</string>
     <string name="preset_battery_title">Hemat baterai</string>
     <string name="preset_battery_summary">Lebih ringan bagi baterai Anda. Foto dan file lebih lama sampai.</string>
     <string name="preset_battery_aware">Wi-Fi Aware nonaktif. Bluetooth membawa jaringan mesh, dan pesan tetap sampai.</string>
@@ -910,6 +911,8 @@
     <string name="settings_typing_indicators_subtitle">Orang yang Anda ajak chat melihat saat Anda mengetik, dari dekat atau lewat relai, dan Anda melihat saat mereka mengetik. Jika nonaktif, Knit tidak mengirim maupun menampilkan indikator mengetik.</string>
     <string name="settings_read_receipts_title">Tanda dibaca</string>
     <string name="settings_read_receipts_subtitle">Orang yang Anda ajak chat melihat saat Anda sudah membaca pesan mereka, dan Anda melihat saat mereka sudah membaca pesan Anda. Jika nonaktif, Knit tidak mengirim maupun menampilkan tanda dibaca.</string>
+    <string name="settings_cover_faces_title">Tutupi wajah di foto yang Anda kirim</string>
+    <string name="settings_cover_faces_subtitle">Sebelum foto dikirim, Knit mencari wajah di dalamnya di ponsel ini lalu menutupinya, dan Anda memeriksa setiap foto. Video dan animasi dikirim apa adanya.</string>
     <string name="settings_low_power_title">Mode daya rendah</string>
     <string name="settings_low_power_subtitle">Menonaktifkan Wi-Fi Aware untuk menghemat baterai. Bluetooth menjaga Anda tetap di jaringan mesh, jadi pesan tetap sampai, tetapi foto dan file lebih lama. Juga aktif selama Penghemat Baterai aktif.</string>
     <string name="settings_low_power_subtitle_saver">Aktif sekarang karena Penghemat Baterai aktif. Wi-Fi Aware nonaktif, dan Bluetooth menjaga Anda tetap di jaringan mesh.</string>
@@ -1004,6 +1007,19 @@
     <string name="camera_capture_failed">Foto itu tidak bisa diambil. Coba lagi.</string>
     <string name="camera_capturing">Mengambil foto</string>
     <string name="camera_switch_lens">Ganti kamera</string>
+    <string name="redact_looking">Mencari wajah…</string>
+    <string name="redact_none_found">Tidak ada wajah yang ditemukan. Ketuk wajah mana pun yang Anda lihat untuk menutupinya.</string>
+    <string name="redact_unavailable">Wajah tidak bisa dicari di ponsel ini. Ketuk setiap wajah untuk menutupinya.</string>
+    <plurals name="redact_covered">
+        <item quantity="other">%d wajah ditutupi</item>
+    </plurals>
+    <string name="redact_hint">Ketuk wajah untuk menutupi atau membukanya. Seret untuk menutupi suatu area. Cubit untuk memperbesar.</string>
+    <string name="redact_photo">Foto yang akan dikirim</string>
+    <string name="redact_face">Wajah %1$d</string>
+    <string name="redact_face_covered">Ditutupi</string>
+    <string name="redact_face_uncovered">Tidak ditutupi</string>
+    <string name="redact_motion_not_covered">Wajah tidak ditutupi di video atau animasi.</string>
+    <string name="redact_unreadable">Foto ini tidak bisa dibuka untuk menutupi wajahnya, jadi tidak dilampirkan.</string>
     <string name="diagnostics_title">Diagnostik</string>
     <string name="diagnostics_reports">Laporan dan log</string>
     <string name="diagnostics_debug_section">Opsi debug</string>

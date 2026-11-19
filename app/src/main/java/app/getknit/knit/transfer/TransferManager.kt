@@ -778,6 +778,7 @@ class TransferManager(
         writeRow(l)
         if (phase.terminal) live.remove(l.state.id)
         publish()
+        ends.unretryableSource(l.state, l.sourceUri)?.let { scope.launch(io) { ends.release(it) } }
     }
 
     private suspend fun writeRow(l: LiveTransfer) {

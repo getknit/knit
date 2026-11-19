@@ -1,6 +1,8 @@
 package app.getknit.knit.transfer
 
+import app.getknit.knit.data.message.TransferPhase
 import app.getknit.knit.data.message.TransferRecord
+import app.getknit.knit.mesh.protocol.TransferPayload
 import java.io.IOException
 
 /**
@@ -19,6 +21,23 @@ internal class TransferEnds(
     fun wanted(pins: List<Long>): ModelsWanted? = models?.wanted(pins)
 
     fun freeBytes(): Long = files.freeBytes()
+
+    /**
+     * [sourceUri] when [state] is an outgoing transfer no Retry will read again (it arrived, or its receiver declined
+     * it), for [release]; null otherwise. A failed or cancelled one keeps its source for the Retry.
+     */
+    fun unretryableSource(
+        state: TransferState,
+        sourceUri: String?,
+    ): String? {
+        val final =
+            state.phase == TransferPhase.Done ||
+                (state.phase == TransferPhase.Declined && state.reason == TransferPayload.REASON_USER)
+        return sourceUri?.takeIf { state.outgoing && final }
+    }
+
+    /** Lets [uri] go: a covered photo's copy is deleted (ADR 2026-10.whkk), a picked document left alone. */
+    suspend fun release(uri: String) = files.release(uri)
 
     /** What [state] sends: its bundle for a models transfer, else the file at [sourceUri]. */
     suspend fun source(

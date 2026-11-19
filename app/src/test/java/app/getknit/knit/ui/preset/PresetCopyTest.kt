@@ -3,6 +3,7 @@ package app.getknit.knit.ui.preset
 import app.getknit.knit.R
 import app.getknit.knit.data.settings.Preset
 import app.getknit.knit.data.settings.PresetChange
+import app.getknit.knit.di.FACE_REDACTION_WIRED
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -38,5 +39,6 @@ class PresetCopyTest {
         assertFalse(R.string.preset_private_offline in offline)
         assertTrue(R.string.preset_private_cues in offline)
         assertTrue(R.string.preset_private_screenshots in offline)
+        assertEquals(FACE_REDACTION_WIRED, R.string.preset_private_faces in offline)
     }
 }

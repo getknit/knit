@@ -142,6 +142,7 @@
     <string name="preset_private_translation">Translation off, so your messages don\'t say what language they are in.</string>
     <string name="preset_private_offline">No Internet relays and no link previews.</string>
     <string name="preset_private_screenshots">Screenshots of Knit come out blank.</string>
+    <string name="preset_private_faces">Faces in photos you send are covered, and you check each one before it goes.</string>
     <string name="preset_battery_title">Battery saver</string>
     <string name="preset_battery_summary">Go easier on your battery. Photos and files take longer to arrive.</string>
     <string name="preset_battery_aware">Wi-Fi Aware off. Bluetooth carries the mesh, and messages still arrive.</string>
@@ -1135,6 +1136,8 @@
          neither. -->
     <string name="settings_read_receipts_title">Read receipts</string>
     <string name="settings_read_receipts_subtitle">The people you chat with see when you\'ve read their messages, and you see when they\'ve read yours. Off, Knit neither sends nor shows read receipts.</string>
+    <string name="settings_cover_faces_title">Cover faces in photos you send</string>
+    <string name="settings_cover_faces_subtitle">Before a photo goes, Knit finds the faces in it on this phone and covers them, and you check each one. Videos and animations go as they are.</string>
     <!-- Low-power mode (ADR 2026-10.d44b). The subtitle changes when Battery Saver holds the mode on with the switch off,
          or the charger holds it off with the switch on. -->
     <string name="settings_low_power_title">Low-power mode</string>
@@ -1254,6 +1257,22 @@
     <string name="camera_capture_failed">That photo couldn\'t be taken. Try again.</string>
     <string name="camera_capturing">Taking photo</string>
     <string name="camera_switch_lens">Switch camera</string>
+
+    <!-- Covering faces in a photo before it is sent (ADR 2026-10.whkk) -->
+    <string name="redact_looking">Looking for faces…</string>
+    <string name="redact_none_found">No faces found. Tap any face you see to cover it.</string>
+    <string name="redact_unavailable">Faces couldn\'t be looked for on this phone. Tap each face to cover it.</string>
+    <plurals name="redact_covered">
+        <item quantity="one">%d face covered</item>
+        <item quantity="other">%d faces covered</item>
+    </plurals>
+    <string name="redact_hint">Tap a face to cover or uncover it. Drag to cover an area. Pinch to zoom.</string>
+    <string name="redact_photo">Photo to send</string>
+    <string name="redact_face">Face %1$d</string>
+    <string name="redact_face_covered">Covered</string>
+    <string name="redact_face_uncovered">Not covered</string>
+    <string name="redact_motion_not_covered">Faces aren\'t covered in videos or animations.</string>
+    <string name="redact_unreadable">This photo couldn\'t be opened to cover its faces, so it wasn\'t attached.</string>
 
     <!-- Diagnostics -->
     <string name="diagnostics_title">Diagnostics</string>

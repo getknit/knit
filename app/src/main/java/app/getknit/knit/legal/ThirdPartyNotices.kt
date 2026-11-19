@@ -6,13 +6,14 @@ enum class NoticeKind { RUNTIME, DATA }
 /**
  * Which builds package a notice's component. [LIVE_CALLS] rows are WebRTC's and what its `.so` links (ADR 2026-10.3tee,
  * 2026-10.swvp), [TRANSLATE] rows the offline translation runtime's (ADR 2026-10.t2h6), [STT] rows the speech runtime's
- * (ADR 2026-10.nz3g, 2026-10.am8d). All three are on the default release runtime, so `ReleaseClasspathNoticesTest` finds
+ * (ADR 2026-10.nz3g, 2026-10.am8d). Those three are on the default release runtime, so `ReleaseClasspathNoticesTest` finds
  * their coordinates on the lockfile's `releaseRuntimeClasspath`, and each drops out of a build that does not package it:
  * the slim APK, or `-PliveCalls=false`, `-Ptranslate=false`, `-Pstt=false`, and for speech a build with no call kind.
- * The in-app list shows each kind only where it is wired ([ThirdPartyNotices.shipped]), and `THIRD-PARTY-NOTICES.md`
- * keeps each in a section of its own.
+ * [FACE_REDACTION] is the face detector's model, an asset packaged only where `-PfaceRedaction` is on (ADR 2026-10.whkk:
+ * debug, and a release made with it). The in-app list shows each kind only where it is wired
+ * ([ThirdPartyNotices.shipped]), and `THIRD-PARTY-NOTICES.md` keeps each in a section of its own.
  */
-enum class Packaging { ALWAYS, LIVE_CALLS, TRANSLATE, STT }
+enum class Packaging { ALWAYS, LIVE_CALLS, TRANSLATE, STT, FACE_REDACTION }
 
 /**
  * One row of the in-app Open-source licenses list — and of `THIRD-PARTY-NOTICES.md`, which prints the same
@@ -408,6 +409,15 @@ object ThirdPartyNotices {
                 kind = NoticeKind.DATA,
             ),
             ThirdPartyNotice(
+                key = "yunet",
+                name = "Face detector",
+                project = "opencv/opencv_zoo — YuNet",
+                url = "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet",
+                license = License.MIT,
+                kind = NoticeKind.DATA,
+                packaging = Packaging.FACE_REDACTION,
+            ),
+            ThirdPartyNotice(
                 key = "detoxify",
                 name = "Toxicity text classifier",
                 project = "unitaryai/detoxify",
@@ -467,12 +477,14 @@ object ThirdPartyNotices {
 
     /**
      * The rows a build shows: every [Packaging.ALWAYS] one, the [Packaging.LIVE_CALLS] ones where [liveCalls], the
-     * [Packaging.TRANSLATE] ones where [translate] and the [Packaging.STT] ones where [stt].
+     * [Packaging.TRANSLATE] ones where [translate], the [Packaging.STT] ones where [stt] and the
+     * [Packaging.FACE_REDACTION] ones where [faceRedaction].
      */
     fun shipped(
         liveCalls: Boolean,
         translate: Boolean,
         stt: Boolean,
+        faceRedaction: Boolean,
     ): List<ThirdPartyNotice> =
         ALL.filter {
             when (it.packaging) {
@@ -480,6 +492,7 @@ object ThirdPartyNotices {
                 Packaging.LIVE_CALLS -> liveCalls
                 Packaging.TRANSLATE -> translate
                 Packaging.STT -> stt
+                Packaging.FACE_REDACTION -> faceRedaction
             }
         }
 

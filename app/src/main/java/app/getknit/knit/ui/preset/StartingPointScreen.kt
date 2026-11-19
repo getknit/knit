@@ -229,6 +229,7 @@ private fun PresetChange.Switch.titleRes(): Int =
         PresetChange.Switch.TYPING_INDICATORS -> R.string.settings_typing_indicators_title
         PresetChange.Switch.TRANSLATION -> R.string.settings_translation_title
         PresetChange.Switch.SECURE_SCREENS -> R.string.settings_secure_screens_title
+        PresetChange.Switch.COVER_FACES -> R.string.settings_cover_faces_title
         PresetChange.Switch.WIFI_AWARE -> R.string.settings_wifi_aware_title
         PresetChange.Switch.TRANSCRIPTS -> R.string.call_settings_transcripts_title
     }

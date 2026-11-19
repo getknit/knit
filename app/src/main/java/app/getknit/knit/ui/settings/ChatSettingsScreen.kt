@@ -29,6 +29,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.R
 import app.getknit.knit.data.settings.BluetoothDownloadLimit
+import app.getknit.knit.di.FACE_REDACTION_WIRED
 import app.getknit.knit.di.TRANSLATE_WIRED
 import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.ui.components.BarTitle
@@ -42,6 +43,7 @@ import org.koin.androidx.compose.koinViewModel
 internal data class ChatSettingsForm(
     val typingIndicatorsEnabled: Boolean = true,
     val readReceiptsEnabled: Boolean = true,
+    val coverFacesEnabled: Boolean = false,
     val linkPreviewsEnabled: Boolean = false,
     val contentFilteringEnabled: Boolean = true,
     val bluetoothDownloadLimit: BluetoothDownloadLimit = BluetoothDownloadLimit.DEFAULT,
@@ -51,8 +53,8 @@ internal data class ChatSettingsForm(
 )
 
 /**
- * Settings › Chats: what a chat sends (typing, read receipts, link previews) and what it lets in (content filtering, large Bluetooth
- * downloads). Like Settings, everything persists the moment it is touched.
+ * Settings › Chats: what a chat sends (typing, read receipts, covered faces, link previews) and what it lets in (content
+ * filtering, large Bluetooth downloads). Like Settings, everything persists the moment it is touched.
  */
 @Composable
 fun ChatSettingsScreen(
@@ -61,6 +63,7 @@ fun ChatSettingsScreen(
 ) {
     val typingIndicatorsEnabled by viewModel.typingIndicatorsEnabled.collectAsStateWithLifecycle()
     val readReceiptsEnabled by viewModel.readReceiptsEnabled.collectAsStateWithLifecycle()
+    val coverFacesEnabled = if (FACE_REDACTION_WIRED) viewModel.coverFacesEnabled.collectAsStateWithLifecycle().value else false
     val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
     val contentFilteringEnabled by viewModel.contentFilteringEnabled.collectAsStateWithLifecycle()
     val bluetoothDownloadLimit by viewModel.bluetoothDownloadLimit.collectAsStateWithLifecycle()
@@ -71,6 +74,7 @@ fun ChatSettingsScreen(
             ChatSettingsForm(
                 typingIndicatorsEnabled = typingIndicatorsEnabled,
                 readReceiptsEnabled = readReceiptsEnabled,
+                coverFacesEnabled = coverFacesEnabled,
                 linkPreviewsEnabled = linkPreviewsEnabled,
                 contentFilteringEnabled = contentFilteringEnabled,
                 bluetoothDownloadLimit = bluetoothDownloadLimit,
@@ -80,6 +84,7 @@ fun ChatSettingsScreen(
         onBack = onBack,
         onToggleTypingIndicators = viewModel::setTypingIndicatorsEnabled,
         onToggleReadReceipts = viewModel::setReadReceiptsEnabled,
+        onToggleCoverFaces = viewModel::setCoverFacesEnabled,
         onToggleLinkPreviews = viewModel::setLinkPreviewsEnabled,
         onToggleContentFiltering = viewModel::setContentFilteringEnabled,
         onSelectBluetoothDownloadLimit = viewModel::setBluetoothDownloadLimit,
@@ -95,6 +100,7 @@ internal fun ChatSettingsScreenContent(
     onBack: () -> Unit,
     onToggleTypingIndicators: (Boolean) -> Unit = {},
     onToggleReadReceipts: (Boolean) -> Unit = {},
+    onToggleCoverFaces: (Boolean) -> Unit = {},
     onToggleLinkPreviews: (Boolean) -> Unit = {},
     onToggleContentFiltering: (Boolean) -> Unit = {},
     onSelectBluetoothDownloadLimit: (BluetoothDownloadLimit) -> Unit = {},
@@ -103,6 +109,7 @@ internal fun ChatSettingsScreenContent(
     // Link previews are the one other thing that uses the Internet, so they ship under the relay plane's build switch. A
     // parameter rather than a bare BuildConfig read so the hidden case is previewable and testable.
     showLinkPreviews: Boolean = BuildConfig.INTERNET_PLANE,
+    showCoverFaces: Boolean = FACE_REDACTION_WIRED,
     // Whether this phone has Wi-Fi Aware at all, so the large-download row never promises a plane it lacks.
     wifiAware: Boolean = rememberWifiAwareSupported(),
 ) {
@@ -147,6 +154,18 @@ internal fun ChatSettingsScreenContent(
                 onToggle = onToggleReadReceipts,
                 modifier = Modifier.testTag("settings_read_receipts"),
             )
+
+            // What a photo shows of the people in it (ADR 2026-10.whkk): only in a build with face redaction, whose model
+            // finds the faces on this phone.
+            if (showCoverFaces) {
+                ToggleRow(
+                    title = stringResource(R.string.settings_cover_faces_title),
+                    subtitle = stringResource(R.string.settings_cover_faces_subtitle),
+                    enabled = form.coverFacesEnabled,
+                    onToggle = onToggleCoverFaces,
+                    modifier = Modifier.testTag("settings_cover_faces"),
+                )
+            }
 
             // The subtitle carries the disclosure that would otherwise need a sheet.
             if (showLinkPreviews) {

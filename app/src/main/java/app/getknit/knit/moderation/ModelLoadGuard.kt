@@ -154,8 +154,15 @@ class ModelLoadGuard(
          */
         const val TRANSLATE = "translate"
 
+        /**
+         * The face detector that redaction runs on a photo being attached (`redact/YuNetFaceDetector`). Only ever
+         * loaded at a person's own attach, so not a launch loop, but a fault would be "Knit dies whenever I attach a
+         * photo"; latched off, redaction falls back to marking faces by hand.
+         */
+        const val FACES = "faces"
+
         /** Every model under the poison-pill. A release build never loads [STT] or [TRANSLATE], so it never latches there. */
-        val ALL = listOf(TOXICITY, NSFW, STT, TRANSLATE)
+        val ALL = listOf(TOXICITY, NSFW, STT, TRANSLATE, FACES)
 
         const val FAULT_SEGV = "segv"
         const val FAULT_KILL = "kill"

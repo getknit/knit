@@ -221,6 +221,13 @@ class FakeTransferFiles : TransferFiles {
 
     override fun freeBytes(): Long = free
 
+    /** Every source a transfer let go of, in order. */
+    val released: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+    override suspend fun release(uri: String) {
+        released += uri
+    }
+
     private class FailingInput(
         private val bytes: ByteArray,
         private val failAfter: Int,

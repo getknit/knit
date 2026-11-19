@@ -103,6 +103,7 @@
     <string name="preset_private_translation">关闭翻译，这样你的消息不会透露你所用的语言。</string>
     <string name="preset_private_offline">不使用互联网中继，也不使用链接预览。</string>
     <string name="preset_private_screenshots">Knit 的截屏会显示为空白。</string>
+    <string name="preset_private_faces">你发送的照片中的人脸会被遮盖，并在发出前由你逐一确认。</string>
     <string name="preset_battery_title">省电</string>
     <string name="preset_battery_summary">更节省电量。照片和文件需要更长时间才能送达。</string>
     <string name="preset_battery_aware">关闭 Wi-Fi Aware。Bluetooth 承载 Mesh 网络，消息仍能送达。</string>
@@ -910,6 +911,8 @@
     <string name="settings_typing_indicators_subtitle">无论在附近还是通过中继，与你聊天的人都能看到你正在输入，你也能看到对方正在输入。关闭后，Knit 既不发送也不显示输入状态。</string>
     <string name="settings_read_receipts_title">已读回执</string>
     <string name="settings_read_receipts_subtitle">与你聊天的人能看到你已读他们的消息，你也能看到对方已读你的消息。关闭后，Knit 既不发送也不显示已读回执。</string>
+    <string name="settings_cover_faces_title">遮盖你发送的照片中的人脸</string>
+    <string name="settings_cover_faces_subtitle">照片发出前，Knit 会在这部手机上找出其中的人脸并加以遮盖，再由你逐一确认。视频和动图按原样发送。</string>
     <string name="settings_low_power_title">低功耗模式</string>
     <string name="settings_low_power_subtitle">关闭 Wi-Fi Aware 以节省电量。Bluetooth 会让你保持在 Mesh 网络中，消息仍能送达，但照片和文件需要更长时间。省电模式开启时，此模式也会开启。</string>
     <string name="settings_low_power_subtitle_saver">由于省电模式已开启，此模式现已开启。Wi-Fi Aware 已关闭，Bluetooth 会让你保持在 Mesh 网络中。</string>
@@ -1004,6 +1007,19 @@
     <string name="camera_capture_failed">未能拍摄照片。请重试。</string>
     <string name="camera_capturing">正在拍照</string>
     <string name="camera_switch_lens">切换相机</string>
+    <string name="redact_looking">正在查找人脸…</string>
+    <string name="redact_none_found">未找到人脸。点按你看到的任何人脸即可遮盖。</string>
+    <string name="redact_unavailable">这部手机无法查找人脸。请点按每张人脸进行遮盖。</string>
+    <plurals name="redact_covered">
+        <item quantity="other">已遮盖 %d 张人脸</item>
+    </plurals>
+    <string name="redact_hint">点按人脸可遮盖或取消遮盖。拖动可遮盖一块区域。双指张合可缩放。</string>
+    <string name="redact_photo">要发送的照片</string>
+    <string name="redact_face">人脸 %1$d</string>
+    <string name="redact_face_covered">已遮盖</string>
+    <string name="redact_face_uncovered">未遮盖</string>
+    <string name="redact_motion_not_covered">视频和动图中的人脸不会被遮盖。</string>
+    <string name="redact_unreadable">无法打开这张照片来遮盖人脸，因此未添加。</string>
     <string name="diagnostics_title">诊断</string>
     <string name="diagnostics_reports">报告和日志</string>
     <string name="diagnostics_debug_section">调试选项</string>

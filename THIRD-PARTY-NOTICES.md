@@ -122,6 +122,16 @@ The translation models the app downloads are not bundled. A build without transl
   © 2014 Mu-An Chiou). They are redistributed under those licenses; the full license texts, source URLs, pinned
   versions and transform rules are in [`app/src/main/assets/emoji/README.md`](app/src/main/assets/emoji/README.md).
 
+## Face detector (packaged only in a build with face redaction: a debug build, or one made with `-PfaceRedaction=true`)
+
+| Asset | Source | License |
+|---|---|---|
+| Face detector (`face_detection_yunet_2026may.tflite` — YuNet, © 2020 Shiqi Yu) | [opencv/opencv_zoo — YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) | MIT |
+
+YuNet, bundled under `app/src/faceRedaction/assets/redact/` and converted to TFLite by `scripts/face-model.py`; its notice,
+source and pins are in [`app/src/faceRedaction/assets/redact/README.md`](app/src/faceRedaction/assets/redact/README.md). A
+shipped release and the slim APK carry none of it, and their in-app list hides this row.
+
 ## Speech (packaged unless a build turns it off: not in the slim APK, a `-Pstt=false` build or one with no call kind)
 
 | Component | Project | License |

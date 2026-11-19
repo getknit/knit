@@ -72,7 +72,7 @@ val nativeSymbols = (project.findProperty("knit.nativeSymbols") as? String)?.toB
 
 // The slim APK: `-Pslim=true` is a preset for the core radio messenger, which every stable GitHub Release ships beside
 // the full APK (`knit-X.Y.Z-slim.apk`, .github/workflows/release.yml). It defaults the Internet plane (relays, link
-// previews), the commons, direct links, both call kinds, speech, Knit Anywhere and translation to OFF, and tags the
+// previews), the commons, direct links, both call kinds, speech, Knit Anywhere, translation and face redaction to OFF, and tags the
 // versionName `-slim` so About, crash reports and a shared APK name it. Each feature's own flag still wins, so a flag
 // left in gradle.properties beats the preset: the shipped defaults live here, never there. Same applicationId and key as the full build, so the
 // two install over each other and keep the user's data. Absent, it changes nothing: F-Droid's -P-free rebuild stays
@@ -262,6 +262,17 @@ val sttInRelease = (stt ?: true) && callsInRelease
 // AAR (gradle/libs.versions.toml). Nothing is downloaded until the reader first asks for a translation.
 val translate = (project.findProperty("translate") as? String)?.toBoolean() ?: (offWhenSlim ?: true)
 
+// Covering faces in a photo being sent (ADR 2026-10.whkk): introduced at 2.13.0, so ON in every build type (the ADR's
+// 2026-11-19 amendment) and OFF in the slim APK, overridable with `-PfaceRedaction=true|false`. On, it packages
+// `src/faceRedaction/assets` (the YuNet model, ~240 KB, checked by `checkModerationModels`) and wires the detector, the
+// review screen and the Settings › Chats row; off, `di/FaceRedactionWiring` builds none of them, the switch is hidden
+// whatever the store holds, and R8 drops the classes only that graph reached. No library of its own (it runs on the
+// LiteRT the classifiers already package), so no lock state moves. The defaults live in source so F-Droid's -P-free
+// rebuild stays identical.
+val faceRedaction = (project.findProperty("faceRedaction") as? String)?.toBoolean() ?: (offWhenSlim ?: true)
+val faceRedactionInDebug = faceRedaction
+val faceRedactionInRelease = faceRedaction
+
 // ABIs packaged into the **debug** APK. Debug is unminified and carries both tflite models, so it is
 // ~150 MB before native libs; the four-ABI default adds ~28 MB more, of which the two 32-bit slices are
 // dead weight — every lab Pixel is arm64-v8a and every Gradle-managed emulator image is x86_64, so
@@ -446,6 +457,8 @@ android {
         // Translation is ON unless `-Ptranslate=false` or the slim preset; see `translate` above.
         buildConfigField("boolean", "TRANSLATE", translate.toString())
         buildConfigField("boolean", "KNIT_ANYWHERE", (knitAnywhere ?: true).toString())
+        // Face redaction is ON unless slim; see `faceRedaction` above.
+        buildConfigField("boolean", "FACE_REDACTION", faceRedactionInDebug.toString())
         // Fault injection for the model poison-pill's acceptance test (ADR 037):
         // `-PmodelFaultOnLoad=segv` raises SIGSEGV, `=kill` sends SIGKILL, inside ModelLoadGuard right
         // after the in-flight marker is durably written. They test opposite things: only `segv` produces
@@ -572,6 +585,8 @@ android {
             // Translation is introduced at 2.11.0: on in a shipped artifact, off in the slim APK; see `translate` above.
             buildConfigField("boolean", "TRANSLATE", translate.toString())
             buildConfigField("boolean", "KNIT_ANYWHERE", (knitAnywhere ?: true).toString())
+            // Face redaction is introduced at 2.13.0: on in a shipped artifact, off in the slim APK; see `faceRedaction` above.
+            buildConfigField("boolean", "FACE_REDACTION", faceRedactionInRelease.toString())
             // Never ship a fault injector, whatever `-PmodelFaultOnLoad` said.
             buildConfigField("String", "MODEL_FAULT_ON_LOAD", "\"\"")
             // Unsigned when no keystore.properties / KNIT_UPLOAD_* creds are present (see signingConfigs).
@@ -905,7 +920,8 @@ androidComponents {
         )
     }
     // What a build with voice calls adds beyond main (see `calls` up top): the call screen's manifest entries, the keep
-    // rules libwebrtc's native half needs, and the speech model's download service and Moonshine's keep rule. The
+    // rules libwebrtc's native half needs, and the speech model's download service and Moonshine's keep rule; and the
+    // face detector's model for one with face redaction (see `faceRedaction`). The
     // runtime is the dependencies block's; these follow the same flags. `keepRules` is @Incubating in AGP 9; it is the
     // only per-variant door for a keep-rules directory.
     @Suppress("UnstableApiUsage")
@@ -920,6 +936,9 @@ androidComponents {
         if (if (debug) sttInDebug else sttInRelease) {
             variant.sources.manifests.addStaticManifestFile("src/stt/AndroidManifest.xml")
             variant.sources.keepRules?.addStaticSourceDirectory("src/stt/keepRules")
+        }
+        if (if (debug) faceRedactionInDebug else faceRedactionInRelease) {
+            variant.sources.assets?.addStaticSourceDirectory("src/faceRedaction/assets")
         }
     }
 }
@@ -1007,20 +1026,26 @@ androidComponents {
 // makes that impossible from a normal clone — this keeps it impossible from an abnormal one.
 val checkModerationModels =
     tasks.register("checkModerationModels") {
-        description = "Fails the build if a bundled .tflite moderation model is missing or a stub."
+        description = "Fails the build if a bundled .tflite model (moderation, or the face detector) is missing or a stub."
         // Resolved to plain Files and a Provider HERE, at configuration time, and captured by value below:
         // a doLast lambda that reached out to a script-level property instead would pull the build-script
         // object into the configuration cache, which cannot serialize it (org.gradle.configuration-cache
         // is on — see gradle.properties).
+        // Each model with the least it can weigh. The face detector is small (~240 KB) and, read as a stub, would cover
+        // no faces at all; it is checked only where it is packaged.
         val models =
             listOf("nsfw.tflite", "toxicity.tflite").map {
-                layout.projectDirectory.file("src/main/assets/moderation/$it").asFile
-            }
+                layout.projectDirectory.file("src/main/assets/moderation/$it").asFile to 1_000_000L
+            } +
+                listOfNotNull(
+                    (layout.projectDirectory.file("src/faceRedaction/assets/redact/face_detection_yunet_2026may.tflite").asFile to 200_000L)
+                        .takeIf { faceRedaction },
+                )
         val stamp = layout.buildDirectory.file("tmp/checkModerationModels.stamp")
-        inputs.files(models).withPropertyName("moderationModels")
+        inputs.files(models.map { it.first }).withPropertyName("moderationModels")
         outputs.file(stamp)
         doLast {
-            models.forEach { model ->
+            models.forEach { (model, least) ->
                 if (!model.isFile) {
                     throw GradleException("Moderation model missing: $model")
                 }
@@ -1032,10 +1057,10 @@ val checkModerationModels =
                             "(git checkout -- ${model.name}) or fetch it from a full clone.",
                     )
                 }
-                if (model.length() < 1_000_000L) {
+                if (model.length() < least) {
                     throw GradleException(
-                        "Moderation model $model is only ${model.length()} bytes — expected >= 1 MB. " +
-                            "A truncated model would silently disable content moderation.",
+                        "Model $model is only ${model.length()} bytes — expected >= $least. " +
+                            "A truncated model would silently disable what it runs (moderation, or covering faces).",
                     )
                 }
             }
@@ -1343,7 +1368,7 @@ dependencies {
 //   detektDebugAndroidTest    src/androidTest
 //   detektDebugScreenshotTest src/screenshotTest
 //   detektReleaseStubs        src/release (below)
-// src/calls, src/liveCalls and src/stt hold only manifests and keep rules.
+// src/calls, src/liveCalls and src/stt hold only manifests and keep rules; src/faceRedaction only assets.
 //
 // src/release holds the no-op demo/keystore stubs that release, staging and nonMinifiedRelease compile in place of
 // src/debug's. detektRelease would compile all of release and read src/main a second time for them, so these two

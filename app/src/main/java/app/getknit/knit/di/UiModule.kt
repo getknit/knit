@@ -39,6 +39,7 @@ import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.LoraStatusRepository
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreForget
 import app.getknit.knit.mesh.power.LowPowerSource
+import app.getknit.knit.redact.FaceDetector
 import app.getknit.knit.transfer.TransferManager
 import app.getknit.knit.translate.ChatTranslation
 import app.getknit.knit.translate.ReaderLanguage
@@ -144,6 +145,7 @@ val uiModule =
                     } else {
                         flowOf(null)
                     },
+                faces = if (FACE_REDACTION_WIRED) get<FaceDetector>() else null,
             )
         }
         viewModel {

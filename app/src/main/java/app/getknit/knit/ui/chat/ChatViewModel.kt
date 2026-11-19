@@ -3,6 +3,7 @@ package app.getknit.knit.ui.chat
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
@@ -26,6 +27,7 @@ import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.LocalMessageDelete
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
+import app.getknit.knit.data.PHOTO_MAX_DIMENSION
 import app.getknit.knit.data.PeerDirectory
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.PinOutcome
@@ -34,6 +36,8 @@ import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.commons.CommonsEntity
 import app.getknit.knit.data.commons.CommonsRepository
+import app.getknit.knit.data.decodeOrientedBounded
+import app.getknit.knit.data.downscale
 import app.getknit.knit.data.draft.Draft
 import app.getknit.knit.data.draft.DraftRepository
 import app.getknit.knit.data.emoji.RecentReactions
@@ -73,6 +77,7 @@ import app.getknit.knit.data.relay.planeFor
 import app.getknit.knit.data.relay.reachFor
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.video.VideoEncodePolicy
+import app.getknit.knit.di.FACE_REDACTION_WIRED
 import app.getknit.knit.di.TRANSLATE_WIRED
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
@@ -115,6 +120,8 @@ import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.notifications.Notifier
+import app.getknit.knit.redact.CoveredCopies
+import app.getknit.knit.redact.FaceDetector
 import app.getknit.knit.transfer.OfferOutcome
 import app.getknit.knit.transfer.TransferManager
 import app.getknit.knit.transfer.TransferRefusal
@@ -134,6 +141,7 @@ import app.getknit.knit.ui.meshcoreAuthorLine
 import app.getknit.knit.ui.meshcoreNameClashes
 import app.getknit.knit.ui.meshcoreRoomClashKeys
 import app.getknit.knit.ui.radioRoomTitle
+import app.getknit.knit.ui.redact.PhotoReview
 import app.getknit.knit.ui.share.OutsideUris
 import app.getknit.knit.ui.share.OwnFile
 import app.getknit.knit.ui.translate.LanguageNames
@@ -799,6 +807,10 @@ class ChatViewModel(
     // Whether the bound MeshCore board may share where it is (`MeshcoreBoardFace.sharesPosition`), null while not read: the
     // MeshCore room's consent sheet says so, and asks again when a board that does was consented without that line.
     meshcoreSharesPosition: Flow<Boolean?> = flowOf(null),
+    // Finds the faces a photo's review covers (ADR 2026-10.whkk): null in a rig that wires none, which still reviews
+    // with every face the person's to cover, and in a build without face redaction (FACE_REDACTION_WIRED), which never
+    // reviews at all.
+    faces: FaceDetector? = null,
 ) : ViewModel() {
     // Null by a constant in a build without translation (TRANSLATE_WIRED), so R8 drops every path that reads it.
     private val translation: ChatTranslation? = if (TRANSLATE_WIRED) translation else null
@@ -3360,13 +3372,28 @@ class ChatViewModel(
         viewModelScope.launch { attachPicture(uri, shared = true, sharedType = type) }
     }
 
-    /** [attach]'s and [attachShared]'s door: the video encode for a video, else the image ingest. */
+    /**
+     * [attach]'s and [attachShared]'s door: the video encode for a video, else the image ingest. With Cover faces on,
+     * a still photo opens the review first (ADR 2026-10.whkk).
+     */
     private suspend fun attachPicture(
         uri: Uri,
         shared: Boolean,
         sharedType: String?,
     ) {
-        if (attachments.isVideo(uri)) {
+        val video = attachments.isVideo(uri)
+        if (FACE_REDACTION_WIRED && settings.coverFacesEnabled.first()) {
+            // This is the photo door: anything here that is neither a video nor an animation is reviewed, even a
+            // pick that could not be told apart, so a picture can never slip past uncovered. One that will not
+            // decode is dropped by [review], never sent.
+            val moving = video || attachments.pictureOf(uri) == AttachmentStore.Picture.MOVING
+            if (!moving) {
+                review { decodeOrientedBounded(context, uri, PHOTO_MAX_DIMENSION) }
+                return
+            }
+            _events.tryEmit(R.string.redact_motion_not_covered)
+        }
+        if (video) {
             attachVideo(uri)
             return
         }
@@ -3376,6 +3403,101 @@ class ChatViewModel(
             _events.tryEmit(R.string.chat_video_unreadable)
         } else {
             stage(result, notifyFailure = shared)
+        }
+    }
+
+    // Null by a constant in a build without face redaction (FACE_REDACTION_WIRED), so R8 drops the review and the copies.
+    private val photoReview: PhotoReview? = if (FACE_REDACTION_WIRED) PhotoReview(viewModelScope, faces) else null
+
+    /**
+     * The photo on the review screen before it is staged, with its faces covered (ADR 2026-10.whkk), or null. Opened by
+     * every door a still photo comes through while Cover faces is on; nothing is staged until [finishReview].
+     */
+    val pendingReview: StateFlow<PhotoReview.Pending?> = photoReview?.pending ?: MutableStateFlow(null)
+
+    init {
+        // A covered photo's copy for a transfer is kept no longer than a week, even if no photo has been sent since.
+        if (FACE_REDACTION_WIRED) viewModelScope.launch(Dispatchers.IO) { runCatching { CoveredCopies.prune(context.cacheDir) } }
+    }
+
+    /**
+     * Opens the review over [decode]'s photo, bounded and upright, for [purpose]. A thread that takes no photo refuses
+     * one for the composer first, as [stage] would after the review (a transfer's refusals are [offerTransfer]'s); a
+     * photo that cannot be decoded is dropped with a word, never sent uncovered.
+     */
+    private suspend fun review(
+        purpose: PhotoReview.Purpose = PhotoReview.Purpose.Attach,
+        decode: () -> Bitmap?,
+    ) {
+        // Every door asks FACE_REDACTION_WIRED first; asked here too, R8 can tell no review is ever opened without it.
+        if (!FACE_REDACTION_WIRED) return
+        if (purpose == PhotoReview.Purpose.Attach) {
+            photoRefusal()?.let {
+                _events.tryEmit(it)
+                return
+            }
+        }
+        // A provider that throws (a Uri gone since the pick) is a photo that will not decode, not a crash.
+        val photo = withContext(Dispatchers.IO) { runCatching(decode).getOrNull()?.let { downscale(it, PHOTO_MAX_DIMENSION) } }
+        if (photo == null) {
+            _events.tryEmit(R.string.redact_unreadable)
+            return
+        }
+        photoReview?.open(photo, purpose)
+    }
+
+    /** Why this thread takes no photo, the refusal [stage] gives one; null where photos go. */
+    private fun photoRefusal(): Int? =
+        when {
+            isBridged -> R.string.chat_mesh_text_only
+            state.value.commonsTextOnly -> R.string.chat_commons_text_only
+            else -> null
+        }
+
+    fun reviewTap(
+        x: Float,
+        y: Float,
+        slop: Float,
+    ) {
+        photoReview?.tap(x, y, slop)
+    }
+
+    fun reviewDraw(
+        x0: Float,
+        y0: Float,
+        x1: Float,
+        y1: Float,
+    ) {
+        photoReview?.draw(x0, y0, x1, y1)
+    }
+
+    fun reviewToggle(id: Int) {
+        photoReview?.toggle(id)
+    }
+
+    /** Closes the review; the photo is staged nowhere. */
+    fun cancelReview() {
+        photoReview?.cancel()
+    }
+
+    /**
+     * Sends the reviewed photo on, covered as the screen showed it: staged through the camera's in-memory door, or
+     * offered over the direct transfer it was picked for.
+     */
+    fun finishReview() {
+        // A constant, so R8 drops the purposes along with the rest of the review in a build without face redaction.
+        if (!FACE_REDACTION_WIRED) return
+        viewModelScope.launch {
+            val finished = photoReview?.finish() ?: return@launch
+            when (val purpose = finished.purpose) {
+                PhotoReview.Purpose.Attach -> {
+                    stage(attachments.ingest(finished.bytes, finished.mime, screen = isRoom, fitBytes = photoFit()), notifyFailure = true)
+                }
+
+                is PhotoReview.Purpose.Transfer -> {
+                    offerCovered(purpose.name, finished.mime, finished.bytes)
+                }
+            }
         }
     }
 
@@ -3495,13 +3617,27 @@ class ChatViewModel(
             return
         }
         viewModelScope.launch {
+            val coverFaces = FACE_REDACTION_WIRED && settings.coverFacesEnabled.first()
             // A video is a video whichever button picked it (ADR 2026-10.hmfe's amendment): sent as-is it would be
             // refused past 8 MB, and under it would go out with no poster, as a file bubble on our side.
             if (attachments.isVideo(uri)) {
+                if (coverFaces) _events.tryEmit(R.string.redact_motion_not_covered)
                 attachVideo(uri, orAsFile = true)
-            } else {
-                attachAsFile(uri)
+                return@launch
             }
+            // A photo picked as a file goes out as a photo (the file door hands an image back to the image door), so
+            // with Cover faces on it is reviewed like one, after the same refusal the file door gives.
+            val picture = if (coverFaces) attachments.pictureOf(uri) else AttachmentStore.Picture.NONE
+            if (picture == AttachmentStore.Picture.STILL) {
+                refusalForFile()?.let {
+                    _events.tryEmit(it)
+                    return@launch
+                }
+                review { decodeOrientedBounded(context, uri, PHOTO_MAX_DIMENSION) }
+                return@launch
+            }
+            if (picture == AttachmentStore.Picture.MOVING) _events.tryEmit(R.string.redact_motion_not_covered)
+            attachAsFile(uri)
         }
     }
 
@@ -3649,7 +3785,12 @@ class ChatViewModel(
         _showTransferConsent.value = null
     }
 
-    /** Offers the file at [uri] to this DM's peer over a one-shot Wi-Fi Direct link; the bytes never ride the mesh. */
+    /**
+     * Offers the file at [uri] to this DM's peer over a one-shot Wi-Fi Direct link; the bytes never ride the mesh.
+     * With Cover faces on, a still photo opens the review first and goes as its covered copy, at the size a photo is
+     * sent in the chat ([PHOTO_MAX_DIMENSION]), the only size the faces are looked for at; a video or an animation
+     * goes as it is, with the notice, as a file of any other type does (ADR 2026-10.whkk).
+     */
     fun offerTransfer(uri: Uri) {
         // The transfer reads [uri] minutes from now, as Knit; one naming Knit's own files is never offered (#284).
         if (!outsideUris.admits(uri)) {
@@ -3661,9 +3802,48 @@ class ChatViewModel(
                 _events.tryEmit(it)
                 return@launch
             }
+            if (FACE_REDACTION_WIRED && settings.coverFacesEnabled.first()) {
+                val picture = attachments.pictureOf(uri)
+                if (picture == AttachmentStore.Picture.STILL) {
+                    val original = withContext(Dispatchers.IO) { attachments.displayName(uri) }
+                    // The name's extension is the covered copy's, set once it is encoded ([CoveredCopies.nameFor]).
+                    review(PhotoReview.Purpose.Transfer(original.orEmpty())) {
+                        decodeOrientedBounded(context, uri, PHOTO_MAX_DIMENSION)
+                    }
+                    return@launch
+                }
+                if (picture == AttachmentStore.Picture.MOVING || attachments.isVideo(uri)) {
+                    _events.tryEmit(R.string.redact_motion_not_covered)
+                }
+            }
             val outcome = transfers.offer(conversationId, uri.toString())
             if (outcome is OfferOutcome.Refused) _events.tryEmit(transferRefusalMessage(outcome.refusal))
         }
+    }
+
+    /**
+     * Offers a reviewed photo's covered bytes over the direct transfer it was picked for, from a copy in the cache
+     * ([CoveredCopies]): the transfer reads its source when the link is up, and again on a Retry. The thread is asked
+     * again first, since the review may have taken a while.
+     */
+    private suspend fun offerCovered(
+        original: String,
+        mime: String,
+        bytes: ByteArray,
+    ) {
+        refusalForTransfer()?.let {
+            _events.tryEmit(it)
+            return
+        }
+        val name = CoveredCopies.nameFor(original, mime)
+        val copy =
+            withContext(Dispatchers.IO) { runCatching { CoveredCopies.write(context.cacheDir, name, bytes) }.getOrNull() }
+        if (copy == null) {
+            _events.tryEmit(R.string.chat_transfer_unreadable)
+            return
+        }
+        val outcome = transfers.offer(conversationId, Uri.fromFile(copy).toString())
+        if (outcome is OfferOutcome.Refused) _events.tryEmit(transferRefusalMessage(outcome.refusal))
     }
 
     /** Calls this thread's peer (experimental). The call screen opens from the call layer; a refusal is a toast. */
@@ -3831,6 +4011,12 @@ class ChatViewModel(
      */
     fun attachCaptured(jpeg: ByteArray) {
         viewModelScope.launch {
+            // Cover faces on: the shot is reviewed before it is stored at all, so its uncovered pixels never reach the
+            // blob store and are gone with this array (ADR 2026-10.whkk).
+            if (FACE_REDACTION_WIRED && settings.coverFacesEnabled.first()) {
+                review { decodeOrientedBounded(jpeg, PHOTO_MAX_DIMENSION) }
+                return@launch
+            }
             stage(
                 attachments.ingest(jpeg, "image/jpeg", screen = isRoom, fitBytes = photoFit()),
                 notifyFailure = true,

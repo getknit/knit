@@ -29,13 +29,17 @@ enum class Preset(
         ),
     ),
 
-    /** Tell others as little as possible: no read or typing cue, no language on the wire, and no screenshots of Knit. */
+    /**
+     * Tell others as little as possible: no read or typing cue, no language on the wire, no screenshots of Knit, and the
+     * faces in a photo covered before it goes.
+     */
     PRIVATE(
         PresetDefaults(
             typingIndicators = false,
             readReceipts = false,
             translation = false,
             secureScreens = true,
+            coverFaces = true,
         ),
     ),
 
@@ -71,6 +75,7 @@ data class PresetDefaults(
     val callTranscripts: Boolean = true,
     val bluetoothDownloadLimit: BluetoothDownloadLimit = BluetoothDownloadLimit.DEFAULT,
     val secureScreens: Boolean = false,
+    val coverFaces: Boolean = false,
 )
 
 /**
@@ -95,6 +100,7 @@ class PresetSetting<T : Any>(
         val WIFI_AWARE = PresetSetting(booleanPreferencesKey(SettingsKeys.WIFI_AWARE_ENABLED)) { it.wifiAware }
         val CALL_TRANSCRIPTS = PresetSetting(booleanPreferencesKey(SettingsKeys.CALL_TRANSCRIPTS)) { it.callTranscripts }
         val SECURE_SCREENS = PresetSetting(booleanPreferencesKey(SettingsKeys.SECURE_SCREENS)) { it.secureScreens }
+        val COVER_FACES = PresetSetting(booleanPreferencesKey(SettingsKeys.COVER_FACES)) { it.coverFaces }
 
         // Stored by name, as `SettingsStore.bluetoothDownloadLimit` reads it with `BluetoothDownloadLimit.of`.
         val BLUETOOTH_DOWNLOAD_LIMIT =
@@ -110,6 +116,7 @@ class PresetSetting<T : Any>(
                 CALL_TRANSCRIPTS,
                 BLUETOOTH_DOWNLOAD_LIMIT,
                 SECURE_SCREENS,
+                COVER_FACES,
             )
     }
 }
@@ -122,13 +129,23 @@ data class PresetChange(
     val switch: Switch,
     val on: Boolean,
 ) {
-    enum class Switch { RELAYS, LINK_PREVIEWS, READ_RECEIPTS, TYPING_INDICATORS, TRANSLATION, SECURE_SCREENS, WIFI_AWARE, TRANSCRIPTS }
+    enum class Switch {
+        RELAYS,
+        LINK_PREVIEWS,
+        READ_RECEIPTS,
+        TYPING_INDICATORS,
+        TRANSLATION,
+        SECURE_SCREENS,
+        COVER_FACES,
+        WIFI_AWARE,
+        TRANSCRIPTS,
+    }
 
-    /** Turning this on (or, for the screenshot block, off) shares more than before; such changes are listed first. */
+    /** Turning this on (or, for the screenshot block and covering faces, off) shares more than before; listed first. */
     val weakensPrivacy: Boolean
         get() =
             when (switch) {
-                Switch.SECURE_SCREENS -> !on
+                Switch.SECURE_SCREENS, Switch.COVER_FACES -> !on
                 Switch.WIFI_AWARE, Switch.TRANSCRIPTS -> false
                 else -> on
             }
@@ -150,6 +167,7 @@ fun presetChanges(
             PresetChange.Switch.TYPING_INDICATORS to (current.typingIndicators to target.typingIndicators),
             PresetChange.Switch.TRANSLATION to (current.translation to target.translation),
             PresetChange.Switch.SECURE_SCREENS to (current.secureScreens to target.secureScreens),
+            PresetChange.Switch.COVER_FACES to (current.coverFaces to target.coverFaces),
             PresetChange.Switch.WIFI_AWARE to (current.wifiAware to target.wifiAware),
             PresetChange.Switch.TRANSCRIPTS to (current.callTranscripts to target.callTranscripts),
         )
