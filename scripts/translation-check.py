@@ -73,6 +73,9 @@ GROWTH = 2.0
 SLACK = 8  # a short label may always grow by this many characters
 
 LOCALE_DIR = re.compile(r"^values-(?:b\+([a-z]{2,3}(?:\+[A-Za-z0-9]+)*)|([a-z]{2,3})(?:-r([A-Z]{2}))?)$")
+# The three ISO 639 codes java.util.Locale still rewrites: Android looks Indonesian up in `values-in`, Hebrew in
+# `values-iw`, Yiddish in `values-ji` (lint's LocaleFolder), so those folders hold `id`, `he` and `yi`.
+LEGACY_LANGUAGE = {"in": "id", "iw": "he", "ji": "yi"}
 
 
 @dataclass(frozen=True)
@@ -134,13 +137,15 @@ def load_glossary(path: Path) -> Glossary:
 
 
 def locale_of(dir_name: str) -> str | None:
-    """`values-pt-rBR` -> `pt-BR`, `values-b+sr+Latn` -> `sr-Latn`; None for a qualifier that is not a locale."""
+    """`values-pt-rBR` -> `pt-BR`, `values-b+sr+Latn` -> `sr-Latn`, `values-in` -> `id`; None for a qualifier that is
+    not a locale."""
     m = LOCALE_DIR.match(dir_name)
     if not m:
         return None
     if m.group(1):
         return m.group(1).replace("+", "-")
-    return m.group(2) + (f"-{m.group(3)}" if m.group(3) else "")
+    language = LEGACY_LANGUAGE.get(m.group(2), m.group(2))
+    return language + (f"-{m.group(3)}" if m.group(3) else "")
 
 
 def base_of(path: Path) -> Path | None:
@@ -148,7 +153,9 @@ def base_of(path: Path) -> Path | None:
     locale = locale_of(path.parent.name)
     if not locale or "-" not in locale:
         return None
-    base = path.parent.parent / f"values-{locale.split('-')[0]}" / "strings.xml"
+    language = locale.split("-")[0]
+    folder = next((old for old, new in LEGACY_LANGUAGE.items() if new == language), language)
+    base = path.parent.parent / f"values-{folder}" / "strings.xml"
     return base if base.exists() else None
 
 

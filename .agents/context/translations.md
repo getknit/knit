@@ -14,6 +14,11 @@ Android's own German and German messengers use it), „ “ quotes, and WLAN for
 Simplified Chinese (`values-zh-rCN/`, machine pass 2026-11-04, awaiting native review) is the sixth: mainland
 Putonghua, written with 你 (not 您), full-width punctuation and “ ” quotes, a half-width space between Han and a
 Latin word or a number, WLAN for plain Wi-Fi, and one plural form (`other`) carrying the number.
+Indonesian (`values-in/`, machine pass 2026-11-18, awaiting native review) is the seventh: standard Bahasa
+Indonesia, written with Anda (as Android's own Indonesian), “ ” quotes and one plural form (`other`) carrying the
+number. Its folder is Android's legacy code `in` (java.util.Locale still rewrites `id`, and lint's `LocaleFolder`
+asks for the old name); everywhere else, the glossary column, `translation-check.py --locale`, the emoji overlay
+and Play, it is `id`.
 Argentine Spanish (`values-es-rAR/`, 2026-10-31) is the first regional overlay: it landed empty, so it reads as
 `values-es/` until Argentine translators override single strings on Weblate (`es_AR`).
 Progress per language is GitHub issue #43.

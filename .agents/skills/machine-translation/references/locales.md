@@ -142,10 +142,50 @@ locale's own section before adding strings to it (mode B). A new pass adds its s
 - **Open:** every Android, Family Link and Quick Share label above; 你 against 您; compact chat-list times with 前
   (“5 分钟前”); 群组照片 against 群头像; the watch's “9时59分” short duration.
 
+## id: Indonesian
+
+- **Folder** `values-in` (phone and watch): Android's legacy code, since java.util.Locale still rewrites `id` and
+  lint's `LocaleFolder` asks for `in`. Everything else says `id`: the glossary column, `--locale id` for every
+  script (`common.android_dir` and `translation-check.locale_of` map the two), listing
+  `fastlane/metadata/android/id/`, Play `id` (`gpc` dry run 2026-11-18), emoji overlay `emoji_id.tsv` (CLDR `id`;
+  `EmojiLocales` maps a phone's `in` to it). Machine pass 2026-11-18.
+- **Scope:** standard Bahasa Indonesia; no Malaysian words (telefon, fail, padam, muat turun, tetapan), no Jakarta
+  slang (gak, udah, aja).
+- **Register:** Anda (capital A), never kamu / -mu / kalian about the user; "you two" = Anda berdua. Imperatives are
+  the bare verb (Ketuk, Buka, Izinkan). Status text in the di- passive (Pesan dikirim, Kontak diblokir).
+- **Typography:** “ ” quotes; no space before punctuation; mnt / jam / dtk; a Settings path “Setelan › Panggilan”.
+- **Plurals:** `other` only, keeping the number, noun singular after it (`%d pesan`). `_zero` strings keep their
+  `%d` too, written as a natural "0 …" phrase (the checker refuses one without it).
+- **Words:** mesh = jaringan mesh, short mesh; Nearby = Sekitar, in a sentence ruang “Sekitar” (the presence badge is
+  lowercase “Di sekitar”); room = ruang; commons = ruang bersama; relay = relai (relai internet, lowercase
+  internet in running text); "Relay all calls" = “Semua panggilan lewat server”, route pill “Lewat server”; a radio
+  or phone passing frames on = meneruskan; connect = hubungkan / terhubung / koneksi, Bluetooth pair = sambungkan /
+  disambungkan; download = unduh / unduhan (Android's folder stays “Download”); link = tautan for a URL and a
+  contact's direct link (tautan langsung), koneksi for a radio link; channel = saluran (MeshCore's “Public” kept);
+  board = board; phone = ponsel; chat = chat, one-to-one chat = chat pribadi, direct message = pesan langsung;
+  voice note = pesan suara; captions = teks (CC kept); transcript = transkrip, Transcribe = Transkripsikan; post =
+  postingan / memposting; airtime = waktu siar; carry = membawa; heard (radio) = terdengar; read receipts = Tanda
+  dibaca; sent / delivered / read = Terkirim / Diterima / Dibaca; backup = cadangan (translated), Backup and
+  restore = Cadangkan dan pulihkan; recovery key = kunci pemulihan; safety number = nomor keamanan; supporter =
+  pendukung, badge = lencana pendukung; ticket = tiket; Low-power mode = Mode daya rendah; Content filtering =
+  Filter konten; Developer view = Tampilan developer; free software = perangkat lunak bebas. Kept in English:
+  walkie-talkie, end-to-end (terenkripsi end-to-end), forward secrecy, online / offline, live (panggilan live),
+  file, build, advert (MeshCore).
+- **Android's words:** Setelan, Notifikasi, Izin, Perangkat di sekitar, Lokasi, Penghemat Baterai, Mode pesawat,
+  Jangan Ganggu, Penghemat Data, Opsi developer; battery page “Penggunaan baterai aplikasi” with “Tidak dibatasi /
+  Dioptimalkan / Dibatasi”; “Jeda aktivitas aplikasi jika tidak digunakan”; “Izinkan notifikasi layar penuh”;
+  “Dinonaktifkan oleh admin”; Family Link “Kontrol › Perangkat yang login › Izin aplikasi”. All unverified.
+- **Final-read sweeps:** informal `\b(kamu|kau|mu|gak|nggak|udah|aja|banget|bikin|kayak|kalian)\b`; Malaysian
+  `\b(telefon|fail|padam|muat turun|tetapan|kata laluan)\b`; `\b[Kk]lik`; lowercase `\banda\b`; the connect / pair
+  split `tersambung|sambungan` (should be 0); `[Dd]ownload` outside the folder name; `Internet` mid-sentence.
+- **Open:** every Android and Family Link label above; Anda against kamu (modern Indonesian apps such as Gojek use
+  kamu); "Earpiece" / "Speaker" in the call's audio menu; "live" for live calls; "Dicolokkan" for plugged in; the
+  watch's “Online” for Linked and “hr ini” for today.
+
 ## The watch app (all locales)
 
 - **Files** `wear/src/main/res/values-<dir>/strings.xml`, machine pass 2026-10-28 for every shipped locale at once
-  (zh-CN 2026-11-04, with its phone pass), one translator per language, the phone's wording reused for every shared term (`translations.md`, "The watch app").
+  (zh-CN 2026-11-04 and id 2026-11-18, each with its phone pass), one translator per language, the phone's wording reused for every shared term (`translations.md`, "The watch app").
 - **Seven characters** forced short words: Linked = de „Im Mesh“, es «Enlace», fr « Relié », pt "Em rede", uk
   «Зв’язок»; Paused = „Pause“ / «Pausa» / « Pause » (de, es, fr); `aged_title_short` = just `^1` everywhere but zh-CN, where `^1前` fits (the library writes "12 Min." in German, "12min" in pt);
   `allow_short` is a noun where the verb is too long (Zugriff, Permiso, Accès, Дозвіл; pt "Permita").

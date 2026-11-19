@@ -297,6 +297,10 @@ class StatusTextTest {
     @Config(qualifiers = "zh-rCN")
     fun `Simplified Chinese short texts fit`() = assertShortTextsFit(res)
 
+    @Test
+    @Config(qualifiers = "in") // Android's legacy folder code for Indonesian (values-in)
+    fun `Indonesian short texts fit`() = assertShortTextsFit(res)
+
     private companion object {
         const val HOURS_8 = 8 * 60 * 60_000L
 

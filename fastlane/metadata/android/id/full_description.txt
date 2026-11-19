@@ -1,0 +1,58 @@
+Knit adalah aplikasi pesan tanpa internet, sinyal seluler, atau akun. Knit terhubung langsung ke ponsel di sekitar Anda lewat Wi-Fi Aware dan Bluetooth.
+
+Setiap ponsel meneruskan pesan ke ponsel di sekitarnya, jadi pesan Anda melompati keramaian, gedung, atau perkemahan, jauh melampaui jangkauan Anda. Makin banyak pemakai Knit, makin jauh jangkauannya.
+
+KENAPA KNIT
+• Tanpa internet atau data seluler
+• Tanpa akun, nomor telepon, atau email untuk mendaftar
+• Tanpa server pusat yang bisa dimatikan, dipantau, atau bocor
+• Tanpa iklan, pelacakan, analitik, atau Layanan Google Play
+• Perangkat lunak bebas: siapa pun bisa memeriksa kerjanya
+
+COCOK UNTUK
+• Festival dan tempat ramai saat sinyal hilang
+• Perjalanan, penerbangan, kapal, berkemah, dan alam bebas
+• Pemadaman listrik dan keadaan darurat
+
+PRIVAT SEJAK AWAL
+Chat pribadi dan grup terenkripsi end-to-end. Hanya orang dalam chat yang bisa membaca pesannya; ponsel yang membawanya dan relai hanya melihat teks sandi. Kunci dibuat di perangkat Anda, dilindungi keamanan perangkat keras Android. Pastikan lawan bicara Anda lewat nomor keamanan atau pindaian QR.
+
+TENTANG IZIN
+Knit meminta izin perangkat di sekitar (lokasi sebelum Android 13) untuk menemukan ponsel lewat Wi-Fi Aware dan Bluetooth LE serta menjangkau radio yang dipasangkan. Lokasi hanya dibaca saat Anda mengetuk Kirim lokasi. Izin INTERNET ada karena Android menganggap soket Wi-Fi Aware lokal sebagai akses jaringan, serta untuk relai, pratinjau tautan, dan unduhan model. Instalasi baru tidak mengakses jaringan.
+
+PERANGKAT LUNAK BEBAS
+Knit berlisensi GNU General Public License v3 atau lebih baru; kode sumbernya ada di github.com/getknit/knit.
+
+FITUR
+• Ruang publik “Sekitar” untuk semua orang dalam jangkauan
+• Pesan pribadi 1:1 (terenkripsi end-to-end)
+• Grup (terenkripsi end-to-end)
+• Balasan dengan kutipan, reaksi emoji, dan @-sebutan
+• Foto, GIF, dan video pendek
+• Panggilan suara antarponsel di dekat Anda atau lewat relai internet
+• Pesan suara, file apa pun, dan file besar antarponsel lewat Wi-Fi
+• Terjemahan dan ucapan ke teks di perangkat
+• Cari di semua chat, kontak, dan pesan
+• Cadangan terenkripsi untuk ponsel baru
+• Simpan-teruskan: pesan menunggu sampai penerima kembali dalam jangkauan
+• Tambah kontak lewat tautan saat terlalu jauh untuk memindai
+• Radio LoRa Meshtastic opsional untuk jangkauan jauh lebih luas
+• Relai internet opsional, nonaktif sampai Anda mengaktifkannya
+• Bagikan aplikasi ke ponsel di dekat Anda, tanpa toko aplikasi
+• Warna dinamis Material You dan mode gelap
+
+RUANG YANG LEBIH AMAN
+Filter di perangkat menyaring teks kasar dan gambar eksplisit secara offline, tanpa mengirim apa pun. Konten sensitif diburamkan sampai diketuk, dan pengirim mana pun bisa diblokir sekali ketuk.
+
+Knit didanai pendukungnya: github.com/sponsors/getknit, ko-fi.com/knit. Liberapay.com/zaventh hanya mendukung pengembangnya.
+
+CARA KERJANYA
+Knit menjalankan Wi-Fi Aware dan Bluetooth Low Energy sekaligus, jadi berfungsi di ponsel yang hanya punya salah satunya. Sebaiknya izinkan berjalan di latar belakang. Perlu Android 10 ke atas.
+
+RADIO JARAK JAUH OPSIONAL
+Pasangkan radio LoRa Meshtastic lewat Bluetooth, dan ruang Sekitar serta pesan langsung Anda ikut lewat radio itu: berkilo-kilometer, tetap tanpa internet atau akun. Radio itu perangkat terpisah; Knit berfungsi penuh tanpanya.
+
+RELAI INTERNET OPSIONAL
+Untuk kontak di luar jangkauan radio, aktifkan relai internet: Knit menitipkan salinan tersegel di server relai hingga ponsel kontak itu terhubung. Nonaktif sampai Anda aktifkan, setelah penjelasan tentang yang bisa dilihat relai (alamat IP Anda, kapan dan kira-kira berapa banyak Anda mengirim) dan yang tidak: pesan, lawan bicara, atau anggota grup Anda. Pilih relai atau jalankan milik sendiri; keduanya publik.
+
+Catatan: tanpa radio dan relai, Knit menjangkau orang di dekat Anda atau keramaian di antara Anda. Ruang publik Sekitar sengaja tidak dienkripsi karena penerimanya tidak tetap, dan tidak pernah diunggah.

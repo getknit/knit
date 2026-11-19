@@ -22,9 +22,9 @@ document:
 
 ### Added
 
-- Knit now comes in Simplified Chinese. It follows a phone set to Chinese, or on Android 13 and later you can
-  pick it for Knit alone in Settings › Apps › Knit › Language. It is a machine translation no native speaker
-  has checked yet, and anyone can suggest a fix on Weblate.
+- Knit now comes in Simplified Chinese and Indonesian. It follows your phone's language, or on Android 13 and
+  later you can pick one for Knit alone in Settings › Apps › Knit › Language. Both are machine translations no
+  native speaker has checked yet, and anyone can suggest a fix on Weblate.
 - When two phones on this version link over Bluetooth or Wi-Fi Aware, the link is now encrypted, so a radio
   nearby can't read what passes between them. A link with a phone on an older version of Knit works as before
   until that phone updates (#286).

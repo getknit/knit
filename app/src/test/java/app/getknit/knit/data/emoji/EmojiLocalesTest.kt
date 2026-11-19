@@ -25,6 +25,26 @@ class EmojiLocalesTest {
     }
 
     @Test
+    fun legacyLanguageCodesMapToTheCurrentOnes() {
+        // Android's Locale.getLanguage() says `in` for Indonesian (the folder is values-in, the overlay `id`), `iw`
+        // for Hebrew and `ji` for Yiddish; this JVM (JDK 17+) never hands those back, so the step is tested alone.
+        assertEquals("id", EmojiLocales.currentLanguage("in"))
+        assertEquals("he", EmojiLocales.currentLanguage("iw"))
+        assertEquals("yi", EmojiLocales.currentLanguage("ji"))
+        assertEquals("id", EmojiLocales.currentLanguage("id"))
+        assertEquals("de", EmojiLocales.currentLanguage("de"))
+    }
+
+    @Test
+    fun indonesianTagsLandOnTheIdOverlay() {
+        // End to end on this JVM, which reads every form as `id`; the legacy step itself is the test above.
+        val withIndonesian = shipped + "id"
+        assertEquals("id", EmojiLocales.overlayFor(listOf("id"), withIndonesian))
+        assertEquals("id", EmojiLocales.overlayFor(listOf("in"), withIndonesian))
+        assertEquals("id", EmojiLocales.overlayFor(listOf("in-ID"), withIndonesian))
+    }
+
+    @Test
     fun englishFirstStopsAtTheBaseEvenWithAnOverlayLaterInTheList() {
         assertNull(EmojiLocales.overlayFor(listOf("en-US", "de-DE"), shipped))
     }

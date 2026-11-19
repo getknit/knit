@@ -150,6 +150,8 @@ class CheckTest(unittest.TestCase):
         self.assertEqual("pt-BR", check.locale_of("values-pt-rBR"))
         self.assertEqual("es", check.locale_of("values-es"))
         self.assertEqual("sr-Latn", check.locale_of("values-b+sr+Latn"))
+        self.assertEqual("id", check.locale_of("values-in"))  # Android's legacy folder for Indonesian
+        self.assertEqual("he", check.locale_of("values-iw"))
         self.assertIsNone(check.locale_of("values-night"))
         self.assertIsNone(check.locale_of("values-v31"))
 

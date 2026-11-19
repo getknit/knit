@@ -35,6 +35,11 @@ object EmojiLocales {
             "UY",
             "VE",
         )
+    /**
+     * The ISO 639 codes java.util.Locale may still hand back (Android's `Locale.getLanguage()` says `in` for
+     * Indonesian, `iw` for Hebrew, `ji` for Yiddish), mapped to the current codes the overlays are tagged with.
+     */
+    private val LEGACY_LANGUAGE = mapOf("in" to "id", "iw" to "he", "ji" to "yi")
     private const val PREFIX = "emoji_"
     private const val SUFFIX = ".tsv"
     private const val BASE = "en"
@@ -45,7 +50,7 @@ object EmojiLocales {
     ): String? {
         for (tag in languageTags) {
             val locale = Locale.forLanguageTag(tag)
-            val lang = locale.language
+            val lang = currentLanguage(locale.language)
             if (lang.isEmpty()) continue
             if (lang == BASE) return null
             val region = locale.country
@@ -59,6 +64,13 @@ object EmojiLocales {
         }
         return null
     }
+
+    /**
+     * [language] under its current ISO 639 code: Android's `Locale.getLanguage()` says `in` for Indonesian even for
+     * the tag `id` (as a JVM started with `-Djava.locale.useOldISOCodes=true` does), while the overlays are tagged
+     * `id`. A separate step because the test JVM (JDK 17+) never hands back the legacy code.
+     */
+    internal fun currentLanguage(language: String): String = LEGACY_LANGUAGE[language] ?: language
 
     /** The overlay tags among the `emoji/` asset file names (`emoji_de.tsv` → `de`), the base excluded. */
     fun tagsIn(fileNames: List<String>): Set<String> =

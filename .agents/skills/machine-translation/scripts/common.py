@@ -25,10 +25,16 @@ ITEM = re.compile(r'<item\b[^>]*\bquantity="(\w+)"[^>]*>(.*?)</item>', re.S)
 ATTR = re.compile(r'([\w:]+)="([^"]*)"')
 
 
+# The ISO 639 codes java.util.Locale still rewrites, so Android looks them up under the old code (lint's
+# LocaleFolder): Indonesian lives in values-in, Hebrew in values-iw, Yiddish in values-ji.
+LEGACY_LANGUAGE = {"id": "in", "he": "iw", "yi": "ji"}
+
+
 def android_dir(locale: str) -> str:
-    """`fr` -> values-fr, `pt-BR` -> values-pt-rBR, `es-419` or `sr-Latn` -> values-b+es+419."""
+    """`fr` -> values-fr, `pt-BR` -> values-pt-rBR, `es-419` or `sr-Latn` -> values-b+es+419, `id` -> values-in."""
     parts = locale.replace("_", "-").split("-")
     lang = parts[0].lower()
+    lang = LEGACY_LANGUAGE.get(lang, lang)
     if len(parts) == 1:
         return f"values-{lang}"
     if len(parts) == 2 and re.fullmatch(r"[A-Za-z]{2}", parts[1]):

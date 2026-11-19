@@ -94,11 +94,13 @@ CLDR_FILES = cldr_files("en")
 # Overlay tag (BCP 47, the asset's file suffix and what the app matches its language against) -> CLDR locale
 # chain, child first. One entry per app language under app/src/main/res/values-<locale>/: pt is CLDR's Brazilian
 # Portuguese, and es-AR (values-es-rAR) resolves through es-419 as CLDR's parentLocales says.
+# Indonesian is tagged id although its folder is values-in (EmojiLocales maps the legacy code).
 LOCALES: dict[str, list[str]] = {
     "de": ["de"],
     "es": ["es"],
     "es-419": ["es_419", "es"],
     "fr": ["fr"],
+    "id": ["id"],
     "pt": ["pt"],
     "uk": ["uk"],
     "zh-CN": ["zh"],
