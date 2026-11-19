@@ -37,6 +37,16 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Every Gradle job here builds without a build cache, so it compiles :app and its unit tests cold in one
+# single-use daemon, with Kotlin in-process. On 2026-11-19 that compile held up to 1999 MB live after a full GC
+# in the project's 2 GB heap, and every job of run 44477096941 died of OutOfMemoryError in
+# :app:compileDebugUnitTestKotlin. At 4g it peaks at 3.4 GB before a young GC and needs no full GC; the
+# runner has 16 GB. The instrumented job needs 4g too: at 2 GB, D8 ran out of heap in :app:mergeExtDexDebug
+# dexing the app and its androidTest APK side by side (run 40462339664). A -D here outranks the user-home and
+# project gradle.properties, and a -D on the gradlew line (lint's 6g) outranks it.
+env:
+  GRADLE_OPTS: "-Dorg.gradle.jvmargs='-Xmx4g -Dfile.encoding=UTF-8'"
+
 jobs:
   build-test:
     name: Build & unit tests
@@ -363,14 +373,6 @@ jobs:
         with:
           packages: platform-tools # NOT the default `tools platform-tools` — see ACTION PINS above
       - uses: gradle/actions/setup-gradle@v5
-      # This daemon dexes the app and its androidTest APK side by side with the in-process Kotlin compile, and at the
-      # repo's 2 GB default D8 ran out of heap in :app:mergeExtDexDebug (run 40462339664). The runner has 16 GB; the
-      # user-home gradle.properties overrides the project's.
-      - name: Gradle heap for two variants
-        run: |
-          home="${GRADLE_USER_HOME:-$HOME/.gradle}"
-          mkdir -p "$home"
-          echo 'org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8' >> "$home/gradle.properties"
       # The hosted runner has KVM, but /dev/kvm is not open to the runner user until a udev rule says so; without
       # it the emulator falls back to software and the boot outlasts Gradle's setup timeout.
       - name: Enable KVM

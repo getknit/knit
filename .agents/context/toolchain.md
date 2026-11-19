@@ -130,7 +130,9 @@ only the ones with no site: the version-advice checks (`GradleDependency`, `Newe
 and the launcher PNGs stay beside the adaptive icon for F-Droid's icon extraction. lintVital (`assembleRelease`)
 runs only fatal checks, so the release build is untouched. Both CIs enforce it: GitLab's `verify:lint` and GitHub's
 `lint` run `./gradlew lint` with a 6 GB daemon heap, because lint keeps ~3.6 GB live (a 3 GB heap stalls it for
-minutes in `lintAnalyzeDebug`).
+minutes in `lintAnalyzeDebug`). Every other GitHub job gets a 4 GB daemon from `ci.yml`'s workflow `GRADLE_OPTS`:
+the cold `:app` plus unit-test compile, with Kotlin in-process, outgrew the project's 2 GB on 2026-11-19 (~2 GB live
+after a full GC). GitLab sets its own heap per job (`GRADLE_HEAP` in `.gitlab-ci.yml`).
 
 ## Static analysis: detekt / ktlint Gradle plugins
 
