@@ -145,3 +145,11 @@ Fixed in three layers:
 an API 36 emulator: the smoke test passes on its minified APK, and Install offline on a split install of its bundle
 merges and signs `Knit-2.11.0-alpha.2-36-merged-r1.apk`. Installing that merged APK on a second phone was not tried.
 This supersedes the residual above that called both xmlpull keep rules load-bearing.
+
+## Amendment 2026-11-18 — release/2.12.0: the byte ceiling is 11.9 MB
+
+The 2.12.0 release build on `release/2.12.0` (v2.12.0-beta.0 plus the #343 backport and regenerated profiles) measured
+10,213,876 bytes of defined dex code in the release CI mirror, 13,876 over the 10.2 MB ceiling. The named-package share
+is 6.7%, under the 15% alarm, so the growth since 2.11 is our own code, renamed and shrunk, not a keep rule. The ceiling
+on this branch is 11,900,000, the same number main took the same day for its larger build (main's amendment carries its
+measurements), so the forward-port keeps one value.
