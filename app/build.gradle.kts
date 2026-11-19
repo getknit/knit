@@ -794,6 +794,22 @@ android {
                 // OutOfMemoryError in its last classes (CI run 41250619065); at 150 the fork holding the mesh lab
                 // still peaked at 876 MB live.
                 test.forkEvery = 100
+                // Test JVMs side by side (#346): one fork ran the ~10,400 tests in about 13 minutes on the 24-core workstation.
+                // Gradle splits the classes across the forks, so only a host resource shared between classes (a fixed port,
+                // a fixed file) could collide; scripts/lab-chaos.sh and unit-stress.sh already run the suite's classes in
+                // parallel JVMs. Locally a fork per 6 cores, at most 4 (~2.5 GB each: the heap above plus Robolectric's
+                // Metaspace); CI keeps one, its runners being one to four vCPUs, unless the job passes `-Pknit.testForks=<n>`.
+                // `org.gradle.workers.max` still caps it, and scripts/gradle-turn.sh budgets the memory beside other builds.
+                test.maxParallelForks =
+                    providers
+                        .gradleProperty("knit.testForks")
+                        .map(String::toInt)
+                        .orElse(
+                            providers.environmentVariable("CI").map { 1 }.orElse(
+                                (Runtime.getRuntime().availableProcessors() / 6).coerceIn(1, 4),
+                            ),
+                        ).get()
+                        .coerceAtLeast(1)
                 // `-Pknit.meshSim=<seed>` runs the mobility simulator's outings (app/src/test/.../mesh/sim/*SimTest):
                 // each takes the minutes of wall clock it simulates and reports what the mesh did, so it is a
                 // measurement and no check, and every other run leaves it out. `knit.meshSimWalkers` and

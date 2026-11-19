@@ -40,7 +40,12 @@ Every JVM test outside `mesh/lab/` (`app/src/test`, `wear/src/test`) is reviewed
 against this catalogue, and a Stop hook asks for it. CI's GitLab runner is one vCPU and 2 GB (two
 `Dispatchers.Default` threads), GitHub's four vCPU, and both run the suite one fork at a time, a fresh one every 100
 classes (`forkEvery` in `app/build.gradle.kts`: MockK keeps every mock a fork makes, so one fork for all ~700 classes
-ran out of heap): an ordering a workstation always wins is lost there one run in thirty. The watch's tests run in
+ran out of heap): an ordering a workstation always wins is lost there one run in thirty. The workstation runs four
+forks side by side instead (`maxParallelForks`: one per 6 cores, at most 4, and 1 wherever `CI` is set; #346), so a
+full local run takes about 4.5 minutes, not 13. The forks split the classes, so a class runs after different
+neighbours than on CI: to replay CI's order for a fork-order failure such as `UncaughtExceptionsBeforeTest` above, pass
+`-Pknit.testForks=1`. And a test binds an ephemeral port and writes only files its own class names, because two
+classes sharing a fixed port or file now run at the same time. The watch's tests run in
 their own job (GitHub `wear-tests`, GitLab
 `test:wear`, `-Pknit.wear=true :wear:testDebugUnitTest`). Most of the incidents below never reproduced locally (`cd16429a`: 25
 green runs; `5626c3e5`: green for almost every draw), so a test is judged by reading it, and

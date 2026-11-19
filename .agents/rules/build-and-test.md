@@ -21,10 +21,13 @@ intermediates. Runs in different worktrees write different outputs but share the
 JVMs of ~2.5 GB, and parallel worktree agents have run the 62 GB workstation out of memory. So every Gradle run an
 agent starts, the main session's included, goes through `scripts/gradle-turn.sh <command>`; a `PreToolUse` hook
 (`.claude/hooks/gradle-turn-gate.py`) blocks a bare `./gradlew`. The script takes this worktree's `flock` in the git
-dir, then the machine's slot in `~/.gradle/knit-gradle-turn/`, which every worktree shares: one agent build at a time,
-since the CI runners on the workstation build beside it outside the turn. `KNIT_GRADLE_SLOTS=<n>` allows more, and a
-build then starts beside another only while `KNIT_GRADLE_MIN_FREE_MB` (default 12288) of memory is free. A waiting run
-prints who holds the slots. Both locks are re-entrant, so a script holding the
+dir, then one of the machine's slots in `~/.gradle/knit-gradle-turn/`, which every worktree shares: three on the
+24-core, 62 GB workstation (one per 8 cores and per 20 GB, at most 4; `KNIT_GRADLE_SLOTS=<n>` overrides). A build alone
+always starts. Beside others it waits for `KNIT_GRADLE_MIN_FREE_MB` (default 12288) of free memory, and that much again
+for each build that began in the last five minutes and has not grown into its memory yet; the free memory also counts
+what the CI runners on the workstation hold, since they build outside the turn. A long run (`KNIT_GRADLE_LONG=1`, or any
+`-Pknit.meshSim` outing) never takes slot 0, so an hour-long outing or sweep loop always leaves a slot for short runs:
+set it for a sweep loop or a soak. A waiting run prints who holds the slots. Both locks are re-entrant, so a script holding the
 turn (`lab-chaos.sh`, `unit-stress.sh`) can nest, and the reviewers the Stop hook spawns at once read in parallel and
 take turns at Gradle. Still chain your own runs in one command, never one in the background and one in the foreground.
 The script also runs the command in a systemd scope of CPU weight 20, so the daemon it starts and that daemon's test
