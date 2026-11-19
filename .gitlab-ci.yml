@@ -101,7 +101,11 @@ workflow:
     docker:
       platform: linux/amd64
   before_script:
-    - apt-get update -qq && apt-get install -y -qq unzip wget > /dev/null
+    # No apt: everything below runs on what eclipse-temurin ships (curl, and the JDK's jar for zips). The
+    # `apt-get install unzip wget` that stood here failed every Android job with exit 100 whenever
+    # archive.ubuntu.com was unreachable (job 11849 on 2026-11-03; 13775, 13785, 13787, 13790 on 2026-11-19),
+    # though only an SDK cache miss (below) and build:release's dex and R8 gates used them; the gates read zips
+    # with jar too.
     - export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
     # CI memory profile, written to $GRADLE_USER_HOME so it overrides the project gradle.properties.
     # NO metaspace cap: a 384m cap starved Metaspace and crashed the daemon (job 462). Heap is $GRADLE_HEAP,
@@ -185,10 +189,12 @@ workflow:
       EOF
     - |
       if [ ! -d "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" ]; then
-        wget -q "https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_VERSION}_latest.zip" -O /tmp/clt.zip
+        curl -fsSL --retry 3 -o /tmp/clt.zip "https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_VERSION}_latest.zip"
         mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
-        unzip -q /tmp/clt.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
+        (cd "$ANDROID_SDK_ROOT/cmdline-tools" && jar xf /tmp/clt.zip)
         mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+        # jar drops the zip's file modes; bin/ holds the only executables.
+        chmod +x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/"*
       fi
     - yes | sdkmanager --licenses > /dev/null 2>&1 || true
     - sdkmanager "platform-tools" "platforms;android-${ANDROID_COMPILE_SDK}" "build-tools;${ANDROID_BUILD_TOOLS}" > /dev/null

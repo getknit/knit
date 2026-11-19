@@ -29,7 +29,9 @@ ANDROID_JAR="${2:-$(find "$SDK/platforms" -maxdepth 2 -name android.jar 2>/dev/n
 
 # A class line is `original -> renamed:` at column 0; members are indented and comments start with `#`.
 renamed="$(awk '/^[^ #].* -> .*:$/ { n = $3; sub(/:$/, "", n); if ($1 != n) print $1 " -> " n }' "$MAPPING")"
-platform="$(unzip -Z1 "$ANDROID_JAR" '*.class' | sed 's/\.class$//; s|/|.|g')"
+# The JDK's jar lists android.jar, not unzip: CI's eclipse-temurin image ships no unzip (see .gitlab-ci.yml's .android).
+JAR="${JAVA_HOME:+$JAVA_HOME/bin/}jar"
+platform="$("$JAR" tf "$ANDROID_JAR" | grep '\.class$' | sed 's/\.class$//; s|/|.|g')"
 hits="$(awk 'NR == FNR { p[$0] = 1; next } ($1 in p)' <(printf '%s\n' "$platform") <(printf '%s\n' "$renamed"))"
 
 echo "renamed classes: $(printf '%s' "$renamed" | grep -c . || true), checked against $ANDROID_JAR"

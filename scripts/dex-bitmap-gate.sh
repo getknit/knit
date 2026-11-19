@@ -46,7 +46,12 @@ DEXDUMP="${DEXDUMP:-$(command -v dexdump || true)}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-unzip -o -q "$APK" 'classes*.dex' -d "$WORK"
+# The JDK's jar reads the APK, not unzip: CI's eclipse-temurin image ships no unzip, and installing one from
+# archive.ubuntu.com failed every Android job whenever that archive was unreachable (pipelines of 11-03, 11-19).
+JAR="${JAVA_HOME:+$JAVA_HOME/bin/}jar"
+APK_ABS="$(cd "$(dirname "$APK")" && pwd)/$(basename "$APK")"
+mapfile -t DEX_ENTRIES < <("$JAR" tf "$APK_ABS" | grep -E '^classes[^/]*\.dex$' || true)
+[ "${#DEX_ENTRIES[@]}" -eq 0 ] || (cd "$WORK" && "$JAR" xf "$APK_ABS" "${DEX_ENTRIES[@]}")
 shopt -s nullglob
 DEXES=("$WORK"/classes*.dex)
 [ "${#DEXES[@]}" -gt 0 ] || { echo "dex-bitmap-gate: no classes*.dex in $APK" >&2; exit 2; }
