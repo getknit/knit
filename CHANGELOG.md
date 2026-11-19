@@ -9,7 +9,7 @@ product:
   platforms: [android]
   category: Communication
 document:
-  updated: 2026-11-11T07:27:26Z
+  updated: 2026-11-18T23:31:49Z
   coverage: partial
   canonical: https://whatsnew.fyi/product/knit
   locale: en
@@ -18,7 +18,9 @@ document:
 
 # Knit changelog
 
-## Unreleased
+## [2.12.0](https://github.com/getknit/knit/releases/tag/v2.12.0) — 2026-11-18T23:31:49Z
+
+> Encrypted links between phones, Simplified Chinese, and a clearer view of who's nearby
 
 ### Added
 
@@ -63,6 +65,9 @@ document:
   example right after you restored Knit from a backup. It now starts as soon as its message arrives.
 - Posts to the Nearby and Meshtastic rooms with a lone "x" in them, like "2 x 3" or a kiss at the end, were
   blocked as profanity, and hidden when you received one. They now go through.
+- A modified copy of Knit nearby could reuse a message's id to show its own text instead, or make a message
+  you sent look delivered when it wasn't. Knit now keeps whichever message arrived first and, in a chat
+  already under way, ignores a delivery check meant for another message.
 - If a message reached your relay while your phone was checking it, your phone could miss it until it next
   reconnected, sometimes hours later. It now checks again straight away.
 - When you can only reach someone over LoRa and their radio comes back after missing several of your
