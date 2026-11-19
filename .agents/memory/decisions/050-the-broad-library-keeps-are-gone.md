@@ -159,3 +159,11 @@ moved. All of it is our own code, renamed and shrunk, not a keep rule, and the n
 ceiling is now 11,900,000, about 12% above the measured size, as the last three raises were. Making `MESHCORE_PLANE` a
 code strip (a constant R8 can fold at every wiring site) would win back most of the MeshCore share until the plane
 ships.
+
+## Amendment 2026-11-18 — release/2.12.0: the byte ceiling is 11.9 MB
+
+The 2.12.0 release build on `release/2.12.0` (v2.12.0-beta.0 plus the #343 backport and regenerated profiles) measured
+10,213,876 bytes of defined dex code in the release CI mirror, 13,876 over the 10.2 MB ceiling. The named-package share
+is 6.7%, under the 15% alarm, so the growth since 2.11 is our own code, renamed and shrunk, not a keep rule. The ceiling
+on this branch is 11,900,000, the same number main took the same day for its larger build (main's amendment carries its
+measurements), so the forward-port keeps one value.
