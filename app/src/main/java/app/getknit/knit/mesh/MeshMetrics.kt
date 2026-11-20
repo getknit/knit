@@ -236,6 +236,12 @@ enum class DropReason {
     BLOB_CONTROL_NOT_FROM_LINK,
 
     /**
+     * A sealed `CTL_APP_UPDATE` (ADR 2026-11.29m7) that did not come in on its sender's own link, unflooded: a copy
+     * somebody re-marked for relay, or one a carrier or a spool handed on. Acted on only from the link.
+     */
+    APP_UPDATE_NOT_FROM_LINK,
+
+    /**
      * A compact LoRa DM that opened under its pair key and was refused at delivery (`InboundPipeline.deliverLoraDirect`,
      * ADR 2026-10.x9fa): a plaintext that is not v3 compact content this build reads, or one that is anything but a
      * message, a `CTL_RECEIPT` or a `CTL_REACTION` — a reset, a seed, a profile, a scope config, a transfer, a call

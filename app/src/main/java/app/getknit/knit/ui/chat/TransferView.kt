@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.annotation.StringRes
 import app.getknit.knit.R
 import app.getknit.knit.data.FileTypes
+import app.getknit.knit.data.message.AppUpdateRecord
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.TransferPhase
 import app.getknit.knit.data.message.TransferRecord
@@ -11,6 +12,7 @@ import app.getknit.knit.transfer.TransferRefusal
 import app.getknit.knit.transfer.TransferState
 import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.ui.translate.TranslateTransferModels
+import app.getknit.knit.update.VersionNames
 
 /**
  * A direct-transfer row as the card draws it: the persisted [TransferRecord]'s facts overlaid with the
@@ -37,9 +39,11 @@ data class TransferView(
     val modelsNew: Int = 0,
     val modelsHeld: Int = 0,
     val modelsUnknown: Int = 0,
+    /** This app's own update (ADR 2026-11.29m7): the version and hash its offer pinned. Null for anything else. */
+    val app: AppUpdateRecord? = null,
 ) {
     /** An archive or executable: nothing on the device can look inside it, and the card says so before Accept. */
-    val risky: Boolean get() = models == null && FileTypes.isRisky(mime, name)
+    val risky: Boolean get() = models == null && app == null && FileTypes.isRisky(mime, name)
 
     /** An open models offer from the other phone (ADR 2026-11.ejn8): the card says what it means for this one. */
     val incomingModelsOffer: Boolean get() = models != null && phase == TransferPhase.Offered && !outgoing && !interrupted
@@ -83,6 +87,7 @@ fun transferViewFor(
         modelsNew = standings.count { it == ModelStanding.New },
         modelsHeld = standings.count { it == ModelStanding.Held },
         modelsUnknown = standings.count { it == ModelStanding.Unknown },
+        app = record.app,
     )
 }
 
@@ -94,6 +99,10 @@ fun transferTitle(
     context: Context,
     view: TransferView,
 ): String {
+    view.app?.let { app ->
+        val name = VersionNames.nameOf(app.versionCode) ?: return context.getString(R.string.chat_transfer_app_title_plain)
+        return context.getString(R.string.chat_transfer_app_title, name)
+    }
     val pins = view.models ?: return view.name
     val known = pins.mapNotNull(TranslateDirection::ofPin)
     return if (known.size == pins.size && known.isNotEmpty()) {

@@ -36,6 +36,8 @@ import app.getknit.knit.ui.image.BlobKeyer
 import app.getknit.knit.ui.image.LinkCardFetcher
 import app.getknit.knit.ui.image.LinkCardKeyer
 import app.getknit.knit.ui.theme.ThemePreferences
+import app.getknit.knit.update.PeerUpdates
+import app.getknit.knit.update.UpdateStaging
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
@@ -130,6 +132,16 @@ class KnitApplication :
             runCatching { koinApp.koin.get<DirectHostGuard>().load() }
         }
 
+        // Peer updates (ADR 2026-11.29m7): announce this build to contacts that stay on a link, and drop staged APKs
+        // nobody installed within a week, or whose transfer the process died in.
+        if (BuildConfig.PEER_UPDATE) {
+            koinApp.koin.get<CoroutineScope>().launch {
+                delay(SWEEP_DELAY_MS)
+                runCatching { koinApp.koin.get<UpdateStaging>().sweep(STAGED_UPDATE_KEEP_MS) }
+                koinApp.koin.get<PeerUpdates>().start()
+            }
+        }
+
         // Clear a Wi-Fi Direct group a previous run left on air. Nothing removes one when the process dies
         // mid-transfer, and a live group both beacons our credentials and keeps Wi-Fi Aware off the radio.
         // Cheap when there is nothing to find (a binder and one query), never touches a group it did not
@@ -191,6 +203,9 @@ class KnitApplication :
     private companion object {
         /** How long the leftover-group sweep waits out the cold-start window: a stale group has waited this long already. */
         const val SWEEP_DELAY_MS = 8_000L
+
+        /** How long a staged peer update waits for its install before the sweep drops it (ADR 2026-11.29m7). */
+        const val STAGED_UPDATE_KEEP_MS = 7 * 24 * 60 * 60_000L
 
         /** How long the ANR import waits out the cold start; the platform keeps a record for days. */
         const val ANR_IMPORT_DELAY_MS = 5_000L

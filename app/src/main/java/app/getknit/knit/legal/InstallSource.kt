@@ -3,21 +3,24 @@ package app.getknit.knit.legal
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import app.getknit.knit.BuildConfig
 
 /**
  * Where this copy of Knit came from, as far as the installer package can say. The three channels carry
  * three different signing keys (Play App Signing, our release key on GitHub and F-Droid, the share key an
  * "Install offline" copy is re-signed with), so this is the first thing a bug report needs and the fact the
  * review prompt routes on. [SIDELOADED] covers the GitHub APK, a shared copy and every other store alike —
- * the installer of a sideload is the package installer, which says nothing about origin.
+ * the installer of a sideload is the package installer, which says nothing about origin. [PEER] is Knit itself: a peer
+ * update installs through Knit's own session (ADR 2026-11.29m7), so the installer of record becomes this package.
  */
-enum class InstallSource { PLAY, FDROID, SIDELOADED }
+enum class InstallSource { PLAY, FDROID, SIDELOADED, PEER }
 
 /** Maps an installer package name (null when unknown) to the channel it stands for. Pure, for the JVM tests. */
 fun installSourceOf(installer: String?): InstallSource =
     when (installer) {
         PLAY_STORE_PACKAGE -> InstallSource.PLAY
         in FDROID_PACKAGES -> InstallSource.FDROID
+        BuildConfig.APPLICATION_ID -> InstallSource.PEER
         else -> InstallSource.SIDELOADED
     }
 

@@ -206,6 +206,15 @@ val bleFeedWindow = (project.findProperty("bleFeedWindow") as? String)?.toBoolea
 // `if (WEAR_STATUS)` branch), and the defaults live in source so F-Droid's -P-free rebuild stays identical.
 val wearStatus = (project.findProperty("wearStatus") as? String)?.toBoolean()
 
+// Peer updates (ADR 2026-11.29m7): an older Knit asks a nearby contact for the newer one, which crosses over a direct
+// transfer and installs over this one. ON in debug, OFF in a shipped artifact until its device trial passes, overridable
+// with `-PpeerUpdate=true|false`, and never in an App Bundle: Play forbids an app updating itself outside Play, so a
+// bundle build carries neither the flag nor the install permission (`src/peerUpdate/AndroidManifest.xml`). The defaults
+// live in source so F-Droid's -P-free rebuild stays identical.
+val peerUpdate = (project.findProperty("peerUpdate") as? String)?.toBoolean()
+val peerUpdateInDebug = !bundleRequested && (peerUpdate ?: true)
+val peerUpdateInRelease = !bundleRequested && (peerUpdate ?: false)
+
 // Direct Internet links between contacts (ADR 2026-10.a5yj): an on-demand UDP link to one contact, the rendezvous cast
 // through a spool. Introduced at 2.11.0: ON in every build (the ADR's 2026-11-08 amendment) and OFF in the slim APK,
 // overridable with `-PdirectLinks=true|false`. Read once, as `DIRECT_LINKS_WIRED` in `di/`; off, nothing of the link is
@@ -445,6 +454,8 @@ android {
         buildConfigField("boolean", "BLE_FEED_WINDOW", (bleFeedWindow ?: true).toString())
         // The Wear OS status service is ON in debug so a lab phone serves a paired watch; see `wearStatus` above.
         buildConfigField("boolean", "WEAR_STATUS", (wearStatus ?: true).toString())
+        // Peer updates are ON in debug so a lab pair can trade a build; see `peerUpdate` above.
+        buildConfigField("boolean", "PEER_UPDATE", peerUpdateInDebug.toString())
         // Direct links are ON in debug so the unit suite, the lab and a lab phone run them; see `directLinks` above.
         buildConfigField("boolean", "DIRECT_LINKS", (directLinks ?: true).toString())
         // Presence keys are ON in every build, and writing tags is ON in debug so a lab phone blinds; see `blindAdvert` above.
@@ -572,6 +583,8 @@ android {
             buildConfigField("boolean", "BLE_FEED_WINDOW", (bleFeedWindow ?: true).toString())
             // The Wear OS status service is a prototype: dark in a shipped artifact.
             buildConfigField("boolean", "WEAR_STATUS", (wearStatus ?: false).toString())
+            // Peer updates wait for their device trial: dark in a shipped artifact, and never in a bundle.
+            buildConfigField("boolean", "PEER_UPDATE", peerUpdateInRelease.toString())
             // Direct links are introduced at 2.11.0: on in a shipped artifact, off in the slim APK.
             buildConfigField("boolean", "DIRECT_LINKS", (directLinks ?: true).toString())
             // Presence keys ship ahead of the writer: on in a shipped artifact. Writing tags waits for N+1: dark there.
@@ -1026,6 +1039,9 @@ androidComponents {
         }
         if (if (debug) faceRedactionInDebug else faceRedactionInRelease) {
             variant.sources.assets?.addStaticSourceDirectory("src/faceRedaction/assets")
+        }
+        if (if (debug) peerUpdateInDebug else peerUpdateInRelease) {
+            variant.sources.manifests.addStaticManifestFile("src/peerUpdate/AndroidManifest.xml")
         }
     }
 }

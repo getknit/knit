@@ -8,6 +8,8 @@ import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.isKoinStarted
 import app.getknit.knit.ui.hasRadioPermissions
+import app.getknit.knit.update.UpdateLanded
+import app.getknit.knit.update.UpdateStaging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -40,6 +42,7 @@ class BootReceiver :
     private val settings: SettingsStore by inject()
     private val scope: CoroutineScope by inject()
     private val startGate: MeshStartGate by inject()
+    private val updateStaging: UpdateStaging by inject()
 
     override fun onReceive(
         context: Context,
@@ -55,6 +58,15 @@ class BootReceiver :
         val appContext = context.applicationContext
         val pending = goAsync()
         scope.launch {
+            // A peer update this phone installed (ADR 2026-11.29m7) brings the UI back too; any update clears the staging.
+            if (intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+                runCatching {
+                    UpdateLanded.onReplaced(
+                        appContext,
+                        updateStaging,
+                    )
+                }.onFailure { Log.w(TAG, "update staging not settled", it) }
+            }
             runCatching {
                 if (shouldStartMeshOnBoot(appContext, settings)) {
                     startGate.record(MeshService.startFromBoot(appContext))

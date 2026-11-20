@@ -5,11 +5,14 @@ import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.message.withVideo
+import app.getknit.knit.mesh.protocol.AppPin
+import app.getknit.knit.mesh.protocol.AppUpdatePayload
 import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.DirectInvite
+import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.GroupKeyPayload
 import app.getknit.knit.mesh.protocol.GroupRootPayload
@@ -635,6 +638,52 @@ class MessageContentTest {
     }
 
     @Test
+    fun anAppUpdateOfferCarriesItsPinAndAFileOfferPaysNothingForIt() {
+        // ADR 2026-11.29m7: the request id, the versionCode and the APK's whole SHA-256 ride beside a file offer.
+        val pin = AppPin(requestId = FrameId.new(), versionCode = 21_400_900L, sha256 = ByteArray(AppPin.SHA256_BYTES) { it.toByte() })
+        val offer = TransferPayload(id = "t4", phase = TransferPayload.PHASE_OFFER, name = "Knit-2.14.0.apk", size = 9L, ap = pin)
+        val decoded = MessageContent.decode(MessageContent(body = "", ctl = MessageContent.CTL_TRANSFER, xf = offer).encode())!!
+        assertEquals(offer, decoded.xf)
+
+        fun size(p: TransferPayload) = MessageContent(body = "", ctl = MessageContent.CTL_TRANSFER, xf = p).encode().size
+        // 72 bytes: the "ap" key (3), a map header (1), "r" and a 22-char id (2 + 23), "v" and a uint32 (2 + 5), "h" and a
+        // 32-byte string (2 + 34).
+        assertEquals(72, size(offer) - size(offer.copy(ap = null)))
+        val bytes = MessageContent(body = "", ctl = MessageContent.CTL_TRANSFER, xf = offer.copy(ap = null)).encode()
+        assertFalse(bytes.toList().windowed(3).any { it == listOf(0x62.toByte(), 'a'.code.toByte(), 'p'.code.toByte()) })
+    }
+
+    @Test
+    fun theAppUpdatePayloadRoundTripsEveryFieldAndStaysOffOrdinaryMessages() {
+        val announce =
+            AppUpdatePayload(
+                phase = AppUpdatePayload.PHASE_ANNOUNCE,
+                versionCode = 21_400_900L,
+                versionName = "2.14.0",
+                certPin = Long.MIN_VALUE + 7,
+                size = 124_000_000L,
+                minSdk = 29,
+                slim = true,
+                requestId = FrameId.new(),
+                reason = AppUpdatePayload.REASON_BUSY,
+            )
+        val decoded = MessageContent.decode(MessageContent(body = "", ctl = MessageContent.CTL_APP_UPDATE, au = announce).encode())!!
+        assertEquals(MessageContent.CTL_APP_UPDATE, decoded.ctl)
+        assertEquals(announce, decoded.au)
+        // The compact layout does not model it, so the named form carries it whole.
+        assertNull(MessageContentV2.encodeOrNull(MessageContent(body = "", ctl = MessageContent.CTL_APP_UPDATE, au = announce)))
+        // A request costs its phase, version and id only: the optional fields are absent, not null.
+        val request = AppUpdatePayload(phase = AppUpdatePayload.PHASE_REQUEST, versionCode = 21_400_900L, requestId = FrameId.new())
+        val content = MessageContent(body = "", ctl = MessageContent.CTL_APP_UPDATE, au = request)
+        assertEquals(request, MessageContent.decode(content.encode())!!.au)
+        // 39 bytes: the "au" key (3), a map header (1), "p" and a small uint (2 + 1), "v" and a uint32 (2 + 5), "r" and a
+        // 22-char id (2 + 23).
+        val bare = MessageContent(body = "", ctl = MessageContent.CTL_APP_UPDATE).encode().size
+        assertEquals(39, content.encode().size - bare)
+        assertNull(MessageContent.decode(MessageContent(body = "hi").encode())!!.au)
+    }
+
+    @Test
     fun theCallPayloadRoundTripsEveryFieldAndStaysOffOrdinaryMessages() {
         val cands =
             CallPayload(
@@ -710,7 +759,7 @@ class MessageContentTest {
          * [MessageContent.VERSION]), the ctl machinery and the profile pad (`p`). A new conversational field must be
          * mapped in [sealedContent]; only a new machinery field belongs here.
          */
-        val MACHINERY = setOf("v", "ctl", "gk", "ack", "rp", "pr", "acks", "xf", "cl", "sc", "pk", "rm", "p")
+        val MACHINERY = setOf("v", "ctl", "gk", "ack", "rp", "pr", "acks", "xf", "cl", "sc", "pk", "au", "rm", "p")
 
         /** Omits what equals its default, as the CBOR codec does, so the keys left are the fields the row filled. */
         val JSON = Json { encodeDefaults = false }

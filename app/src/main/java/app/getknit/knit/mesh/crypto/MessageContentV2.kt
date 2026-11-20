@@ -66,9 +66,10 @@ internal object MessageContentV2 {
 
     /**
      * The rare control payloads the compact layout does not model: the group key, a transfer, a call, a scope config, a
-     * presence key.
+     * presence key, an app update.
      */
-    private fun MessageContent.hasNamedOnlyPayload(): Boolean = gk != null || xf != null || cl != null || sc != null || pk != null
+    private fun MessageContent.hasNamedOnlyPayload(): Boolean =
+        gk != null || xf != null || cl != null || sc != null || pk != null || au != null
 
     /** Signals one non-canonical id/hash/key inside [wireOf]: the whole content falls back to the named form. */
     private class NonCanonical : RuntimeException()

@@ -624,6 +624,40 @@
     <string name="chat_transfer_choose_models_body">So they can translate offline without downloading anything</string>
     <string name="chat_transfer_models_incoming">Wants to send you translation models</string>
     <string name="chat_transfer_models_installed">Installed</string>
+    <!-- Peer updates (ADR 2026-11.29m7): a nearby contact runs a newer Knit and this phone can ask them for it over a
+         direct transfer. %1$s is the contact's name, %2$s a version such as 2.14.0. Shown on one line above the composer. -->
+    <string name="update_hint">%1$s has Knit %2$s. Ask for it?</string>
+    <string name="update_hint_ask">Ask</string>
+    <string name="update_hint_ask_again">Ask again</string>
+    <string name="update_hint_waiting">Waiting for %1$s to send Knit %2$s…</string>
+    <string name="update_hint_answered">%1$s is sending Knit %2$s</string>
+    <!-- %1$s is the contact's name. They turned the ask down, or were busy, or no longer run that version. -->
+    <string name="update_hint_declined">%1$s can\'t send it right now</string>
+    <string name="update_hint_declined_busy">%1$s is busy with a call or another transfer</string>
+    <string name="update_hint_declined_gone">%1$s no longer has that version</string>
+    <string name="update_hint_unanswered">%1$s didn\'t answer</string>
+    <!-- The close button's spoken label on the update hint. -->
+    <string name="update_hint_dismiss">Hide this update</string>
+    <string name="update_hint_gone">That update can\'t install on this phone</string>
+    <!-- On the phone that was asked. %1$s is the contact's name, %2$s this phone's version, %3$s its size, e.g. 124 MB. -->
+    <string name="update_request_band">%1$s asked for your Knit %2$s (%3$s)</string>
+    <string name="update_request_send">Send</string>
+    <string name="update_request_not_now">Not now</string>
+    <string name="update_request_gone">That ask has expired</string>
+    <!-- The card of a transfer carrying Knit itself. %1$s is the version, e.g. 2.14.0. -->
+    <string name="chat_transfer_app_title">Knit %1$s</string>
+    <string name="chat_transfer_app_title_plain">Knit update</string>
+    <string name="chat_transfer_app_ready">Ready to install</string>
+    <string name="chat_transfer_app_installing">Installing…</string>
+    <!-- The button that installs the received update; Knit closes and opens again. -->
+    <string name="chat_transfer_app_install">Install and restart</string>
+    <string name="update_install_failed">Knit couldn\'t install the update</string>
+    <string name="update_install_gone">The update is no longer on this phone</string>
+    <!-- A dialog before Android's "Install unknown apps" screen, which Knit needs once to install its own update. -->
+    <string name="update_grant_title">Let Knit install its update</string>
+    <string name="update_grant_body">Android asks once before an app can install updates itself. Knit only ever installs a newer Knit signed by the same key, never any other app. Turn on \"Allow from this source\", then come back and ask again.</string>
+    <string name="update_grant_open">Open settings</string>
+    <string name="update_grant_cancel">Not now</string>
     <string name="chat_transfer_models_nothing_new">Nothing new for this phone</string>
     <plurals name="chat_transfer_models_held">
         <item quantity="one">%d is already on this phone</item>
@@ -638,6 +672,11 @@
     <!-- The direct-transfer offer heads-up. Its own notification, so it wears the transfer mark. -->
     <string name="notif_transfer_offer">Wants to send you %1$s</string>
     <string name="notif_transfer_offer_sized">Wants to send you %1$s (%2$s)</string>
+    <!-- A nearby contact asked this phone for its version of Knit (ADR 2026-11.29m7). %1$s is this phone's version, e.g. 2.14.0. -->
+    <string name="notif_update_request">Asked for your Knit %1$s</string>
+    <!-- Shown once Knit has installed an update a nearby contact sent (ADR 2026-11.29m7). %1$s is the new version, e.g. 2.14.0. -->
+    <string name="update_landed_title">Knit updated to %1$s</string>
+    <string name="update_landed_body">Tap to open Knit.</string>
 
     <!-- Voice notes -->
     <string name="chat_voice_record">Hold to record a voice message</string>
@@ -1662,6 +1701,8 @@
     <string name="about_install_source_play">Google Play</string>
     <string name="about_install_source_fdroid">F-Droid</string>
     <string name="about_install_source_sideloaded">Sideloaded (GitHub, a shared APK or another store)</string>
+    <!-- Knit installed this version itself, from a nearby contact's phone (ADR 2026-11.29m7). -->
+    <string name="about_install_source_peer">Updated from a nearby contact</string>
     <string name="about_build_android">Android</string>
     <string name="about_build_android_value">%1$s (SDK %2$d)</string>
     <string name="about_build_device">Device</string>

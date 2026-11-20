@@ -6,8 +6,9 @@ themselves and then tear down (`MAX_TRANSFER_BYTES` = 8 GiB, against the 8 MiB a
 them, and the chat keeps a small record of what happened.
 
 Decisions: ADR 2026-09.wtmz (the carrier and the protocol), ADR 2026-09.37ce (the seal), ADR 2026-09.7uqe
-(the surfaces), ADR 2026-10.5hzt (READY sent until the receiver connects; the sender's Retry). Read those
-before changing behaviour — this file is the map, they are the reasoning.
+(the surfaces), ADR 2026-10.5hzt (READY sent until the receiver connects; the sender's Retry), ADR 2026-11.29m7
+(Knit's own update between nearby contacts, `update/`). Read those before changing behaviour — this file is the map,
+they are the reasoning.
 
 ## Shape
 
@@ -48,6 +49,19 @@ before changing behaviour — this file is the map, they are the reasoning.
   (`OfferReading.read`).
 - **`onSignal` refuses an id that is not a canonical `FrameId`, in every phase** (ADR 2026-11.ejn8). The id keys the
   row and, before that check, nothing validated it.
+- **Knit's own update rides it too** (ADR 2026-11.29m7, `BuildConfig.PEER_UPDATE`: on in debug, off in a shipped
+  artifact, never in a bundle). The older phone asks over a link-local sealed `MessageContent.CTL_APP_UPDATE` (`au`,
+  `AppUpdatePayload`: ANNOUNCE, REQUEST, DECLINE), sent like a presence key (`MeshManager.sendAppUpdate`, never
+  custodied) and acted on only from its sender's own link (`InboundPipeline.onAppUpdateSignal`,
+  `DropReason.APP_UPDATE_NOT_FROM_LINK`). `update/PeerUpdates` holds the announces, asks and requests in memory
+  (`UpdateEligibility`, `VersionNames`); the newer phone answers with `TransferManager.offerApp`, an ordinary file
+  offer plus `TransferPayload.ap` (`AppPin`). **An `ap` offer accepts itself only when it answers this phone's own ask**
+  (`TransferAppUpdate.expects`, spent once, read last in `OfferReading.readApp`); any other is dropped without a row.
+  The bytes stage under `noBackupFilesDir/update/<transfer id>/` (`UpdateStaging`), `check()` hashes them against the
+  pin and reads the archive (`AndroidAppUpdateFiles`), and `TransferRecord.app` keeps the pin for the card's Install
+  and restart (`UpdateInstaller`: one `PackageInstaller` session, our own package only, the status at the unexported
+  `UpdateStatusReceiver`, `InstallStatusPolicy`). `BootReceiver` hands `MY_PACKAGE_REPLACED` to `UpdateLanded`. The
+  chat's half is `ui/update/PeerUpdateViewModel`, apart from `ChatViewModel`.
 
 ## What will bite you
 
@@ -93,6 +107,10 @@ before changing behaviour — this file is the map, they are the reasoning.
 - **Aware stays paused across a mesh restart** while the radio is lent: `WifiAwareTransport.stop()` no longer clears
   `paused`, and `resume()` on a stopped transport only lifts the hold. A call's group easily outlives a notification
   Pause or a Stop and Start.
+- **A received APK still never gets Open** (`TransferCard`), and Knit installs nothing but its own update, from its own
+  staging, through its own session (ADR 2026-11.29m7). Never route a picked or shared package into `UpdateInstaller`:
+  it takes a transfer id and builds the path itself on purpose. The install-status receiver acts only on the session
+  `UpdateStaging`'s pending record names and launches only the installer's own confirm intent, grants stripped.
 - **A force-stop mid-transfer strands a group on air.** `dumpsys wifip2p` shows `curState=GroupCreatedState`
   with the app dead. The startup sweep in `KnitApplication` clears it 8 s into launch; `…debug.XFER --ez
   sweep true` runs it on demand.

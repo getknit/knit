@@ -332,10 +332,10 @@ doc). **Don't start a deferred item without explicit direction.**
   from a scoped search to the thread with its draft intact) and the ATF pass over the field.
 
 - **Direct file transfer's follow-ons** (ADR 2026-09.wtmz, `context/direct-transfer.md`). Shipped as a
-  DM-only overflow item; four things were named and left. **The APK entry point** is one call away —
-  `TransferManager.offer(peerId, prepareKnitApk(context).toString())`, since `ui/invite/ShareApk.kt` already
-  stages the installable APK — and is held back only because handing someone an APK deserves its own
-  thinking about what the receiving side says. **Receiver-side content screening**: nothing looks inside the
+  DM-only overflow item; four things were named and left. **The APK entry point** became peer updates (ADR
+  2026-11.29m7, `update/`): the older phone asks a nearby contact for the newer build, which installs over this one.
+  **Still owed:** its device trial (the ADR's), then `-PpeerUpdate=true` for a shipped artifact; offering an update
+  unasked from the newer side; serving from a Play install's merged copy. **Receiver-side content screening**: nothing looks inside the
   file, which the consent sheet states plainly rather than papering over; the moderation pipeline is built
   for 8 MiB attachments in the blob store, not for a gigabyte in Downloads. **A 2.4 GHz re-host** if a
   screen-off client's throughput ever collapses (it did not — screen-off costs about 3%). **The API 30-32
@@ -729,7 +729,9 @@ doc). **Don't start a deferred item without explicit direction.**
   serves decrypted bytes (the same proxy-descriptor machinery a PDF preview wants), because ADR 029's
   invariant forbids the plaintext staging file the obvious `FileProvider` route would need. Saving through
   the storage picker is the only exit today. **Before building it:** the provider must never expose an
-  install-capable grant for a package, or the platform's unknown-sources gate stops being the last word.
+  install-capable grant for a package, or the platform's unknown-sources gate stops being the last word. Knit's own
+  peer update (ADR 2026-11.29m7) is no exception to this: it installs from private staging through a session and
+  never goes through a provider.
 
 - **BLE promotion gate on A2DP audio** — the adaptive scan throttle now drops the **scan** to its floor
   while streaming (`ScanDemandPolicy` / the demand-gated `scanLoop`), but **connects** are still not gated

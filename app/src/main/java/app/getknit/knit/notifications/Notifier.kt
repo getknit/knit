@@ -174,6 +174,16 @@ interface Notifier {
         sizeBytes: Long?,
     )
 
+    /**
+     * Posts the heads-up for a nearby contact's ask for this phone's Knit (ADR 2026-11.29m7). It opens the DM, whose
+     * band carries Send and Not now; the ask waits ten minutes, so it stands on its own like a transfer offer.
+     */
+    fun notifyUpdateRequest(
+        peerId: String,
+        peerName: String,
+        peerAvatarBytes: ByteArray?,
+    )
+
     /** Posts a high-priority "you were mentioned" notification (separate Mentions entry for the thread). */
     fun notifyMention(
         incoming: NotifMessage,

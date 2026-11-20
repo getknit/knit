@@ -308,6 +308,7 @@ carries; never renumber an old one.
 | [2026-10.yvn6](decisions/2026-10-yvn6-ble-links-step-down-to-the-coded-phy-at-range.md) | BLE links step down to the Coded PHY at range | ble, mesh, power |
 | [2026-10.zeja](decisions/2026-10-zeja-what-s-new.md) | What's New: a chat-list card, bundled announcements | ui, onboarding |
 | [2026-11.264w](decisions/2026-11-264w-a-link-proves-the-node-id-its-hello-claims.md) | A link proves the node id its HELLO claims | mesh, security |
+| [2026-11.29m7](decisions/2026-11-29m7-knit-installs-its-own-update-from-a-nearby-contact.md) | Knit installs its own update from a nearby contact | transfer, release, wire, security, privacy |
 | [2026-11.43f7](decisions/2026-11-43f7-a-bluetooth-link-s-reader-waits-for-room-instead-of-dropping.md) | A Bluetooth link's reader waits for room instead of dropping | bluetooth, mesh |
 | [2026-11.4ckq](decisions/2026-11-4ckq-a-peer-s-advertised-photo-is-stored-at-once-and-re-wanted-from-the-database.md) | a peer's advertised photo is stored at once and re-wanted from the database | blobs, contacts |
 | [2026-11.7527](decisions/2026-11-7527-stories-ride-as-one-dm-form-frame-sealed-to-an-audience-key.md) | stories ride as one DM-form frame sealed to an audience key, or as a Nearby room post | stories, wire, crypto, custody, privacy |

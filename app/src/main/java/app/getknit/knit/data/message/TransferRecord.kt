@@ -1,8 +1,10 @@
 package app.getknit.knit.data.message
 
+import app.getknit.knit.mesh.protocol.AppPin
 import app.getknit.knit.mesh.protocol.TransferPayload
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.util.Locale
 
 /**
  * Where a direct Wi-Fi file transfer stands. One vocabulary for the live state (`transfer/TransferManager`),
@@ -26,6 +28,22 @@ enum class TransferPhase {
         get() = this == Done || this == Declined || this == Expired || this == Cancelled || this == Failed
 }
 
+/** [TransferRecord.app]: the update an app-update transfer carried, as its offer pinned it. [sha256] is lowercase hex. */
+@Serializable
+data class AppUpdateRecord(
+    val versionCode: Long,
+    val sha256: String,
+) {
+    companion object {
+        /** The record of an offer's [pin]. */
+        fun of(pin: AppPin): AppUpdateRecord = AppUpdateRecord(pin.versionCode, hexOf(pin.sha256))
+
+        /** [bytes] as lowercase hex, the spelling [sha256] is stored and compared in. */
+        fun hexOf(bytes: ByteArray): String =
+            buildString(bytes.size * 2) { bytes.forEach { append(String.format(Locale.ROOT, "%02x", it)) } }
+    }
+}
+
 /**
  * What a [MessageEntity.KIND_FILE_TRANSFER] row's [MessageEntity.body] records: the file that was offered
  * ([name], [size], [mime]), which side offered it, how far it got, and — once received — where it was saved.
@@ -39,6 +57,10 @@ enum class TransferPhase {
  *
  * A bundle of translation models (ADR 2026-11.ejn8) keeps its direction pins in [models], which the card reads
  * through this phone's own table; [name] is only the label that went with it, and Retry re-offers the pins.
+ *
+ * This app's own update (ADR 2026-11.29m7) keeps [app]: the version and SHA-256 the offer pinned. On the receiving
+ * side a Done record's card offers the install, which finds the staged APK by this record's [id] and checks it against
+ * [app] again as it writes the install session. Never retried: the asker asks again instead.
  *
  * Progress is not here either — the row is rewritten only on a phase change, and the card reads live bytes
  * from the manager's state. A non-terminal record with no live state (the process died mid-transfer) is
@@ -57,6 +79,7 @@ data class TransferRecord(
     val sourceUri: String? = null,
     val retried: Boolean = false,
     val models: List<Long>? = null,
+    val app: AppUpdateRecord? = null,
 ) {
     fun encode(): String = json.encodeToString(this)
 

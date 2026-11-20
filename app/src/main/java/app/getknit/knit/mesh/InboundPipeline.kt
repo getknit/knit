@@ -74,6 +74,7 @@ import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.link.LinkClaims
 import app.getknit.knit.mesh.lora.MeshtasticProto
 import app.getknit.knit.mesh.lora.OpenedDirect
+import app.getknit.knit.mesh.protocol.AppUpdatePayload
 import app.getknit.knit.mesh.protocol.BadgeEntry
 import app.getknit.knit.mesh.protocol.BlobCancelContent
 import app.getknit.knit.mesh.protocol.BlobHasContent
@@ -125,6 +126,7 @@ import app.getknit.knit.notifications.incomingNotification
 import app.getknit.knit.notifications.mentionNotification
 import app.getknit.knit.notifications.reactionNotificationKey
 import app.getknit.knit.transfer.TransferNotice
+import app.getknit.knit.update.UpdateRequest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -290,6 +292,11 @@ class InboundPipeline(
     // A sealed CTL_TRANSFER landed (transfer/TransferManager.onSignal): direct-transfer signaling, handed on
     // post-commit like the rest. True when it admitted a live incoming OFFER, which is what earns a notification.
     private val onTransferCtl: suspend (senderId: String, payload: TransferPayload, sentAt: Long) -> TransferNotice? = { _, _, _ -> null },
+    // A sealed CTL_APP_UPDATE landed from an accepted contact (update/PeerUpdates.onSignal, ADR 2026-11.29m7), handed on
+    // post-commit; `fromOwnLink` says its sender's own link carried it, unflooded. Non-null for a contact's ask of this
+    // phone's build that was admitted, which is what earns a notification.
+    private val onAppUpdateCtl: suspend (senderId: String, payload: AppUpdatePayload, fromOwnLink: Boolean) -> UpdateRequest? =
+        { _, _, _ -> null },
     // A sealed CTL_CALL landed (call/CallManager.onSignal; experimental, docs/VOICE_CALLS.md): voice-call signaling,
     // handed on post-commit from an accepted thread only. The call layer owns ringing and every notification, and the
     // hook must return without waiting — it runs on this frame's inbound path.
@@ -422,7 +429,7 @@ class InboundPipeline(
         // path). It is not healed by a re-serve: the custody capture above already ran, so our digest folds the
         // frame and no peer offers it again. A caller's cancellation is rethrown rather than logged here, and the
         // router's own deliveries never see one (ADR 2026-10.f82h).
-        runCatchingUnlessCancelled { dispatchByType(env, wire, fromNodeId, kind) }
+        runCatchingUnlessCancelled { dispatchByType(env, wire, fromNodeId, kind, onLink) }
             .onFailure { Log.w(TAG, "handler error on ${env.type} ${env.id} from ${env.senderId}: ${it.message}") }
     }
 
@@ -492,6 +499,7 @@ class InboundPipeline(
         wire: WireEnvelope,
         fromNodeId: String,
         kind: TransportKind,
+        onLink: Boolean = false,
     ) {
         // What the source's *plane* is read for: a delivery receipt records which plane it reached us on, so the
         // ✓✓ can say how the message got there (MessageEntity.receivedVia), and a holder's answer to a proof query
@@ -500,7 +508,7 @@ class InboundPipeline(
         val plane = planeOf(fromNodeId, kind)
         when (env.type) {
             FrameType.CHAT -> {
-                handleChat(env, plane, signed = wire.sig.isNotEmpty(), source = InboundFrame(wire, env, fromNodeId, kind))
+                handleChat(env, plane, signed = wire.sig.isNotEmpty(), source = InboundFrame(wire, env, fromNodeId, kind, onLink))
             }
 
             FrameType.GROUP_UPDATE -> {
@@ -1966,7 +1974,7 @@ class InboundPipeline(
             committed
         }
         if (plain.ctl != null) {
-            handleCtlDm(env, plain, me, now, plane, commit)
+            handleCtlDm(env, plain, me, now, plane, commit, source)
             return
         }
         deliverChat(
@@ -2090,6 +2098,8 @@ class InboundPipeline(
         now: Long,
         plane: DeliveryPlane,
         commit: suspend (suspend (RatchetSessions.OpenedUnder) -> Unit) -> Boolean,
+        // The frame as it arrived, for the one ctl that must have come over its sender's own link (CTL_APP_UPDATE).
+        source: InboundFrame? = null,
     ) {
         var outcome = CtlOutcome()
         val committed = commit { under -> outcome = applyCtlInTxn(env, plain, me, now, plane, under) }
@@ -2150,6 +2160,10 @@ class InboundPipeline(
             MessageContent.CTL_PRESENCE_KEY -> {
                 // Counted after the commit, so a rolled-back write is never counted as stored.
                 notePresenceKey(env, outcome.presenceKey)
+            }
+
+            MessageContent.CTL_APP_UPDATE -> {
+                plain.au?.let { onAppUpdateSignal(env, it, me, source) }
             }
 
             else -> {}
@@ -5007,6 +5021,33 @@ class InboundPipeline(
                 sizeBytes = admitted.size,
             )
         }
+    }
+
+    /**
+     * A sealed `CTL_APP_UPDATE` (ADR 2026-11.29m7): from an accepted thread only, like the transfer it leads to, and only
+     * the copy its sender's own link carried, unflooded. `relay` sits outside the signed bytes, so a flooded copy is one
+     * somebody re-marked, and it would pass the coordinator's "the sender is near" check whenever the contact happened to
+     * be: the `BLOB_CONTROL_NOT_FROM_LINK` gate, applied to a sealed frame. A contact's admitted ask earns a notification.
+     */
+    private suspend fun onAppUpdateSignal(
+        env: RelayEnvelope,
+        payload: AppUpdatePayload,
+        me: String,
+        source: InboundFrame?,
+    ) {
+        if (!isAccepted(env.senderId, me)) return
+        val fromOwnLink = source != null && source.onLink && source.fromNodeId == env.senderId && !source.wire.relay
+        if (!fromOwnLink) {
+            metrics.onDropped(DropReason.APP_UPDATE_NOT_FROM_LINK)
+            return
+        }
+        val asked = onAppUpdateCtl(env.senderId, payload, true) ?: return
+        val peer = peers.find(env.senderId)
+        notifier.notifyUpdateRequest(
+            peerId = asked.peerId,
+            peerName = peers.labelIndex().labelFor(env.senderId, peer?.name).text,
+            peerAvatarBytes = peer?.avatarHash?.let { blobs.bytes(it) },
+        )
     }
 
     /** Fires a "new message" notification for an inbound chat in [conversationId] (skips our own and empty messages). */

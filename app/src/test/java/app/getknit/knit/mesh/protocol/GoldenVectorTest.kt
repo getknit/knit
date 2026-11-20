@@ -392,6 +392,54 @@ class GoldenVectorTest {
                             mime = "video/mp4",
                         ),
                 ).encode(),
+            // A peer update (ADR 2026-11.29m7): an OFFER of this app's own APK carries `ap` beside the file's facts, and the
+            // link-local CTL_APP_UPDATE carries `au`, the announce, the ask and its decline, on the named form only.
+            "messageContentTransferOfferApp" to
+                MessageContent(
+                    body = "",
+                    ctl = MessageContent.CTL_TRANSFER,
+                    xf =
+                        TransferPayload(
+                            id = frameId(3),
+                            phase = TransferPayload.PHASE_OFFER,
+                            name = "Knit-2.14.0.apk",
+                            size = 124_000_000L,
+                            mime = "application/vnd.android.package-archive",
+                            ap = AppPin(requestId = frameId(4), versionCode = 21_400_900L, sha256 = bytes(32, 21)),
+                        ),
+                ).encode(),
+            "messageContentAppUpdateAnnounce" to
+                MessageContent(
+                    body = "",
+                    ctl = MessageContent.CTL_APP_UPDATE,
+                    au =
+                        AppUpdatePayload(
+                            phase = AppUpdatePayload.PHASE_ANNOUNCE,
+                            versionCode = 21_400_900L,
+                            versionName = "2.14.0",
+                            certPin = 0x0123_4567_89ab_cdefL,
+                            size = 124_000_000L,
+                            minSdk = 29,
+                        ),
+                ).encode(),
+            "messageContentAppUpdateRequest" to
+                MessageContent(
+                    body = "",
+                    ctl = MessageContent.CTL_APP_UPDATE,
+                    au = AppUpdatePayload(phase = AppUpdatePayload.PHASE_REQUEST, versionCode = 21_400_900L, requestId = frameId(4)),
+                ).encode(),
+            "messageContentAppUpdateDecline" to
+                MessageContent(
+                    body = "",
+                    ctl = MessageContent.CTL_APP_UPDATE,
+                    au =
+                        AppUpdatePayload(
+                            phase = AppUpdatePayload.PHASE_DECLINE,
+                            versionCode = 21_400_900L,
+                            requestId = frameId(4),
+                            reason = AppUpdatePayload.REASON_NOT_NOW,
+                        ),
+                ).encode(),
             // The sealed voice-call ctl plaintext (docs/VOICE_CALLS.md §3.2; experimental, CAP_CALL builds only): the
             // additive `cl` beside the ctl marker, on the named form like the transfer's (MessageContentV2 refuses it).
             // An OFFER naming the Wi-Fi Direct group its caller would host (§3.10), the callee's joining RINGING, the

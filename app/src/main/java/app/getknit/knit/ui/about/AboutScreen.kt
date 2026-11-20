@@ -434,6 +434,7 @@ private fun InstallSource.labelRes(): Int =
         InstallSource.PLAY -> R.string.about_install_source_play
         InstallSource.FDROID -> R.string.about_install_source_fdroid
         InstallSource.SIDELOADED -> R.string.about_install_source_sideloaded
+        InstallSource.PEER -> R.string.about_install_source_peer
     }
 
 internal fun previewEnvironment(

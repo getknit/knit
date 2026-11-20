@@ -491,6 +491,12 @@ class SettingsStore(
      */
     override val cloneDismissedAt: Flow<Long> = dataStore.data.map { it[KEY_CLONE_DISMISSED_AT] ?: 0L }
 
+    /**
+     * The newest versionCode whose peer-update hint the person closed (ADR 2026-11.29m7), 0 for none: the hint stays
+     * away for that version and anything older, and comes back only for a newer one.
+     */
+    val peerUpdateDismissedVersion: Flow<Long> = dataStore.data.map { it[KEY_PEER_UPDATE_DISMISSED] ?: 0L }
+
     /** What this person has seen of the What's New announcements — see [WhatsNewRecord]. */
     val whatsNewRecord: Flow<WhatsNewRecord> =
         dataStore.data.map {
@@ -1205,6 +1211,10 @@ class SettingsStore(
     /** The user dismissed the clone banner at [value] — see [cloneDismissedAt]. */
     suspend fun setCloneDismissedAt(value: Long) = dataStore.edit { it[KEY_CLONE_DISMISSED_AT] = value }
 
+    /** The person closed the peer-update hint for [versionCode] — see [peerUpdateDismissedVersion]. */
+    suspend fun dismissPeerUpdate(versionCode: Long) =
+        dataStore.edit { it[KEY_PEER_UPDATE_DISMISSED] = maxOf(it[KEY_PEER_UPDATE_DISMISSED] ?: 0L, versionCode) }
+
     /**
      * Seeds the shipped default spools (`res/values/spools.xml`) into [spoolUrls] exactly once, marking
      * the install as seeded so a **removal sticks**. A default the app kept re-adding would not be a
@@ -1406,6 +1416,7 @@ class SettingsStore(
         val KEY_RESTORE_PENDING = booleanPreferencesKey(SettingsKeys.RESTORE_PENDING)
         val KEY_CLONE_SEEN_AT = longPreferencesKey("clone_seen_at")
         val KEY_CLONE_DISMISSED_AT = longPreferencesKey("clone_dismissed_at")
+        val KEY_PEER_UPDATE_DISMISSED = longPreferencesKey("peer_update_dismissed_version")
         val KEY_RELAY_ROOM_NOTICE_DISMISSED = booleanPreferencesKey("relay_room_notice_dismissed")
         val KEY_WHATS_NEW_SEEN = stringPreferencesKey("whats_new_seen")
         val KEY_WHATS_NEW_SHOWN = stringPreferencesKey("whats_new_shown")

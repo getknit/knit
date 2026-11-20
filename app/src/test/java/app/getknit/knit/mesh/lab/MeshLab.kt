@@ -200,6 +200,9 @@ import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.reactionNotificationKey
 import app.getknit.knit.ui.contacts.contactStanding
 import app.getknit.knit.ui.contacts.observeContactSignals
+import app.getknit.knit.update.LocalBuild
+import app.getknit.knit.update.PeerUpdates
+import app.getknit.knit.update.UpdateTimings
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -214,12 +217,15 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -2116,6 +2122,16 @@ class LabNode internal constructor(
     lateinit var manager: MeshManager
         private set
 
+    /**
+     * This node's peer-update coordinator (ADR 2026-11.29m7), rebuilt by boot() as `di/MeshModule` builds it over this
+     * boot's manager, with lab-short timings. It announces and takes nothing until a scenario sets [appBuild].
+     */
+    lateinit var peerUpdates: PeerUpdates
+        private set
+
+    /** The build this node runs as a peer update reads it; null (the default) serves and takes nothing. */
+    @Volatile var appBuild: LocalBuild? = null
+
     /** This boot's notifier — a relaxed mock, so a scenario can count what the person was shown (`coVerify`). */
     lateinit var notifier: Notifier
         private set
@@ -2320,6 +2336,7 @@ class LabNode internal constructor(
                 meshcoreClaims = meshcoreClaims,
                 badgePins = listOf(BadgeKeys.RFC8032_TEST1),
                 onCallSignal = { sender, payload, sentAt -> calls.onSignal(sender, payload, sentAt) },
+                onAppUpdateSignal = { sender, payload, fromOwnLink -> peerUpdates.onSignal(sender, payload, fromOwnLink) },
                 onCallTalk = { _, chunk, _, _, viaRelay -> heardTalk(chunk, viaRelay) },
                 // A node on the lab's Internet takes links as `di/DirectLinkWiring` wires them: the bit in its profile, and
                 // each opened signal handed to its links, resolved late.
@@ -2375,6 +2392,8 @@ class LabNode internal constructor(
                 tombs = CallTombStore(dataStore),
                 networked = { networked },
             )
+        peerUpdates = peerUpdatesOver(scope)
+        peerUpdates.start()
         manager.start()
         // The session's collectors subscribe asynchronously; a frame sent before that is emitted into nobody.
         // The startup seed of our own profile into custody is asynchronous too, and the lab has no cue plane:
@@ -2390,6 +2409,23 @@ class LabNode internal constructor(
         }
         awaitMeshcoreReady()
     }
+
+    /** This boot's peer-update coordinator over its manager, as `di/MeshModule` builds it, with lab-short timings. */
+    private fun peerUpdatesOver(scope: CoroutineScope): PeerUpdates =
+        PeerUpdates(
+            local = { appBuild },
+            signals = manager,
+            neighbors =
+                manager.neighbors
+                    .map { near -> near.mapTo(HashSet()) { peer -> peer.nodeId } }
+                    .stateIn(scope, SharingStarted.Eagerly, emptySet()),
+            candidate = { manager.mayAnnounceUpdateTo(it) },
+            scope = scope,
+            sdkInt = LAB_SDK,
+            clock = now,
+            timings = LAB_UPDATE_TIMINGS,
+            blocked = settings.blockedNodeIds,
+        )
 
     /**
      * This node's LoRa plane over [air], built as `di/MeshModule` builds it: the board provisioned with Knit on
@@ -4602,6 +4638,11 @@ private suspend fun presentsAsItIs(
 
 /** The coding rate every lab MeshCore board reports: 4/5 (the denominator). */
 private const val LAB_CR = 5
+
+// Peer updates in the lab (ADR 2026-11.29m7): a phone's API level for the eligibility rule, and the coordinator's timers
+// shrunk so a scenario's dwell and ask take a moment rather than half a minute.
+private const val LAB_SDK = 34
+private val LAB_UPDATE_TIMINGS = UpdateTimings(dwellMs = 300L, announceRetryMs = 300L)
 
 private const val NANOS_PER_MS = 1_000_000L
 

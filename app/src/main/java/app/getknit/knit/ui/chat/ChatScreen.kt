@@ -300,6 +300,13 @@ import app.getknit.knit.ui.translate.TranslationBlock
 import app.getknit.knit.ui.translate.TranslationShown
 import app.getknit.knit.ui.translate.TranslationToggle
 import app.getknit.knit.ui.translate.translationShown
+import app.getknit.knit.ui.update.PeerUpdateUi
+import app.getknit.knit.ui.update.PeerUpdateViewModel
+import app.getknit.knit.ui.update.UpdateConsent
+import app.getknit.knit.ui.update.UpdateEvent
+import app.getknit.knit.ui.update.UpdateHintLine
+import app.getknit.knit.ui.update.UpdateRequestBand
+import app.getknit.knit.ui.update.openInstallGrant
 import app.getknit.knit.ui.util.countText
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import app.getknit.knit.ui.voice.MicGate
@@ -364,8 +371,18 @@ fun ChatScreen(
     // "Search" in the overflow: the search screen scoped to this thread.
     onSearch: () -> Unit = {},
     viewModel: ChatViewModel = koinViewModel { parametersOf(conversationId) },
+    // A DM's peer update (ADR 2026-11.29m7), kept out of ChatViewModel; inert in a build without peer updates.
+    updates: PeerUpdateViewModel = koinViewModel { parametersOf(conversationId) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val updateHint by updates.hint.collectAsStateWithLifecycle()
+    val updateRequest by updates.request.collectAsStateWithLifecycle()
+    val updateOwnSize by updates.ownSize.collectAsStateWithLifecycle()
+    val updateStaged by updates.staged.collectAsStateWithLifecycle()
+    val updateInstalling by updates.installing.collectAsStateWithLifecycle()
+    val updateConsent by updates.consent.collectAsStateWithLifecycle()
+    // Before Android's "Install unknown apps" screen, which Knit needs once to install its own update.
+    var showUpdateGrant by remember { mutableStateOf(false) }
     val pinned by viewModel.pinned.collectAsStateWithLifecycle()
     val isSending by viewModel.isSending.collectAsStateWithLifecycle()
     val pendingAttachment by viewModel.pendingAttachment.collectAsStateWithLifecycle()
@@ -531,6 +548,14 @@ fun ChatScreen(
     // unlike a Scaffold snackbar which the viewer would cover.
     LaunchedEffect(Unit) {
         viewModel.events.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    }
+    LaunchedEffect(Unit) {
+        updates.events.collect { event ->
+            when (event) {
+                is UpdateEvent.Message -> Toast.makeText(context, event.text, Toast.LENGTH_SHORT).show()
+                UpdateEvent.OpenInstallGrant -> showUpdateGrant = true
+            }
+        }
     }
     LaunchedEffect(Unit) {
         viewModel.saveNeeded.collect(startSave)
@@ -736,9 +761,33 @@ fun ChatScreen(
         onStartMeshCall = viewModel::startMeshCall,
         meshCallFirst = meshCallFirst,
         peerOnline = peerOnline,
-        showTransferConsent = showTransferConsent,
-        onAcceptTransferConsent = viewModel::acceptTransferConsent,
-        onDismissTransferConsent = viewModel::dismissTransferConsent,
+        // A peer update's first transfer reads the same disclosure: an Ask takes the receiving side's, a Send the sending side's.
+        showTransferConsent = showTransferConsent ?: updateConsent?.let { TransferConsent(incoming = it == UpdateConsent.Ask) },
+        onAcceptTransferConsent =
+            if (showTransferConsent == null &&
+                updateConsent != null
+            ) {
+                updates::acceptConsent
+            } else {
+                viewModel::acceptTransferConsent
+            },
+        onDismissTransferConsent = {
+            viewModel.dismissTransferConsent()
+            updates.dismissConsent()
+        },
+        peerUpdate =
+            PeerUpdateUi(
+                hint = updateHint,
+                request = updateRequest,
+                ownSize = updateOwnSize,
+                staged = updateStaged,
+                installing = updateInstalling,
+                onAsk = updates::ask,
+                onDismiss = updates::dismiss,
+                onSend = updates::send,
+                onNotNow = updates::notNow,
+                onInstall = updates::install,
+            ),
         directSend = directSend,
         onChooseFileToSend = viewModel::chooseFileToSend,
         onChooseModelsToSend = viewModel::chooseModelsToSend,
@@ -935,6 +984,27 @@ fun ChatScreen(
     // is the honest complement to the fact that Knit never offers to *open* a file it cannot screen: the
     // bytes still leave only where the user sends them, and an app package still meets the platform's own
     // unknown-sources gate afterwards. See docs/CONTENT_MODERATION.md §7.
+    if (showUpdateGrant) {
+        AlertDialog(
+            onDismissRequest = { showUpdateGrant = false },
+            title = { Text(stringResource(R.string.update_grant_title)) },
+            text = { Text(stringResource(R.string.update_grant_body)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showUpdateGrant = false
+                        openInstallGrant(context)
+                    },
+                ) {
+                    Text(stringResource(R.string.update_grant_open))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUpdateGrant = false }) { Text(stringResource(R.string.update_grant_cancel)) }
+            },
+        )
+    }
+
     riskyFile?.let { pending ->
         AlertDialog(
             onDismissRequest = { riskyFile = null },
@@ -1075,6 +1145,8 @@ internal fun ChatScreenContent(
     onDeclineTransfer: (id: String) -> Unit = {},
     onCancelTransfer: (id: String) -> Unit = {},
     onRetryTransfer: (id: String) -> Unit = {},
+    // A DM's peer update (ADR 2026-11.29m7): the hint, the request band and the staged cards; nothing by default.
+    peerUpdate: PeerUpdateUi = PeerUpdateUi(),
     onClearAttachment: () -> Unit,
     onReceiveImage: (Uri) -> Unit,
     onTyping: (String) -> Unit,
@@ -1777,6 +1849,10 @@ internal fun ChatScreenContent(
                                 onDraftChanged = onDraftChanged,
                                 formatting = !state.isBridged,
                                 draftTranslate = draftTranslate,
+                                aboveField =
+                                    peerUpdate.hint?.let { hint ->
+                                        { UpdateHintLine(state.title, hint, onAsk = peerUpdate.onAsk, onDismiss = peerUpdate.onDismiss) }
+                                    },
                                 onTranslateDraft = onTranslateDraft,
                                 onUndoDraftTranslation = onUndoDraftTranslation,
                                 onDraftNotThisLanguage = onDraftNotThisLanguage,
@@ -1848,6 +1924,15 @@ internal fun ChatScreenContent(
                         )
                     }
                     if (state.commonsStale) CommonsStaleNotice(onClick = { onOpenCommonsDetails(conversationId) })
+                    peerUpdate.request?.let {
+                        UpdateRequestBand(
+                            peerName = state.title,
+                            versionName = BuildConfig.VERSION_NAME,
+                            size = peerUpdate.ownSize,
+                            onSend = peerUpdate.onSend,
+                            onNotNow = peerUpdate.onNotNow,
+                        )
+                    }
                 }
                 // Cold open: the state is a five-way combine, and its Room arm reads the *whole* thread and folds
                 // every row before it first emits. On a conversation with a lot of history that gap is long
@@ -1963,6 +2048,9 @@ internal fun ChatScreenContent(
                                             onCancel = { onCancelTransfer(transfer.id) },
                                             modifier = itemMotion,
                                             onRetry = { onRetryTransfer(transfer.id) },
+                                            installReady = transfer.id in peerUpdate.staged,
+                                            installing = transfer.id in peerUpdate.installing,
+                                            onInstall = { transfer.app?.let { peerUpdate.onInstall(transfer.id, it) } },
                                         )
                                     } else if (notice != null) {
                                         SystemNotice(text = notice, modifier = itemMotion)
@@ -4980,6 +5068,8 @@ private fun MessageInput(
     formatting: Boolean = false,
     // Translating the draft before it is sent (ADR 2026-10.t2h6's amendment): null where translation is not wired.
     draftTranslate: DraftTranslateUi? = null,
+    // A line of its own above the field, under the translation line: a DM's peer-update hint (ADR 2026-11.29m7).
+    aboveField: (@Composable () -> Unit)? = null,
     onTranslateDraft: (from: TranslateLang?, to: TranslateLang?) -> Unit = { _, _ -> },
     onUndoDraftTranslation: () -> Unit = {},
     onDraftNotThisLanguage: () -> Unit = {},
@@ -5311,6 +5401,7 @@ private fun MessageInput(
                     onNotThisLanguage = onDraftNotThisLanguage,
                 )
             }
+            if (voiceRecording == null) aboveField?.invoke()
             // The mic is offered when the composer is otherwise idle, and *kept* for as long as a recording
             // it started is running — until it locks, at which point the stop button takes over the trailing
             // slot and an inline mic beside a running bar would be a second, inert control.

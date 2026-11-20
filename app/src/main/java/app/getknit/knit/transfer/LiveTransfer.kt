@@ -1,8 +1,11 @@
 package app.getknit.knit.transfer
 
+import app.getknit.knit.data.message.TransferPhase
+import app.getknit.knit.mesh.protocol.TransferPayload
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import java.net.Socket
+import java.util.Base64
 
 /** One transfer in [TransferManager]'s hands: its state and everything only this run of it holds. Never persisted. */
 internal class LiveTransfer(
@@ -34,4 +37,26 @@ internal class LiveTransfer(
 
     // A peer's CANCEL that arrived while [awaitingVerdict]: used only if no OK verdict comes.
     @Volatile var peerCancel: Int? = null
+
+    /** The credentials, port and stream key this transfer's receiver joins with. The same payload every time it is sent. */
+    fun readyPayload(): TransferPayload {
+        val creds = checkNotNull(credentials)
+        return TransferPayload(
+            id = state.id,
+            phase = TransferPayload.PHASE_READY,
+            ssid = creds.ssid,
+            passphrase = creds.passphrase,
+            port = port,
+            key = Base64.getEncoder().encodeToString(checkNotNull(key)),
+        )
+    }
+
+    /** This side's offer to [senderId], still unanswered at [now]. */
+    fun isOurOpenOffer(
+        senderId: String,
+        now: Long,
+    ): Boolean = state.outgoing && state.peerId == senderId && state.phase == TransferPhase.Offered && now < state.expiresAt
+
+    /** The peer's offer to this side, still unanswered at [now]. */
+    fun isOpenIncomingOffer(now: Long): Boolean = !state.outgoing && state.phase == TransferPhase.Offered && now < state.expiresAt
 }

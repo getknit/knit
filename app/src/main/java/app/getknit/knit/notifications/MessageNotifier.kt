@@ -20,6 +20,7 @@ import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import androidx.core.content.LocusIdCompat
 import androidx.core.graphics.drawable.IconCompat
+import app.getknit.knit.BuildConfig
 import app.getknit.knit.MainActivity
 import app.getknit.knit.R
 import app.getknit.knit.data.message.ConversationKind
@@ -326,6 +327,28 @@ class MessageNotifier internal constructor(
         postNotification(tag, ID_TRANSFER, notification)
     }
 
+    override fun notifyUpdateRequest(
+        peerId: String,
+        peerName: String,
+        peerAvatarBytes: ByteArray?,
+    ) {
+        // Reading the thread already: the band is on screen with Send and Not now on it.
+        if (peerId == visibleConversationId) return
+        val tag = UPDATE_PREFIX + peerId
+        val notification =
+            NotificationCompat
+                .Builder(context, NotificationChannels.DMS)
+                .setSmallIcon(R.drawable.ic_direct_transfer)
+                .setLargeIcon(avatars.bitmapFor(peerAvatarBytes) ?: avatars.letterAvatar(peerName, peerId))
+                .setContentTitle(peerName)
+                .setContentText(context.getString(R.string.notif_update_request, BuildConfig.VERSION_NAME))
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setContentIntent(openChatIntent(tag, peerId))
+                .setAutoCancel(true)
+                .build()
+        postNotification(tag, ID_UPDATE, notification)
+    }
+
     override fun clearOpenToChat() {
         runCatching { manager.cancel(ID_OPEN_TO_CHAT) }
     }
@@ -338,6 +361,7 @@ class MessageNotifier internal constructor(
         // The offer heads-up belongs to the same thread and goes when it does — opening the chat puts the
         // card itself in front of the user, which is more than the notification was offering.
         runCatching { manager.cancel(transferTagFor(conversationId), ID_TRANSFER) }
+        runCatching { manager.cancel(UPDATE_PREFIX + conversationId, ID_UPDATE) }
         postSummary()
     }
 
@@ -741,6 +765,10 @@ class MessageNotifier internal constructor(
         private const val ID_TRANSFER = 10
 
         // 11 is StorageAlert's: the mesh could not open its storage because the Keystore refused (ADR 2026-10.47rw).
+
+        // A contact's ask for this phone's Knit (standalone, one per peer by tag, ADR 2026-11.29m7).
+        private const val ID_UPDATE = 12
+        private const val UPDATE_PREFIX = "update:"
 
         // Its PendingIntent tag: a request code of its own so its deep link never clobbers a chat's.
         private const val TAG_OPEN_TO_CHAT = "open-to-chat"

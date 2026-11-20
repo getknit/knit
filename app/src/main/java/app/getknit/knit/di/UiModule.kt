@@ -68,7 +68,11 @@ import app.getknit.knit.ui.search.SearchViewModel
 import app.getknit.knit.ui.settings.ChatSettingsViewModel
 import app.getknit.knit.ui.settings.SettingsViewModel
 import app.getknit.knit.ui.share.OutsideUris
+import app.getknit.knit.ui.update.PeerUpdateViewModel
 import app.getknit.knit.ui.yourmesh.YourMeshViewModel
+import app.getknit.knit.update.AndroidAppBuild
+import app.getknit.knit.update.PeerUpdates
+import app.getknit.knit.update.UpdateInstaller
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
@@ -79,6 +83,19 @@ import org.koin.dsl.module
 
 val uiModule =
     module {
+        // A DM's half of a peer update (ADR 2026-11.29m7), beside ChatViewModel and keyed the same way. Its seams are
+        // absent in a build without peer updates, so it shows nothing there.
+        viewModel { params ->
+            PeerUpdateViewModel(
+                conversationId = params.get(),
+                updates = if (BuildConfig.PEER_UPDATE) get<PeerUpdates>() else null,
+                installer = if (BuildConfig.PEER_UPDATE) get<UpdateInstaller>() else null,
+                build = if (BuildConfig.PEER_UPDATE) get<AndroidAppBuild>() else null,
+                staging = get(),
+                transfers = get(),
+                settings = get(),
+            )
+        }
         // ChatViewModel takes the conversationId (the Nearby room, a peer's node id, or a group id) as a
         // runtime param; the rest (incl. GroupRepository) are resolved by type.
         viewModel { params ->

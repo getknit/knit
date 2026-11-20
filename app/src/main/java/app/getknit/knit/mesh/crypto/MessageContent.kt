@@ -7,6 +7,7 @@ import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.replyRef
 import app.getknit.knit.data.message.videoInfo
+import app.getknit.knit.mesh.protocol.AppUpdatePayload
 import app.getknit.knit.mesh.protocol.AttachmentName
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.DeclaredLangs
@@ -111,6 +112,9 @@ data class MessageContent(
     // One or two presence keys for [CTL_PRESENCE_KEY] (additive; ADR 2026-11.xp6d). Named layout only, like `sc`: the
     // compact v3 codec refuses it and the compact LoRa door never admits it.
     val pk: PresenceKeyPayload? = null,
+    // This app's own build, or the ask for it, for [CTL_APP_UPDATE] (additive; ADR 2026-11.29m7). Named layout only,
+    // like `pk`: the compact v3 codec refuses it.
+    val au: AppUpdatePayload? = null,
     // The body's formatting as ranges (additive; ADR 2026-10.p95v): one CBOR byte string under "s", absent while
     // empty, so an unformatted message seals to the bytes it did before styles existed. Conversational: mapped by
     // [sealedContent], never set on a ctl. Label 17 in the compact layout ([MessageContentV2]). Normalised against
@@ -254,6 +258,14 @@ data class MessageContent(
          * no-op. A build without the feature consumes it as the usual silent no-op.
          */
         const val CTL_PRESENCE_KEY = 11
+
+        /**
+         * [ctl]: [au] is this app's own build, or a contact's ask for it (ADR 2026-11.29m7): what lets an older phone ask a
+         * nearby contact for a newer Knit over a direct transfer. Sealed under a confirmed session only and sent point to
+         * point over a live link (signed, `relay = false`), never flooded, custodied, cast or relayed, like
+         * [CTL_PRESENCE_KEY]. A build without the feature consumes it as the usual silent no-op.
+         */
+        const val CTL_APP_UPDATE = 12
 
         @OptIn(ExperimentalSerializationApi::class)
         fun decode(bytes: ByteArray): MessageContent? =

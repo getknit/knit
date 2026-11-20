@@ -23,6 +23,17 @@ F-Droid's `Binaries:` + `AllowedAPKSigningKeys` flow instead of letting F-Droid 
 `AllowedAPKSigningKeys` pins the distribution certificate publicly in fdroiddata, so **rotating
 `knit-dist.jks` forces every off-Play user to uninstall and reinstall.** Treat it as permanent.
 
+**Peer updates add a second reason the off-Play key matters** (ADR 2026-11.29m7). Two `knit-dist` phones in range can
+trade a newer build over Direct transfer and Knit installs it over itself (`update/`), which only works while both
+carry the same certificate; a debug build trades only with builds from the same machine's debug key, and a Play
+install never takes part. The feature's manifest (`app/src/peerUpdate/AndroidManifest.xml`:
+`REQUEST_INSTALL_PACKAGES`, `UPDATE_PACKAGES_WITHOUT_USER_ACTION`, the install-status receiver) is added only where
+`BuildConfig.PEER_UPDATE` is on: debug by default, a shipped artifact only with `-PpeerUpdate=true`, and **never a
+bundle** (`bundleRequested`), since Play forbids an app updating itself outside Play. Before a release turns it on:
+the F-Droid build would then declare `REQUEST_INSTALL_PACKAGES`, which its reviewers may question, and the release APK
+must be built in an invocation of its own, never beside a `bundle*` task. After a peer update the installer of record
+is Knit itself, which `legal/InstallSource` reads as `PEER`.
+
 ## The reproducibility contract
 
 F-Droid rebuilds the tagged commit on their buildserver and byte-compares against the APK on our GitHub

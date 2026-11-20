@@ -93,6 +93,7 @@ import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.lora.OpenedDirect
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
+import app.getknit.knit.mesh.protocol.AppUpdatePayload
 import app.getknit.knit.mesh.protocol.BadgeEntry
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.ChatContent
@@ -167,6 +168,8 @@ import app.getknit.knit.presence.OpenToChatPolicy
 import app.getknit.knit.presence.OpenToChatWatch
 import app.getknit.knit.transfer.TransferNotice
 import app.getknit.knit.transfer.TransferSignals
+import app.getknit.knit.update.UpdateRequest
+import app.getknit.knit.update.UpdateSignals
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -427,6 +430,10 @@ class MeshManager(
     // like publicChannel because the manager sends through this class. The default admits nothing. Not a
     // property: the only reader is [pipeline]'s initializer, which hands it straight to onTransferCtl.
     onTransferSignal: suspend (senderId: String, payload: TransferPayload, sentAt: Long) -> TransferNotice? = { _, _, _ -> null },
+    // A sealed CTL_APP_UPDATE landed (update/PeerUpdates.onSignal, ADR 2026-11.29m7), late-bound for onTransferSignal's
+    // reason. The default admits nothing: every test, and every build without peer updates.
+    onAppUpdateSignal: suspend (senderId: String, payload: AppUpdatePayload, fromOwnLink: Boolean) -> UpdateRequest? =
+        { _, _, _ -> null },
     // A sealed CTL_CALL landed (call/CallManager.onSignal; experimental, docs/VOICE_CALLS.md): voice-call signaling,
     // late-bound for onTransferSignal's reason. Called on the inbound path, so the far end must return without
     // waiting on the network or the media. The default ignores it — every test, and every build without calls.
@@ -529,6 +536,7 @@ class MeshManager(
     readQuickDelayMs: Long = ReadSync.QUICK_DELAY_MS,
 ) : MeshController,
     TransferSignals,
+    UpdateSignals,
     CallSignals,
     TurnSource,
     MeshPostSink {
@@ -1016,6 +1024,7 @@ class MeshManager(
             onSelfProfile = { cloneWatch.onSelfProfile(it) },
             onPeerFrameOpened = { senderId, initEph, flagged -> introSync.onPeerFrameOpened(senderId, initEph, flagged) },
             onTransferCtl = onTransferSignal,
+            onAppUpdateCtl = onAppUpdateSignal,
             onCallCtl = onCallSignal,
             onCallTalk = { senderId, chunk, sentAt, frameBytes, hop, kind ->
                 // An opened chunk is the peer's own bytes over the radio, as good as a signature (C-3.11-6).
@@ -6093,6 +6102,54 @@ class MeshManager(
             identity.nodeId(),
             CtlDmPurpose.TRANSFER,
         )
+
+    /**
+     * [UpdateSignals]: one `CTL_APP_UPDATE` (ADR 2026-11.29m7) to [peerId], sealed the way a presence key is
+     * ([sealPresenceKeys]: under a confirmed session only, signed `relay = false`) and handed to that contact's live link,
+     * so the router never floods it, no node custodies it and no spool is pushed it. False when [peerId] is not on a
+     * proven link ([readLinked]) or nothing could be sealed.
+     */
+    override suspend fun sendAppUpdate(
+        peerId: String,
+        payload: AppUpdatePayload,
+    ): Boolean {
+        if (!readLinked(peerId)) return false
+        val frame = sealPresenceKeys(peerId, MessageContent(body = "", ctl = MessageContent.CTL_APP_UPDATE, au = payload)) ?: return false
+        router.sendOwn(frame.wire, frame.id, to = Peer(peerId), live = true)
+        return true
+    }
+
+    /**
+     * `mesh/lab`'s flood seam (`PeerUpdateLabTest`), the sibling of [sendPresenceKeyAsAFork]: seals [payload] as
+     * [sendAppUpdate] does, then marks the copy for relay and originates it as every DM goes, custodied and flooded, as a
+     * contact running a modified build could: `relay` sits outside the signed bytes, so the signature still holds. The
+     * receiver must drop it (`DropReason.APP_UPDATE_NOT_FROM_LINK`).
+     */
+    internal suspend fun floodAppUpdateForLab(
+        peerId: String,
+        payload: AppUpdatePayload,
+    ): Boolean {
+        val frame = sealPresenceKeys(peerId, MessageContent(body = "", ctl = MessageContent.CTL_APP_UPDATE, au = payload)) ?: return false
+        val flooded =
+            WireEnvelope(ttl = frame.wire.ttl, hops = frame.wire.hops, relay = true, sig = frame.wire.sig, signed = frame.wire.signed)
+        val env = WireCodec.decodeEnvelope(flooded.signed) ?: return false
+        // The way a modified client floods its own frame: custody first, then the air, as every originated DM goes.
+        originateWire(flooded, env)
+        return true
+    }
+
+    /**
+     * Whether [peerId] may be told this phone's build, or be heard about it (ADR 2026-11.29m7): on a proven link now, not
+     * blocked, an accepted contact, and one whose pinned profile takes direct transfers and v2 seals, which a build that
+     * cannot take the APK lacks. A blocked thread stays accepted, so the block list is read here on its own.
+     */
+    suspend fun mayAnnounceUpdateTo(peerId: String): Boolean {
+        if (!readLinked(peerId) || peerId in settings.blockedNodeIds.first()) return false
+        val caps = peers.find(peerId)?.capabilities ?: return false
+        val needed = Protocol.CAP_DIRECT_TRANSFER or Protocol.CAP_RATCHET
+        if (caps and needed != needed) return false
+        return AcceptanceSnapshot.of(settings, peers, messages, identity.nodeId()).isAccepted(peerId)
+    }
 
     /**
      * [CallSignals]: one sealed `CTL_CALL` DM to [peerId] — the offer, answer, late candidates or hang-up of a voice

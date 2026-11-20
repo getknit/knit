@@ -466,7 +466,7 @@ class MessageContentV2Test {
         const val MESHCORE_KEY_HEX = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
 
         /** The schema version (elided while default) and the payloads [MessageContentV2] has no label for. */
-        val NAMED_ONLY = setOf("v", "gk", "xf", "cl", "sc", "pk")
+        val NAMED_ONLY = setOf("v", "gk", "xf", "cl", "sc", "pk", "au")
 
         /** Omits what equals its default, as the CBOR codec does, so the keys left are the fields the fixture set. */
         val JSON = Json { encodeDefaults = false }

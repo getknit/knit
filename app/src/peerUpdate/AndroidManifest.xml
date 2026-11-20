@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What a build with peer updates adds to the manifest (ADR 2026-11.29m7). Not a source set: the build adds this file
+     to a variant only where `BuildConfig.PEER_UPDATE` is on (`-PpeerUpdate=`; on in debug, off in a shipped artifact,
+     and never in an App Bundle, since Play forbids an app updating itself outside Play). Knit installs only its own
+     package, from its own staging, through one PackageInstaller session. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The person's "Install unknown apps" grant for Knit, asked for once, before the first ask. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Lets an update of Knit by Knit itself complete without the platform's dialog on API 33+ (USER_ACTION_NOT_REQUIRED). -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+
+    <application>
+        <!-- The install session's status. Unexported with no intent filter: only UpdateInstaller's explicit PendingIntent
+             reaches it, and it acts only on the session it recorded (UpdateStatusReceiver). -->
+        <receiver
+            android:name="app.getknit.knit.update.UpdateStatusReceiver"
+            android:exported="false" />
+    </application>
+
+</manifest>

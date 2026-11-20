@@ -1,15 +1,19 @@
 package app.getknit.knit.transfer
 
+import app.getknit.knit.mesh.protocol.AppPin
+import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.TransferPayload
 
-/** An OFFER as this phone admits it: a file's facts, or a models offer read through this phone's own table. */
+/** An OFFER as this phone admits it: a file's facts, a models offer read through this phone's own table, or an update. */
 internal class Offered(
     val name: String,
     val size: Long,
     val mime: String?,
     val pins: List<Long>?,
-    /** Whether it is worth a notification: a models offer with nothing new for this phone is not. */
+    /** Whether it is worth a notification: a models offer with nothing new for this phone is not, nor an update it asked for. */
     val notify: Boolean,
+    /** An app update this phone asked for (ADR 2026-11.29m7): the offer accepts itself. */
+    val app: AppPin? = null,
 )
 
 /**
@@ -55,6 +59,39 @@ internal object OfferReading {
         val size = if (wanted.take.isEmpty()) 0L else wanted.bytes
         return Offered(wanted.label, size, mime = null, pins = pins, notify = wanted.take.isNotEmpty())
     }
+
+    /**
+     * An app-update offer, admitted only when it answers an ask this phone sent ([expectsApp], which spends the ask): a
+     * contact cannot start an update nobody asked for, and a build that cannot install one drops it rather than saving
+     * an APK to Downloads it never wanted. The pin is bounded before anything reads it, and [expectsApp] is asked last,
+     * so a malformed or distant offer never spends the ask.
+     */
+    fun readApp(
+        payload: TransferPayload,
+        pin: AppPin,
+        nearby: () -> Boolean,
+        refused: (why: String) -> Unit,
+        expectsApp: ((AppPin, Long) -> Boolean)?,
+    ): Offered? {
+        val size = payload.size?.takeIf { it > 0L } ?: return null.also { refused("an update offer with no size") }
+        val wellFormed =
+            FrameId.toBytesOrNull(pin.requestId) != null && pin.versionCode > 0L && pin.sha256.size == AppPin.SHA256_BYTES
+        return when {
+            expectsApp == null -> null.also { refused("an update offer to a build that takes none") }
+            !wellFormed -> null.also { refused("a malformed update pin") }
+            !nearby() -> null.also { refused("an update offer from out of range") }
+            !expectsApp(pin, size) -> null.also { refused("an update offer nobody asked for") }
+            else -> Offered(APP_LABEL, size, APK_MIME, pins = null, notify = false, app = pin)
+        }
+    }
+
+    /** The DECLINE reason for an update this phone asked for and could not take ([refusal] from its own accept). */
+    fun declineReason(refusal: TransferRefusal): Int =
+        if (refusal == TransferRefusal.NoSpace) TransferPayload.REASON_NO_SPACE else TransferPayload.REASON_BUSY
+
+    /** What an update's card and record are named on the receiving side: this phone's word, never the sender's file name. */
+    const val APP_LABEL = "Knit.apk"
+    const val APK_MIME = "application/vnd.android.package-archive"
 
     /**
      * Why this phone cannot offer [source] now, or null: a phone that may not host ([host], ADR 2026-10.w3dw), a peer out

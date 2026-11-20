@@ -962,6 +962,10 @@ class BadgeEntry(
  * ACCEPT. The OFFER is still a whole file offer, an archive of the models, so a build that ignores [md] takes it as
  * that file and its ACCEPT, naming none, is sent the whole archive. Absent from every plain file transfer's frame,
  * which encodes as it did before the field existed.
+ *
+ * [ap] marks the transfer as this app's own update (ADR 2026-11.29m7): set only on an OFFER that answers the
+ * receiver's `CTL_APP_UPDATE` request, and read only by a receiver that sent that request. Absent from every other
+ * frame, which encodes as it did before the field existed.
  */
 @Serializable
 data class TransferPayload(
@@ -976,6 +980,7 @@ data class TransferPayload(
     val key: String? = null,
     val reason: Int? = null,
     val md: List<Long>? = null,
+    val ap: AppPin? = null,
 ) {
     companion object {
         const val PHASE_OFFER = 1
@@ -999,6 +1004,75 @@ data class TransferPayload(
         // The bytes arrived intact and the verdict said so, but the receiver could not keep them: a file it could
         // not save, models it could not install (ADR 2026-11.ejn8). The sender, holding that verdict, stays Done.
         const val REASON_NOT_SAVED = 10
+    }
+}
+
+/**
+ * [TransferPayload.ap]: which update an app-update OFFER carries (ADR 2026-11.29m7). [requestId] is the receiver's own
+ * `CTL_APP_UPDATE` request id, so a receiver accepts the offer by itself only when it answers a request it sent;
+ * [versionCode] and [sha256] are what the receiver checks the staged APK against before the verdict, so the sender is
+ * trusted with nothing. Every field is required (`docs/WIRE_COMPAT.md` rule 6). Short names, a plain class equal by its
+ * bytes, like [PresenceKeyPayload].
+ */
+@Serializable
+class AppPin(
+    @SerialName("r") val requestId: String,
+    @SerialName("v") val versionCode: Long,
+    @SerialName("h") @ByteString val sha256: ByteArray,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is AppPin && requestId == other.requestId && versionCode == other.versionCode && sha256.contentEquals(other.sha256)
+
+    override fun hashCode(): Int = (requestId.hashCode() * 31 + versionCode.hashCode()) * 31 + sha256.contentHashCode()
+
+    override fun toString(): String = "AppPin(requestId=$requestId, versionCode=$versionCode)"
+
+    companion object {
+        const val SHA256_BYTES = 32
+    }
+}
+
+/**
+ * The `au` payload for a `CTL_APP_UPDATE` ctl frame (ADR 2026-11.29m7; additive): what one phone tells a contact on a
+ * live link about the Knit it runs, and the older phone's ask for it. Sealed under a confirmed session and sent point to
+ * point (`relay = false`, never flooded, custodied or cast), like `CTL_PRESENCE_KEY`.
+ *
+ * - [PHASE_ANNOUNCE] names this phone's build: [versionCode], [versionName], [certPin] (the first eight bytes of its
+ *   signing certificate's SHA-256, big-endian), the APK's [size], its [minSdk], and [slim] for the slim track. Sent only
+ *   by a phone that can serve that APK.
+ * - [PHASE_REQUEST] asks for the build [versionCode] named, under a fresh [requestId] (a canonical `FrameId`) that the
+ *   answering transfer offer carries back in [AppPin.requestId].
+ * - [PHASE_DECLINE] answers [requestId] with [reason] instead of a transfer.
+ *
+ * [phase] and [versionCode] are required (`docs/WIRE_COMPAT.md` rule 6); every other field is the phase's own. A phase
+ * this build does not know is ignored. Every value is the peer's word: the receiver bounds each one before it acts
+ * (`update/PeerUpdates`), and nothing here is trusted about the APK itself, which is checked byte by byte on arrival.
+ */
+@Serializable
+data class AppUpdatePayload(
+    @SerialName("p") val phase: Int,
+    @SerialName("v") val versionCode: Long,
+    @SerialName("n") val versionName: String? = null,
+    @SerialName("c") val certPin: Long? = null,
+    @SerialName("s") val size: Long? = null,
+    @SerialName("m") val minSdk: Int? = null,
+    @SerialName("t") val slim: Boolean? = null,
+    @SerialName("r") val requestId: String? = null,
+    @SerialName("w") val reason: Int? = null,
+) {
+    companion object {
+        const val PHASE_ANNOUNCE = 1
+        const val PHASE_REQUEST = 2
+        const val PHASE_DECLINE = 3
+
+        /** The person tapped Not now. */
+        const val REASON_NOT_NOW = 1
+
+        /** This phone is in a call or another transfer. */
+        const val REASON_BUSY = 2
+
+        /** This phone no longer runs the build that was asked for, or cannot serve it at all. */
+        const val REASON_GONE = 3
     }
 }
 

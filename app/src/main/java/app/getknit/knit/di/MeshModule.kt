@@ -120,6 +120,12 @@ import app.getknit.knit.transfer.TransferModels
 import app.getknit.knit.transfer.TransferSignals
 import app.getknit.knit.ui.chat.notificationLabels
 import app.getknit.knit.ui.devview.EventConsole
+import app.getknit.knit.update.AndroidAppBuild
+import app.getknit.knit.update.AndroidAppUpdateFiles
+import app.getknit.knit.update.PeerUpdates
+import app.getknit.knit.update.UpdateInstaller
+import app.getknit.knit.update.UpdateSignals
+import app.getknit.knit.update.UpdateStaging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -649,6 +655,10 @@ val meshModule =
                         emptyFlow()
                     },
                 onTransferSignal = { sender, payload, sentAt -> get<TransferManager>().onSignal(sender, payload, sentAt) },
+                // Peer updates (ADR 2026-11.29m7), resolved late like the transfer hook; nothing in a build without them.
+                onAppUpdateSignal = { sender, payload, fromOwnLink ->
+                    if (BuildConfig.PEER_UPDATE) get<PeerUpdates>().onSignal(sender, payload, fromOwnLink) else null
+                },
                 // Voice calls (experimental, `CALLS_WIRED` — di/CallWiring): resolved late like the transfer hook, and
                 // never allowed to throw into the inbound path (rules/mesh.md). Nothing in a build that wires no calls.
                 onCallSignal = { sender, payload, sentAt ->
@@ -747,8 +757,44 @@ val meshModule =
                 log = { line -> Log.i("KnitTransfer", line) },
                 // Translation models over the same link (ADR 2026-11.ejn8), where the build packages translation.
                 models = getOrNull<TransferModels>(),
+                // This app's own update over the same link (ADR 2026-11.29m7), where the build takes peer updates.
+                app =
+                    if (BuildConfig.PEER_UPDATE) {
+                        AndroidAppUpdateFiles(
+                            build = get(),
+                            staging = get(),
+                            updates = { get<PeerUpdates>() },
+                            ownPackage = androidContext().packageName,
+                            log = { line -> Log.i("KnitUpdate", line) },
+                        )
+                    } else {
+                        null
+                    },
             )
         }
+        // Peer updates (ADR 2026-11.29m7): the staging is defined in every build, since any update clears it
+        // (`BootReceiver`); the rest is read only where `BuildConfig.PEER_UPDATE` is on.
+        single { UpdateStaging(File(androidContext().noBackupFilesDir, "update")) }
+        single { AndroidAppBuild(androidContext(), mayHost = { get<TransferManager>().mayOffer() }) }
+        single<UpdateSignals> { get<MeshManager>() }
+        single {
+            val scope = get<CoroutineScope>()
+            PeerUpdates(
+                local = { get<AndroidAppBuild>().local() },
+                signals = get(),
+                neighbors =
+                    get<MeshController>()
+                        .neighbors
+                        .map { near -> near.mapTo(HashSet()) { peer -> peer.nodeId } }
+                        .stateIn(scope, SharingStarted.Eagerly, emptySet()),
+                candidate = { id -> get<MeshManager>().mayAnnounceUpdateTo(id) },
+                scope = scope,
+                sdkInt = Build.VERSION.SDK_INT,
+                log = { line -> Log.i("KnitUpdate", line) },
+                blocked = get<SettingsStore>().blockedNodeIds,
+            )
+        }
+        single { UpdateInstaller(androidContext(), get(), get()) { line -> Log.i("KnitUpdate", line) } }
         // One place that turns settings + `spoolStatus()` into the relay facts the chat indicator, the
         // relay settings screen and Diagnostics all read.
         single { RelayStatusRepository(get(), get()) }

@@ -96,6 +96,7 @@ internal val BUILD_FLAGS: List<Pair<String, Boolean>> =
         "DIRECT_LINKS" to BuildConfig.DIRECT_LINKS,
         "PRESENCE_KEYS" to BuildConfig.PRESENCE_KEYS,
         "BLIND_ADVERT" to BuildConfig.BLIND_ADVERT,
+        "PEER_UPDATE" to BuildConfig.PEER_UPDATE,
         "LIVE_CALLS" to BuildConfig.LIVE_CALLS,
         "MESH_CALLS" to BuildConfig.MESH_CALLS,
         "STT" to BuildConfig.STT,

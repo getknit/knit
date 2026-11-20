@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -56,6 +57,10 @@ fun TransferCard(
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
     onRetry: () -> Unit = {},
+    // A received update of Knit itself (ADR 2026-11.29m7): staged and installable here, under way, and the tap.
+    installReady: Boolean = false,
+    installing: Boolean = false,
+    onInstall: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val size = Formatter.formatShortFileSize(context, view.size)
@@ -77,12 +82,10 @@ fun TransferCard(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(contentAlignment = Alignment.Center, modifier = Modifier.size(ICON_SLOT)) {
                         Icon(
-                            if (view.models !=
-                                null
-                            ) {
-                                Icons.Filled.Translate
-                            } else {
-                                fileIconFor(view.mime, view.name)
+                            when {
+                                view.models != null -> Icons.Filled.Translate
+                                view.app != null -> Icons.Filled.SystemUpdate
+                                else -> fileIconFor(view.mime, view.name)
                             },
                             contentDescription = null,
                         )
@@ -95,7 +98,7 @@ fun TransferCard(
                             overflow = TextOverflow.Ellipsis,
                         )
                         // An offer that brings this phone nothing new carries no size: nothing would cross.
-                        val status = transferStatusText(view)
+                        val status = transferStatusText(view, installReady, installing)
                         Text(
                             if (view.size > 0) "$size · $status" else status,
                             style = MaterialTheme.typography.labelSmall,
@@ -126,7 +129,7 @@ fun TransferCard(
                         modifier = Modifier.padding(top = 6.dp),
                     )
                 }
-                TransferActions(view, onAccept, onDecline, onCancel, onRetry) { uri ->
+                TransferActions(view, onAccept, onDecline, onCancel, onRetry, onInstall.takeIf { installReady && !installing }) { uri ->
                     if (!openSavedFile(context, uri, view.mime)) {
                         Toast.makeText(context, R.string.chat_transfer_no_app, Toast.LENGTH_SHORT).show()
                     }
@@ -162,6 +165,8 @@ private fun TransferActions(
     onDecline: () -> Unit,
     onCancel: () -> Unit,
     onRetry: () -> Unit,
+    // Set only for a received update staged here and not yet installing (ADR 2026-11.29m7).
+    onInstall: (() -> Unit)?,
     onOpen: (uri: String) -> Unit,
 ) {
     val answerable = !view.interrupted && !view.phase.terminal
@@ -171,8 +176,9 @@ private fun TransferActions(
                 TextButton(onClick = onDecline, modifier = Modifier.testTag("transfer_decline")) {
                     Text(stringResource(R.string.chat_transfer_decline))
                 }
-                // A models offer with nothing new for this phone has nothing to accept.
-                if (view.models == null || view.modelsNew > 0) {
+                // A models offer with nothing new for this phone has nothing to accept, and an update this phone asked
+                // for accepts itself (ADR 2026-11.29m7).
+                if (view.app == null && (view.models == null || view.modelsNew > 0)) {
                     TextButton(onClick = onAccept, modifier = Modifier.testTag("transfer_accept")) {
                         Text(stringResource(R.string.chat_transfer_accept))
                     }
@@ -191,6 +197,14 @@ private fun TransferActions(
                 }
             }
 
+            // Knit's own update, staged and checked: the one package Knit installs, and only through its own session
+            // from its own staging (ADR 2026-11.29m7). Every other package still has no Open below.
+            onInstall != null && view.app != null && view.phase == TransferPhase.Done && !view.outgoing -> {
+                TextButton(onClick = onInstall, modifier = Modifier.testTag("transfer_install")) {
+                    Text(stringResource(R.string.chat_transfer_app_install))
+                }
+            }
+
             // Open lands in Downloads through whatever app claims the type. Never for a package: Knit must
             // not become the install source, so a received APK is left to the Files app.
             view.phase == TransferPhase.Done && !view.outgoing && view.savedUri != null && !view.installable -> {
@@ -204,7 +218,11 @@ private fun TransferActions(
 }
 
 @Composable
-private fun transferStatusText(view: TransferView): String =
+private fun transferStatusText(
+    view: TransferView,
+    installReady: Boolean,
+    installing: Boolean,
+): String =
     when {
         view.interrupted -> {
             stringResource(R.string.chat_transfer_interrupted)
@@ -228,6 +246,10 @@ private fun transferStatusText(view: TransferView): String =
 
         view.phase == TransferPhase.Done && !view.outgoing && view.models != null -> {
             stringResource(R.string.chat_transfer_models_installed)
+        }
+
+        view.phase == TransferPhase.Done && !view.outgoing && view.app != null && (installing || installReady) -> {
+            stringResource(if (installing) R.string.chat_transfer_app_installing else R.string.chat_transfer_app_ready)
         }
 
         view.phase == TransferPhase.Done -> {

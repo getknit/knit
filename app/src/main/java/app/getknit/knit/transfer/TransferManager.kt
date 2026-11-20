@@ -1,8 +1,10 @@
 package app.getknit.knit.transfer
 
 import app.getknit.knit.data.MessageRepository
+import app.getknit.knit.data.message.AppUpdateRecord
 import app.getknit.knit.data.message.TransferPhase
 import app.getknit.knit.data.message.TransferRecord
+import app.getknit.knit.mesh.protocol.AppPin
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.TransferPayload
 import kotlinx.coroutines.CoroutineDispatcher
@@ -42,6 +44,8 @@ data class TransferState(
     val expiresAt: Long = 0L,
     /** The pins of a translation-model bundle (ADR 2026-11.ejn8): offered, then the subset an ACCEPT took. Null for a file. */
     val models: List<Long>? = null,
+    /** This app's own update (ADR 2026-11.29m7): the version and SHA-256 its offer pinned. Null for anything else. */
+    val app: AppPin? = null,
 )
 
 /** What [TransferManager.offer] did. */
@@ -134,8 +138,11 @@ class TransferManager(
     private val log: (String) -> Unit = {},
     // A build that packages translation hands its models in (ADR 2026-11.ejn8); without it a models offer is a file.
     models: TransferModels? = null,
+    // A build that takes peer updates hands its own APK and update staging in (ADR 2026-11.29m7); without it an update
+    // offer is dropped.
+    app: TransferAppUpdate? = null,
 ) {
-    private val ends = TransferEnds(files, models)
+    private val ends = TransferEnds(files, models, app)
     private val dialer = TransferDialer(wifi, timings, clock, log)
 
     private class TransferTimeout : IOException("timed out")
@@ -172,11 +179,26 @@ class TransferManager(
         return start(peerId, ends.bundle(pins), sourceUri = null, pins = pins)
     }
 
+    /**
+     * Offers this phone's own APK to [peerId], answering its ask [requestId] for [versionCode] (ADR 2026-11.29m7). The
+     * person tapped Send and the peer must be nearby (the caller checks). [TransferRefusal.Gone] when this phone no
+     * longer runs the version asked for, or cannot serve at all.
+     */
+    suspend fun offerApp(
+        peerId: String,
+        requestId: String,
+        versionCode: Long,
+    ): OfferOutcome {
+        val own = ends.app?.source()?.takeIf { it.versionCode == versionCode } ?: return OfferOutcome.Refused(TransferRefusal.Gone)
+        return start(peerId, own.source, sourceUri = null, pins = null, app = AppPin(requestId, versionCode, own.sha256))
+    }
+
     private suspend fun start(
         peerId: String,
         source: TransferSource?,
         sourceUri: String?,
         pins: List<Long>?,
+        app: AppPin? = null,
     ): OfferOutcome {
         OfferReading.refusal(wifi.hostRefusal(), peerNearby(peerId), source)?.let { return OfferOutcome.Refused(it) }
         checkNotNull(source)
@@ -193,6 +215,7 @@ class TransferManager(
                 phase = TransferPhase.Offered,
                 expiresAt = now + timings.offerTtlMs,
                 models = pins,
+                app = app,
             )
         val l = LiveTransfer(state, offeredAt = now, sourceUri = sourceUri)
         val admitted =
@@ -208,7 +231,7 @@ class TransferManager(
         if (!admitted) return OfferOutcome.Refused(TransferRefusal.Busy)
         // A models offer is a file offer with its pins beside it: a build that cannot install them sees the archive as a
         // file, and one that can reads names and sizes off its own table instead.
-        val offer = TransferPayload(id, TransferPayload.PHASE_OFFER, source.name, source.size, source.mime, md = pins)
+        val offer = TransferPayload(id, TransferPayload.PHASE_OFFER, source.name, source.size, source.mime, md = pins, ap = app)
         val sent = signals.sendTransferSignal(peerId, offer)
         if (!sent) {
             mutex.withLock {
@@ -312,20 +335,20 @@ class TransferManager(
         }
     }
 
-    /** Turns an incoming offer down. */
-    suspend fun decline(id: String) {
+    /** Turns an incoming offer down: the person's tap, or ([reason]) an update this phone asked for and cannot take. */
+    suspend fun decline(
+        id: String,
+        reason: Int = TransferPayload.REASON_USER,
+    ) {
         val l = live[id] ?: return
         val declined =
             mutex.withLock {
                 if (!l.isOpenIncomingOffer(clock())) return
-                transitionLocked(l, TransferPhase.Declined, reason = TransferPayload.REASON_USER)
+                transitionLocked(l, TransferPhase.Declined, reason = reason)
                 true
             }
         if (declined) {
-            signals.sendTransferSignal(
-                l.state.peerId,
-                TransferPayload(id = id, phase = TransferPayload.PHASE_DECLINE, reason = TransferPayload.REASON_USER),
-            )
+            signals.sendTransferSignal(l.state.peerId, TransferPayload(id = id, phase = TransferPayload.PHASE_DECLINE, reason = reason))
         }
     }
 
@@ -363,12 +386,14 @@ class TransferManager(
         payload: TransferPayload,
         sentAt: Long,
     ): TransferNotice? {
+        val now = clock()
+        // A custody replay of an offer nobody can still host. Read before the offer, so a stale update offer never
+        // spends the ask it names.
+        if (now - sentAt > STALE_OFFER_MS) return null
         val offered =
-            OfferReading.read(payload, ends.models, nearby = { peerNearby(senderId) }) { why ->
+            ends.readOffer(senderId, payload, nearby = { peerNearby(senderId) }) { why ->
                 log("xfer ${payload.id} from $senderId refused: $why")
             } ?: return null
-        val now = clock()
-        if (now - sentAt > STALE_OFFER_MS) return null // a custody replay of an offer nobody can still host
         val l =
             LiveTransfer(
                 TransferState(
@@ -381,6 +406,7 @@ class TransferManager(
                     phase = TransferPhase.Offered,
                     expiresAt = now + timings.offerTtlMs,
                     models = offered.pins,
+                    app = offered.app,
                 ),
                 offeredAt = minOf(sentAt, now),
             )
@@ -420,6 +446,9 @@ class TransferManager(
                 scheduleExpiry(l)
                 val what = offered.pins?.let { "models=${it.size}" } ?: "'${offered.name}'"
                 log("xfer ${payload.id} offered by $senderId: ${offered.size}B $what")
+                // The person's tap on Ask was the answer (ADR 2026-11.29m7): an update this phone asked for accepts itself, or
+                // is turned down with why it cannot be taken, so the asker's card ends rather than waiting out the offer.
+                if (offered.app != null) scope.launch { accept(payload.id)?.let { decline(payload.id, OfferReading.declineReason(it)) } }
                 return if (offered.notify) TransferNotice(offered.name, offered.size) else null
             }
         }
@@ -463,25 +492,12 @@ class TransferManager(
             )
             return
         }
-        val sent = signals.sendTransferSignal(senderId, readyPayload(l))
+        val sent = signals.sendTransferSignal(senderId, l.readyPayload())
         if (!sent) {
             fail(l, TransferPayload.REASON_CONNECTION, tellPeer = false)
             return
         }
         l.job = scope.launch { hostAndSend(l) }
-    }
-
-    /** The credentials, port and stream key [l]'s receiver joins with. The same payload every time it is sent. */
-    private fun readyPayload(l: LiveTransfer): TransferPayload {
-        val creds = checkNotNull(l.credentials)
-        return TransferPayload(
-            id = l.state.id,
-            phase = TransferPayload.PHASE_READY,
-            ssid = creds.ssid,
-            passphrase = creds.passphrase,
-            port = l.port,
-            key = Base64.getEncoder().encodeToString(checkNotNull(l.key)),
-        )
     }
 
     private suspend fun onReady(
@@ -627,7 +643,7 @@ class TransferManager(
             delay(timings.readyResendMs)
             if (clock() >= until) return
             sent += 1
-            val ok = signals.sendTransferSignal(l.state.peerId, readyPayload(l))
+            val ok = signals.sendTransferSignal(l.state.peerId, l.readyPayload())
             log("xfer ${l.state.id} READY again (#$sent${if (ok) "" else ", not sealed"})")
         }
     }
@@ -654,8 +670,8 @@ class TransferManager(
                     sink.commitOrNotSaved()
                     l.committed = true
                     log("xfer ${l.state.id} received bytes=${l.state.size} → ${sink.uri}")
-                    // A bundle is installed, not saved: there is nothing for the card to open.
-                    transition(l, TransferPhase.Done, savedUri = sink.uri.takeIf { l.state.models == null })
+                    // A bundle is installed and an update staged, not saved: there is nothing for the card to open.
+                    transition(l, TransferPhase.Done, savedUri = sink.uri.takeIf { l.state.models == null && l.state.app == null })
                 } else {
                     failure = TransferPayload.REASON_CORRUPT
                 }
@@ -795,6 +811,7 @@ class TransferManager(
                 reason = s.reason,
                 sourceUri = l.sourceUri,
                 models = s.models,
+                app = s.app?.let(AppUpdateRecord::of),
             )
         messages.save(record.toEntity(peerId = s.peerId, selfId = me(), sentAt = l.offeredAt))
     }
@@ -806,14 +823,6 @@ class TransferManager(
     private fun publish() {
         _states.value = live.values.associate { it.state.id to it.state.copy(bytes = it.bytes) }
     }
-
-    private fun LiveTransfer.isOurOpenOffer(
-        senderId: String,
-        now: Long,
-    ): Boolean = state.outgoing && state.peerId == senderId && state.phase == TransferPhase.Offered && now < state.expiresAt
-
-    private fun LiveTransfer.isOpenIncomingOffer(now: Long): Boolean =
-        !state.outgoing && state.phase == TransferPhase.Offered && now < state.expiresAt
 
     companion object {
         /** A sanity bound on what an offer may name, not a promise about storage. */
