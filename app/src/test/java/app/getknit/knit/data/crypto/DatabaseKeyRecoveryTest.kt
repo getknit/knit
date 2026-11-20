@@ -22,6 +22,8 @@ import java.security.ProviderException
  * `DatabaseKeyTest` runs the same rules against the real Keystore). The case this exists for — issue #110, ADR
  * 2026-10.47rw: a Keystore that refuses on every attempt leaves the database, its sidecars and the wrap exactly as
  * they were and throws [KeystoreUnavailableException]. Only a proven loss wipes, after keeping the old wrap aside.
+ * And #351, the 2026-11-19 amendment: a StrongBox that refuses to make a key is not a Keystore that refuses — the
+ * passphrase is minted under a TEE key, and a fresh install opens.
  */
 @RunWith(AndroidJUnit4::class)
 class DatabaseKeyRecoveryTest {
@@ -41,6 +43,9 @@ class DatabaseKeyRecoveryTest {
     }
 
     private fun refusal() = InvalidKeyException("Keystore operation failed", ProviderException("KM_ERROR_UNKNOWN_ERROR"))
+
+    /** The Xiaomi 14's StrongBox, 2026-11-19: there, and UNIMPLEMENTED for every key it is asked to make. */
+    private fun strongBoxRefusal() = ProviderException("Keystore key generation failed", IllegalStateException("Not implemented"))
 
     private fun staleDatabase() {
         database.parentFile!!.mkdirs()
@@ -122,6 +127,36 @@ class DatabaseKeyRecoveryTest {
         cipher.keyScript += refusal()
         assertThrows(KeystoreUnavailableException::class.java) { databaseKey.getOrCreate() }
         assertFalse(keyFile.exists())
+    }
+
+    @Test
+    fun aStrongBoxThatRefusesEveryKeyStillOpensAFreshInstall() {
+        repeat(3) { cipher.strongBoxScript += strongBoxRefusal() }
+        staleDatabase()
+
+        val passphrase = databaseKey.getOrCreate()
+        assertEquals(DatabaseKey.PASSPHRASE_BYTES, passphrase.size)
+        assertWiped()
+        assertEquals(listOf(DatabaseKey.KEY_ALIAS to true, DatabaseKey.KEY_ALIAS to false), cipher.attempts)
+        assertEquals(1, cipher.generated)
+
+        // The next open: the TEE key is under the alias, so the StrongBox is not asked again.
+        assertArrayEquals(passphrase, databaseKey.getOrCreate())
+        assertEquals(2, cipher.attempts.size)
+    }
+
+    @Test
+    fun aTeeThatRefusesTooIsStillARefusal() {
+        val tee = ProviderException("Keystore key generation failed")
+        cipher.strongBoxScript += strongBoxRefusal()
+        cipher.teeScript += tee
+
+        val thrown = assertThrows(KeystoreUnavailableException::class.java) { databaseKey.getOrCreate() }
+        assertSame(tee, thrown.cause)
+
+        // Try again, the Keystore making keys once more: a passphrase is minted and reads back.
+        val passphrase = databaseKey.getOrCreate()
+        assertArrayEquals(passphrase, databaseKey.getOrCreate())
     }
 
     @Test

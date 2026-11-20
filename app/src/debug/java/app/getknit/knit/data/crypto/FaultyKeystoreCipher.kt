@@ -16,12 +16,28 @@ import javax.crypto.SecretKey
  * While [alterMarker] holds a count, the next N [open]s of anything longer than a database passphrase lose a span from
  * the middle: an identity that opens with its tag verified and does not parse, the Play crash of the 2026-11-05
  * amendment, staged the same way with `files/keystore-alter`.
+ *
+ * While [strongBoxMarker] holds a count, the next N StrongBox [generate]s throw what a Xiaomi 14 threw for every one
+ * on 2026-11-19 — a plain `ProviderException("Keystore key generation failed")`, its StrongBox there and making
+ * nothing — so a phone or an emulator runs [StrongBoxFirst]'s fallback over the real Keystore (#351, the 2026-11-19
+ * amendment). Staged with `files/keystore-strongbox`; with no file a generate is the real one, StrongBox included.
  */
 class FaultyKeystoreCipher(
     private val marker: File,
     private val alterMarker: File = File(marker.parentFile, ALTER_MARKER),
+    private val strongBoxMarker: File = File(marker.parentFile, STRONGBOX_MARKER),
     private val delegate: KeystoreCipher = AndroidKeystoreCipher,
 ) : KeystoreCipher by delegate {
+    override fun generate(
+        alias: String,
+        strongBox: Boolean,
+    ): SecretKey {
+        if (strongBox && take(strongBoxMarker)) {
+            throw ProviderException("Keystore key generation failed", IllegalStateException("injected by ${strongBoxMarker.name}"))
+        }
+        return delegate.generate(alias, strongBox)
+    }
+
     override fun open(
         key: SecretKey,
         wrapped: ByteArray,
@@ -51,6 +67,9 @@ class FaultyKeystoreCipher(
 
         /** The altered-bytes marker file's name under `filesDir`. */
         const val ALTER_MARKER = "keystore-alter"
+
+        /** The StrongBox-refusal marker file's name under `filesDir`. */
+        const val STRONGBOX_MARKER = "keystore-strongbox"
 
         /** `DatabaseKey`'s passphrase is 32 bytes: left alone, or the open would stop there and never reach the identity. */
         private const val ALTER_ABOVE_BYTES = 64

@@ -50,6 +50,9 @@ document:
 - After you restore Knit or a chat's encryption resets, a message sent to you around then could go missing
   for good if another phone passed you an old copy of it first. It now arrives, and the sender sees two ticks
   (#347).
+- On a phone whose security chip refuses to make keys, Knit stopped at "Waiting for secure storage" the first
+  time you opened it, and Try again never got past it. Knit now uses the phone's regular secure storage there
+  and opens as usual (#351).
 
 ## [2.12.0](https://github.com/getknit/knit/releases/tag/v2.12.0) — 2026-11-18T23:31:49Z
 

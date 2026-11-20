@@ -2,7 +2,7 @@ package app.getknit.knit.ui.invite
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.security.keystore.StrongBoxUnavailableException
+import app.getknit.knit.data.crypto.StrongBoxFirst
 import com.android.apksig.ApkSigner
 import com.android.apksig.KeyConfig
 import java.math.BigInteger
@@ -42,7 +42,10 @@ object ShareSigningKey {
     @Synchronized
     fun signerConfig(): ApkSigner.SignerConfig {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        if (!keyStore.containsAlias(ALIAS)) generate()
+        // getKey, never containsAlias: keystore2's containsAlias answers false for a Keystore that is only busy, and
+        // generating replaces the key every Knit shared from this phone was signed with. getKey answers null only
+        // when there is no key and throws for the rest, which fails this one share (ADR 2026-10.47rw).
+        if (keyStore.getKey(ALIAS, null) == null) generate(keyStore)
         val privateKey = keyStore.getKey(ALIAS, null) as PrivateKey
         val cert = keyStore.getCertificate(ALIAS) as X509Certificate
         // KeyConfig.Jca wraps the (non-extractable) keystore handle; apksig signs it through the JCA
@@ -50,15 +53,13 @@ object ShareSigningKey {
         return ApkSigner.SignerConfig.Builder(SIGNER_NAME, KeyConfig.Jca(privateKey), listOf(cert)).build()
     }
 
-    // Prefer a StrongBox (secure-element) backed key; fall back to a TEE-backed key on devices without
-    // one, mirroring KeystoreSecret. Deliberately no user-auth / unlocked-device requirement: a share can
-    // be driven headlessly (the debug bridge) or while the device is locked, which such a requirement
-    // would make throw.
-    private fun generate() =
-        runCatching { generate(strongBox = true) }
-            .getOrElse { e ->
-                if (e is StrongBoxUnavailableException) generate(strongBox = false) else throw e
-            }
+    // Prefer a StrongBox (secure-element) backed key; fall back to a TEE-backed key on a phone without one, or
+    // whose StrongBox refuses to make it, as KeystoreSecret does (StrongBoxFirst, ADR 2026-10.47rw's 2026-11-19
+    // amendment). Deliberately no user-auth / unlocked-device requirement: a share can be driven headlessly (the
+    // debug bridge) or while the device is locked, which such a requirement would make throw.
+    private fun generate(keyStore: KeyStore) {
+        StrongBoxFirst.generate(KEY_LABEL, { generate(strongBox = it) }, { keyStore.deleteEntry(ALIAS) })
+    }
 
     private fun generate(strongBox: Boolean) {
         val spec =
@@ -82,6 +83,9 @@ object ShareSigningKey {
 
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val ALIAS = "knit_apk_sign_key"
+
+    /** What the one warning calls this key when a StrongBox refuses to make it. */
+    private const val KEY_LABEL = "the share signing key"
     private const val SIGNER_NAME = "knit"
     private const val EC_CURVE = "secp256r1"
     private const val CERT_SUBJECT = "CN=Knit Offline Share, O=Knit"
