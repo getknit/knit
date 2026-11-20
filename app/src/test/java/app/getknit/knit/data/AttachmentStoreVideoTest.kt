@@ -5,6 +5,8 @@ import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.data.AttachmentStore.IngestResult
+import app.getknit.knit.data.video.BitrateMode
+import app.getknit.knit.data.video.EncoderChoice
 import app.getknit.knit.data.video.TranscodeResult
 import app.getknit.knit.data.video.VideoEncodePolicy
 import app.getknit.knit.data.video.VideoEncoder
@@ -64,6 +66,7 @@ class AttachmentStoreVideoTest {
             meta = VideoMeta(durationMs = 40_000, width = 480, height = 854),
             poster = poster,
             plan = VideoEncodePolicy.plan(source, hevcEncoder = true),
+            encoders = EncoderChoice(VideoEncodePolicy.MIME_HEVC, listOf("c2.vendor.hevc.encoder"), BitrateMode.CBR),
             source = source,
             elapsedMs = 9_000,
         )

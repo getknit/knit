@@ -53,6 +53,8 @@ document:
 - On a phone whose security chip refuses to make keys, Knit stopped at "Waiting for secure storage" the first
   time you opened it, and Try again never got past it. Knit now uses the phone's regular secure storage there
   and opens as usual (#351).
+- On some phones, such as the Galaxy A51 and the Redmi Note 13 Pro+, every video you picked failed with
+  "Couldn't read that video". Those videos now send, at the same small size as on other phones (#353).
 - The lock beside a chat's name, which you tap to see that the chat is encrypted, is now easier to hit on a
   narrow phone or with a larger display size. A long name now gets cut short a little sooner to make room
   (#354).

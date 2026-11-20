@@ -2,7 +2,6 @@ package app.getknit.knit.data.video
 
 import android.content.Context
 import android.media.MediaCodecInfo
-import android.media.MediaCodecList
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Handler
@@ -22,11 +21,14 @@ import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Effects
+import androidx.media3.transformer.EncoderSelector
+import androidx.media3.transformer.EncoderUtil
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
+import com.google.common.collect.ImmutableList
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
@@ -47,13 +49,15 @@ interface VideoEncoder {
 sealed interface TranscodeResult {
     /**
      * The re-encoded MP4, what its own bytes say about it ([meta]), its [poster] (empty when no frame decoded), the
-     * [plan] it was made with, the [source] it was made from, and how long the encode took.
+     * [plan] it was made with, the [encoders] it was offered (null when Media3's defaults chose), the [source] it was
+     * made from, and how long the encode took.
      */
     class Success(
         val bytes: ByteArray,
         val meta: VideoMeta,
         val poster: ByteArray,
         val plan: VideoEncodePlan,
+        val encoders: EncoderChoice?,
         val source: VideoSource,
         val elapsedMs: Long,
     ) : TranscodeResult
@@ -74,11 +78,11 @@ sealed interface TranscodeResult {
  * Re-encodes a picked video to what [VideoEncodePolicy] asks for, with Media3 Transformer, into memory.
  *
  * The decisions are the policy's; this is the wiring. It reads the source's dimensions, rotation, length, frame rate
- * and audio with `MediaMetadataRetriever`, asks the platform whether it has an HEVC encoder, runs the export on a
- * looper of its own and writes it through [MemoryMp4Muxer], so the plaintext never touches the filesystem and the
- * source's location and capture metadata never leave the phone. The output is measured, and an overshoot is encoded
- * once more at the policy's lower rate. HDR is tone-mapped to SDR: every phone records HDR now, and an HDR stream at
- * this bitrate is mostly lost contrast.
+ * and audio with `MediaMetadataRetriever`, lists the phone's HEVC and H.264 encoders for [VideoEncoderChoice] to pick
+ * the codec, encoders and bitrate mode from, runs the export on a looper of its own and writes it through
+ * [MemoryMp4Muxer], so the plaintext never touches the filesystem and the source's location and capture metadata
+ * never leave the phone. The output is measured, and an overshoot is encoded once more at the policy's lower rate. HDR
+ * is tone-mapped to SDR: every phone records HDR now, and an HDR stream at this bitrate is mostly lost contrast.
  *
  * [transcode] is cancellable: cancelling the coroutine cancels the export and frees its codecs. `ExperimentalApi` is
  * for the last HDR mode only, Media3's read-as-SDR, kept as the final fallback.
@@ -114,11 +118,13 @@ class VideoTranscoder(
     ): TranscodeResult {
         val source = probe(uri) ?: return TranscodeResult.Unreadable
         val started = SystemClock.elapsedRealtime()
-        var plan = VideoEncodePolicy.plan(source, hevcEncoder = hasHevcEncoder())
+        val choice = VideoEncoderChoice.choose(candidates(VideoEncodePolicy.MIME_HEVC), candidates(VideoEncodePolicy.MIME_H264))
+        Log.d(TAG, "video encoders: $choice")
+        var plan = VideoEncodePolicy.plan(source, hevcEncoder = choice?.mime == VideoEncodePolicy.MIME_HEVC)
         var hdrModes = HDR_MODES
         while (true) {
             val bytes =
-                when (val pass = export(uri, plan, hdrModes.first(), source.hasAudio, onProgress)) {
+                when (val pass = export(uri, plan, choice, hdrModes.first(), source.hasAudio, onProgress)) {
                     is ExportOutcome.Done -> {
                         pass.bytes
                     }
@@ -137,7 +143,8 @@ class VideoTranscoder(
                 VideoEncodeVerdict.Accept -> {
                     val meta = VideoFrames.meta(bytes) ?: return TranscodeResult.Unreadable
                     val poster = VideoFrames.poster(bytes) ?: ByteArray(0)
-                    return TranscodeResult.Success(bytes, meta, poster, plan, source, SystemClock.elapsedRealtime() - started)
+                    val elapsedMs = SystemClock.elapsedRealtime() - started
+                    return TranscodeResult.Success(bytes, meta, poster, plan, choice, source, elapsedMs)
                 }
 
                 VideoEncodeVerdict.Refuse -> {
@@ -164,6 +171,7 @@ class VideoTranscoder(
     private suspend fun export(
         uri: Uri,
         plan: VideoEncodePlan,
+        choice: EncoderChoice?,
         hdrMode: Int,
         hasAudio: Boolean,
         onProgress: (Float) -> Unit,
@@ -208,13 +216,21 @@ class VideoTranscoder(
                             exportException: ExportException,
                         ) {
                             handler.removeCallbacks(poll)
-                            Log.w(TAG, "video encode failed: ${exportException.errorCodeName}")
+                            val causes =
+                                generateSequence(exportException.cause) { it.cause }
+                                    .take(MAX_LOGGED_CAUSES)
+                                    .joinToString(" <- ") { "${it.javaClass.simpleName}: ${it.message}" }
+                            Log.w(
+                                TAG,
+                                "video encode failed: ${exportException.errorCodeName} (${plan.videoMime} " +
+                                    "${plan.videoBitrate} b/s, ${choice?.mode}): ${exportException.message}; $causes",
+                            )
                             cont.resume(ExportOutcome.Error(exportException.errorCode))
                         }
                     }
                 handler.post {
                     if (!cont.isActive) return@post
-                    val built = buildTransformer(plan, muxers, listener, thread)
+                    val built = buildTransformer(plan, choice, muxers, listener, thread)
                     transformer = built
                     built.start(composition(uri, plan, hdrMode, hasAudio), UNUSED_OUTPUT_PATH)
                     handler.post(poll)
@@ -226,20 +242,40 @@ class VideoTranscoder(
         }
     }
 
+    /**
+     * Media3's encoders for [plan], held to [choice]: the plan's MIME type picks only from the encoders the bitrate mode
+     * was chosen for, so Media3's mode filter cannot empty its list. Any other MIME type (Transformer's own fallback,
+     * should the muxer refuse the plan's), and every type when there is no [choice], gets Media3's default list.
+     */
     private fun buildTransformer(
         plan: VideoEncodePlan,
+        choice: EncoderChoice?,
         muxers: MemoryMp4Muxer.Factory,
         listener: Transformer.Listener,
         thread: HandlerThread,
     ): Transformer {
+        val offered =
+            choice?.takeIf { it.mime == plan.videoMime }?.let { c ->
+                ImmutableList.copyOf(EncoderUtil.getSupportedEncoders(c.mime).filter { it.name in c.encoders })
+            }
+        val selector =
+            EncoderSelector { mime ->
+                if (offered != null && mime.equals(plan.videoMime, ignoreCase = true)) {
+                    offered
+                } else {
+                    EncoderSelector.DEFAULT.selectEncoderInfos(mime)
+                }
+            }
+        val mode = if (offered != null && choice.mode == BitrateMode.CBR) BITRATE_MODE_CBR else BITRATE_MODE_VBR
         val encoders =
             DefaultEncoderFactory
                 .Builder(context)
+                .setVideoEncoderSelector(selector)
                 .setRequestedVideoEncoderSettings(
                     VideoEncoderSettings
                         .Builder()
                         .setBitrate(plan.videoBitrate)
-                        .setBitrateMode(bitrateModeFor(plan.videoMime))
+                        .setBitrateMode(mode)
                         .build(),
                 ).setRequestedAudioEncoderSettings(AudioEncoderSettings.Builder().setBitrate(plan.audioBitrate).build())
                 .setEnableFallback(true)
@@ -293,37 +329,32 @@ class VideoTranscoder(
     }
 
     /**
-     * Whether an HEVC encoder here can take the output size at the output rate, either way up. Having one is not
-     * enough: AOSP's software HEVC encoder, the one a phone without a hardware HEVC encoder falls back to, stops at
-     * 512 × 512, and Transformer's fallback would then shrink a 480p plan to 288p rather than change codec.
+     * The phone's encoders for [mime], in Media3's order, as [VideoEncoderChoice] reads them. Taking the output size
+     * is checked, not assumed: AOSP's software HEVC encoder, the one a phone without a hardware HEVC encoder falls back
+     * to, stops at 512 × 512, and Transformer's fallback would then shrink a 480p plan to 288p rather than change codec.
      */
-    private fun hasHevcEncoder(): Boolean {
+    private fun candidates(mime: String): List<EncoderCandidate> =
+        EncoderUtil.getSupportedEncoders(mime).map { info ->
+            EncoderCandidate(
+                name = info.name,
+                hardware = EncoderUtil.isHardwareAccelerated(info, mime),
+                takesOutputSize = takesOutputSize(info, mime),
+                cbr = EncoderUtil.isBitrateModeSupported(info, mime, BITRATE_MODE_CBR),
+                vbr = EncoderUtil.isBitrateModeSupported(info, mime, BITRATE_MODE_VBR),
+            )
+        }
+
+    /** Whether [info] encodes [mime] at the plan's largest output, 854 × 480 at 30 fps, either way up. */
+    private fun takesOutputSize(
+        info: MediaCodecInfo,
+        mime: String,
+    ): Boolean {
         // 16:9 rounded up to even: an odd 853 fails every encoder's 2 x 2 alignment (found on the Pixel 3).
         val long = ((VideoEncodePolicy.SHORT_SIDE * LONG_SIDE_16_9 / SHORT_SIDE_16_9.toDouble()).roundToInt() + 1) and 1.inv()
         val short = VideoEncodePolicy.SHORT_SIDE
         val rate = VideoEncodePolicy.MAX_FRAME_RATE.toDouble()
-        return MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
-            val type = info.supportedTypes.firstOrNull { it.equals(VideoEncodePolicy.MIME_HEVC, ignoreCase = true) }
-            val video = type?.takeIf { info.isEncoder }?.let { info.getCapabilitiesForType(it).videoCapabilities }
-            video != null &&
-                (video.areSizeAndRateSupported(long, short, rate) || video.areSizeAndRateSupported(short, long, rate))
-        }
-    }
-
-    /**
-     * CBR wherever the encoder offers it, else VBR. Under VBR the platform's quality floor (`VQApply`, Android 12+)
-     * raises a low requested bitrate to its own minimum on the codecs that carry its tuning: the emulator's AOSP AVC
-     * encoder took a 490 kbps request to 1.23 Mbps at 480p, and a 28 s clip came out at 4.7 MB on both passes, whatever
-     * was asked. CBR is the mode that floor leaves alone, and it makes the size what the plan says it is.
-     */
-    private fun bitrateModeFor(mime: String): Int {
-        val cbr = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
-        val anyCbr =
-            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
-                val type = info.supportedTypes.firstOrNull { it.equals(mime, ignoreCase = true) }
-                type != null && info.isEncoder && info.getCapabilitiesForType(type).encoderCapabilities?.isBitrateModeSupported(cbr) == true
-            }
-        return if (anyCbr) cbr else MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+        val video = info.getCapabilitiesForType(mime).videoCapabilities ?: return false
+        return video.areSizeAndRateSupported(long, short, rate) || video.areSizeAndRateSupported(short, long, rate)
     }
 
     private inline fun <T> MediaMetadataRetriever.useRetriever(block: (MediaMetadataRetriever) -> T): T =
@@ -353,6 +384,9 @@ class VideoTranscoder(
         const val MS_PER_S = 1000f
         const val LONG_SIDE_16_9 = 16
         const val SHORT_SIDE_16_9 = 9
+        const val MAX_LOGGED_CAUSES = 4
+        const val BITRATE_MODE_CBR = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+        const val BITRATE_MODE_VBR = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
 
         /**
          * How an HDR source is brought to SDR, tried in turn: the OpenGL tone-map (the best picture, and it fails where
@@ -367,12 +401,15 @@ class VideoTranscoder(
                 Composition.HDR_MODE_EXPERIMENTAL_FORCE_INTERPRET_HDR_AS_SDR,
             )
 
-        /** The failures a different HDR mode can get past: the frame pipeline, and a codec refusing the format. */
+        /**
+         * The failures a different HDR mode can get past: the frame pipeline, and a decoder refusing the format. An
+         * encoder refusing it is not one: every mode here encodes SDR, so the encoder is asked for the same format in
+         * each, and two more passes only tripled the time to fail (#353).
+         */
         val HDR_FALLBACK_ERRORS =
             setOf(
                 ExportException.ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED,
                 ExportException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
-                ExportException.ERROR_CODE_ENCODING_FORMAT_UNSUPPORTED,
                 ExportException.ERROR_CODE_DECODER_INIT_FAILED,
                 ExportException.ERROR_CODE_ENCODER_INIT_FAILED,
             )
