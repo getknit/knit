@@ -48,6 +48,10 @@ class PreviewStringsTest(
     @get:Rule
     val compose = createComposeRule()
 
+    /** A dialog with a text field otherwise never idles: see [RequestedWindowSize]. */
+    @get:Rule
+    val windows = RequestedWindowSize()
+
     private val read: MutableSet<Int> = Collections.synchronizedSet(LinkedHashSet())
 
     @Test
@@ -68,9 +72,9 @@ class PreviewStringsTest(
                 }
                 repeat(2) { compose.mainClock.advanceTimeByFrame() }
             }
-        // A preview that composed but never settles (RenameGroupDialog's field in a dialog, under Robolectric) has read
-        // its strings: keep them, and fail so the run names it. Any other failure leaves no file, so the script reports
-        // the preview as not recorded and leaves its screenshot as it is.
+        // A preview that composed but never settles under Robolectric has read its strings: keep them, and fail so the
+        // run names it. Any other failure leaves no file, so the script reports the preview as not recorded and leaves
+        // its screenshot as it is.
         if (composed.isSuccess || composed.exceptionOrNull()?.javaClass?.name == NOT_IDLE) write()
         composed.getOrThrow()
     }

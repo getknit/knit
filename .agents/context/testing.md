@@ -1127,9 +1127,13 @@ and compares it, pixel for pixel, with a PNG committed under `app/src/screenshot
   A text is judged by its lines where its box is wider than they are (a wrapped label fills its width, and a segmented
   button shifts that box 1 dp past its edge for the check). **It is a gate:** GitHub CI's `preview-layout` job fails
   on any finding, and on a preview left without a result (a test JVM that died). A preview it cannot judge goes in the
-  script's `SKIP` with its reason (`RenameGroupDialog` never idles under Robolectric); a skipped name that no longer
-  exists fails the run. It only sees each preview's sample data, so a screen whose previews use short names needs a
-  worst-case preview to be checked at all.
+  script's `SKIP` with its reason; a skipped name that no longer exists fails the run. It only sees each preview's
+  sample data, so a screen whose previews use short names needs a worst-case preview to be checked at all.
+- **Both preview harnesses size windows as a phone does** (`RequestedWindowSize`, in `PreviewClippingTest` and
+  `PreviewStringsTest`). Robolectric otherwise gives a `wrap_content` window the whole display, so `ViewRootImpl`
+  measures a dialog at two widths on every traversal, and a text field re-measured at each requests the next one: a
+  dialog with a field never idles (`AppNotIdleException` after 60 s). A new Robolectric test that composes a dialog
+  with a text field needs the same rule.
 - **Layoutlib's framework is not the device's.** `Formatter.formatShortFileSize` below a kilobyte renders its
   template: `(123) (B)` under en-US, the raw `${NUMBER} ${UNIT}` with no locale named (`MetricsSectionEmpty`'s
   "Bytes sent"). It is a renderer quirk the reference captures, not an app bug; 2.5 MB renders normally.

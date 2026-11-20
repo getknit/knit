@@ -95,6 +95,10 @@ class PreviewClippingTest(
     @get:Rule
     val compose = createComposeRule()
 
+    /** A dialog with a text field otherwise never idles: see [RequestedWindowSize]. */
+    @get:Rule
+    val windows = RequestedWindowSize()
+
     @Test
     fun nothingIsCutOff() {
         val findings =

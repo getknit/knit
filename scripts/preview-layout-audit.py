@@ -25,11 +25,7 @@ DEFAULT_DIR = ROOT / "app/build/preview-layout"
 TEST = "app.getknit.knit.ui.preview.PreviewClippingTest"
 
 # Previews the audit cannot judge, each with why. Keep this short: a skipped preview is a screen nobody checks.
-SKIP = {
-    # Its text field in a dialog never lets Compose idle under Robolectric (PreviewStringsTest fails on it too), and a
-    # dialog is its own window, outside the frame the audit reads.
-    "RenameGroupDialog": "never idles under Robolectric",
-}
+SKIP: dict[str, str] = {}
 
 
 def run(out: Path, only: set[str] | None) -> None:
