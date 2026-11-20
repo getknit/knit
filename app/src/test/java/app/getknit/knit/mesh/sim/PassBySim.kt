@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.sim
 
+import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.mesh.lab.LabLimits
 import app.getknit.knit.mesh.lab.LabNode
 import app.getknit.knit.mesh.lab.MeshLab
@@ -22,6 +23,12 @@ data class PassByScenario(
     val dms: Int = DEFAULT_DMS,
     /** Photos each walker queues the same way. */
     val pictures: Int = 0,
+    /**
+     * Frames each walker carries into its pass for others ([load]): DMs [loadAuthors] contacts of its own wrote to each
+     * other, which it took into custody as it met them, one at a time, before the walk. None reaches the walker it passes.
+     */
+    val load: Int = 0,
+    val loadAuthors: Int = DEFAULT_LOAD_AUTHORS,
     val pictureBytes: Int = DEFAULT_PICTURE_KB * BYTES_PER_KB,
     val radio: String = BleRadio.NAME,
     val connectM: Double = DEFAULT_RANGE_M,
@@ -39,6 +46,14 @@ data class PassByScenario(
     /** How long a pair is watched once it is out of reach again: what was on the air lands, nothing else can. */
     val watchAfterMs: Long = DEFAULT_WATCH_AFTER_MS,
 ) {
+    init {
+        require(load == 0 || loadAuthors >= 2) { "a load needs two authors to write to each other: $loadAuthors" }
+        // An author's own custody holds its sends and its profile under one sender quota: past it, its oldest sends go.
+        require(load == 0 || (load + loadAuthors - 1) / loadAuthors < ForwardRepository.DEFAULT_MAX_PER_SENDER) {
+            "$load frames from $loadAuthors authors is past the ${ForwardRepository.DEFAULT_MAX_PER_SENDER}-a-sender quota"
+        }
+    }
+
     /** The widest any link reaches: Bluetooth's drop, or Aware's under `ble1m+nan`, held as far past its reach. */
     val reachM: Double
         get() = if (radio == NanRadio.NAME) maxOf(dropM, (nanRangeM ?: connectM) * dropM / connectM) else dropM
@@ -74,11 +89,14 @@ data class PassByScenario(
             "dms_each" to dms,
             "pictures_each" to pictures,
             "picture_kb" to pictureBytes / BYTES_PER_KB,
+            "load_each" to load,
+            "load_authors" to loadAuthors,
         )
 
     companion object {
         const val DEFAULT_PAIRS = 20
         const val DEFAULT_DMS = 20
+        const val DEFAULT_LOAD_AUTHORS = 5
         const val DEFAULT_PICTURE_KB = 200
         const val DEFAULT_RANGE_M = 15.0
         const val DEFAULT_TICK_MS = 500L
@@ -129,6 +147,38 @@ data class PassOutcome(
     /** The photos carried for the other's home whose bytes the carrier holds at the end, of those sent. */
     val carriedPicturesHeld: Int,
     val carriedPictures: Int,
+    /**
+     * The DMs each brought for the other: sent, still in the sender's custody when the walk began, crossed when the world
+     * loop read the pair just before its cut (stricter than the verdict, which counts what lands within a tick after),
+     * and crossed by the end.
+     */
+    val dms: Int = 0,
+    val dmsHeldAtBoot: Int = 0,
+    val dmsAtDrop: Int? = null,
+    val dmsCrossed: Int = 0,
+    /**
+     * The frames each carried for the other's home, as its custody held them at the walk's start: crossed just before the
+     * cut and by the end.
+     */
+    val carried: Int = 0,
+    val carriedAtDrop: Int? = null,
+    val carriedCrossed: Int = 0,
+    /**
+     * The frames each carried in for others ([PassByScenario.load]) as its custody held them at the walk's start; how
+     * many of the other's each held just before the cut and at the end, how many of its own it still held then (an
+     * arrival past the 1,000-row cap evicts the largest sender's oldest), and whether the two custodies held the same set.
+     */
+    val load: Int = 0,
+    val loadAtDrop: Int? = null,
+    val loadCrossed: Int = 0,
+    val loadKeptAtDrop: Int? = null,
+    val loadKept: Int = 0,
+    val parityAtDrop: Boolean? = null,
+    val parity: Boolean = false,
+    /** What the pair's air links aired both ways, and lost to a cut: frames, digests and receipts alike. */
+    val airedRecords: Long = 0,
+    val airedBytes: Long = 0,
+    val cutRecords: Long = 0,
 ) {
     val dialMs: Long? get() = if (inRangeAtMs != null && linkedAtMs != null) linkedAtMs - inRangeAtMs else null
     val linkMs: Long? get() = if (linkedAtMs != null && droppedAtMs != null) droppedAtMs - linkedAtMs else null
@@ -148,7 +198,8 @@ data class PassOutcome(
  * **The walk** is [MeshSim]'s: real time, a radio step every tick applied to the lab as it comes ([applyLinks]). Each
  * pair is watched from its first link until it is [PassByScenario.watchAfterMs] past reach. It converged when each
  * walker holds every DM and photo the other brought for it, and each custody holds every frame the other brought for
- * its home, within a tick of the link dropping.
+ * its home, within a tick of the link dropping. Past the custody quota a sender's custody has already evicted its oldest
+ * sends before the walk, and nothing else carries them: there a pass is measured against what its custody still held.
  */
 class PassBySim(
     private val lab: MeshLab,
@@ -177,9 +228,20 @@ class PassBySim(
         val home: LabNode,
     ) {
         val forOther = mutableListOf<String>()
+        val forOtherIds = mutableListOf<String>()
+
+        // Of [forOther], the ones its custody still held once everything was queued: a quota keeps the newest, and an
+        // evicted DM has no carrier, so these are all a pass can bring. Convergence is measured against them.
+        var heldForOther: List<String> = emptyList()
         val picturesForOther = mutableListOf<Pair<String, ByteArray>>()
         var carriedIds: Set<String> = emptySet()
         val carriedPictureHashes = mutableListOf<String>()
+
+        // The contacts whose DMs to each other it carries in ([PassByScenario.load]), the DMs they wrote, and those its
+        // custody held once all were in. Their profiles and contact frames ride in too, uncounted.
+        val authors = mutableListOf<LabNode>()
+        val loadSent = HashSet<String>()
+        var loadIds: Set<String> = emptySet()
     }
 
     // One pair's times, on the wall clock from the walk's start: the radio's written by the world loop, the convergence's
@@ -198,7 +260,20 @@ class PassBySim(
         @Volatile var textAtMs: Long? = null
 
         @Volatile var contacts = 0
+
+        // What had crossed when the world loop read the pair just before its cut: records already on the air land after.
+        @Volatile var atDrop: Crossed? = null
     }
+
+    // What one pair holds of what the other brought: DMs for it, frames carried for its home, the other's load; how much
+    // of its own load each still holds, and whether the two custodies are one set.
+    private data class Crossed(
+        val dms: Int,
+        val carried: Int,
+        val load: Int,
+        val loadKept: Int,
+        val parity: Boolean,
+    )
 
     suspend fun play(): PassByReport {
         val boot = boot()
@@ -226,16 +301,57 @@ class PassBySim(
                 lab.unlink(x, y)
             }
         }
+        if (scenario.load > 0) meetAuthors(limits)
         for ((w, walker) in walkers.withIndex()) queue(w, walker, walkers[partner(w)])
-        // Nothing crossed before the walk: every pair still lacks what the other brought.
-        if (scenario.dms + scenario.pictures > 0) {
-            for (pair in 0 until scenario.pairs) {
-                val (a, b) = sidewalk.walkers(pair).let { (x, y) -> walkers[x] to walkers[y] }
-                check(!holds(b, a, pictures = false) && !holds(a, b, pictures = false)) { "pair $pair crossed before the walk" }
+        checkNothingCrossed()
+        return bootLine()
+    }
+
+    // Each walker's load authors, each of whom has met the next, so it can seal a DM to it while it is away.
+    private suspend fun meetAuthors(limits: LabLimits) {
+        for ((w, walker) in walkers.withIndex()) {
+            walker.authors +=
+                (0 until scenario.loadAuthors).map { lab.node("w${w}a$it", limits).apply { setDisplayName("Author $w.$it") } }
+            for ((i, x) in walker.authors.withIndex()) {
+                val y = walker.authors[(i + 1) % walker.authors.size]
+                lab.link(x, y)
+                lab.awaitAcquainted(x, y)
+                lab.befriend(x, y)
+                lab.unlink(x, y)
             }
         }
+    }
+
+    // Nothing crossed before the walk: every pair still lacks what the other brought, its load too.
+    private suspend fun checkNothingCrossed() {
+        for (pair in 0 until scenario.pairs) {
+            val (a, b) = sidewalk.walkers(pair).let { (x, y) -> walkers[x] to walkers[y] }
+            if (scenario.dms + scenario.pictures > 0) {
+                check(!holds(b, a, pictures = false) && !holds(a, b, pictures = false)) { "pair $pair crossed before the walk" }
+            }
+            check(b.node.custodyIds().none { it in a.loadIds } && a.node.custodyIds().none { it in b.loadIds }) {
+                "pair $pair shares a load before the walk"
+            }
+        }
+    }
+
+    private suspend fun bootLine(): String {
         val frames = walkers.sumOf { it.forOther.size + it.picturesForOther.size + it.carriedIds.size }
-        return "boot: ${scenario.pairs} pairs and their homes, ${walkers.size * 2} nodes; $frames frames queued out of reach"
+        val sent = walkers.size * (scenario.dms + scenario.pictures)
+        val held = walkers.sumOf { it.heldForOther.size + it.carriedIds.size }
+        val nodes = walkers.size * 2 + walkers.sumOf { it.authors.size }
+        val custody = walkers.map { it.node.custodyIds().size }
+        return "boot: ${scenario.pairs} pairs and their homes, $nodes nodes; $frames frames queued out of reach" +
+            (if (held < sent) "; the senders' custody kept $held of the $sent they sent" else "") +
+            (
+                if (scenario.load > 0) {
+                    "; each walker carries in ${scenario.load} frames from ${scenario.loadAuthors} authors, custody holding " +
+                        "${walkers.minOf { it.loadIds.size }} to ${walkers.maxOf { it.loadIds.size }} of them and " +
+                        "${custody.min()} to ${custody.max()} frames in all"
+                } else {
+                    ""
+                }
+            )
     }
 
     private fun partner(walker: Int): Int = walker xor 1
@@ -247,12 +363,26 @@ class PassBySim(
         other: Walker,
     ) {
         val me = walker.node
+        // Its own DMs go between its authors' loads, so custody's newest-received-first serve order mixes the two.
+        var nextAuthor = 0
         for (i in 0 until scenario.dms) {
+            // The authors due before DM i: one a slice, the slices even across the DMs.
+            val due = if (walker.authors.isEmpty()) 0 else i * walker.authors.size / scenario.dms + 1
+            while (nextAuthor < due) takeLoad(walker, nextAuthor++)
             val to = if (i % 2 == 0) other.node else walker.home
             val body = "${me.name} dm $i to ${to.name}: ${FILLER.take(DM_FILLER_CHARS)}"
             check(me.sendDm(to, body)) { "${me.name} could not send \"$body\"" }
             check(me.ownMessageId(me.dmWith(to), body) in me.custodyIds()) { "${me.name}'s DM \"$body\" is not in its custody" }
-            if (to === other.node) walker.forOther += body
+            if (to === other.node) {
+                walker.forOther += body
+                walker.forOtherIds += me.ownMessageId(me.dmWith(to), body)
+            }
+        }
+        // Any author's load the DMs did not reach (fewer DMs than authors, or none).
+        while (nextAuthor < walker.authors.size) takeLoad(walker, nextAuthor++)
+        if (walker.authors.isNotEmpty()) {
+            walker.loadIds = me.custodyIds().filterTo(HashSet()) { it in walker.loadSent }
+            check(walker.loadIds.isNotEmpty()) { "${me.name}'s custody took none of its load" }
         }
         for (j in 0 until scenario.pictures) {
             val to = if (j % 2 == 0) other.node else walker.home
@@ -268,10 +398,75 @@ class PassBySim(
             }
         }
         walker.carriedIds = me.custodyIdsTo(walker.home)
+        val custody = me.custodyIds()
+        walker.heldForOther = walker.forOther.filterIndexed { i, _ -> walker.forOtherIds[i] in custody }
+        // Custody keeps a sender's newest frames ([ForwardRepository.DEFAULT_MAX_PER_SENDER]), its own sends too: past
+        // the quota it holds fewer than were queued, never none. Photos are measured under the quota only: an evicted
+        // photo's frame would need its own reckoning, and its carried copy too.
         val forHome = scenario.dms / 2 + scenario.pictures / 2
-        check(walker.carriedIds.size >= forHome) {
-            "${me.name}'s custody holds ${walker.carriedIds.size} frames for its home contact, of the $forHome it sent"
+        val quota = ForwardRepository.DEFAULT_MAX_PER_SENDER
+        if (scenario.dms + scenario.pictures < quota) {
+            check(walker.carriedIds.size >= forHome) {
+                "${me.name}'s custody holds ${walker.carriedIds.size} frames for its home contact, of the $forHome it sent"
+            }
+            check(walker.heldForOther.size == walker.forOther.size) { "${me.name}'s custody lost a DM under its quota" }
+        } else {
+            check(
+                scenario.pictures == 0,
+            ) { "photos past the custody quota are not measured: ${scenario.pictures} with ${scenario.dms} DMs" }
+            check(walker.carriedIds.isNotEmpty() && walker.heldForOther.isNotEmpty()) { "${me.name}'s custody kept none of its sends" }
         }
+    }
+
+    // [walker] meets its author [index] alone, who writes its share of the load to the next author, absent: the walker's
+    // custody takes it, as a carrier's does, and the author goes.
+    private suspend fun takeLoad(
+        walker: Walker,
+        index: Int,
+    ) {
+        val author = walker.authors[index]
+        val to = walker.authors[(index + 1) % walker.authors.size]
+        val share = scenario.load / walker.authors.size + if (index < scenario.load % walker.authors.size) 1 else 0
+        lab.link(author, walker.node)
+        lab.awaitAcquainted(author, walker.node)
+        val ids = HashSet<String>()
+        repeat(share) { k ->
+            val body = "${author.name} load $k to ${to.name}: ${FILLER.take(DM_FILLER_CHARS)}"
+            check(author.sendDm(to, body)) { "${author.name} could not send \"$body\"" }
+            ids += author.ownMessageId(author.dmWith(to), body)
+        }
+        val held = settleLoad(walker.node, author, ids)
+        // Past the 1,000-row cap an arrival evicts the largest sender's oldest row, the arriving author's own once its
+        // bucket is the largest: a share can arrive whole and stay in part. Short of the cap, all of it stays.
+        val full = walker.node.custodyIds().size >= ForwardRepository.DEFAULT_MAX_ROWS
+        check(held == share || (full && held > 0)) {
+            "${walker.node.name}'s custody took $held of ${author.name}'s $share, " +
+                "holding ${walker.node.custodyIds().size} frames in all"
+        }
+        lab.unlink(author, walker.node)
+        walker.loadSent += ids
+    }
+
+    // Waits until [walker]'s custody holds all of [ids] from [author], or has held the same number of them, at its row
+    // cap, for [LOAD_QUIET_MS]: an arrival past the cap evicts, so a full share may never stay. Returns how many it holds.
+    private suspend fun settleLoad(
+        walker: LabNode,
+        author: LabNode,
+        ids: Set<String>,
+    ): Int {
+        var last = -1
+        var steadySince = System.nanoTime()
+        lab.tryAwait(1, maxOf(MeshLab.AWAIT_MS, ids.size * LOAD_SETTLE_MS)) {
+            val held = walker.custodyIdsFrom(author).count { it in ids }
+            if (held != last) {
+                last = held
+                steadySince = System.nanoTime()
+            }
+            val steadyMs = (System.nanoTime() - steadySince) / NANOS_PER_MS
+            val stuckAtCap = held > 0 && steadyMs >= LOAD_QUIET_MS && walker.custodyIds().size >= ForwardRepository.DEFAULT_MAX_ROWS
+            if (held == ids.size || stuckAtCap) 1 else 0
+        }
+        return walker.custodyIdsFrom(author).count { it in ids }
     }
 
     // The world loop on the wall clock beside one watcher a pair, until every pass is over.
@@ -305,7 +500,11 @@ class PassBySim(
         val changes = radio.step(atMs, positions)
         val nowMs = wallMs(origin)
         for (link in changes.raised + changes.dropped) check(link.a / 2 == link.b / 2) { "walkers of two pairs linked: $link" }
-        for (link in changes.dropped) settle(link.a / 2, nowMs)
+        for (link in changes.dropped) {
+            val pair = link.a / 2
+            settle(pair, nowMs)
+            if (passes[pair].atDrop == null) passes[pair].atDrop = crossed(pair)
+        }
         lab.applyLinks(changes, { walkers[it].node }, radio)
         for (pair in 0 until scenario.pairs) {
             val (a, b) = sidewalk.walkers(pair)
@@ -366,9 +565,34 @@ class PassBySim(
     ): Boolean {
         val conversation = holder.node.dmWith(from.node)
         val held = rows(holder.node, conversation)
-        if (!held.keys.containsAll(from.forOther + from.picturesForOther.map { it.first })) return false
+        if (!held.keys.containsAll(from.heldForOther + from.picturesForOther.map { it.first })) return false
         if (!holder.node.custodyIds().containsAll(from.carriedIds)) return false
         return !pictures || picturesLanded(holder, from) == from.picturesForOther.size
+    }
+
+    // What each walker of [pair] holds of what the other brought.
+    private suspend fun crossed(pair: Int): Crossed {
+        val (x, y) = sidewalk.walkers(pair)
+        val (a, b) = walkers[x] to walkers[y]
+        val one = crossedTo(b, a)
+        val two = crossedTo(a, b)
+        val parity = a.node.custodyIds() == b.node.custodyIds()
+        return Crossed(one.dms + two.dms, one.carried + two.carried, one.load + two.load, one.loadKept + two.loadKept, parity)
+    }
+
+    private suspend fun crossedTo(
+        holder: Walker,
+        from: Walker,
+    ): Crossed {
+        val held = rows(holder.node, holder.node.dmWith(from.node))
+        val custody = holder.node.custodyIds()
+        return Crossed(
+            dms = from.forOther.count { it in held },
+            carried = from.carriedIds.count { it in custody },
+            load = from.loadIds.count { it in custody },
+            loadKept = holder.loadIds.count { it in custody },
+            parity = false,
+        )
     }
 
     // How many of the photos [from] brought for [holder] it holds whole.
@@ -407,7 +631,14 @@ class PassBySim(
                 outcomes.map(::passLine) +
                 listOf(
                     "converged in range: ${percent(outcomes.count { it.verdict == PassVerdict.CONVERGED }, outcomes.size)} " +
-                        "($tally)",
+                        "($tally)" +
+                        (
+                            if (outcomes.any { it.dmsHeldAtBoot < it.dms }) {
+                                "; past the custody quota, converged means every DM its sender's custody still held at the start"
+                            } else {
+                                ""
+                            }
+                        ),
                     "time to converge after the link: ${spread(converge)}; link held p50 ${seconds(percentile(links, P50))} " +
                         "p10 ${seconds(percentile(links, P10))}; dial p50 ${seconds(percentile(dials, P50))} " +
                         "p90 ${seconds(percentile(dials, P90))}; text alone ${spread(texts)}",
@@ -424,6 +655,7 @@ class PassBySim(
         val carried =
             walkers[x].carriedPictureHashes.map { it to walkers[y] } +
                 walkers[y].carriedPictureHashes.map { it to walkers[x] }
+        val end = crossed(pair)
         return PassOutcome(
             pair = pair,
             verdict = verdict(pass),
@@ -437,6 +669,38 @@ class PassBySim(
             contacts = pass.contacts,
             carriedPicturesHeld = carried.count { (hash, carrier) -> carrier.node.holdsBlob(hash) },
             carriedPictures = carried.size,
+            dms = walkers[x].forOther.size + walkers[y].forOther.size,
+            dmsHeldAtBoot = walkers[x].heldForOther.size + walkers[y].heldForOther.size,
+            dmsAtDrop = pass.atDrop?.dms,
+            dmsCrossed = end.dms,
+            carried = walkers[x].carriedIds.size + walkers[y].carriedIds.size,
+            carriedAtDrop = pass.atDrop?.carried,
+            carriedCrossed = end.carried,
+            load = walkers[x].loadIds.size + walkers[y].loadIds.size,
+            loadAtDrop = pass.atDrop?.load,
+            loadCrossed = end.load,
+            loadKeptAtDrop = pass.atDrop?.loadKept,
+            loadKept = end.loadKept,
+            parityAtDrop = pass.atDrop?.parity,
+            parity = end.parity,
+            airedRecords =
+                listOf(x, y).sumOf {
+                    walkers[it]
+                        .node.transport.aired.records
+                        .get()
+                },
+            airedBytes =
+                listOf(x, y).sumOf {
+                    walkers[it]
+                        .node.transport.aired.bytes
+                        .get()
+                },
+            cutRecords =
+                listOf(x, y).sumOf {
+                    walkers[it]
+                        .node.transport.aired.cut
+                        .get()
+                },
         )
     }
 
@@ -470,6 +734,23 @@ class PassBySim(
         summary["flapped_pairs"] = outcomes.count { it.contacts > 1 }
         summary["carried_pictures"] = outcomes.sumOf { it.carriedPictures }
         summary["carried_pictures_held"] = outcomes.sumOf { it.carriedPicturesHeld }
+        summary["dms_for_other"] = outcomes.sumOf { it.dms }
+        summary["dms_held_at_boot"] = outcomes.sumOf { it.dmsHeldAtBoot }
+        summary["dms_crossed_at_drop"] = outcomes.sumOf { it.dmsAtDrop ?: 0 }
+        summary["dms_crossed"] = outcomes.sumOf { it.dmsCrossed }
+        summary["carried_frames"] = outcomes.sumOf { it.carried }
+        summary["carried_crossed_at_drop"] = outcomes.sumOf { it.carriedAtDrop ?: 0 }
+        summary["carried_crossed"] = outcomes.sumOf { it.carriedCrossed }
+        summary["load_frames"] = outcomes.sumOf { it.load }
+        summary["load_crossed_at_drop"] = outcomes.sumOf { it.loadAtDrop ?: 0 }
+        summary["load_crossed"] = outcomes.sumOf { it.loadCrossed }
+        summary["load_kept_at_drop"] = outcomes.sumOf { it.loadKeptAtDrop ?: 0 }
+        summary["load_kept"] = outcomes.sumOf { it.loadKept }
+        summary["parity_at_drop_pairs"] = outcomes.count { it.parityAtDrop == true }
+        summary["parity_pairs"] = outcomes.count { it.parity }
+        summary["aired_records"] = outcomes.sumOf { it.airedRecords }
+        summary["aired_kb"] = outcomes.sumOf { it.airedBytes } / PassByScenario.BYTES_PER_KB
+        summary["cut_records"] = outcomes.sumOf { it.cutRecords }
         return summary
     }
 
@@ -497,6 +778,24 @@ class PassBySim(
             "text ${seconds(o.textMs)} and all ${seconds(o.convergeMs)} after the link" +
             (if (o.pictures > 0) ", ${o.picturesLanded} of ${o.pictures} photos landed" else "") +
             (if (o.contacts > 1) ", ${o.contacts} links" else "") +
+            (
+                if (o.verdict == PassVerdict.CUT_SHORT || o.dmsHeldAtBoot < o.dms) {
+                    ", before the cut ${o.dmsAtDrop ?: 0} of ${o.dms} DMs (${o.dmsHeldAtBoot} still in custody) and " +
+                        "${o.carriedAtDrop ?: 0} of ${o.carried} carried frames, by the end ${o.dmsCrossed} and ${o.carriedCrossed}"
+                } else {
+                    ""
+                }
+            ) +
+            (
+                if (o.load > 0) {
+                    "; load: before the cut ${o.loadAtDrop ?: 0} of the other's crossed, ${o.loadKeptAtDrop ?: o.load} " +
+                        "of ${o.load} own kept, parity ${o.parityAtDrop ?: false}; by the end ${o.loadCrossed}, ${o.loadKept}, " +
+                        "${o.parity}; aired ${o.airedRecords} records, ${o.airedBytes / PassByScenario.BYTES_PER_KB} KB, " +
+                        "${o.cutRecords} cut"
+                } else {
+                    ""
+                }
+            ) +
             (if (o.carriedPictures > 0) ", carrier holds ${o.carriedPicturesHeld} of ${o.carriedPictures} home photos" else "")
 
     private companion object {
@@ -507,6 +806,12 @@ class PassBySim(
         const val P10 = 10
         const val VERDICT_WIDTH = 12
         const val DM_FILLER_CHARS = 60
+
+        // How long a walker's custody may take, per frame, to take an author's share of the load over a boot link.
+        const val LOAD_SETTLE_MS = 100L
+
+        // How long a full custody's count of an author's share must hold still before its share counts as arrived.
+        const val LOAD_QUIET_MS = 2_000L
         const val FILLER = "on my way, see you at the corner by the bakery in ten minutes or so, bring the map"
     }
 }

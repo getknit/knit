@@ -63,6 +63,10 @@ internal object SimProperties {
     const val LATERAL = "knit.meshSimLateralM"
     const val PASS_DMS = "knit.meshSimPassDms"
     const val PASS_PICTURES = "knit.meshSimPassPictures"
+
+    /** Frames each walker carries into its pass for others, and how many contacts wrote them ([PassByScenario.load]). */
+    const val PASS_LOAD = "knit.meshSimPassLoad"
+    const val PASS_AUTHORS = "knit.meshSimPassAuthors"
     const val PICTURE_KB = "knit.meshSimPictureKb"
 
     /** Under `ble1m+nan`: the metres Wi-Fi Aware finds a peer within ([NanRadio]); the Bluetooth range when unset. */
@@ -162,6 +166,8 @@ internal object SimProperties {
             lateralM = System.getProperty(LATERAL)?.toDouble() ?: defaults.lateralM,
             dms = System.getProperty(PASS_DMS)?.toInt() ?: defaults.dms,
             pictures = System.getProperty(PASS_PICTURES)?.toInt() ?: defaults.pictures,
+            load = System.getProperty(PASS_LOAD)?.toInt() ?: defaults.load,
+            loadAuthors = System.getProperty(PASS_AUTHORS)?.toInt() ?: defaults.loadAuthors,
             pictureBytes = System.getProperty(PICTURE_KB)?.let { it.toInt() * PassByScenario.BYTES_PER_KB } ?: defaults.pictureBytes,
             radio = System.getProperty(RADIO) ?: defaults.radio,
             connectM = range,

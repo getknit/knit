@@ -41,7 +41,8 @@ class PassBySimTest {
             val scenario = SimProperties.passBy(SimProperties.seed())
             val name =
                 "passby-s${scenario.seed}-p${scenario.pairs}-${scenario.radio}-r${scenario.connectM.toInt()}" +
-                    "-d${scenario.dms}-i${scenario.pictures}${SimProperties.tag()}"
+                    "-d${scenario.dms}-i${scenario.pictures}" + (if (scenario.load > 0) "-l${scenario.load}" else "") +
+                    SimProperties.tag()
             var out: File? = null
             val sim = PassBySim(lab, scenario) { line -> out?.appendText("$line\n") }
             out = freshReport(SimProperties.out(), name)

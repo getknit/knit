@@ -829,7 +829,8 @@ android {
                 // sent before the outing (none unless set); `knit.meshSimRangeM` and `knit.meshSimDropM` the metres a link
                 // is dialled and held to (25 and 35 unless set; the drop is 1.4 times the range when only the range is);
                 // `knit.meshSimPairs`, `knit.meshSimSpeed`, `knit.meshSimLateralM`, `knit.meshSimPassDms`,
-                // `knit.meshSimPassPictures` and `knit.meshSimPictureKb` shape PassBySimTest's sidewalk;
+                // `knit.meshSimPassPictures`, `knit.meshSimPictureKb`, `knit.meshSimPassLoad` and `knit.meshSimPassAuthors`
+                // shape PassBySimTest's sidewalk;
                 // `knit.meshSimNanRangeM`, `knit.meshSimNanFail` and `knit.meshSimNanDiscoverMs` the `ble1m+nan` radio's
                 // Aware reach, failed data paths and discovery median; `knit.meshSimTrace` a
                 // `.movements` file FieldSimTest replays. `knit.meshSimOut` (an absolute directory) and `knit.meshSimTag` say where the
@@ -868,6 +869,8 @@ android {
                             "knit.meshSimPassDms",
                             "knit.meshSimPassPictures",
                             "knit.meshSimPictureKb",
+                            "knit.meshSimPassLoad",
+                            "knit.meshSimPassAuthors",
                             "knit.meshSimNanRangeM",
                             "knit.meshSimNanFail",
                             "knit.meshSimNanDiscoverMs",
