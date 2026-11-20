@@ -1830,6 +1830,8 @@ class DebugBridgeReceiver :
             .put("receiptsCustodied", snap.receipts.receiptsCustodied)
             .put("receiptsCoalesced", snap.receipts.receiptsCoalesced)
             .put("receiptsRidden", snap.receipts.receiptsRidden)
+            .put("receiptsRideHeld", snap.receipts.receiptsRideHeld)
+            .put("receiptsRideReleased", snap.receipts.receiptsRideReleased)
             .put("receiptsSpooled", snap.receipts.receiptsSpooled)
             .put("ridesUnrouted", snap.receipts.ridesUnrouted)
             .put("receiptsHeld", snap.receipts.receiptsHeld)
@@ -1963,6 +1965,9 @@ class DebugBridgeReceiver :
             .put("loraDirectUnreachable", snap.lora.loraDirectUnreachable)
             .put("loraDirectNoOutcome", snap.lora.loraDirectNoOutcome)
             .put("loraDirectHeld", snap.lora.loraDirectHeld)
+            // A DM the user typed offered past an unreachable mark: its own attempt, never the re-probe's wait (x9fa's
+            // 2026-11-19 amendment).
+            .put("loraDirectPastHold", snap.lora.loraDirectPastHold)
             .put("loraDirectTooLong", snap.lora.loraDirectTooLong)
             .put("loraDirectSlotZero", snap.lora.loraDirectSlotZero)
             .put("loraDirectResent", snap.lora.loraDirectResent)

@@ -14,9 +14,10 @@ package app.getknit.knit.mesh.lora
  * - [Reach.UNKNOWN]: nothing known, as after a restart. A DM goes out, one at a time ([mustWait]), and its outcome
  *   decides.
  * - [Reach.REACHABLE]: the destination acked within [lingerMs]. Offers go straight to the queue.
- * - [Reach.UNREACHABLE]: the firmware gave up, or nothing answered by the deadline. Offers are held — their DMs stay
- *   with `LoraDirectSource` — until the board is heard ([onHeard], the only edge out besides an ack) or the re-probe
- *   gets an ack back.
+ * - [Reach.UNREACHABLE]: the firmware gave up, or nothing answered by the deadline. A ✓✓ or a reaction offered is held
+ *   until the board is heard ([onHeard], the only edge out besides an ack) or the re-probe gets an ack back; a DM the
+ *   user types passes it and gets an attempt of its own, still one send at a time ([mustWait]; ADR 2026-10.x9fa's
+ *   2026-11-19 amendment).
  * - [Reach.REFUSED]: the destination's board refused what reached it (a `NO_CHANNEL` after a Restore, which a board
  *   that still holds our key never sends: it decodes the PKI DM on index 0 whatever its Knit channel). Held until
  *   their profile changes ([onProfileChanged]); hearing them does not clear it, since they are plainly on the air. It
@@ -140,7 +141,10 @@ internal class LoraDirectPolicy(
         return state.reach
     }
 
-    /** Whether an offer to [peerId] is held: they are marked unreachable, refused, or our board holds no key for them. */
+    /**
+     * Whether an offer to [peerId] is held: they are marked unreachable, refused, or our board holds no key for them. A DM
+     * the user typed is held only by the last two (the transport's `clearToOffer`).
+     */
     @Synchronized
     fun holds(
         peerId: String,
@@ -455,6 +459,24 @@ internal class LoraDirectPolicy(
     @Synchronized
     fun inFlight(): Int = flights.size
 
+    /**
+     * Which compact frames the table has a place for at [now] ([DirectFlightRoom]), taken once before the pacer's take: its
+     * monitor must never call back here.
+     */
+    @Synchronized
+    fun flightRoom(now: Long): DirectFlightRoom {
+        val unreachable = peers.keys.toList().filterTo(HashSet()) { reachOf(it, now) == Reach.UNREACHABLE }
+        val reachable = peers.keys.toList().filterTo(HashSet()) { reachOf(it, now) == Reach.REACHABLE }
+        return DirectFlightRoom(
+            inFlight = flights.size,
+            toUnreachable =
+                flights.values.count { it.send.peerId in unreachable || (it.send.resend && it.send.peerId !in reachable) },
+            unreachable = unreachable,
+            reachable = reachable,
+            maxFlights = maxFlights,
+        )
+    }
+
     /** Every flight, ended — the board is gone. The caller books what the board may still spend on them. */
     @Synchronized
     fun clearFlights(): List<Flight> {
@@ -478,20 +500,48 @@ internal class LoraDirectPolicy(
         while (queue.size > MAX_PARKED_PER_PEER) queue.removeFirst()
     }
 
-    /** Takes what is parked for [peerId]: to offer again on an ack, or to drop on a failure. */
+    /** Takes what is parked for [peerId]: to offer again on an ack, or to drop where nothing may retry. */
     @Synchronized
     fun unpark(peerId: String): List<Parked> = parked.remove(peerId)?.toList().orEmpty()
 
+    /** What a failed send to a peer leaves parked behind it ([unparkOnFailure]). */
+    class Unparked(
+        /** The newest DM the user wrote while the send was out: the one that gets the next attempt, or null. */
+        val next: Parked?,
+        /** Everything else that was parked, in the order it was parked. */
+        val rest: List<Parked>,
+    )
+
     /**
-     * Forgets every mark, parked offer and held frame — the board is gone, and with it the route each was about. A held
-     * frame's DM stays with the source for the re-probe; a held ✓✓ or reaction rode its signed copy.
+     * Takes what is parked for [peerId] once the send it waited on failed, and picks the newest [DirectKind.MESSAGE] among
+     * it as [Unparked.next] (ADR 2026-10.x9fa's 2026-11-19 amendment): a DM the user typed gets an attempt of its own, and
+     * of a burst only the newest — the older ones follow its ack, or wait for the next typed DM or the re-probe. Never a
+     * receipt or a reaction: neither is something a person is waiting to send.
+     *
+     * No time edge (the design pass's B1): everything here was parked while that send was alive — queued in the pacer,
+     * held for a key or a retry gap, or on the air — since every failure empties the queue, and a flight's `sentAt` is when
+     * the board took it, which would strand a DM parked while it was still queued.
      */
     @Synchronized
-    fun clearPeers() {
+    fun unparkOnFailure(peerId: String): Unparked {
+        val taken = parked.remove(peerId)?.toList().orEmpty()
+        val next = taken.lastOrNull { it.kind == DirectKind.MESSAGE }
+        return Unparked(next, if (next == null) taken else taken.filter { it !== next })
+    }
+
+    /**
+     * Forgets every mark, parked offer and held frame — the board is gone, and with it the route each was about. A held
+     * frame's DM stays with the source for the re-probe; a held ✓✓ or reaction rode its signed copy. Returns what was
+     * parked, by peer, so the caller can say which ✓✓ never got its compact copy on the air.
+     */
+    @Synchronized
+    fun clearPeers(): List<Pair<String, Parked>> {
+        val dropped = parked.flatMap { (peer, queue) -> queue.map { peer to it } }
         peers.clear()
         parked.clear()
         contactHeld.clear()
         retries.clear()
+        return dropped
     }
 
     /**
@@ -647,6 +697,42 @@ internal class LoraDirectPolicy(
 
         /** The most offers parked behind one peer's send; the DMs among the rest stay with the source. */
         const val MAX_PARKED_PER_PEER = 8
+    }
+}
+
+/**
+ * Which compact frames the flight table has a place for (ADR 2026-10.x9fa's 2026-11-19 amendment, lora-reviewer's rounds
+ * 2 to 4). A send to a peer marked [LoraDirectPolicy.Reach.UNREACHABLE] — a typed DM past the mark, the turn a failure
+ * hands on — and a resend or re-probe to a peer not known reachable may hold at most `maxFlights - 1` places: on
+ * MeshCore's two, attempts at absent boards end only at their deadlines (minutes), and two of them would hold every
+ * compact frame to every peer meanwhile, the reply to a friend beside you included. The last place is kept for a fresh
+ * frame to a peer the plane is not waiting to confirm, and for anything to a peer whose board acked this session
+ * ([LoraDirectPolicy.Reach.REACHABLE], written only by an ack this process saw and never persisted): its after-ack batch
+ * may use both. On Meshtastic's 32 it never binds. A snapshot: immutable, read under the pacer's monitor.
+ */
+internal class DirectFlightRoom(
+    val inFlight: Int,
+    /**
+     * Sends waiting that the reserve caps: one whose peer is marked unreachable now, or a resend or re-probe whose peer is
+     * not known reachable.
+     */
+    val toUnreachable: Int,
+    val unreachable: Set<String>,
+    val maxFlights: Int,
+    /** Peers whose board acked this session, within the linger: never capped. */
+    val reachable: Set<String> = emptySet(),
+) {
+    /**
+     * Whether compact frame [send] may take a place now. A resend or re-probe ([DirectSend.resend]) is capped whatever its
+     * peer's mark (lora-reviewer's round 3): marks are not persisted and a board loss wipes them, while the re-probe
+     * schedule is restored, so after a launch or a reconnect re-probes to absent boards read as unknown. A peer whose board
+     * acked this session is never capped (round 4): that mark only an ack this process saw writes, so a friend's after-ack
+     * batch never waits behind a re-probe to an absent board.
+     */
+    fun admits(send: DirectSend): Boolean {
+        if (inFlight >= maxFlights) return false
+        if (send.peerId in reachable || (!send.resend && send.peerId !in unreachable)) return true
+        return toUnreachable < maxOf(1, maxFlights - 1)
     }
 }
 

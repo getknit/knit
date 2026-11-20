@@ -2423,6 +2423,9 @@ class LabNode internal constructor(
             boardMap = flow { emitAll(manager.loraBoardMap()) },
             onBoardBound = { settings.setLoraBoard(it.nodeNum.toLong(), it.key) },
             onPublicPost = { manager.onPublicPostHeard(it) },
+            // As the MeshCore plane and `di/LoraWiring` wire them, so the ride-only ✓✓ runs end to end on this air too.
+            onRadioReached = { frameId, peerId, late -> manager.onLoraRadioReached(frameId, peerId, late) },
+            onDirectUndelivered = { frameId, peerId -> manager.onLoraDirectUndelivered(frameId, peerId) },
             scope = scope,
             metrics = metrics,
             clock = now,
@@ -2537,7 +2540,8 @@ class LabNode internal constructor(
                         override suspend fun isUnacked(frameId: String): Boolean = manager.loraDirectSource().isUnacked(frameId)
                     },
                 boardMap = meshcoreBoardHolders(flow { emitAll(manager.meshcoreBoardMap()) }),
-                onRadioReached = { frameId, late -> manager.onLoraRadioReached(frameId, late) },
+                onRadioReached = { frameId, peerId, late -> manager.onLoraRadioReached(frameId, peerId, late) },
+                onDirectUndelivered = { frameId, peerId -> manager.onLoraDirectUndelivered(frameId, peerId) },
                 scope = scope,
                 metrics = metrics,
                 state = LoraPlaneStateStore(settings, BoardKind.MESHCORE),

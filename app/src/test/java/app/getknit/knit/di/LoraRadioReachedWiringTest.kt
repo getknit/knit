@@ -54,9 +54,22 @@ class LoraRadioReachedWiringTest {
         val field = LoraMeshTransport::class.java.getDeclaredField("onRadioReached").apply { isAccessible = true }
 
         @Suppress("UNCHECKED_CAST")
-        val edge = field.get(transport) as (String, Boolean) -> Unit
-        edge("row-1", true)
+        val edge = field.get(transport) as (String, String, Boolean) -> Unit
+        edge("row-1", "bob", true)
 
-        verify(exactly = 1) { manager.onLoraRadioReached("row-1", true) }
+        verify(exactly = 1) { manager.onLoraRadioReached("row-1", "bob", true) }
+    }
+
+    /** The same shape for a ✓✓ whose compact copy did not land (ADR 2026-10.x9fa's 2026-11-19 amendment). */
+    @Test
+    fun theTransportsUndeliveredReceiptEdgeReachesTheManager() {
+        val transport = app.koin.get<LoraMeshTransport>(loraPlane(BoardKind.MESHTASTIC))
+        val field = LoraMeshTransport::class.java.getDeclaredField("onDirectUndelivered").apply { isAccessible = true }
+
+        @Suppress("UNCHECKED_CAST")
+        val edge = field.get(transport) as (String, String) -> Unit
+        edge("tick-1", "bob")
+
+        verify(exactly = 1) { manager.onLoraDirectUndelivered("tick-1", "bob") }
     }
 }

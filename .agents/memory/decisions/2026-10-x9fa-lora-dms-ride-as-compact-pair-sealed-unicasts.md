@@ -523,3 +523,107 @@ both; a ✓✓ before the flush; a board-taken older DM leaves the probe alone),
 Device trial owed: the strand recipe in `.agents/context/lora-bridge.md` on MeshCore and on Meshtastic boards: the
 older DM lands within a minute of `lora reprobe … (+1 after its ack)`, `loraDirectResent` climbs by two, and nothing
 re-airs at the next round. A phone-away control (board on, Knit force-stopped) logs the probe with no suffix.
+
+### Amendment (2026-11-19, draft): a typed DM is never held behind the re-probe
+
+**What was observed.** Field test 2026-11-19, the Pixel 9 out, the Pixel 7 in the lab, both on MeshCore V4 boards. The
+P7's coalesced ✓✓ for the P9's first DM was the P7's only LoRa send. Its flood reached the P9, the ack back was lost, so
+`settle` marked the P9 unreachable. The P7's reply, typed at 20:32:52, had parked behind that ✓✓'s flight
+(`LoraDirectPolicy.mustWait`) and was dropped to the source on the failure (`direct.unpark`). Nothing re-offered it but a
+hearing of the P9, and none came over LoRa, or the re-probe, `LoraReprobe.BASE_MS` (15 min) after the offer. It arrived
+over Wi-Fi Aware once the P9 was home. The user's rule: a typed DM always gets an attempt of its own now, and only an
+idle user falls back to the re-probe. For a burst (the user's choice): when a send fails, only the newest DM typed during
+it gets the next attempt; the older ones follow its ack, or wait for the next typed DM or the re-probe.
+
+**What changed.**
+
+- **A typed DM passes an unreachable mark.** `offer` with `DirectKind.MESSAGE` is always one the user just wrote
+  (`MeshManager.sendChat`, its pending flush, a parked replay; resends go through `enqueueResend`). It is held only by a
+  refusal or a missing key (`REFUSED`, `NO_KEY`), and its send-time gate asks only those (`RideGate.refusalHeld`; a ✓✓
+  and a reaction keep `reachHeld`). Counted where it is queued, `loraDirectPastHold`, logged
+  `lora direct past hold <id> -> <peer>`. `mustWait` is unchanged: one send in flight per peer not known reachable, which
+  on MeshCore also keeps two route ladders from fighting over one contact's route.
+- **A failed send hands its turn to the DM typed during it** (`LoraDirectPolicy.unparkOnFailure`). Where asking again
+  could change the answer — the send ended `Unreachable` or with no outcome, or our own board refused it (pace, or its
+  own reason) — the newest parked DM goes back through `offer` at once, past the mark (`lora direct next <id> -> <peer>
+  (typed during the failed send, +<n> left)`); the older DMs go to the source; a parked ✓✓ is told undelivered; a
+  reaction rides its signed copy. A second `PKI_UNKNOWN_PUBKEY` to the re-offer counts as such a failure too: it marks the
+  peer unreachable, not keyless, so a DM typed a second later would pass the mark anyway, and the handed-on DM starts
+  afresh (`afterPeerKey` false), so a burst costs at most two sends. After their board's refusal nothing retries and
+  everything goes to the source as before. No time edge (the design pass's B1): `Flight.sentAt` is when the
+  board took the frame, and `mustWait` also parks behind a frame still queued, in a `PKI_UNKNOWN_PUBKEY` retry gap or held
+  for an `add_contact`; every failure empties the parked queue, so everything parked was typed during that send's life.
+- **After a fresh DM's ack, everything held goes at once.** `catchUp`'s `after ack` trigger runs only after the
+  destination's own board acked a DM the user wrote, so the unicast path is proven and the link may be up only briefly:
+  up to `AFTER_ACK_LIMIT` (8, `MAX_PARKED_PER_PEER`) held DMs no board took are queued together
+  (`lora resend <id> -> <peer> (after ack, +<n> with it)`), booked on the re-probe's schedule as before. `heard`, `lifted`
+  and `cover lapsed` keep the newest plus ≤ 2 after its ack (`RESEND_LIMIT`): a hearing is not an acked unicast. The
+  re-probe round is unchanged.
+- **The flight table meters them** (the design pass's B2). MeshCore's table is two (`MeshcoreTraits.maxFlights`), and
+  `LoraDirectPolicy.launch` ends the oldest live flight on a third as no outcome: an unreachable mark on the path just
+  proven, a lost late ack. So a compact frame the table has no place for waits in the pacer (`LoraPacePolicy.take`'s
+  `directRoom`, asked per frame against a `DirectFlightRoom` snapshot): skipped like a braked post, never asked for air,
+  never a holder, room posts still going; every settle calls `onFlightEnded` and wakes the pacer, and a 30-s deferral
+  (`FLIGHT_RECHECK_MS`) is the backstop, never a tick. The last place is kept for a peer the plane is not waiting to
+  confirm (lora-reviewer's rounds 2 to 4): sends to a peer marked unreachable — a typed DM past the mark, the turn a
+  failure hands on — and every resend or re-probe (`DirectSend.resend`) to a peer not known reachable hold at most
+  `maxFlights - 1`, since on MeshCore each ends only at its deadline (up to `MAX_FLIGHT_MS`, about 7 min) and two would
+  hold every compact frame to every peer, the reply to a friend beside you included. Keyed on the send as well as the
+  mark because the marks are never persisted and a board loss wipes them, while the re-probe schedule is restored: after a
+  launch or a reconnect re-probes to absent boards read as unknown peers. A typed DM, ✓✓ or reaction to a reachable or
+  unknown peer may take the last place, and anything to a peer whose board acked this session (`REACHABLE`, written only
+  by an ack this process saw and never persisted, so the restart concern does not reach it) may use both — its after-ack
+  batch included. Chosen over a chain on
+  `flushAfter` because it covers every source of compact frames at once — the parked replay on an ack, a ✓✓, a typed DM
+  to a reachable peer — and strands nothing when the slot an ack frees is taken by another peer's frame. On Meshtastic
+  (32) it never binds.
+- **The app is told when a ✓✓'s compact copy did not land.** `LoraMeshTransport.onDirectUndelivered(frameId, peerId)`,
+  wired to `MeshManager.onLoraDirectUndelivered`, once per send, for a `DirectKind.RECEIPT` held at the offer by an
+  unreachable mark; dropped unflown for want of air (a shed, an oversize evict, a pacing NAK at the write,
+  `abandonNever`, a give-up at the write) or for an unreachable mark at send; refused by our own board after it took it;
+  parked behind a failed send or when the board goes; or whose own send ended unreachable or unanswered (the deadline,
+  `clearFlights`, an eviction). Never for their board's refusal, a missing key, a cover, slot 0, `NOT_DIRECT` or a seal
+  too long: there the signed copy is the path, and riding changes nothing. It runs on the plane's coroutines: lock-free
+  map and hold updates, no I/O, no launch, no call back into the plane. `onRadioReached` gains the peer the send was for;
+  its receiver may launch onto a scope of its own, never run anything inline.
+- **The app's half** (`MeshManager`, `DmAckCoalescer`, ADR 054 decision 4 amended): such a ✓✓'s ids wait in a ride-only
+  hold modelled on `AckSync`'s ride hold for room ticks (ADR 2026-09.aa27), never flushed on the 45-s timer, ride the next
+  DM the user types inline (`inlineAcksFor`, ahead of the timed hold's ids), and what did not fit is released as one
+  compact tick, with whatever the timed hold has for that author, on their board's next ack of one of our DMs
+  (`onLoraRadioReached`, its one launch onto the session scope). `mesh/LoraTickIds` maps each compact tick's frame
+  id to its ids, recorded before the offer since a tick held at the offer is reported inside it. A ride-only id the
+  compact copy sheds goes back to the ride-only hold, never the timed one, so no flush re-seals its signed receipt;
+  `DmReAckLedger` already records them answered, so the release seals none either. Bounded per author at 12 and at
+  500 in all (past that the largest author's oldest go, so one author minting ids cannot grow it or crowd out the
+  rest), and aged out inside the compact send window; a given-back id keeps the age it had. Counters: `receiptsRideHeld`, `receiptsRideReleased` (the ones that ride inline count
+  in `receiptsCoalesced`).
+
+**What is superseded.** In this ADR's gates, "the peer not marked unreachable" for a typed DM, and "dropped to the
+source on a failure" for the newest DM typed during the failed send. In the 2026-11-04 amendment, "A ✓✓ is still never
+caught up: it is the coalescer's" — it is still never re-aired by the plane, but the coalescer now holds it to ride.
+
+**What it costs.** One attempt per typing burst at an absent board. On MeshCore that is two zero-hop airings and a
+flood, plus the PATH return if it lands. A failed MeshCore attempt also spends a zero-hop write and a `RESET_PATH` of the
+ladder's `MAX_LADDER_WRITES_PER_DAY` (24 per contact), so about 12 typing bursts a day; past that, typed DMs and
+re-probes to an `UNKNOWN` route are refused locally (`ROUTE_BUDGET_SPENT`) until UTC midnight. Typed attempts now spend
+the budget the idle re-probe relied on. On Meshtastic each burst books `AIRINGS` (5) at full price under `Ceiling.FULL`,
+and a DIRECT frame the window refuses holds what ranks behind it, the user's own room posts included, for up to a
+window. Behind a fresh ack up to eight DMs' airings go at once instead of three, still one admission each. The flight
+table's hold: on MeshCore, compact frames to unconfirmed peers wait behind each other — one attempt at an absent board out
+at a time, each up to about 7 min — while a confirmed or unknown peer's go in the last place; a third frame waits only
+when both places are taken. The last place is kept from sends to peers marked unreachable and from resends and re-probes
+to peers not known reachable, so two hearing-resends or re-probes to unconfirmed peers never fly at once on MeshCore;
+a peer whose board acked this session may use both places, so its after-ack batch never waits behind a re-probe to an
+absent board. On Meshtastic (32) it never binds. A ride-only
+✓✓ that rides a typed DM whose own compact copy then fails is gone from LoRa, as with today's inline ride: the author's
+re-probe re-delivers their DM, and the re-ack heals it.
+
+Tests: `LoraDirectPolicyTest` (`unparkOnFailure`), `LoraPaceFlightHoldTest` (the flight-table hold, per frame),
+`LoraDirectTransportTest` (the typed DM past the mark and at send; the ✓✓ still held and told once; a refusal still
+holding; the turn at the failure, a burst's one more flight, an idle peer; B1's queued and key-gap cases; the batch after
+an ack; every undelivered path and the excluded ones), `MeshcoreAfterAckBatchTest` (B2: five held DMs behind one ack on
+a two-flight table, none evicted; attempts at absent boards never take the last place from a peer who is there), `MeshcoreDirectLabTest.aReplyTypedDuringALostTicksFlightGoesTheMomentTheTickFailsNotAtTheReprobe`
+and `aBurstOfFiveDmsAtADeadBoardCostsAtMostTwoFlights`. The ride-only ✓✓'s own oracles are `DmAckCoalescerTest` and
+`MeshManagerTest`'s. Device trial owed: today's field case again (P9 out, P7 in the lab, both on the build): P9 DMs P7,
+P7 replies within a minute; the reply reaches P9 over LoRa within minutes, with `lora direct next` or
+`lora direct past hold` on P7 and `loraDirectPastHold` climbing; both idle 15 minutes, no airing beyond the re-probe.

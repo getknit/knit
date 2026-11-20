@@ -636,6 +636,8 @@ class MeshMetrics {
     private val receiptsCustodied = AtomicLong()
     private val receiptsCoalesced = AtomicLong()
     private val receiptsRidden = AtomicLong()
+    private val receiptsRideHeld = AtomicLong()
+    private val receiptsRideReleased = AtomicLong()
     private val ridesUnrouted = AtomicLong()
     private val receiptsHeld = AtomicLong()
     private val receiptsSpooled = AtomicLong()
@@ -769,6 +771,7 @@ class MeshMetrics {
     private val loraDirectUnreachable = AtomicLong()
     private val loraDirectNoOutcome = AtomicLong()
     private val loraDirectHeld = AtomicLong()
+    private val loraDirectPastHold = AtomicLong()
     private val loraDirectTooLong = AtomicLong()
     private val loraDirectSlotZero = AtomicLong()
     private val loraDirectStranger = AtomicLong()
@@ -1208,6 +1211,20 @@ class MeshMetrics {
      */
     fun onReceiptRidden(count: Int) {
         receiptsRidden.addAndGet(count.toLong())
+    }
+
+    /**
+     * DM ✓✓ ids whose compact LoRa tick did not land (held for an unreachable board, refused for air, or flown with no
+     * answer) and now wait in `DmAckCoalescer`'s ride-only hold for the next DM the user writes to that author (ADR
+     * 2026-10.x9fa's 2026-11-19 amendment). The inline ones that then ride count in [onReceiptCoalesced].
+     */
+    fun onReceiptsRideHeld(count: Int) {
+        receiptsRideHeld.addAndGet(count.toLong())
+    }
+
+    /** Ride-only ✓✓ ids flushed as a compact tick because their author's board just acked one of our DMs. */
+    fun onReceiptsRideReleased(count: Int) {
+        receiptsRideReleased.addAndGet(count.toLong())
     }
 
     /**
@@ -1931,6 +1948,14 @@ class MeshMetrics {
         loraDirectHeld.incrementAndGet()
     }
 
+    /**
+     * A DM the user typed to a peer whose board is marked unreachable, offered anyway: a typed DM gets an attempt of its own
+     * and never waits on the re-probe (ADR 2026-10.x9fa's 2026-11-19 amendment).
+     */
+    fun onLoraDirectPastHold() {
+        loraDirectPastHold.incrementAndGet()
+    }
+
     /** A compact DM past one packet: not carried over LoRa; the signed copy still travels the other planes. */
     fun onLoraDirectTooLong() {
         loraDirectTooLong.incrementAndGet()
@@ -2249,6 +2274,8 @@ class MeshMetrics {
             receiptsCustodied = receiptsCustodied.get(),
             receiptsCoalesced = receiptsCoalesced.get(),
             receiptsRidden = receiptsRidden.get(),
+            receiptsRideHeld = receiptsRideHeld.get(),
+            receiptsRideReleased = receiptsRideReleased.get(),
             ridesUnrouted = ridesUnrouted.get(),
             receiptsHeld = receiptsHeld.get(),
             receiptsSpooled = receiptsSpooled.get(),
@@ -2438,6 +2465,7 @@ class MeshMetrics {
             loraDirectUnreachable = loraDirectUnreachable.get(),
             loraDirectNoOutcome = loraDirectNoOutcome.get(),
             loraDirectHeld = loraDirectHeld.get(),
+            loraDirectPastHold = loraDirectPastHold.get(),
             loraDirectTooLong = loraDirectTooLong.get(),
             loraDirectSlotZero = loraDirectSlotZero.get(),
             loraDirectStranger = loraDirectStranger.get(),
@@ -2596,6 +2624,8 @@ class MeshMetrics {
             val receiptsCustodied: Long = 0,
             val receiptsCoalesced: Long = 0,
             val receiptsRidden: Long = 0,
+            val receiptsRideHeld: Long = 0,
+            val receiptsRideReleased: Long = 0,
             val ridesUnrouted: Long = 0,
             val receiptsHeld: Long = 0,
             val receiptsSpooled: Long = 0,
@@ -2805,6 +2835,7 @@ class MeshMetrics {
             val loraDirectUnreachable: Long = 0,
             val loraDirectNoOutcome: Long = 0,
             val loraDirectHeld: Long = 0,
+            val loraDirectPastHold: Long = 0,
             val loraDirectTooLong: Long = 0,
             val loraDirectSlotZero: Long = 0,
             val loraDirectStranger: Long = 0,

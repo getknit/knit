@@ -195,14 +195,16 @@ class LoraDirectLabTest {
         }
 
     /**
-     * (b) Bob's board is off: alice's DM goes out once, every retry with it, and her board gives up — unreachable, and the
-     * next DM is held, not aired. The board comes back and airs a room post; alice's board hears it, and once the re-probe's
+     * (b) Bob's board is off: alice's DM goes out once, every retry with it, and her board gives up — unreachable. The next
+     * DM she types gets an attempt of its own past the mark (ADR 2026-10.x9fa's 2026-11-19 amendment), and gives up too.
+     * The board comes back and airs a room post; alice's board hears it, and once the re-probe's
      * gap since the failure has run the held DM is re-aired and lands, its ✓✓ following. Which of the two re-airs it is
      * left open on purpose: the hearing's resend when the gap had run by the time a packet of bob's was heard, else the
      * re-probe round once the clock passes it. Either is the plane working; the scenario asserts one of them aired it,
      * and that the first DM followed behind its board ack in the same round (#343).
      */
     @Test
+    @Suppress("LongMethod") // one scenario: two give-ups, the hearing, the re-air and the older DM behind its ack
     fun aBoardThatWasOffIsHeardAgainAndTheHeldDmLands() =
         runBlocking {
             val air = MeshLab.quickAir()
@@ -223,10 +225,16 @@ class LoraDirectLabTest {
             lab.await(1) {
                 alice.metrics
                     .lora()
-                    .loraDirectHeld
+                    .loraDirectPastHold
                     .toInt()
             }
-            assertEquals("the second is held, not aired", FakeMeshtasticAir.UNICAST_ATTEMPTS, air.knit(alice))
+            lab.await(2) {
+                alice.metrics
+                    .lora()
+                    .loraDirectUnreachable
+                    .toInt()
+            }
+            assertEquals("the second went on its own attempt, never held", 2 * FakeMeshtasticAir.UNICAST_ATTEMPTS, air.knit(alice))
 
             air.lossy = { _, _ -> false }
             assertTrue(bob.sendRoom("back on the air"))

@@ -43,9 +43,10 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   defaults false; `loraDmEnabled` gates our compact sends only, never what our board already acked.
   **Before touching a compact DM — `LoraDirectSink.offer`, `LoraDirectCrypto` / `LoraDirectOpen`, `LoraDirectInbox`,
   `LoraDirectSource`, `LoraBoardHolder` / the board map, `LORA_DIRECT_TAG`, `DirectKind`, `DirectSend`,
-  `LoraDirectPolicy` (`mustWait`, `holds`, `onHeard`, `deadlineMs`, `retriesBefore`, `RETRANSMITS`, `boardAcks`,
-  `ACK_PAYLOAD_BYTES`), `RideGate.direct`
-  / `reachHeld` / `unackedFrameId`, `StaleAtSend.NOT_DIRECT` / `HELD` / `ACKED` / `SLOT_ZERO`, `noteHeard` /
+  `LoraDirectPolicy` (`mustWait`, `holds`, `unparkOnFailure`, `onHeard`, `deadlineMs`, `retriesBefore`, `RETRANSMITS`,
+  `boardAcks`, `ACK_PAYLOAD_BYTES`), `RideGate.direct`
+  / `reachHeld` / `refusalHeld` / `unackedFrameId`, `LoraMeshTransport.onDirectUndelivered`, `AFTER_ACK_LIMIT`,
+  `loraDirectPastHold`, `StaleAtSend.NOT_DIRECT` / `HELD` / `ACKED` / `SLOT_ZERO`, `noteHeard` /
   `onBoardHeard` / `isLive`, `catchUp`, `DirectDm.boardTook`, `onDirectPacket`, `LoraReprobe` / `reprobeDue`, `frameKey` / `LoraPacePolicy.hasQueued` /
   `hasQueuedTo`, `LoraDirectPolicy.payloadCap`, `ReceivedPacket.pkiEncrypted`, or `LoraSizeHint.DM_BODY_BYTES`:** READ
   ADR 2026-10.x9fa (it supersedes ADR 039's DM form, ADR 2026-10.a4pm and rp3s's probe, re-offer and repair) and its
@@ -57,13 +58,21 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `loraDirectSlotZero`); every gate re-asked at send; one copy per frame id queued or awaiting its answer; one send in
   flight per peer not known reachable. A destination's ACK is a radio's, never a person's: it marks the board
   `Reachable` (45-min linger) and never feeds `reachable`; an implicit ACK only counts; `Unreachable` or no outcome by
-  the deadline holds offers until a live hearing of that board (RSSI, not MQTT, not our board, fresh `rx_time`) or the
-  re-probe; a destination's refusal holds until their profile changes or 4 h pass. Every send ends at its deadline. The re-probe
+  the deadline holds a ✓✓ or a reaction until a live hearing of that board (RSSI, not MQTT, not our board, fresh
+  `rx_time`) or the re-probe, while a DM the user types passes it (`refusalHeld`, `loraDirectPastHold`) and the newest
+  one typed during a failed send gets the next attempt at once (`unparkOnFailure`, no time edge) — x9fa's 2026-11-19
+  amendment; a destination's refusal holds until their profile changes or 4 h pass. Every send ends at its deadline. The re-probe
   keys on our DMs with no ✓✓, whatever the board said, and on its board ack the ≤ 2 older DMs no board took follow in
   the same round (#343, x9fa's 2026-11-17 amendment). A catch-up (x9fa's 2026-11-04 amendment, #294) re-airs the
   newest DM **no board took** (`DirectDm.boardTook`) on a fact — a hearing after a failure, a relay cover lapsed or
   lifted, the board acking a fresh DM — never a board-taken one (that is the re-probe's), inside the re-probe's gap
-  since the last failure and booked on its schedule; no timer, nothing persisted. A board-map source that has not reported reads "not now"; a
+  since the last failure and booked on its schedule; no timer, nothing persisted. Behind a fresh ack up to
+  `AFTER_ACK_LIMIT` (8) go at once, a hearing or a cover keeps the newest plus ≤ 2 after its ack; the flight table meters
+  them (`LoraPacePolicy.take`'s `directRoom`, `LoraDirectPolicy.flightRoom` / `DirectFlightRoom`: a compact frame waits
+  while `BoardTraits.maxFlights` sends are out, never evicting one; sends to peers marked unreachable and resends or
+  re-probes to peers not known reachable hold at most `maxFlights - 1`, the last place kept for a fresh frame to a peer
+  who is there, and a peer whose board acked this session may use both). A ✓✓ whose compact copy did not land for air, an unreachable mark or our own board's refusal is told
+  to the app once per send (`onDirectUndelivered`), never for their refusal, a key, a cover, slot 0 or `NOT_DIRECT`. A board-map source that has not reported reads "not now"; a
   failing one is retried every 5 min and counted (`loraBoardHoldersFailed`). Before our id, the fan-out admits at most
   `PRE_ID_ADMISSIONS` (4) room posts (`loraPreIdRefused` past it), charging a slot only to a frame that reaches the
   queue (`reservePreId`). A frame dropped before its first fragment is `abandon`ed: its dedup slot comes back, and a
@@ -149,7 +158,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   DM. It can outlast a lifted brake by the linger sweep's minute (#240).
 - **When touching `skipCovered` / `coverReason`, `suppressDataPath` / `linkIds`, `coveredByInternet` / `liftCover` /
   `liftedPeers` on this plane,
-  `RideGate` (`authorId`, `direct`, `reachHeld`, `unackedFrameId`), `staleReason` / `StaleAtSend`,
+  `RideGate` (`authorId`, `direct`, `reachHeld`, `refusalHeld`, `unackedFrameId`), `staleReason` / `StaleAtSend`,
   `OutboundFrame.sigKey`, `sendFrame`, or `selfIdKnown`:** READ ADR 054 and ADR 2026-09.5dt2 (and ADR 2026-09.y5f3 for
   the Internet cover, ADR 2026-10.rp3s for the author, ADR 2026-10.x9fa for a compact DM's gates). A compact DM to us,
   or to a peer a short-range plane holds a **live link** to (links, never sightings; `suppressDataPath` is the only
@@ -257,7 +266,8 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   then the Meshtastic name or cached service; until Stage 5 a MeshCore entry is listed but not pickable
   (`BoardOption.pickable`), so it never binds to the Meshtastic session (ADR 2026-11.gsqu's Stage 3c/3d amendment).
 
-- **When touching the chat's "reached their LoRa radio" — `LoraMeshTransport.onRadioReached`, `radioReached`,
+- **When touching the chat's "reached their LoRa radio" — `LoraMeshTransport.onRadioReached` (`frameId`, `peerId`,
+  `late`), `radioReached`,
   `MeshManager.onLoraRadioReached`, `MeshController.loraRadioReached`, `LoraRadioReached`, `DeliveryStatus.RadioReached`
   / `ofTick`, `tickGlyph` / `tickGlyphTag`, `AckProof` / `PacketOutcome.Acked.proof` (`ack_proof_status`), or
   `LoraDirectPolicy.launch`'s eviction:** READ ADR 040's 2026-10-31 amendment and ADR 2026-10.x9fa, then "UI surfaces" in

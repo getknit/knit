@@ -897,12 +897,12 @@ class MeshManagerTest {
             backgroundScope.launch { rig.manager.loraRadioReached.collect { seen += it } }
 
             rig.clockNow = 1_000L
-            rig.manager.onLoraRadioReached("f1", late = false)
+            rig.manager.onLoraRadioReached("f1", "bob", late = false)
             rig.clockNow = 2_000L
-            rig.manager.onLoraRadioReached("f1", late = true) // the re-probe's ack, or the same ack replayed
-            rig.manager.onLoraRadioReached("f2", late = true)
+            rig.manager.onLoraRadioReached("f1", "bob", late = true) // the re-probe's ack, or the same ack replayed
+            rig.manager.onLoraRadioReached("f2", "bob", late = true)
             rig.clockNow = 3_000L
-            rig.manager.onLoraRadioReached("f2", late = false) // a re-probe acked on time replaces the late replay
+            rig.manager.onLoraRadioReached("f2", "bob", late = false) // a re-probe acked on time replaces the late replay
 
             val expected = mapOf("f1" to LoraRadioReached(1_000L, late = false), "f2" to LoraRadioReached(3_000L, late = false))
             val lateF2 = expected + ("f2" to LoraRadioReached(2_000L, late = true))
@@ -1949,6 +1949,157 @@ class MeshManagerTest {
             assertTrue("no compact receipt for them", sink.offers.none { it.kind == DirectKind.RECEIPT })
         }
 
+    // --- a ✓✓ whose compact tick did not land waits for a ride (ADR 2026-10.x9fa's 2026-11-19 amendment) ---
+
+    /** Holds [ids] for bob and flushes them: one signed tick and its one compact RECEIPT offer, which this returns. */
+    private suspend fun Rig.flushedTick(
+        ids: List<String>,
+        offers: List<LoraOffer>,
+        settle: () -> Unit,
+    ): LoraOffer {
+        ids.forEach { manager.dmAcks.hold(bob.nodeId, it) }
+        clockNow += DmAckCoalescer.HOLD_MS
+        manager.dmAcks.flushDue()
+        settle()
+        return offers.single { it.kind == DirectKind.RECEIPT }
+    }
+
+    /**
+     * The field case (P7 → P9, 2026-11-19): the compact ✓✓ did not land, so its ids wait in the ride-only hold — never on
+     * the coalescer's timer, which would offer a tick the plane holds again every 45 s — and the next DM the user writes
+     * to that author carries them inline, in its signed copy and its compact one, with no second signed receipt.
+     */
+    @Test
+    fun aTickThatDidNotLandRidesTheNextDmInlineAndNeverTicksOnTheTimer() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val acks = rig.manager.dmAcks
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val held = List(2) { FrameId.new() } // the compact layout carries canonical frame ids only
+            val tick = rig.flushedTick(held, rig.loraOffers) { advanceUntilIdle() }
+            val custodied = rig.metrics.receipts().receiptsCustodied
+            val coalesced = rig.metrics.receipts().receiptsCoalesced
+
+            rig.manager.onLoraDirectUndelivered(tick.frameId, rig.bob.nodeId)
+            rig.manager.onLoraDirectUndelivered(tick.frameId, rig.bob.nodeId) // a second report of one tick
+            assertEquals(held, acks.riding(rig.bob.nodeId))
+            assertEquals("held for a ride once", 2L, rig.metrics.receipts().receiptsRideHeld)
+
+            rig.clockNow += DmAckCoalescer.HOLD_MS * 4
+            acks.flushDue()
+            advanceUntilIdle()
+            assertEquals("no tick on the timer", 1, rig.loraOffers.count { it.kind == DirectKind.RECEIPT })
+
+            val inlined = CopyOnWriteArrayList<Pair<String, List<String>>>()
+            rig.manager.onDmAcksInlined = { to, ids -> inlined += to to ids }
+            assertTrue(rig.manager.sendChat("on my way", recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+
+            val dm = rig.loraOffers.single { it.kind == DirectKind.MESSAGE }
+            assertEquals("the compact copy carries them", held, checkNotNull(MessageContentV2.decode(dm.plaintext)).acks)
+            assertEquals("the signed copy sealed them", listOf(rig.bob.nodeId to held), inlined)
+            assertTrue("taken out of the ride-only hold", acks.riding(rig.bob.nodeId).isEmpty())
+            assertEquals("counted as coalesced", coalesced + 2, rig.metrics.receipts().receiptsCoalesced)
+            assertEquals("no second signed receipt", custodied, rig.metrics.receipts().receiptsCustodied)
+            assertEquals("and no compact one", 1, rig.loraOffers.count { it.kind == DirectKind.RECEIPT })
+        }
+
+    /** The control: a report for a tick never offered, or naming another peer, holds nothing. */
+    @Test
+    fun anUndeliveredReportForAnUnknownTickOrAnotherPeerHoldsNothing() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val acks = rig.manager.dmAcks
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val tick = rig.flushedTick(listOf(FrameId.new()), rig.loraOffers) { advanceUntilIdle() }
+
+            rig.manager.onLoraDirectUndelivered("never-offered", rig.bob.nodeId)
+            rig.manager.onLoraDirectUndelivered(tick.frameId, "someone-else")
+            assertTrue(acks.riding(rig.bob.nodeId).isEmpty())
+            assertTrue(acks.riding("someone-else").isEmpty())
+            assertEquals(0L, rig.metrics.receipts().receiptsRideHeld)
+        }
+
+    /**
+     * A ride-only ✓✓ the compact copy has to shed goes back to the ride-only hold, never the timed one: its tick already
+     * failed to land, and the timed hold's flush would offer it again against the same board.
+     */
+    @Test
+    fun aShedRideOnlyAckGoesBackToTheRideNotTheTimer() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val acks = rig.manager.dmAcks
+            // The flush's tick offer, then the send's inline room (168: they ride the signed copy), then the DM's offer
+            // (a smaller board's: the compact copy sheds them).
+            val sink = rig.bindBudgetedLora(LoraDirectBudget(168, 9), LoraDirectBudget(168, 9), LoraDirectBudget(40, 1))
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val held = List(2) { FrameId.new() }
+            val tick = rig.flushedTick(held, sink.offers) { advanceUntilIdle() }
+            rig.manager.onLoraDirectUndelivered(tick.frameId, rig.bob.nodeId)
+
+            assertTrue(rig.manager.sendChat("hi", recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+
+            assertNull("the compact copy shed them", checkNotNull(MessageContentV2.decode(sink.offers.last().plaintext)).acks)
+            assertEquals("back to the ride", held.toSet(), acks.riding(rig.bob.nodeId).toSet())
+            assertTrue("never the timed hold", acks.pending(rig.bob.nodeId).isEmpty())
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            acks.flushDue()
+            advanceUntilIdle()
+            assertEquals("no tick on the timer", 1, sink.offers.count { it.kind == DirectKind.RECEIPT })
+        }
+
+    /**
+     * Their board just acked one of our DMs: the link is up, perhaps only briefly, so what waited for a ride goes now, as
+     * one compact tick and no second signed receipt (the ledger has them answered). Nothing waiting: nothing goes.
+     */
+    @Test
+    fun aRadioAckFromTheAuthorReleasesTheRideOnlyAcksAsOneCompactTick() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val acks = rig.manager.dmAcks
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            rig.manager.start()
+            try {
+                val held = List(2) { FrameId.new() }
+                val tick = rig.flushedTick(held, rig.loraOffers) { advanceUntilIdle() }
+                val custodied = rig.metrics.receipts().receiptsCustodied
+
+                rig.manager.onLoraRadioReached("our-dm", rig.bob.nodeId, late = false)
+                assertEquals("nothing waiting: nothing released", 0L, rig.metrics.receipts().receiptsRideReleased)
+
+                rig.manager.onLoraDirectUndelivered(tick.frameId, rig.bob.nodeId)
+                rig.manager.onLoraRadioReached("our-dm", rig.bob.nodeId, late = false)
+                // The release's last write: its offer comes before it on the same coroutine.
+                rig.await(2) { released(rig) }
+
+                val released = rig.loraOffers.last { it.kind == DirectKind.RECEIPT }
+                assertEquals("one compact tick released", 2, rig.loraOffers.count { it.kind == DirectKind.RECEIPT })
+                assertTrue("a tick of its own", released.frameId != tick.frameId)
+                assertEquals(held, checkNotNull(MessageContentV2.decode(released.plaintext)).acks)
+                assertEquals(2L, rig.metrics.receipts().receiptsRideReleased)
+                assertTrue(acks.riding(rig.bob.nodeId).isEmpty())
+                assertEquals("no second signed receipt", custodied, rig.metrics.receipts().receiptsCustodied)
+            } finally {
+                rig.manager.stop()
+            }
+        }
+
+    /** The ride-only ✓✓ ids released so far, as an Int for [Rig.await]. */
+    private fun released(rig: Rig): Int {
+        val receipts = rig.metrics.receipts()
+        return receipts.receiptsRideReleased.toInt()
+    }
+
     /** A LoRa sink that records its offers and answers [budgets] in turn, the last one from then on. */
     private class BudgetedSink(
         private val budgets: List<LoraDirectBudget>,
@@ -2846,7 +2997,7 @@ class MeshManagerTest {
             val rows = (0 until 4).map { rig.dmRow("dm $it", sentAt = rig.now - 60_000 + it * 1_000L) }
             coEvery { rig.messages.unackedDmsTo(rig.bob.nodeId, rig.me.nodeId, any()) } returns rows
             val (oldest, taken) = rows.first() to rows.drop(1)
-            taken.forEach { rig.manager.onLoraRadioReached(it.id, late = false) }
+            taken.forEach { rig.manager.onLoraRadioReached(it.id, "bob", late = false) }
             val source = rig.manager.loraDirectSource()
 
             assertEquals(listOf(oldest.id), source.unackedTo(rig.bob.nodeId, limit = 3, untakenOnly = true).map { it.frameId })

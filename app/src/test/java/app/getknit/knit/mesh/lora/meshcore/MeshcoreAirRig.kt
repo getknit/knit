@@ -60,6 +60,12 @@ internal class MeshcoreAirRig(
         val delivered: MutableList<OpenedDirect>,
         val unacked: MutableMap<String, DirectDm>,
         private val made: () -> MeshcoreHooks,
+        /** Every frame id the plane said reached its recipient's radio (`onRadioReached`), in order. */
+        val reached: MutableList<String> = mutableListOf(),
+        /** Every ✓✓ the plane said did not land (`onDirectUndelivered`), in order. */
+        val undelivered: MutableList<String> = mutableListOf(),
+        /** The plane's config: set it null and back to lose the board and bind it again (a reconnect, as the plane sees it). */
+        val config: MutableStateFlow<LoraConfig?> = MutableStateFlow(null),
     ) {
         /** The plane's MeshCore hooks, as `meshcorePlane` built them. */
         val hooks: MeshcoreHooks get() = made()
@@ -134,7 +140,10 @@ internal class MeshcoreAirRig(
         val metrics = MeshMetrics()
         val delivered = mutableListOf<OpenedDirect>()
         val unacked = LinkedHashMap<String, DirectDm>()
+        val reached = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val undelivered = java.util.concurrent.CopyOnWriteArrayList<String>()
         var hooks: MeshcoreHooks? = null
+        val config = MutableStateFlow<LoraConfig?>(LoraConfig(address, MeshcoreHooks.NO_CONFIGURED_SLOT, dms = true))
         val holders =
             peers.associate { peer ->
                 idOf(peer) to
@@ -162,7 +171,7 @@ internal class MeshcoreAirRig(
                             onBoardKey = { _, _, _ -> },
                         ).also { hooks = it }
                     },
-                config = MutableStateFlow(LoraConfig(address, MeshcoreHooks.NO_CONFIGURED_SLOT, dms = true)),
+                config = config,
                 crypto = Seal(self, ids),
                 inbox = LoraDirectInbox { delivered += it },
                 source =
@@ -177,6 +186,8 @@ internal class MeshcoreAirRig(
                         override suspend fun isUnacked(frameId: String): Boolean = frameId in unacked
                     },
                 boardMap = flowOf(MeshcoreContacts.holdersOf(holders)),
+                onRadioReached = { frameId, _, _ -> reached += frameId },
+                onDirectUndelivered = { frameId, _ -> undelivered += frameId },
                 scope = scope.backgroundScope,
                 metrics = metrics,
                 clock = { scope.testScheduler.currentTime },
@@ -190,7 +201,24 @@ internal class MeshcoreAirRig(
                 fragIds = kotlin.random.Random(MeshcoreChannel.mix("frag", name)).let { r -> { r.nextInt(0x10000) } },
             )
         transport.start()
-        val node = Node(name, self, board, dialer, session, transport, metrics, logs, delivered, unacked) { checkNotNull(hooks) }
+        val made = { checkNotNull(hooks) }
+        val node =
+            Node(
+                name,
+                self,
+                board,
+                dialer,
+                session,
+                transport,
+                metrics,
+                logs,
+                delivered,
+                unacked,
+                made,
+                reached,
+                undelivered,
+                config,
+            )
         nodes[name] = node
         settle(10_000)
         return node
@@ -211,10 +239,18 @@ internal class MeshcoreAirRig(
         to: Node,
         frameId: String,
         body: ByteArray = ByteArray(24) { (it + 1).toByte() },
+    ) = dm(from, to.id, frameId, body)
+
+    /** [dm] to a peer by id, for a contact whose board has no phone in the rig (one out of range, say). */
+    fun dm(
+        from: Node,
+        toId: String,
+        frameId: String,
+        body: ByteArray = ByteArray(24) { (it + 1).toByte() },
     ) {
-        val dm = DirectDm("${to.id}/$frameId", wall(), body)
+        val dm = DirectDm("$toId/$frameId", wall(), body)
         from.unacked[dm.frameId] = dm
-        from.transport.offer(to.id, dm.frameId, dm.sentAtMs, body, app.getknit.knit.mesh.lora.DirectKind.MESSAGE)
+        from.transport.offer(toId, dm.frameId, dm.sentAtMs, body, app.getknit.knit.mesh.lora.DirectKind.MESSAGE)
     }
 
     /** A signed room post by [author], [bytes] of text that does not deflate: two bound packets at 150 B. */

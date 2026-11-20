@@ -271,7 +271,14 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `loraDirect*` counters — `Sent`, `Acked` (the destination's own board), `ImplicitAck` (counted, never trusted),
   `Unreachable`, `NoOutcome`, `Held`, `TooLong`, `SlotZero`, `Resent`, and on receive `Delivered`, `Stranger`,
   `AuthFailed`, `ClockRefused`. `loraStaleAtSendByReason` can now read `NOT_DIRECT`/`HELD`/`ACKED`/`SLOT_ZERO`, never
-  `UNHEARD`. `loraBoardHoldersFailed` now means the board map's source failed.
+  `UNHEARD`. `loraBoardHoldersFailed` now means the board map's source failed. Since x9fa's 2026-11-19 amendment
+  `Held` counts only a ✓✓ or a reaction held by an unreachable mark (and anything refused or keyless), and
+  `loraDirectPastHold` (also a field-log counter) a DM the user typed queued past an unreachable mark: its own attempt,
+  never the re-probe's wait — the oracle of the typed-DM trial, beside the `lora direct past hold` and
+  `lora direct next` log lines. In the metrics block (`STATE`'s `metrics`, `LORA`'s `counters`), `receiptsRideHeld` counts ✓✓ ids whose compact tick did not land
+  and now wait to ride the next DM typed to their author (`lora direct undelivered`), and `receiptsRideReleased` those
+  flushed as a compact tick when that author's board next acked one of our DMs; the ones that rode inline count in
+  `receiptsCoalesced`. Both are also field-log counters.
   <!-- doc-lint: allow loraDmSent — a dump key ADR 2026-10.x9fa removed, named so an old trial log can be read -->
   <!-- doc-lint: allow loraReoffered — a dump key ADR 2026-10.x9fa removed, named so an old trial log can be read -->
   <!-- doc-lint: allow loraUnheardHeld — a dump key ADR 2026-10.x9fa removed, named so an old trial log can be read -->

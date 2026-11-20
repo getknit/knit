@@ -137,6 +137,124 @@ class LoraDirectPolicyTest {
         assertTrue(p.unpark("bob").isEmpty())
     }
 
+    /**
+     * ADR 2026-10.x9fa's 2026-11-19 amendment: after a failure the newest DM the user typed gets the next attempt, never a
+     * ✓✓ or a reaction, whatever was parked after it — and no time edge, so a DM parked before the failed send took the air
+     * (still queued, or in a key's retry gap) is as much its turn as one parked during its flight (B1).
+     */
+    @Test
+    fun aFailureHandsItsTurnToTheNewestParkedDmAndNeverToAReceiptOrAReaction() {
+        val p = policy()
+        p.park("bob", LoraDirectPolicy.Parked("m1", 0, byteArrayOf(1), DirectKind.MESSAGE))
+        p.park("bob", LoraDirectPolicy.Parked("r1", 0, byteArrayOf(1), DirectKind.RECEIPT))
+        p.park("bob", LoraDirectPolicy.Parked("m2", 5, byteArrayOf(2), DirectKind.MESSAGE))
+        p.park("bob", LoraDirectPolicy.Parked("x1", 9, byteArrayOf(1), DirectKind.REACTION))
+        p.park("bob", LoraDirectPolicy.Parked("r2", 9, byteArrayOf(1), DirectKind.RECEIPT))
+        p.park("carol", LoraDirectPolicy.Parked("c1", 0, byteArrayOf(1), DirectKind.MESSAGE))
+
+        val unparked = p.unparkOnFailure("bob")
+        assertEquals("m2", unparked.next?.frameId)
+        assertArrayEquals(byteArrayOf(2), unparked.next?.plaintext)
+        assertEquals("the rest, in the order parked", listOf("m1", "r1", "x1", "r2"), unparked.rest.map { it.frameId })
+        assertTrue("taken: nothing left for bob", p.unpark("bob").isEmpty())
+        assertEquals("carol's own stay", listOf("c1"), p.unpark("carol").map { it.frameId })
+    }
+
+    @Test
+    fun aFailureWithNothingTypedBehindItHandsTheTurnToNobody() {
+        val p = policy()
+        val nothing = p.unparkOnFailure("bob")
+        assertNull(nothing.next)
+        assertTrue(nothing.rest.isEmpty())
+
+        p.park("bob", LoraDirectPolicy.Parked("r1", 0, byteArrayOf(1), DirectKind.RECEIPT))
+        p.park("bob", LoraDirectPolicy.Parked("x1", 0, byteArrayOf(1), DirectKind.REACTION))
+        val ticksOnly = p.unparkOnFailure("bob")
+        assertNull("a ✓✓ or a reaction never takes the turn", ticksOnly.next)
+        assertEquals(listOf("r1", "x1"), ticksOnly.rest.map { it.frameId })
+    }
+
+    private fun send(
+        peer: String,
+        resend: Boolean = false,
+    ) = DirectSend(peer, BoardAddr(2u), "x", DirectKind.MESSAGE, resend = resend)
+
+    /**
+     * Round 2's blocking finding: on a two-flight table a send to an unreachable peer takes at most one place, and the last
+     * is kept for a peer the plane is not waiting to confirm; a full table admits nobody.
+     */
+    @Test
+    fun theLastFlightIsKeptForAPeerThePlaneIsNotWaitingToConfirm() {
+        val p = LoraDirectPolicy(lingerMs = linger, maxFlights = 2)
+        p.onUnreachable("bob", 0)
+        p.onUnreachable("carol", 0)
+        p.onAcked("dave", 0)
+        val empty = p.flightRoom(0)
+        assertTrue(empty.admits(send("bob")))
+        assertTrue(empty.admits(send("dave")))
+        assertNull(p.launch(flight(1u, "bob")))
+        val one = p.flightRoom(1)
+        assertFalse("one attempt at an absent board out: the last place is kept", one.admits(send("carol")))
+        assertTrue("for a peer we are not waiting to confirm", one.admits(send("dave")))
+        assertTrue("or one we know nothing of", one.admits(send("erin")))
+        assertNull(p.launch(flight(2u, "dave")))
+        val full = p.flightRoom(2)
+        assertFalse(full.admits(send("dave")))
+        assertFalse(full.admits(send("erin")))
+        // Meshtastic's 32: the reserve never binds a burst of attempts.
+        val wide = DirectFlightRoom(inFlight = 30, toUnreachable = 30, unreachable = setOf("bob"), maxFlights = 32)
+        assertTrue(wide.admits(send("bob")))
+    }
+
+    /**
+     * Round 3's blocking finding: marks are wiped by a restart or a board loss while the re-probe schedule is restored, so a
+     * resend or re-probe is capped by the reserve whatever its peer's mark, and counts toward it.
+     */
+    @Test
+    fun aResendIsCappedByTheReserveEvenToAPeerWithNoMark() {
+        val p = LoraDirectPolicy(lingerMs = linger, maxFlights = 2)
+        val empty = p.flightRoom(0)
+        assertTrue(empty.admits(send("bob", resend = true)))
+        p.launch(
+            LoraDirectPolicy.Flight(1u, send("bob", resend = true), airMs = 1_800, sentAt = 0, deadline = 45_000, retransmitMs = 8_000),
+        )
+        val one = p.flightRoom(1)
+        assertEquals("a re-probe to a peer with no mark counts", 1, one.toUnreachable)
+        assertFalse("a second re-probe waits", one.admits(send("carol", resend = true)))
+        assertTrue("a typed DM to a third peer takes the last place", one.admits(send("dave")))
+    }
+
+    /**
+     * Round 4's blocking finding: a peer whose board acked this session is never capped, so its after-ack batch is not held
+     * behind a re-probe to an absent board, and a resend to it does not count toward the reserve.
+     */
+    @Test
+    fun aResendToAPeerWhoseBoardAckedThisSessionIsNeverCapped() {
+        val p = LoraDirectPolicy(lingerMs = linger, maxFlights = 2)
+        p.onAcked("dave", 0)
+        p.launch(
+            LoraDirectPolicy.Flight(1u, send("bob", resend = true), airMs = 1_800, sentAt = 0, deadline = 45_000, retransmitMs = 8_000),
+        )
+        val one = p.flightRoom(1)
+        assertTrue("dave's after-ack resend takes the last place", one.admits(send("dave", resend = true)))
+        assertFalse("another re-probe to a peer not known reachable still waits", one.admits(send("carol", resend = true)))
+        p.launch(
+            LoraDirectPolicy.Flight(2u, send("dave", resend = true), airMs = 1_800, sentAt = 0, deadline = 45_000, retransmitMs = 8_000),
+        )
+        val full = p.flightRoom(2)
+        assertEquals("dave's resend does not count toward the reserve", 1, full.toUnreachable)
+        assertFalse("a full table admits nobody", full.admits(send("dave", resend = true)))
+    }
+
+    @Test
+    fun losingTheBoardHandsBackEverythingParkedByPeer() {
+        val p = policy()
+        p.park("bob", LoraDirectPolicy.Parked("r1", 0, byteArrayOf(1), DirectKind.RECEIPT))
+        p.park("carol", LoraDirectPolicy.Parked("m1", 0, byteArrayOf(1), DirectKind.MESSAGE))
+        assertEquals(setOf("bob" to "r1", "carol" to "m1"), p.clearPeers().map { (peer, it) -> peer to it.frameId }.toSet())
+        assertTrue(p.clearPeers().isEmpty())
+    }
+
     @Test
     fun theGapIsTheFirmwaresAndTheDeadlineOutlastsItsGiveUpOnABusyBand() {
         // `getRetransmissionMsec` at LongFast: a ≈44.5-ms slot, 2^CW + 16 + 32 slots, 4.5 s of processing.

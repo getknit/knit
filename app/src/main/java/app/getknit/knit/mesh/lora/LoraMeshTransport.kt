@@ -116,18 +116,34 @@ internal class LoraMeshTransport(
     /**
      * One of our compact DMs ([DirectKind.MESSAGE], by its row id) reached its recipient's **radio**: the destination's
      * own board acked it — its phone may be away, and the board's to-phone queue can still drop it — so the chat shows
-     * "reached their LoRa radio" until the ✓✓ (ADR 040's 2026-10-31 amendment). [late] is an ack that came after the send
+     * "reached their LoRa radio" until the ✓✓ (ADR 040's 2026-10-31 amendment). `peerId` is the recipient the send was
+     * addressed to. [late] is an ack that came after the send
      * ended, replayed from our board's to-phone queue, which may be minutes old: the caller shows no time for it. An ack
      * whose proof our board found forged ([AckProof.INVALID]) never comes here; an implicit ack, a receipt's or a
      * reaction's never does either.
      *
      * Called on the one `board.outcomes` collector, between moving the marks and releasing what was parked behind the
      * send — or, for an answer that outran its send's registration and was held for it, on the pacer as it registers the
-     * send (ADR 2026-11.gsqu's Stage 5c-2b amendment): it must return at once, take no lock that waits, launch nothing and
-     * never call back into this plane — a stall there drops the answers queued behind it, and a re-entry would reorder the
-     * parked offers.
+     * send (ADR 2026-11.gsqu's Stage 5c-2b amendment): it must return at once, take no lock that waits and never call back
+     * into this plane — a stall there drops the answers queued behind it, and a re-entry would reorder the parked offers.
+     * Anything slower goes onto a scope of the receiver's own (`MeshManager` launches the ride-only ✓✓'s release there,
+     * ADR 2026-10.x9fa's 2026-11-19 amendment), never inline.
      */
-    private val onRadioReached: (frameId: String, late: Boolean) -> Unit = { _, _ -> },
+    private val onRadioReached: (frameId: String, peerId: String, late: Boolean) -> Unit = { _, _, _ -> },
+    /**
+     * The compact copy of one of our ✓✓s ([DirectKind.RECEIPT], under the frame id it was offered with) to `peerId` did not
+     * land, and riding a later DM could still carry it (ADR 2026-10.x9fa's 2026-11-19 amendment): held at the offer by an
+     * unreachable mark; dropped unflown for want of air (a full queue's shed, a pacing NAK at the write, a window that never
+     * admits it, a give-up at the write) or for an unreachable mark at send; refused by our own board after it took it;
+     * parked behind a send that failed, or when the board went; or its own send ended unreachable or unanswered. Never for a
+     * destination's refusal, a missing key, a link or spool cover, slot 0, a peer no longer a board holder or a seal too
+     * long: there the signed copy is the path, and riding changes nothing. At most once per send.
+     *
+     * Called on the plane's coroutines — the outcome collector, the pacer, the deadline loop, the one that offered — never
+     * holding the pacer's monitor: the receiver does only lock-free map and hold updates, no I/O, no launch, and never
+     * calls back into this plane.
+     */
+    private val onDirectUndelivered: (frameId: String, peerId: String) -> Unit = { _, _ -> },
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
     /**
@@ -197,7 +213,8 @@ internal class LoraMeshTransport(
         boardMap: LoraBoardMap? = null,
         onPublicPost: suspend (MeshPost) -> Unit = {},
         onBoardBound: suspend (BoardBinding) -> Unit = {},
-        onRadioReached: (frameId: String, late: Boolean) -> Unit = { _, _ -> },
+        onRadioReached: (frameId: String, peerId: String, late: Boolean) -> Unit = { _, _, _ -> },
+        onDirectUndelivered: (frameId: String, peerId: String) -> Unit = { _, _ -> },
         scope: CoroutineScope,
         metrics: MeshMetrics,
         state: LoraPlaneState = LoraPlaneState.None,
@@ -217,6 +234,7 @@ internal class LoraMeshTransport(
         source = source,
         boardMap = boardMap,
         onRadioReached = onRadioReached,
+        onDirectUndelivered = onDirectUndelivered,
         scope = scope,
         metrics = metrics,
         state = state,
@@ -717,9 +735,11 @@ internal class LoraMeshTransport(
         candidates.clear()
         _reachable.value = emptySet()
         _health.value = TransportHealth.Unavailable
-        // The board is gone and with it the route every mark was about (ADR 2026-10.x9fa).
+        // The board is gone and with it the route every mark was about (ADR 2026-10.x9fa). A ✓✓ parked here never aired.
         endFlights()
-        direct.clearPeers()
+        direct.clearPeers().forEach { (peer, parked) ->
+            if (parked.kind == DirectKind.RECEIPT) tellUndelivered(parked.frameId, peer, "board lost")
+        }
         // A lift was this board's hearing; the next board has heard nothing yet. Only adds cover, so nothing lapses and
         // no catch-up runs; `stop()` and the next status publish show it.
         synchronized(coverLock) {
@@ -733,7 +753,9 @@ internal class LoraMeshTransport(
      * what it took, link or no link. A late destination ack for one still moves the marks ([onUnawaited]).
      */
     private fun endFlights() {
-        direct.clearFlights()
+        // A ✓✓ whose answer will never be read here is one the app may ride on a later DM.
+        direct.clearFlights().forEach { tellUndelivered(it.send, "board lost") }
+        pace.onFlightEnded()
     }
 
     /**
@@ -1147,9 +1169,15 @@ internal class LoraMeshTransport(
      * The gates, each re-asked before the first byte ([staleReason]): DMs switched on; [recipientId] a pinned board
      * holder whose profile carries the capability; neither a live link nor a spool carrying them; the bound slot not
      * 0 (the Knit channel is where Knit's frames go; the firmware PKI-encrypts a unicast on any slot); one copy per
-     * [frameId] queued or in flight; the peer not marked unreachable, refused or keyless (held — the DM stays with
-     * [source] for the re-probe and the next hearing); one send in flight per peer not known reachable (the rest parked
-     * behind it); and the seal fitting one PKI packet ([LoraDirectPolicy.payloadCap]).
+     * [frameId] queued or in flight; the peer not marked refused or keyless, nor — for a ✓✓ or a reaction — unreachable
+     * (held: a DM stays with [source] for the re-probe and the next hearing, a ✓✓ is told undelivered); one send in flight
+     * per peer not known reachable (the rest parked behind it); and the seal fitting one PKI packet
+     * ([LoraDirectPolicy.payloadCap]).
+     *
+     * A [DirectKind.MESSAGE] here is always one the user just wrote — `MeshManager.sendChat`, its pending flush, or a DM
+     * parked behind a send — never a resend, which goes through [enqueueResend]: so it passes an unreachable mark and gets an
+     * attempt of its own, never waiting on the re-probe (ADR 2026-10.x9fa's 2026-11-19 amendment). Its send-time gate asks
+     * only for a refusal or a missing key ([RideGate.refusalHeld]).
      */
     override fun offer(
         recipientId: String,
@@ -1160,17 +1188,26 @@ internal class LoraMeshTransport(
     ) {
         val now = clock()
         val holder = directHolder(recipientId, kind, now) ?: return
-        if (!clearToOffer(recipientId, frameId, now)) return
+        if (!clearToOffer(recipientId, frameId, kind, now)) return
         if (direct.mustWait(recipientId, now, pace.hasQueuedTo(recipientId))) {
             direct.park(recipientId, LoraDirectPolicy.Parked(frameId, sentAtMs, plaintext, kind))
             publishStatus()
             return
         }
         val packet = sealOrNull(recipientId, frameId, sentAtMs, plaintext) ?: return
+        // Counted where it goes, not where it passed the gate: a DM parked behind a send passes it again when replayed.
+        if (kind == DirectKind.MESSAGE && direct.reachOf(recipientId, now) == LoraDirectPolicy.Reach.UNREACHABLE) {
+            metrics.onLoraDirectPastHold()
+            log("lora direct past hold $frameId -> $recipientId")
+        }
         enqueueDirect(
             packet,
             DirectSend(recipientId, holder.addr, frameId, kind, airings = traits.airings),
-            RideGate(recipientId = recipientId, direct = true, reachHeld = true),
+            if (kind == DirectKind.MESSAGE) {
+                RideGate(recipientId = recipientId, direct = true, refusalHeld = true)
+            } else {
+                RideGate(recipientId = recipientId, direct = true, reachHeld = true)
+            },
         )
     }
 
@@ -1202,6 +1239,7 @@ internal class LoraMeshTransport(
     private fun clearToOffer(
         recipientId: String,
         frameId: String,
+        kind: DirectKind,
         now: Long,
     ): Boolean =
         when {
@@ -1219,15 +1257,55 @@ internal class LoraMeshTransport(
             }
 
             direct.holds(recipientId, now) -> {
-                metrics.onLoraDirectHeld()
-                log("lora direct held $frameId -> $recipientId")
-                false
+                clearOfMark(recipientId, frameId, kind, direct.reachOf(recipientId, now))
             }
 
             else -> {
                 true
             }
         }
+
+    /**
+     * Whether an offer to [recipientId], whose board is marked [reach], goes anyway. A DM the user just typed passes an
+     * unreachable mark (counted `loraDirectPastHold` and logged `lora direct past hold` by [offer] once it is queued): a
+     * typed DM always gets an attempt of its own, and only an idle user waits for the re-probe (ADR 2026-10.x9fa's
+     * 2026-11-19 amendment). A refusal or a missing key holds
+     * it as ever — asking again changes neither. A ✓✓ or a reaction is held by any mark (`loraDirectHeld`), and a ✓✓ held by
+     * an unreachable one is told undelivered, so the app can ride it on the next DM the user types.
+     */
+    private fun clearOfMark(
+        recipientId: String,
+        frameId: String,
+        kind: DirectKind,
+        reach: LoraDirectPolicy.Reach,
+    ): Boolean {
+        if (kind == DirectKind.MESSAGE && reach == LoraDirectPolicy.Reach.UNREACHABLE) return true
+        metrics.onLoraDirectHeld()
+        log("lora direct held $frameId -> $recipientId")
+        if (kind == DirectKind.RECEIPT && reach == LoraDirectPolicy.Reach.UNREACHABLE) tellUndelivered(frameId, recipientId, "held")
+        return false
+    }
+
+    /**
+     * Tells the app that the compact copy of our ✓✓ [frameId] to [peerId] did not land ([onDirectUndelivered]), logged as
+     * `lora direct undelivered <id> -> <peer> (<why>)`. Never called holding the pacer's monitor.
+     */
+    private fun tellUndelivered(
+        frameId: String,
+        peerId: String,
+        why: String,
+    ) {
+        log("lora direct undelivered $frameId -> $peerId ($why)")
+        runCatching { onDirectUndelivered(frameId, peerId) }.onFailure { log("lora direct undelivered failed: $it") }
+    }
+
+    /** [tellUndelivered] for [send], when it is a ✓✓ and the first word about this send. */
+    private fun tellUndelivered(
+        send: DirectSend,
+        why: String,
+    ) {
+        if (send.kind == DirectKind.RECEIPT && send.firstUndelivered()) tellUndelivered(send.frameId, send.peerId, why)
+    }
 
     /**
      * The one packet for [plaintext] to [peerId], or null: no pair key, or past one packet at the current payload cap
@@ -1353,8 +1431,12 @@ internal class LoraMeshTransport(
      * One backoff for every trigger: nothing goes inside the re-probe's gap since the last failure this process saw
      * ([LoraReprobe.onHeard], which pulls the round forward instead), and what goes is booked as a re-probe
      * ([LoraReprobe.onReprobed]). Only DMs no board took ([DirectDm.boardTook]: one that did waits on its phone, which
-     * is the re-probe's question) and none with a copy still waiting. The newest goes now, the ≤ 2 older after its
-     * destination acks it; each asks [LoraDirectSource.isUnacked] again at send, never behind a timer.
+     * is the re-probe's question) and none with a copy still waiting. On a hearing or a cover, the newest goes now and the
+     * ≤ 2 older after its destination acks it: a hearing is not an acked unicast. Behind a fresh DM's ack ([skip]) the
+     * destination's own board just took a DM the user wrote, so the unicast path is proven and up to [AFTER_ACK_LIMIT] go
+     * at once (ADR 2026-10.x9fa's 2026-11-19 amendment) — the link may be up only briefly — as fast as the flight table
+     * lets the pacer send them ([LoraPacePolicy.take]'s `directRoom`), the window and the queue cap the bound. Each asks
+     * [LoraDirectSource.isUnacked] again at send, never behind a timer.
      */
     private suspend fun catchUp(
         peerId: String,
@@ -1364,22 +1446,30 @@ internal class LoraMeshTransport(
         if (!mayTransmit() || currentConfig?.dms != true) return
         val now = clock()
         if (!reprobe.onHeard(peerId, now)) return
+        val afterAck = skip != null
+        val limit = if (afterAck) AFTER_ACK_LIMIT else RESEND_LIMIT
         val held =
             source
-                .unackedTo(peerId, RESEND_LIMIT, untakenOnly = true, maxBytes = directBudget.plaintextBytes)
+                .unackedTo(peerId, limit, untakenOnly = true, maxBytes = directBudget.plaintextBytes)
                 .filter { it.frameId != skip && !it.boardTook && !copyWaiting(it.frameId) }
         val newest = held.firstOrNull() ?: return
-        if (!enqueueResend(peerId, newest, flushAfter = held.drop(1).map { it.frameId })) {
+        val queued = if (afterAck) emptyList() else held.drop(1).map { it.frameId }
+        if (!enqueueResend(peerId, newest, flushAfter = queued)) {
             log("lora catch-up refused $peerId")
             return
         }
+        val alongside = if (afterAck) held.drop(1).count { enqueueResend(peerId, it, flushAfter = emptyList()) } else 0
         // Behind a fresh DM's board ack ([skip]) the board is there and the gap was just reset (`onAcked`): this is no
         // evidence the phone is away, so it books at the base gap rather than doubling — or a burst's acks would push the
         // re-probe out to its 4 h cap. Every other trigger books as a re-probe does.
         val reset = skip != null || lastAcked(peerId, newest.frameId)
         reprobe.onReprobed(peerId, newest.frameId, lastAcked = reset, now)
         stateWake.trySend(Unit)
-        log("lora resend ${newest.frameId} -> $peerId ($why, +${held.size - 1} after its ack)")
+        if (afterAck) {
+            log("lora resend ${newest.frameId} -> $peerId ($why, +$alongside with it)")
+        } else {
+            log("lora resend ${newest.frameId} -> $peerId ($why, +${held.size - 1} after its ack)")
+        }
     }
 
     /** Whether the DM the last re-probe or resend to [peerId] aired has its ✓✓ now — what resets the backoff. */
@@ -1648,7 +1738,7 @@ internal class LoraMeshTransport(
             log("lora direct ack proof invalid ${send.frameId} -> ${send.peerId}")
             return
         }
-        runCatching { onRadioReached(send.frameId, late) }.onFailure { log("lora direct radio reached failed: $it") }
+        runCatching { onRadioReached(send.frameId, send.peerId, late) }.onFailure { log("lora direct radio reached failed: $it") }
     }
 
     /**
@@ -1703,16 +1793,44 @@ internal class LoraMeshTransport(
                 // Every airing stays booked, as it was at send: the firmware flew them all, or may have. Only a link that
                 // counted them (`flown`) gets the unflown ones back; the deadline's own no-outcome never carries a count.
                 outcome.flown?.let { refundUnflown(flight, now, it) }
-                if (outcome is PacketOutcome.Unreachable) metrics.onLoraDirectUnreachable() else metrics.onLoraDirectNoOutcome()
                 direct.onUnreachable(peer, now)
                 reprobe.onFailed(peer, now)
+                // Counted after the mark: a reader that sees the counter move may act on the mark (mesh-lab-reviewer).
+                if (outcome is PacketOutcome.Unreachable) metrics.onLoraDirectUnreachable() else metrics.onLoraDirectNoOutcome()
                 log("lora direct unreachable ${send.frameId} -> $peer (${outcome::class.simpleName})")
-                // Left to the source: the DMs among them are re-aired by the next hearing or the re-probe.
-                direct.unpark(peer)
+                tellUndelivered(send, "unreachable")
+                // The DM typed while it was out gets the next attempt; the rest are left to the source, re-aired by the
+                // next ack, the next hearing or the re-probe.
+                handOn(peer, retry = true)
             }
         }
+        // A place in the flight table came back: a compact DM waiting for one may go now (LoraPacePolicy.take).
+        pace.onFlightEnded()
+        wake.trySend(Unit)
         stateWake.trySend(Unit)
         publishStatus()
+    }
+
+    /**
+     * Lets go of what was parked behind a send to [peer] that failed (ADR 2026-10.x9fa's 2026-11-19 amendment,
+     * [LoraDirectPolicy.unparkOnFailure]). Where asking again could change the answer ([retry]: their board silent, our
+     * own board refusing for pace or for itself, or their board still lacking our key after the one re-offer), the newest
+     * DM the user typed while it was out goes back through [offer] — past the unreachable mark, on an attempt of its own —
+     * and every ✓✓ parked there is told undelivered; the older DMs stay with the source for the next ack, the next typed
+     * DM or the re-probe, and a reaction rides its signed copy. Where it could not (their board refused), everything is
+     * dropped as before: DMs to the source, ✓✓s and reactions to their signed copies.
+     */
+    private fun handOn(
+        peer: String,
+        retry: Boolean,
+    ) {
+        val unparked = direct.unparkOnFailure(peer)
+        if (!retry) return
+        unparked.rest.filter { it.kind == DirectKind.RECEIPT }.forEach { tellUndelivered(it.frameId, peer, "parked") }
+        val next = unparked.next ?: return
+        val left = unparked.rest.count { it.kind == DirectKind.MESSAGE }
+        log("lora direct next ${next.frameId} -> $peer (typed during the failed send, +$left left)")
+        offer(peer, next.frameId, next.sentAtMs, next.plaintext, next.kind)
     }
 
     /**
@@ -1746,7 +1864,11 @@ internal class LoraMeshTransport(
                 log("lora direct refused ${send.frameId} -> $peer reason=${outcome.reason} byDestination=${outcome.byDestination}")
                 if (refusal == RefusalClass.DEST_REFUSED) direct.onRefused(peer, now)
                 if (refusal == RefusalClass.PACE) pace.onPaceRefusal(now)
-                direct.unpark(peer)
+                // Our own board's refusal (pace, or its own reason) says nothing about their board: a ✓✓ may ride later,
+                // and the DM typed meanwhile is asked again, behind the pacer's cool-down. Theirs holds the peer.
+                val ours = refusal != RefusalClass.DEST_REFUSED
+                if (ours) tellUndelivered(send, "refused")
+                handOn(peer, retry = ours)
             }
         }
     }
@@ -1755,7 +1877,8 @@ internal class LoraMeshTransport(
      * Their board answered `PKI_UNKNOWN_PUBKEY` (35): it holds no key for ours, and our board has just sent it our
      * `NodeInfo` in reply (`ReliableRouter.cpp:162-168` at v2.8.1) — air the window owes, booked here. The frame goes
      * once more after one retransmit gap, through the pacer and its own gates, with what was parked still waiting behind
-     * it; a second 35 to that re-offer is a give-up, as the firmware's own would be (ADR 2026-10.aajj).
+     * it; a second 35 to that re-offer is a give-up, as the firmware's own would be (ADR 2026-10.aajj), and the newest DM
+     * typed meanwhile gets the next attempt ([handOn]).
      */
     private fun onPeerLacksOurKey(
         flight: LoraDirectPolicy.Flight,
@@ -1767,11 +1890,14 @@ internal class LoraMeshTransport(
         hooks.bookKeyReply(now)
         val packet = flight.packet
         if (send.afterPeerKey || packet == null) {
-            metrics.onLoraDirectUnreachable()
             direct.onUnreachable(peer, now)
             reprobe.onFailed(peer, now)
+            metrics.onLoraDirectUnreachable() // after the mark, as in settle
             log("lora direct peer lacks our key ${send.frameId} -> $peer again: unreachable")
-            direct.unpark(peer)
+            // Marked unreachable, not keyless: a DM typed a second later passes that mark and its own 35 sends our NodeInfo
+            // again, so the one typed during this send gets the same turn. It starts afresh (`afterPeerKey` false), so a
+            // burst costs at most two sends (lora-reviewer's round 2).
+            handOn(peer, retry = true)
             return
         }
         val retry =
@@ -2157,9 +2283,14 @@ internal class LoraMeshTransport(
             currentConfig?.dms != true || holder == null || !holder.direct || holder.addr != addressed -> StaleAtSend.NOT_DIRECT
             hooks.directSlotRefused(currentConfig?.channelIndex) -> StaleAtSend.SLOT_ZERO
             frame.gate.reachHeld && direct.holds(to, clock()) -> StaleAtSend.HELD
+            frame.gate.refusalHeld && direct.reachOf(to, clock()).keepsResendsOff() -> StaleAtSend.HELD
             else -> null
         }
     }
+
+    /** Whether [frame]'s peer is marked unreachable now: what tells a ✓✓ dropped at send as held from one refused. */
+    private fun unreachableNow(frame: OutboundFrame): Boolean =
+        frame.direct?.let { direct.reachOf(it.peerId, clock()) == LoraDirectPolicy.Reach.UNREACHABLE } == true
 
     /** Whether we may put anything on the air at all: a board is bound and the plane is on. */
     private fun mayTransmit(): Boolean {
@@ -2218,8 +2349,13 @@ internal class LoraMeshTransport(
                 board.state.first { it is BoardState.Ready }
                 continue
             }
+            // A compact DM waits in the queue while the flight table has no place for it, never evicting a live send (the
+            // design pass's B2), and the last place is kept for a peer we are not waiting to confirm (round 2's blocking
+            // finding). Read here, off the pacer's monitor; only this loop launches flights, so the table cannot grow
+            // meanwhile, and a mark moving after the snapshot only delays a frame to the next take.
+            val room = direct.flightRoom(clock())
             val frame =
-                pace.take(clock()).also {
+                pace.take(clock()) { f -> f.direct?.let(room::admits) ?: true }.also {
                     // Reported after every take, admitted or not: a DM can flow while a room post is held, and it
                     // is the *held* frame that has to be visible — nothing else counts it until the queue fills and
                     // sheds it as an ordinary drop. Only after a real take because both counts clear on entry to
@@ -2286,7 +2422,7 @@ internal class LoraMeshTransport(
             staleReason(frame)?.let { reason ->
                 metrics.onLoraStaleAtSend(reason.name)
                 log("lora stale at send ${frame.label}: ${reason.name.lowercase()}")
-                abandon(frame)
+                abandon(frame, if (reason == StaleAtSend.HELD && unreachableNow(frame)) Abandon.HELD else Abandon.PATH)
                 return
             }
         }
@@ -2384,7 +2520,7 @@ internal class LoraMeshTransport(
                 metrics.onLoraNak(result.reason.name)
                 log("lora nak id=${result.id} reason=${result.reason} label=${frame.label}")
                 if (refusal == RefusalClass.PACE) pace.onPaceRefusal(clock())
-                abandon(frame) // a no-op once a fragment has flown
+                abandon(frame, if (refusal == RefusalClass.PACE) Abandon.AIR else Abandon.PATH) // a no-op once a fragment has flown
                 FragmentOutcome.ENDED
             }
 
@@ -2405,7 +2541,7 @@ internal class LoraMeshTransport(
             else -> {
                 val unaired = refusedUnaired(frame, result)
                 log("lora tx ${frame.label} gave up: $result")
-                abandon(frame)
+                abandon(frame, Abandon.AIR)
                 if (unaired) FragmentOutcome.REFUSED else FragmentOutcome.ENDED
             }
         }
@@ -2480,19 +2616,40 @@ internal class LoraMeshTransport(
      * a NAK or give-up on the first fragment, a missing config or a slot that is not Knit's, and the pacer's shed and
      * oversize evictions ([abandonShed]).
      */
-    private fun abandon(frame: OutboundFrame) {
+    private fun abandon(
+        frame: OutboundFrame,
+        why: Abandon = Abandon.PATH,
+    ) {
         if (frame.sentParts > 0) return
         frame.sigKey?.let(sigSeen::reopen)
         frame.direct?.let { send ->
             // Off the pacer's books first, or the replayed offers would see this frame still on its way and park again.
             pace.done(frame)
+            if (why != Abandon.PATH) tellUndelivered(send, why.name.lowercase())
             direct.unpark(send.peerId).forEach { offer(send.peerId, it.frameId, it.sentAtMs, it.plaintext, it.kind) }
         }
     }
 
-    /** [abandon]s whatever the pacer dropped unsent since the last look. */
+    /**
+     * Why a frame that never flew was let go ([abandon]), as far as a ✓✓ among them needs to know (ADR 2026-10.x9fa's
+     * 2026-11-19 amendment): [AIR] and [HELD] tell the app its compact copy did not land, so it may ride a later DM;
+     * [PATH] does not — a cover, slot 0, a slot that is not Knit's, a board the peer no longer holds or a missing key, where
+     * the signed copy is the path and riding changes nothing.
+     */
+    private enum class Abandon {
+        /** No air for it: a full queue's shed, a window that never admits it, a pacing NAK or a give-up at the write. */
+        AIR,
+
+        /** Its peer was marked unreachable while it waited ([StaleAtSend.HELD]). */
+        HELD,
+
+        /** Another path carries it, or none could. */
+        PATH,
+    }
+
+    /** [abandon]s whatever the pacer dropped unsent since the last look: a shed or an oversize evict, both for want of air. */
     private fun abandonShed() {
-        pace.drainShed().forEach(::abandon)
+        pace.drainShed().forEach { abandon(it, Abandon.AIR) }
     }
 
     /**
@@ -2505,7 +2662,7 @@ internal class LoraMeshTransport(
         for (frame in pace.drainNever()) {
             metrics.onLoraAirNever()
             log("lora air never ${frame.label} parts=${frame.messages.size}: over its ceiling of an empty window")
-            abandon(frame)
+            abandon(frame, Abandon.AIR)
         }
     }
 
@@ -3039,6 +3196,13 @@ internal class LoraMeshTransport(
          * older two only after the destination acks it — a board heard is not a phone that reads.
          */
         const val RESEND_LIMIT = 3
+
+        /**
+         * The most held DMs no board took that go at once behind a fresh DM's ack (ADR 2026-10.x9fa's 2026-11-19 amendment):
+         * the destination's own board just took a DM the user wrote, so the unicast path is proven, and the link may be up
+         * only briefly. The parked bound ([LoraDirectPolicy.MAX_PARKED_PER_PEER]); a hearing keeps [RESEND_LIMIT].
+         */
+        const val AFTER_ACK_LIMIT = LoraDirectPolicy.MAX_PARKED_PER_PEER
 
         /** How often a failed board-map source is asked again; the last map it gave stays in force meanwhile. */
         const val BOARD_MAP_RETRY_MS = 5 * 60_000L

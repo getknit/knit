@@ -39,6 +39,8 @@ object FieldCounters {
                 put("receiptsResent", receiptsResent)
                 put("receiptsCustodied", receiptsCustodied)
                 put("receiptsRidden", receiptsRidden)
+                put("receiptsRideHeld", receiptsRideHeld)
+                put("receiptsRideReleased", receiptsRideReleased)
                 put("receiptsSpooled", receiptsSpooled)
                 put("ridesUnrouted", ridesUnrouted)
                 put("receiptsHeld", receiptsHeld)
@@ -141,6 +143,7 @@ object FieldCounters {
                 put("loraDirectAcked", loraDirectAcked)
                 put("loraDirectUnreachable", loraDirectUnreachable)
                 put("loraDirectNoOutcome", loraDirectNoOutcome)
+                put("loraDirectPastHold", loraDirectPastHold)
                 put("loraDirectDelivered", loraDirectDelivered)
                 put("loraDirectResent", loraDirectResent)
             }

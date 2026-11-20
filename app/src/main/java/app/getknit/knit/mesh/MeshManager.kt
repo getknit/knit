@@ -1466,17 +1466,47 @@ class MeshManager(
     /**
      * The LoRa plane's word that our DM [frameId] reached its recipient's radio (`LoraMeshTransport.onRadioReached`,
      * wired in `di/MeshModule`); [late] when the ack came after the send ended. Runs on the outcome collector, or on the
-     * pacer for an answer held for its send (ADR 2026-11.gsqu's Stage 5c-2b amendment), so it does exactly one lock-free
-     * thing: no database read, no launch, nothing that calls the plane back.
+     * pacer for an answer held for its send (ADR 2026-11.gsqu's Stage 5c-2b amendment), so it does lock-free updates
+     * only: no database read, nothing that calls the plane back. Its one launch, onto the session scope (the default
+     * dispatcher, never inline), is the release of the ✓✓ waiting in [DmAckCoalescer]'s ride-only hold for [peerId], the
+     * recipient the acked send was addressed to: their board just took a DM, so the link is up, perhaps only briefly
+     * (ADR 2026-10.x9fa's 2026-11-19 amendment). Nothing waiting, no launch.
      * Stamped on [clock], the wall clock a row's `sentAt` uses; the first ack wins.
      */
     internal fun onLoraRadioReached(
         frameId: String,
+        peerId: String,
         late: Boolean,
     ) {
         val reach = LoraRadioReached(atMs = clock(), late = late)
         loraReached.update { held -> LoraRadioReached.record(held, frameId, reach) }
+        if (dmAcks.ridingFor(peerId) == 0) return
+        sessionScope?.launch {
+            val released = dmAcks.releaseRiding(peerId)
+            if (released > 0) metrics.onReceiptsRideReleased(released)
+        }
     }
+
+    /**
+     * The LoRa plane's word that the compact copy of our ✓✓ [frameId] to [peerId] did not land
+     * (`LoraMeshTransport.onDirectUndelivered`, ADR 2026-10.x9fa's 2026-11-19 amendment), wired in `di/LoraWiring`: its ids
+     * wait in [DmAckCoalescer]'s ride-only hold, to ride the next DM the user writes to [peerId] or go when their board
+     * next acks one. Runs on the plane's coroutines under [onLoraRadioReached]'s contract: lock-free map and hold updates
+     * only, no database, no launch, nothing that calls the plane back. A frame [offerLoraTicks] never recorded (or one aged
+     * out, or reported twice) is ignored, and so is one whose recorded author is not [peerId].
+     */
+    internal fun onLoraDirectUndelivered(
+        frameId: String,
+        peerId: String,
+    ) {
+        val tick = loraTicks.take(frameId, clock()) ?: return
+        if (tick.authorId != peerId) return
+        dmAcks.holdRiding(peerId, tick.ids)
+        metrics.onReceiptsRideHeld(tick.ids.size)
+    }
+
+    /** The ids each compact ✓✓ we offered carries, by its frame id, for [onLoraDirectUndelivered]. */
+    private val loraTicks = LoraTickIds()
 
     // Demo-screenshot only (DemoSeeder.seedRelays): a pinned spool status that [spoolStatus] answers with
     // instead of the live one. Null in every build that is not `-PseedDemo=true`.
@@ -2533,15 +2563,17 @@ class MeshManager(
         if (inlineIds.isNotEmpty() && recipientId != null) {
             val carried = envelope != null && EncEnvelope.isDmRatchetVersion(envelope.v)
             if (carried) {
-                metrics.onReceiptCoalesced(inlineAcks.dm.size)
-                onDmAcksInlined?.invoke(recipientId, inlineAcks.dm)
+                metrics.onReceiptCoalesced(inlineAcks.dmAll.size)
+                onDmAcksInlined?.invoke(recipientId, inlineAcks.dmAll)
                 metrics.onReceiptRidden(inlineAcks.room.size)
                 ackSync.rode(inlineAcks.room)
             } else {
-                // Each half goes back to the hold that owns it. A room ack must never land in [dmAcks]:
+                // Each part goes back to the hold that owns it. A room ack must never land in [dmAcks]:
                 // that hold *originates* what it still holds when the debounce runs out, which is the
-                // custody row the ride exists to avoid (ADR 2026-09.aa27).
+                // custody row the ride exists to avoid (ADR 2026-09.aa27); nor a ride-only DM ack in its timed
+                // hold, which would tick it again on the timer against a board it already failed to reach.
                 dmAcks.giveBack(recipientId, inlineAcks.dm)
+                dmAcks.giveBackRiding(recipientId, inlineAcks.dmRiding)
                 ackSync.giveBackRiding(recipientId, inlineAcks.room)
             }
         }
@@ -2582,7 +2614,15 @@ class MeshManager(
         } finally {
             tellInlineReads(recipientId, inline, envelope, seal.rootTag, sent)
         }
-        offerChatLoraDirect(row, group, envelope, inlineIds, inline.compactRead, loraHeld = inlineAcks.dm)
+        offerChatLoraDirect(
+            row,
+            group,
+            envelope,
+            inlineIds,
+            inline.compactRead,
+            loraHeld = inlineAcks.dmAll,
+            loraRiding = inlineAcks.dmRiding,
+        )
         return true
     }
 
@@ -2660,8 +2700,10 @@ class MeshManager(
      * The compact copy of a DM [sendChat] just sealed, for the LoRa plane (ADR 2026-10.x9fa): beside the signed one and
      * never instead of it, under the same id and stamp, with the content the signed copy sealed — the inline acks
      * included when its v2/v3 arm carried them, which is the only arm that does. [loraHeld] are the ones the coalescer
-     * held for the board: shed to fit, they go back to it ([offerLoraDirect]).
+     * held for the board: shed to fit, they go back to it ([offerLoraDirect]), the [loraRiding] among them to its ride-only
+     * hold.
      */
+    @Suppress("LongParameterList")
     private suspend fun offerChatLoraDirect(
         row: MessageEntity,
         group: GroupInfo?,
@@ -2670,13 +2712,22 @@ class MeshManager(
         // The read marks among [inlineIds] (ADR 2026-11.z6jw), null toward an author who reads no mask.
         read: Set<String>? = null,
         loraHeld: List<String>,
+        loraRiding: List<String> = emptyList(),
     ) {
         val recipientId = row.recipientId
         if (recipientId == null || group != null) return
         val carried = EncEnvelope.isDmRatchetVersion(envelope.v) && inlineIds.isNotEmpty()
         val rm = if (carried) read?.let { ReadMask.encode(inlineIds, it) } else null
         val content = row.sealedContent().copy(acks = inlineIds.takeIf { carried }, rm = rm)
-        offerLoraDirect(recipientId, row.id, row.sentAt, content, DirectKind.MESSAGE, loraHeld = loraHeld.takeIf { carried }.orEmpty())
+        offerLoraDirect(
+            recipientId,
+            row.id,
+            row.sentAt,
+            content,
+            DirectKind.MESSAGE,
+            loraHeld = loraHeld.takeIf { carried }.orEmpty(),
+            loraRiding = loraRiding.takeIf { carried }.orEmpty(),
+        )
     }
 
     /** Builds a [FrameType.CHAT] routing envelope wrapping the given [content] payload. */
@@ -3868,7 +3919,7 @@ class MeshManager(
         attached: Boolean,
     ): InlineAcks {
         if (recipientId == null || group != null) return InlineAcks()
-        val waiting = dmAcks.pending(recipientId).size + ackSync.ridingFor(recipientId)
+        val waiting = dmAcks.pending(recipientId).size + dmAcks.ridingFor(recipientId) + ackSync.ridingFor(recipientId)
         if (waiting == 0) return InlineAcks()
         val peer = peers.find(recipientId) ?: return InlineAcks()
         if ((peer.capabilities ?: 0L) and Protocol.CAP_INLINE_ACK == 0L) return InlineAcks()
@@ -3885,22 +3936,30 @@ class MeshManager(
         // DM acks take the slots first: someone is waiting on each of those and this ride is the only path
         // they have that costs nothing. A room ack has no single addressee waiting and is content to catch
         // the next carrier, so it fills what is left.
-        val dm = dmAcks.take(recipientId, fit)
-        return InlineAcks(dm = dm, room = ackSync.takeRiding(recipientId, fit - dm.size))
+        // Among the DM acks, the ones whose compact tick already failed to land go first: they have waited longest, and
+        // a DM the user writes is the ride they were held for (ADR 2026-10.x9fa's 2026-11-19 amendment).
+        val dmRiding = dmAcks.takeRiding(recipientId, fit)
+        val dm = dmAcks.take(recipientId, fit - dmRiding.size)
+        return InlineAcks(dm = dm, dmRiding = dmRiding, room = ackSync.takeRiding(recipientId, fit - dmRiding.size - dm.size))
     }
 
     /**
-     * The receipt ids one outbound DM carries inline, split by the hold each came from — [dmAcks] for a DM
-     * receipt held off the board (ADR 054), [AckSync]'s ride hold for a broadcast-room tick waiting for a
-     * frame going that way (ADR 2026-09.aa27). The split exists only for the give-back: a seal that falls
-     * short of v2 carries neither, and putting them back in the wrong hold would either lose them or
-     * originate a custody row for a room tick.
+     * The receipt ids one outbound DM carries inline, split by the hold each came from — [dmAcks]' timed hold for a DM
+     * receipt held off the board (ADR 054), its ride-only hold for one whose compact tick did not land ([dmRiding], ADR
+     * 2026-10.x9fa's 2026-11-19 amendment), [AckSync]'s ride hold for a broadcast-room tick waiting for a frame going
+     * that way (ADR 2026-09.aa27). The split exists only for the give-back: a seal that falls short of v2 carries none,
+     * and putting them back in the wrong hold would lose them, re-tick a failed tick on a timer, or originate a custody
+     * row for a room tick.
      */
     private class InlineAcks(
         val dm: List<String> = emptyList(),
+        val dmRiding: List<String> = emptyList(),
         val room: List<String> = emptyList(),
     ) {
-        val ids: List<String> get() = dm + room
+        /** Every DM ack carried, the ride-only ones first: what the board's compact copy may shed. */
+        val dmAll: List<String> get() = dmRiding + dm
+
+        val ids: List<String> get() = dmAll + room
     }
 
     /**
@@ -7213,7 +7272,7 @@ class MeshManager(
      * and only inside [LORA_DIRECT_SEND_WINDOW_MS]; whether a packet goes on the air is then the plane's own gates (the
      * board map, the covers, its reach marks, one packet). A content the compact layout cannot hold canonically has no
      * compact copy at all. [loraHeld] are the inline acks the coalescer gave [content] to carry: shed to fit the sink's
-     * budget, they are given back to it.
+     * budget, they are given back to it — to its ride-only hold for the ones in [loraRiding], which came from there.
      */
     private suspend fun offerLoraDirect(
         recipientId: String,
@@ -7222,9 +7281,10 @@ class MeshManager(
         content: MessageContent,
         kind: DirectKind,
         loraHeld: List<String> = emptyList(),
+        loraRiding: List<String> = emptyList(),
     ) {
         val sink = loraDirectSink(recipientId) ?: return
-        offerLoraDirect(sink, sink.budgetFor(recipientId), recipientId, frameId, sentAt, content, kind, loraHeld)
+        offerLoraDirect(sink, sink.budgetFor(recipientId), recipientId, frameId, sentAt, content, kind, loraHeld, loraRiding)
     }
 
     /**
@@ -7242,6 +7302,7 @@ class MeshManager(
         content: MessageContent,
         kind: DirectKind,
         loraHeld: List<String>,
+        loraRiding: List<String> = emptyList(),
     ) {
         if (clock() - sentAt >= LORA_DIRECT_SEND_WINDOW_MS) return
         val peer = peers.find(recipientId) ?: return
@@ -7254,7 +7315,14 @@ class MeshManager(
         // hears only the board; the signed copy carried them too, and a receipt is idempotent. Their flush also re-seals one
         // signed CTL_RECEIPT, since DmReAckLedger does not record inline acks on purpose: bounded at one per shed DM (the
         // ledger then records that tick, ADR 2026-10.8hn6) and idempotent (ADR 018). Never mark them carried in the ledger.
-        if (copy.giveBack.isNotEmpty()) dmAcks.giveBack(recipientId, copy.giveBack)
+        // One the ride-only hold lent goes back there, never to the timed hold: its compact tick already failed to land,
+        // and a flush would re-seal its signed receipt for a tick the plane would hold again (ADR 2026-10.x9fa's
+        // 2026-11-19 amendment).
+        if (copy.giveBack.isNotEmpty()) {
+            val (riders, held) = copy.giveBack.partition { it in loraRiding }
+            if (held.isNotEmpty()) dmAcks.giveBack(recipientId, held)
+            dmAcks.giveBackRiding(recipientId, riders)
+        }
     }
 
     /**
@@ -7281,6 +7349,8 @@ class MeshManager(
             // Counted only for a chunk with a read in it: past four ids a mask is never 0 (its width bit), read or not.
             if (read != null && chunk.any { it in read }) metrics.onReadsLoraOffered()
             val id = if (i == 0) firstId else FrameId.new()
+            // Recorded before the offer: a tick the plane holds at once is reported from inside it (onLoraDirectUndelivered).
+            loraTicks.record(id, authorId, chunk, clock())
             offerLoraDirect(sink, budget, authorId, id, sentAt, content, DirectKind.RECEIPT, loraHeld = emptyList())
         }
     }

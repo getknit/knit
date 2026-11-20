@@ -28,6 +28,15 @@ import java.util.concurrent.ConcurrentHashMap
  * custody our own inbound DMs, so the digests agree and no carrier re-serves one we hold. It takes real
  * divergence (our copy evicted, a wipe) or a plane that re-offers without a digest (LoRa). A cancelled caller no
  * longer cuts the hold short (ADR 2026-10.f82h); a process death still can (#56).
+ *
+ * A second, **ride-only** hold ([holdRiding]) keeps the ids whose compact ✓✓ the board could not deliver — held for an
+ * unreachable board, refused for air, or flown with no answer (ADR 2026-10.x9fa's 2026-11-19 amendment). Those never
+ * flush on a timer: against an unreachable board that would offer a tick the plane drops every [holdMs]. They ride the
+ * next DM the user writes to that author ([takeRiding], inline, the cheapest path there is), or go as one compact tick
+ * when that author's board next acks one of our DMs ([releaseRiding]: the link is up, perhaps only briefly). Bounded
+ * per author at [maxBatch] and aged out at [rideTtlMs]: past that the author's own re-probe re-delivers their DM, and
+ * its re-ack is held afresh.
+ *
  * Pure — [now] and [flushScope] are injected; the JVM tests drive it on a virtual clock.
  */
 class DmAckCoalescer(
@@ -40,6 +49,10 @@ class DmAckCoalescer(
     private val maxBatch: Int = MAX_LORA_TICK_ACKS,
     private val pendingCap: Int = PENDING_CAP,
     private val ttlMs: Long = TTL_MS,
+    /** How long a ride-only id waits for a ride: the window a compact copy is taken in (`LORA_DIRECT_SEND_WINDOW_MS`). */
+    private val rideTtlMs: Long = LORA_DIRECT_SEND_WINDOW_MS,
+    /** Cap on ride-only ids across all authors — beyond it the largest author's oldest go (security-reviewer). */
+    private val ridingCap: Int = PENDING_CAP,
 ) {
     /** Acks accumulating toward one author: frameId → recordedAt in arrival order; guarded by `synchronized(this)`. */
     private class Batch {
@@ -48,6 +61,20 @@ class DmAckCoalescer(
     }
 
     private val pending = ConcurrentHashMap<String, Batch>()
+
+    /** Ride-only ids toward one author: frameId → when it went ride-only, oldest first; guarded by `synchronized(this)`. */
+    private class Riders {
+        val ids = LinkedHashMap<String, Long>()
+    }
+
+    private val riding = ConcurrentHashMap<String, Riders>()
+
+    /**
+     * When each ride-only id a [takeRiding] lent out first went ride-only, so a [giveBackRiding] keeps its age rather than
+     * restarting it: a DM that keeps falling short of v2 must not hold an id past [rideTtlMs]. Bounded at [ridingCap] and
+     * aged out like the hold; an id that rode is simply never given back.
+     */
+    private val lent = ConcurrentHashMap<String, Long>()
 
     /**
      * Records that we owe [authorId] a receipt for [frameId]. A repeated id (a re-delivery inside the hold) is
@@ -59,6 +86,8 @@ class DmAckCoalescer(
         authorId: String,
         frameId: String,
     ) {
+        // A re-delivery re-holds the id for a fresh tick: it no longer waits for a ride, or it would be answered twice.
+        riding[authorId]?.let { riders -> synchronized(riders) { riders.ids.remove(frameId) } }
         while (true) {
             val batch = pending.computeIfAbsent(authorId) { Batch() }
             var full = false
@@ -97,9 +126,13 @@ class DmAckCoalescer(
         }
     }
 
-    /** Flushes every batch whose oldest id has waited out the hold, after ageing out anything past [ttlMs]. */
+    /**
+     * Flushes every batch whose oldest id has waited out the hold, after ageing out anything past [ttlMs] (and
+     * ride-only ids past [rideTtlMs], which never flush here).
+     */
     suspend fun flushDue() {
         sweep()
+        sweepRiding()
         val cutoff = now() - holdMs
         pending.keys.toList().forEach { authorId ->
             val batch = pending[authorId] ?: return@forEach
@@ -158,6 +191,147 @@ class DmAckCoalescer(
     fun pending(authorId: String): List<String> {
         val batch = pending[authorId] ?: return emptyList()
         return synchronized(batch) { batch.ids.keys.toList() }
+    }
+
+    // --- the ride-only hold (ADR 2026-10.x9fa's 2026-11-19 amendment) ---
+
+    /**
+     * Keeps [ids], ✓✓ owed to [authorId] whose compact copy the board did not deliver, for a ride: the next DM written to
+     * that author ([takeRiding]) or that author's next board ack ([releaseRiding]), never a timer. An id the timed hold
+     * still has is left to it, which will tick it anyway. Past [maxBatch] the oldest goes. Never suspends and does no
+     * I/O, so the plane's coroutines may call it (via `MeshManager.onLoraDirectUndelivered`). A concurrent
+     * [releaseRiding] may detach the map between the lookup and the lock, and an id landed in a detached one would be
+     * lost, so it retries into a fresh one ([hold]'s guard). Past [ridingCap] across all authors, the largest author's
+     * oldest go: one author minting ids cannot grow the hold, nor push out everyone else's.
+     */
+    fun holdRiding(
+        authorId: String,
+        ids: Collection<String>,
+    ) {
+        val at = now()
+        holdRidingAt(authorId, ids.map { it to at })
+    }
+
+    private fun holdRidingAt(
+        authorId: String,
+        ids: List<Pair<String, Long>>,
+    ) {
+        if (ids.isEmpty()) return
+        val timed = pending[authorId]?.let { batch -> synchronized(batch) { batch.ids.keys.toSet() } }.orEmpty()
+        val fresh = ids.filter { (id, _) -> id !in timed }
+        if (fresh.isEmpty()) return
+        while (true) {
+            val riders = riding.computeIfAbsent(authorId) { Riders() }
+            val landed =
+                synchronized(riders) {
+                    if (riding[authorId] !== riders) return@synchronized false
+                    fresh.forEach { (id, at) -> riders.ids.putIfAbsent(id, at) }
+                    while (riders.ids.size > maxBatch) riders.ids.remove(riders.ids.keys.first())
+                    true
+                }
+            if (landed) break
+        }
+        trimRiding()
+    }
+
+    /** Evicts the largest author's oldest ride-only ids until the hold is back under [ridingCap]; no two monitors held. */
+    private fun trimRiding() {
+        while (riding.values.sumOf { synchronized(it) { it.ids.size } } > ridingCap) {
+            val (authorId, riders) =
+                riding.entries.maxByOrNull { (_, r) -> synchronized(r) { r.ids.size } }?.toPair() ?: return
+            val evicted =
+                synchronized(riders) {
+                    val oldest = riders.ids.keys.firstOrNull() ?: return@synchronized false
+                    riders.ids.remove(oldest)
+                    if (riders.ids.isEmpty()) riding.remove(authorId, riders)
+                    true
+                }
+            if (!evicted) riding.remove(authorId, riders)
+        }
+    }
+
+    /** How many ride-only ids wait for [authorId], after ageing out what is past [rideTtlMs]. */
+    fun ridingFor(authorId: String): Int {
+        val riders = riding[authorId] ?: return 0
+        return synchronized(riders) {
+            agedOut(riders)
+            riders.ids.size
+        }
+    }
+
+    /**
+     * Removes up to [max] of the oldest ride-only ids owed to [authorId], for the caller to carry inline on a DM it is
+     * sending to them. What it could not carry after all goes back with [giveBackRiding], never [giveBack]: the timed
+     * hold would tick it on its own.
+     */
+    fun takeRiding(
+        authorId: String,
+        max: Int,
+    ): List<String> {
+        if (max <= 0) return emptyList()
+        val riders = riding[authorId] ?: return emptyList()
+        val taken =
+            synchronized(riders) {
+                agedOut(riders)
+                val entries = riders.ids.entries
+                val oldest = entries.take(max).map { (id, at) -> id to at }
+                oldest.forEach { (id, _) -> riders.ids.remove(id) }
+                if (riders.ids.isEmpty()) riding.remove(authorId, riders)
+                oldest
+            }
+        taken.forEach { (id, at) -> lent[id] = at }
+        while (lent.size > ridingCap) lent.entries.minByOrNull { it.value }?.let { lent.remove(it.key, it.value) } ?: break
+        return taken.map { it.first }
+    }
+
+    /** Restores ride-only ids a [takeRiding] could not carry; they wait for the next ride, keeping the age they had. */
+    fun giveBackRiding(
+        authorId: String,
+        ids: List<String>,
+    ) {
+        val at = now()
+        holdRidingAt(authorId, ids.map { it to (lent.remove(it) ?: at) })
+    }
+
+    /**
+     * [authorId]'s board just acked one of our DMs: what waited for a ride goes now, with whatever the timed hold has for
+     * them, as one flush (their compact ticks; the ledger keeps a second signed receipt from being sealed). Nothing waits
+     * for a ride: nothing happens, and the timed hold keeps its own time. Returns how many ride-only ids went.
+     */
+    suspend fun releaseRiding(authorId: String): Int {
+        val riders = riding.remove(authorId) ?: return 0
+        val ids =
+            synchronized(riders) {
+                agedOut(riders)
+                riders.ids.keys.toList()
+            }
+        if (ids.isEmpty()) return 0
+        val timed = pending.remove(authorId)?.let { batch -> synchronized(batch) { batch.ids.keys.toList() } }.orEmpty()
+        flush(authorId, (ids + timed).distinct())
+        return ids.size
+    }
+
+    /** The ride-only ids owed to [authorId], oldest first (diagnostics and tests). */
+    fun riding(authorId: String): List<String> {
+        val riders = riding[authorId] ?: return emptyList()
+        return synchronized(riders) { riders.ids.keys.toList() }
+    }
+
+    /** Drops what in [riders] is past [rideTtlMs]; called holding its monitor. */
+    private fun agedOut(riders: Riders) {
+        val cutoff = now() - rideTtlMs
+        riders.ids.entries.removeAll { it.value < cutoff }
+    }
+
+    private fun sweepRiding() {
+        val cutoff = now() - rideTtlMs
+        lent.entries.removeAll { it.value < cutoff }
+        riding.entries.removeAll { (_, riders) ->
+            synchronized(riders) {
+                agedOut(riders)
+                riders.ids.isEmpty()
+            }
+        }
     }
 
     private fun pendingTotal(): Int = pending.values.sumOf { synchronized(it) { it.ids.size } }

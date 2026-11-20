@@ -443,15 +443,44 @@ the DM off PKI, was wrong, and the 2.8 board trial that "confirmed it" passed th
   the newest claim, then the larger node id; our own board never).
   Without the capability their board would ack a packet their app throws away. A map that has not reported reads "not
   now"; a failing source is counted (`loraBoardHoldersFailed`) and asked again every 5 min, its last map in force.
-- **Gates**, asked at offer and again before the first byte (`RideGate.direct` / `reachHeld` / `unackedFrameId`):
+- **Gates**, asked at offer and again before the first byte (`RideGate.direct` / `reachHeld` / `refusalHeld` /
+  `unackedFrameId`):
   DMs switched on (`LoraConfig.dms`); still a direct board holder at the same board (`NOT_DIRECT`); no live link and no
   spool cover (`LINKED` / `INTERNET`); the slot; one copy per frame id queued or awaiting its answer (`hasQueued` and
-  `LoraDirectPolicy.hasFrame`); the peer not marked unreachable, refused or keyless (`HELD`, an offer only); and the
+  `LoraDirectPolicy.hasFrame`); the peer not marked refused or keyless, nor — for a ✓✓ or a reaction — unreachable
+  (`HELD`, an offer only: `reachHeld` on a ✓✓ or a reaction, `refusalHeld` on a DM the user typed, which passes an
+  unreachable mark and gets an attempt of its own, `loraDirectPastHold`, `lora direct past hold <id> -> <peer>`; x9fa's
+  2026-11-19 amendment); and the
   seal fitting one PKI packet (`LoraDirectPolicy.payloadCap`: `min(MAX_PAYLOAD − 12, maxPayload − want_ack's 2 B)`,
   219 B at every MTU a board negotiates; `loraDirectTooLong`). `MeshManager.LORA_DIRECT_PLAINTEXT_BYTES` (168 B) reads
   the same function. One send in flight
   per peer not known reachable (`mustWait`): the rest are parked (≤ 8 per peer), offered again on the destination's
-  ack, dropped to the source on a failure, released if that send never flew.
+  ack, released if that send never flew. On a failure (`LoraDirectPolicy.unparkOnFailure`) the newest parked DM the user
+  typed goes back through the offer at once — its own attempt, `lora direct next <id> -> <peer> (typed during the
+  failed send, +<n> left)` — the older DMs go to the source, a parked ✓✓ is told undelivered and a reaction rides its
+  signed copy; only where asking again could help (their board silent, our own board's refusal, a second
+  `PKI_UNKNOWN_PUBKEY` to the re-offer, which marks unreachable), never after their board's refusal, where everything
+  goes to the source as before. No time edge: a DM
+  parked while the failed send was still queued, or in a key's retry gap, is as much its turn.
+- **The flight table** (`LoraDirectPolicy`, `BoardTraits.maxFlights`: 32 on Meshtastic, 2 on MeshCore). While it is
+  full every compact frame waits in the pacer (`LoraPacePolicy.take`'s `directRoom`, asked per frame against
+  `LoraDirectPolicy.flightRoom`'s `DirectFlightRoom`; skipped like a braked post, never asked for air, never a holder; a
+  30-s backstop deferral, `FLIGHT_RECHECK_MS`, cleared by `onFlightEnded` on every settle), so no launch pushes a live send
+  out as no outcome. Room posts still go. Sends to peers marked unreachable, and resends and re-probes to peers not known
+  reachable (marks are wiped by a board loss and never restored, the re-probe schedule is), hold at most
+  `maxFlights - 1` places: the last is kept for a fresh frame to a reachable or unknown peer, so attempts at absent boards
+  (minutes each on MeshCore) never stall a DM to a peer who is there. A peer whose board acked this session (`REACHABLE`)
+  may use both places, its after-ack batch included.
+- **A ✓✓ whose compact copy did not land** (`LoraMeshTransport.onDirectUndelivered(frameId, peerId)`, wired in
+  `di/LoraWiring` to `MeshManager.onLoraDirectUndelivered`; `lora direct undelivered <id> -> <peer> (<why>)`). Once per
+  send, for a `DirectKind.RECEIPT` held at the offer by an unreachable mark (`held`); dropped unflown for want of air —
+  a shed or oversize evict, a pacing NAK at the write, `abandonNever`, a give-up at the write (`air`) — or for an
+  unreachable mark at send (`held`); refused by our own board after it took it (`refused`); parked behind a failed send
+  (`parked`) or when the board goes (`board lost`, with every ✓✓ in flight); or its own send ended unreachable or
+  unanswered (`unreachable`). Never for their board's refusal, a missing key, a cover, slot 0, `NOT_DIRECT` or a seal
+  too long. The app holds its ids to ride the next DM the user types (`DmAckCoalescer`'s ride-only hold, by the tick's
+  frame id through `LoraTickIds`), or releases them as one compact tick when that author's board next acks one of our
+  DMs (`onRadioReached`'s `peerId`). Never on the 45-s timer: against an unreachable board that would loop.
 - **Outcomes** (`MeshtasticSession.routeNak` → `PacketOutcome`). `Acked(byDestination)` only when the `Routing`
   packet comes from the destination's board: the board is `Reachable` (45-min linger), the re-probe resets, parked
   offers go. An implicit ack — a relay, or our own board hearing it repeated — is counted (`loraDirectImplicitAck`)
@@ -497,12 +526,16 @@ the DM off PKI, was wrong, and the 2.8 board trial that "confirmed it" passed th
   that re-air what a cover or a failure stranded: a hearing on the edge out of `Unreachable` (`heard`), a relay cover
   lapsing (`cover lapsed`) or lifted by a live compact frame (`lifted`), and the destination's board acking a fresh DM
   (`after ack`, that DM skipped; never on a resend's ack). Each logs `lora resend <id> -> <peer> (<why>, +<n> after its
-  ack)`, or `lora catch-up refused <peer>` when a gate of the resend said no. All share the re-probe's gap since the
+  ack)` — `(after ack, +<n> with it)` behind a fresh ack — or `lora catch-up refused <peer>` when a gate of the resend
+  said no. All share the re-probe's gap since the
   last failure (`LoraReprobe.onHeard`), and a catch-up books as a re-probe (`onReprobed`; behind a fresh ack at the base
   gap). Only DMs no board took (`DirectDm.boardTook`, off `MeshManager.loraRadioReached`, in memory, dropped before the
   source's limit) with no copy waiting; after a restart the first catch-up per peer may re-air up to three a board
   took before it: a DM the board took waits on its phone, the re-probe's question, so ordinary chat never re-airs (the
-  coalescer holds a ✓✓ up to 45 s). The newest goes, ≤ 2 older after its ack.
+  coalescer holds a ✓✓ up to 45 s). On a hearing or a cover the newest goes, ≤ 2 older after its ack (`RESEND_LIMIT`):
+  a hearing is not an acked unicast. Behind a fresh DM's ack the destination's board just took a DM the user wrote, so
+  up to `AFTER_ACK_LIMIT` (8) go at once, metered by the flight table, the window and the queue cap (x9fa's 2026-11-19
+  amendment).
 - **The re-probe** (`LoraReprobe`, `lora reprobe <id> -> <peer>`, `loraReprobed`) keys on our DMs still without their
   ✓✓, whatever the radio said: the phone may be away from a board that acks everything. The probe is that one DM;
   the ≤ 2 older ones no board took ride as its `flushAfter` and air once the destination's board acks it, in the same
@@ -771,7 +804,7 @@ false are two encodings — both read as messagable); `Channel{ index=1, setting
   is `DeliveryStatus.RadioReached`: the LoRa mark ahead of one ✓ (`chat_tick_lora_reached`), "Reached their LoRa
   radio" on the bubble, the chat-list row and the details screen, which adds the ack's time (none for a late one) and
   "Waiting for their phone to confirm". It says their **radio** took the packet, never their phone. The source is
-  `LoraMeshTransport.onRadioReached(frameId, late)`, called for a `DirectKind.MESSAGE` on a destination's ACK in `settle`
+  `LoraMeshTransport.onRadioReached(frameId, peerId, late)`, called for a `DirectKind.MESSAGE` on a destination's ACK in `settle`
   or, late, in `onUnawaited` (an implicit ACK, a receipt's or a reaction's never), bound in `di/MeshModule` to
   `MeshManager.onLoraRadioReached` → `MeshController.loraRadioReached` (`LoraRadioReached`, row id → wall-clock stamp,
   first ack wins, 256 held, in memory only, never pruned: `received` always wins). The ack's proof gates it: firmware
@@ -1498,7 +1531,8 @@ where no other Knit board is listening. Set the Meshtastic app's device to **Non
   `loraTooBig == 0`. `meshtastic --listen` on a third board shows nothing addressed to it. A DM past one packet counts
   `loraDirectTooLong` and lands later over BLE or the spool. The strand trial: power B's board off, send two DMs from A
   → one airing and its four retries (`airtime.usedMs` rises by five airings at once; `meshtastic --listen` near A shows five transmissions, the give-up about a minute later), `lora direct unreachable`,
-  `loraDirectUnreachable 1`, the second `lora direct held`; power B's board on and let it air anything →
+  `loraDirectUnreachable 1`, the second `lora direct next … (typed during the failed send` then `lora direct past hold`
+  and a second give-up (`loraDirectUnreachable 2`; x9fa's 2026-11-19 amendment); power B's board on and let it air anything →
   `lora direct heard <B>`, then `lora resend` once the gap since the failure has passed (else the next
   `lora reprobe … (+1 after its ack)`), and both land: the older within a minute of the newest, never a gap later (#343). The relay strand (#294), A and B on one relay and both boards, no link: A sends a DM
   and switches its relays off within a second → `lora resend <id> -> <B> (cover lapsed` on A within seconds (or

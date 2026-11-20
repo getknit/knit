@@ -116,6 +116,10 @@ class LoraDirectTransportTest {
         val pace: LoraPacePolicy,
         /** Every `onRadioReached` the plane made: the frame id, and whether the ack came late. */
         val reached: MutableList<Pair<String, Boolean>>,
+        /** The peer each `onRadioReached` named, in the same order. */
+        val reachedPeers: MutableList<String>,
+        /** Every `onDirectUndelivered` the plane made: the ✓✓'s frame id and its peer. */
+        val undelivered: MutableList<Pair<String, String>>,
     )
 
     private val wallBase = 1_700_000_000_000L
@@ -154,6 +158,8 @@ class LoraDirectTransportTest {
         val config = MutableStateFlow<LoraConfig?>(LoraConfig("AA:$nodeNum", knitIndex))
         val pace = LoraPacePolicy(minGapMs = 0)
         val reached = mutableListOf<Pair<String, Boolean>>()
+        val reachedPeers = mutableListOf<String>()
+        val undelivered = mutableListOf<Pair<String, String>>()
         val transport =
             LoraMeshTransport(
                 selfId = { id },
@@ -170,10 +176,12 @@ class LoraDirectTransportTest {
                 },
                 source = source,
                 boardMap = boardFlow.filterNotNull(),
-                onRadioReached = { frameId, late ->
+                onRadioReached = { frameId, peerId, late ->
                     reached += frameId to late
+                    reachedPeers += peerId
                     source.took += frameId
                 },
+                onDirectUndelivered = { frameId, peerId -> undelivered += frameId to peerId },
                 scope = scope,
                 metrics = metrics,
                 state = state,
@@ -182,7 +190,7 @@ class LoraDirectTransportTest {
                 pace = pace,
                 log = log,
             )
-        return Node(id, transport, link, metrics, seal, source, delivered, boardFlow, config, pace, reached)
+        return Node(id, transport, link, metrics, seal, source, delivered, boardFlow, config, pace, reached, reachedPeers, undelivered)
     }
 
     private fun TestScope.up(vararg nodes: Node) {
@@ -489,11 +497,17 @@ class LoraDirectTransportTest {
 
     // --- outcomes ---
 
+    /**
+     * ADR 2026-10.x9fa's 2026-11-19 amendment: a board that is off ends in unreachable after every retry, and of the DMs
+     * typed while that send was out only the newest gets the next attempt — past the mark, at once — the older left to the
+     * source. A DM typed with nothing in flight gets its own attempt too: never held for the re-probe.
+     */
     @Test
-    fun aBoardThatIsOffEndsInUnreachableAfterEveryRetryAndHoldsTheRest() =
+    fun aBoardThatIsOffEndsInUnreachableAfterEveryRetryAndTheNewestDmTypedMeanwhileGetsTheNextAttempt() =
         runTest {
             val air = FakeMeshtasticAir()
-            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)))
+            val logs = mutableListOf<String>()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)), log = { logs += it })
             up(a) // bob's board is not on the air
             a.dm("bob", "f1")
             settle(1_000)
@@ -505,25 +519,29 @@ class LoraDirectTransportTest {
 
             settle(air.untilGiveUp())
             assertEquals(1L, a.lora.loraDirectUnreachable)
-            assertEquals("the send and every retry aired", FakeMeshtasticAir.UNICAST_ATTEMPTS, air.knitAirings(1u))
-            val size =
-                a.link.sent
-                    .single()
-                    .size
+            assertEquals("the newest typed meanwhile went next, past the mark", listOf("f1", "f3"), sentIds(a))
+            assertEquals(1L, a.lora.loraDirectPastHold)
+            assertTrue(logs.contains("lora direct next f3 -> bob (typed during the failed send, +1 left)"))
+            assertEquals("the older one is left to the source", 0, a.transport.status.value.direct.parked)
+
+            settle(air.untilGiveUp())
+            assertEquals(2L, a.lora.loraDirectUnreachable)
+            assertEquals("each send and every retry aired", 2 * FakeMeshtasticAir.UNICAST_ATTEMPTS, air.knitAirings(1u))
             assertEquals(
                 "and every retry is booked",
-                LoraDirectPolicy.AIRINGS * priced(size),
+                2 * LoraDirectPolicy.AIRINGS * priced(hiPacket),
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
                     .usedMs,
             )
-            assertEquals("the parked offers are left to the source", 0, a.transport.status.value.direct.parked)
             assertEquals(1, a.transport.status.value.direct.unreachable)
+            assertEquals("f2 waits on the source: nothing re-aired it", listOf("f1", "f3"), sentIds(a))
 
             a.dm("bob", "f4")
             settle()
-            assertEquals("held while unreachable", 1, a.link.sent.size)
-            assertEquals(1L, a.lora.loraDirectHeld)
+            assertEquals("a typed DM gets its own attempt while unreachable", listOf("f1", "f3", "f4"), sentIds(a))
+            assertEquals(2L, a.lora.loraDirectPastHold)
+            assertEquals(0L, a.lora.loraDirectHeld)
         }
 
     @Test
@@ -534,18 +552,21 @@ class LoraDirectTransportTest {
             up(a)
             a.dm("bob", "f1")
             settle(air.untilGiveUp())
+            // Typed while bob is marked: f2 gets its own attempt, f3 its turn after f2 fails; all three stay unacked.
             a.dm("bob", "f2")
             a.dm("bob", "f3")
-            settle()
-            assertEquals(1L, a.lora.loraDirectUnreachable)
-            assertEquals(2L, a.lora.loraDirectHeld)
+            settle(air.untilGiveUp())
+            settle(air.untilGiveUp())
+            assertEquals(3L, a.lora.loraDirectUnreachable)
+            assertEquals(2L, a.lora.loraDirectPastHold)
+            assertEquals(0L, a.lora.loraDirectHeld)
 
             // A gap after the failure — the re-probe deferred meanwhile by a link cover (a spool cover's lapse would
             // catch up on its own, #294) — bob's board comes back and airs anything at all.
             a.transport.suppressDataPath(setOf("bob"))
             settle(LoraReprobe.BASE_MS + LoraMeshTransport.LINGER_SWEEP_MS)
             a.transport.suppressDataPath(emptySet())
-            assertEquals("nothing aired while covered", 1, a.link.sent.size)
+            assertEquals("nothing aired while covered", 3, a.link.sent.size)
             val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)))
             up(b)
             b.link.deliverNothingButAir(air, from = 2u, to = 1u)
@@ -576,7 +597,10 @@ class LoraDirectTransportTest {
             assertEquals(listOf("f1"), b.delivered.map { it.frameId })
         }
 
-    /** f1 given up on, f2 held behind its mark, then bob's board heard inside the re-probe's gap: the 11-17 strand. */
+    /**
+     * f1 given up on, f2 typed past its mark and given up on too (ADR 2026-10.x9fa's 2026-11-19 amendment), then bob's
+     * board heard inside the re-probe's gap: the 11-17 strand.
+     */
     private fun TestScope.strandTwoThenHear(
         air: FakeMeshtasticAir,
         a: Node,
@@ -585,14 +609,14 @@ class LoraDirectTransportTest {
         a.dm("bob", "f1")
         settle(air.untilGiveUp())
         a.dm("bob", "f2")
-        settle()
-        assertEquals(1L, a.lora.loraDirectUnreachable)
-        assertEquals(1L, a.lora.loraDirectHeld)
+        settle(air.untilGiveUp())
+        assertEquals(2L, a.lora.loraDirectUnreachable)
+        assertEquals(1L, a.lora.loraDirectPastHold)
         val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)))
         up(b)
         b.link.deliverNothingButAir(air, from = 2u, to = 1u)
         settle()
-        assertEquals("cleared, but no resend inside the gap", 1, a.link.sent.size)
+        assertEquals("cleared, but no resend inside the gap", 2, a.link.sent.size)
         return b
     }
 
@@ -632,7 +656,7 @@ class LoraDirectTransportTest {
 
             settle(LoraReprobe.BASE_MS + LoraMeshTransport.LINGER_SWEEP_MS)
             settle(10_000)
-            assertEquals("f1 aired only the once it gave up on", listOf("f1", "f2"), sentIds(a))
+            assertEquals("f1 aired only the once it gave up on", listOf("f1", "f2", "f2"), sentIds(a))
             assertEquals(listOf("f2"), b.delivered.map { it.frameId })
             assertEquals(1L, a.lora.loraDirectResent)
             assertEquals(
@@ -655,11 +679,11 @@ class LoraDirectTransportTest {
             val b = strandTwoThenHear(air, a)
 
             settle(LoraReprobe.BASE_MS + LoraMeshTransport.LINGER_SWEEP_MS)
-            assertEquals(listOf("f1", "f2"), sentIds(a))
+            assertEquals(listOf("f1", "f2", "f2"), sentIds(a))
             a.source.ack("f1") // bob's ✓✓ for f1 lands while it waits
             a.link.updateHeadroom(16)
             settle(10_000)
-            assertEquals("asked again at send, so it never airs", listOf("f1", "f2"), sentIds(a))
+            assertEquals("asked again at send, so it never airs", listOf("f1", "f2", "f2"), sentIds(a))
             assertEquals(listOf("f2"), b.delivered.map { it.frameId })
             assertEquals(mapOf(StaleAtSend.ACKED.name to 1L), a.lora.loraStaleAtSendByReason)
         }
@@ -741,15 +765,21 @@ class LoraDirectTransportTest {
             assertEquals("each retry drew an ACK that never arrived", FakeMeshtasticAir.UNICAST_ATTEMPTS, air.ackAirings(2u))
         }
 
+    /**
+     * A burst into an asymmetric link costs one send and its retries, then one attempt for the newest DM typed during it
+     * (ADR 2026-10.x9fa's 2026-11-19 amendment) — never one per DM.
+     */
     @Test
-    fun anAsymmetricLinkStaysBoundedToOneSendAndItsRetries() =
+    fun anAsymmetricLinkStaysBoundedToOneSendAndItsRetriesAndOneForTheNewest() =
         runTest {
             val air = FakeMeshtasticAir().apply { lossy = { from, _ -> from == 2u } } // bob hears alice, alice never hears bob
             val (a, b) = pair(air)
             repeat(5) { a.dm("bob", "f$it") }
             settle(air.untilGiveUp())
-            assertEquals("one send and its retries, not one per DM", FakeMeshtasticAir.UNICAST_ATTEMPTS, air.knitAirings(1u))
-            assertEquals(listOf("f0"), b.delivered.map { it.frameId })
+            settle(air.untilGiveUp())
+            settle(air.untilGiveUp())
+            assertEquals("two sends and their retries, not one per DM", 2 * FakeMeshtasticAir.UNICAST_ATTEMPTS, air.knitAirings(1u))
+            assertEquals(listOf("f0", "f4"), b.delivered.map { it.frameId })
         }
 
     @Test
@@ -981,7 +1011,7 @@ class LoraDirectTransportTest {
         }
 
     @Test
-    fun aFreshDmsBoardAckBringsTheOlderOnesNoBoardTookBehindItAndAResendsAckBringsNothing() =
+    fun aFreshDmsBoardAckBringsEveryOlderOneNoBoardTookAtOnceAndAResendsAckBringsNothing() =
         runTest {
             val air = FakeMeshtasticAir()
             val logs = mutableListOf<String>()
@@ -996,12 +1026,12 @@ class LoraDirectTransportTest {
             a.dm("bob", "f4")
             settle(10_000)
             settle(10_000)
-            // f4's ack queues the newest of the rest, the two older after its ack (RESEND_LIMIT counts only what no board
-            // took); those resends' own acks queue nothing more, so f0 waits for the re-probe.
-            assertEquals(listOf("f4", "f3", "f2", "f1"), sentIds(a))
-            assertEquals(listOf("f4", "f3", "f2", "f1"), b.delivered.map { it.frameId })
-            assertEquals(3L, a.lora.loraDirectResent)
-            assertTrue(logs.any { it.startsWith("lora resend f3 -> bob (after ack, +2 after its ack)") })
+            // f4's ack proves the unicast path: every DM no board took goes at once, up to AFTER_ACK_LIMIT (ADR 2026-10.x9fa's
+            // 2026-11-19 amendment); those resends' own acks queue nothing more.
+            assertEquals(listOf("f4", "f3", "f2", "f1", "f0"), sentIds(a))
+            assertEquals(listOf("f4", "f3", "f2", "f1", "f0"), b.delivered.map { it.frameId })
+            assertEquals(4L, a.lora.loraDirectResent)
+            assertTrue(logs.contains("lora resend f3 -> bob (after ack, +3 with it)"))
             assertEquals(
                 "a board that just acked is no evidence the phone is away: the re-probe stays at the base gap",
                 listOf(LoraReprobe.BASE_MS),
@@ -1198,6 +1228,344 @@ class LoraDirectTransportTest {
             settle()
             assertEquals(1L, a.lora.loraDirectAcked)
             assertEquals(2, a.transport.status.value.internetCovered)
+        }
+
+    // --- a typed DM never waits on the re-probe (ADR 2026-10.x9fa's 2026-11-19 amendment) ---
+
+    /** Bob's board off: f1 given up on, so bob is marked unreachable. */
+    private fun TestScope.markedUnreachable(log: (String) -> Unit = {}): Node {
+        val air = FakeMeshtasticAir()
+        val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)), log = log)
+        up(a)
+        a.dm("bob", "f1")
+        settle(air.untilGiveUp())
+        assertEquals(1, a.transport.status.value.direct.unreachable)
+        return a
+    }
+
+    @Test
+    fun aTypedDmToAnUnreachablePeerAirsAndIsNotDroppedAtSend() =
+        runTest {
+            val logs = mutableListOf<String>()
+            val a = markedUnreachable(log = { logs += it })
+            a.link.free = 0 // the board full: it waits in the queue, and its gates are asked again at send
+            a.dm("bob", "f2")
+            settle()
+            assertTrue(logs.contains("lora direct past hold f2 -> bob"))
+            a.link.updateHeadroom(16)
+            settle()
+            assertEquals(listOf("f1", "f2"), sentIds(a))
+            assertEquals(1L, a.lora.loraDirectPastHold)
+            assertEquals(0L, a.lora.loraDirectHeld)
+            assertEquals("the unreachable mark is not asked of it at send", emptyMap<String, Long>(), a.lora.loraStaleAtSendByReason)
+            assertTrue("never told undelivered: it is no ✓✓", a.undelivered.isEmpty())
+        }
+
+    @Test
+    fun aReceiptToAnUnreachablePeerIsStillHeldAndToldUndeliveredOnce() =
+        runTest {
+            val a = markedUnreachable()
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            a.dm("bob", "x1", kind = DirectKind.REACTION)
+            settle()
+            assertEquals("neither aired", listOf("f1"), sentIds(a))
+            assertEquals(2L, a.lora.loraDirectHeld)
+            assertEquals(0L, a.lora.loraDirectPastHold)
+            assertEquals("the ✓✓ alone, once", listOf("r1" to "bob"), a.undelivered)
+        }
+
+    @Test
+    fun aRefusalStillHoldsATypedDmAtTheOfferAndAtSend() =
+        runTest {
+            // A refusal that arrives for a send that already ended (its late NAK) marks bob refused while f2 waits queued.
+            val air = FakeMeshtasticAir().apply { silent = { _, _ -> true } }
+            val (a, _) = pair(air)
+            a.dm("bob", "f1")
+            settle(1_000)
+            val handle = a.link.sentIds.single()
+            settle(LoraDirectPolicy.deadlineMs(priced(hiPacket), LoraAirtime().slotTimeMs()))
+            assertEquals(1, a.transport.status.value.direct.unreachable)
+            a.link.free = 0
+            a.dm("bob", "f2") // past the unreachable mark, into the queue
+            settle(1_000)
+            a.link.emitOutcome(PacketOutcome.Refused(handle, RoutingError.NO_CHANNEL, byDestination = true))
+            settle(1_000)
+            assertEquals(1, a.transport.status.value.direct.refused)
+            a.link.updateHeadroom(16)
+            settle()
+            assertEquals("dropped at send: refused while it waited", listOf("f1"), sentIds(a))
+            assertEquals(mapOf(StaleAtSend.HELD.name to 1L), a.lora.loraStaleAtSendByReason)
+            a.dm("bob", "f3")
+            settle()
+            assertEquals("and held at the offer", listOf("f1"), sentIds(a))
+            assertEquals(1L, a.lora.loraDirectHeld)
+            assertEquals(1L, a.lora.loraDirectPastHold)
+        }
+
+    @Test
+    fun theDmTypedDuringAFailingSendAirsTheMomentItFails() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)))
+            up(a)
+            a.dm("bob", "f1")
+            settle(1_000)
+            a.dm("bob", "f2")
+            settle(air.giveUpMs(hiPacket) - 3_000)
+            assertEquals("not yet: f1 is still out", listOf("f1"), sentIds(a))
+            settle(7_000)
+            assertEquals("f2 went at f1's failure, no re-probe gap", listOf("f1", "f2"), sentIds(a))
+            assertTrue(testScheduler.currentTime < LoraReprobe.BASE_MS)
+        }
+
+    @Test
+    fun fiveDmsTypedDuringAFailingSendCostExactlyOneMoreFlight() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)))
+            up(a)
+            a.dm("bob", "f0")
+            settle(1_000)
+            (1..5).forEach { a.dm("bob", "f$it") }
+            settle(air.untilGiveUp())
+            settle(air.untilGiveUp())
+            settle(air.untilGiveUp())
+            assertEquals("the failed send, then the newest typed during it", listOf("f0", "f5"), sentIds(a))
+            assertEquals(2 * FakeMeshtasticAir.UNICAST_ATTEMPTS, air.knitAirings(1u))
+            assertEquals(2L, a.lora.loraDirectUnreachable)
+        }
+
+    @Test
+    fun anIdlePeerSeesNothingMoreBeforeTheReprobesGap() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)))
+            up(a)
+            a.dm("bob", "f1")
+            settle(LoraReprobe.BASE_MS - 5_000)
+            assertEquals("one send and its retries, nothing typed after", listOf("f1"), sentIds(a))
+            assertEquals(FakeMeshtasticAir.UNICAST_ATTEMPTS, air.knitAirings(1u))
+            settle(LoraMeshTransport.LINGER_SWEEP_MS + 10_000)
+            assertEquals("then the re-probe asks", 1L, a.lora.loraReprobed)
+        }
+
+    /** B1: a DM parked while the send it waits on is still queued in the pacer gets its own attempt when that one fails. */
+    @Test
+    fun aDmParkedWhileTheFailedSendWasStillQueuedAirsOnItsOwnAttempt() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)))
+            up(a)
+            a.link.free = 0
+            a.dm("bob", "f1")
+            settle(1_000)
+            a.dm("bob", "f2") // parked behind f1, which has not flown yet
+            settle(1_000)
+            assertEquals(1, a.transport.status.value.direct.parked)
+            assertTrue(a.link.sent.isEmpty())
+            a.link.updateHeadroom(16)
+            settle(air.untilGiveUp())
+            settle(1_000)
+            assertEquals(listOf("f1", "f2"), sentIds(a))
+            assertEquals(1L, a.lora.loraDirectPastHold)
+        }
+
+    /** B1: a DM parked during the retry gap after the destination lacked our key airs when that retry fails. */
+    @Test
+    fun aDmParkedDuringAKeyRetryGapAirsOnItsOwnAttemptWhenTheRetryFails() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val logs = mutableListOf<String>()
+            val (a, b) = pair(air, log = { logs += it })
+            b.link.forget(1u)
+            a.dm("bob", "f1")
+            settle(3_000)
+            assertEquals(1L, a.lora.loraDirectPeerLacksOurKey)
+            air.lossy = { _, to -> to == 2u } // and then bob's board goes out of reach
+            a.dm("bob", "f2") // inside the re-offer's gap
+            settle(1_000)
+            assertEquals(1, a.transport.status.value.direct.parked)
+            settle(30_000 + air.untilGiveUp())
+            settle(1_000)
+            assertEquals("the re-offer failed, and f2 went on its own attempt", listOf("f1", "f1", "f2"), sentIds(a))
+            assertTrue(logs.any { it.startsWith("lora direct next f2 -> bob") })
+        }
+
+    @Test
+    fun afterAFreshAckEveryHeldDmUpToTheLimitQueuesAtOnceNotBehindEachOthersAcks() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            lateinit var a: Node
+            // Bob's board goes silent the moment it acks f10: a chain would stop at one resend, a batch sends them all.
+            a =
+                node(air, 1u, "alice", mapOf("bob" to holder(2u)), log = {
+                    if (it == "lora direct acked f10 -> bob") air.silent = { _, _ -> true }
+                })
+            val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)))
+            up(a, b)
+            a.transport.suppressDataPath(setOf("bob"))
+            (0..9).forEach { a.dm("bob", "f$it") }
+            settle()
+            a.transport.suppressDataPath(emptySet())
+            assertTrue(a.link.sent.isEmpty())
+
+            a.dm("bob", "f10")
+            settle(10_000)
+            assertEquals(
+                "f10, then the eight newest it held, none waiting on another's ack",
+                listOf("f10") + (9 downTo 2).map { "f$it" },
+                sentIds(a),
+            )
+            assertEquals(LoraMeshTransport.AFTER_ACK_LIMIT.toLong(), a.lora.loraDirectResent)
+        }
+
+    // --- a ✓✓ whose compact copy did not land (ADR 2026-10.x9fa's 2026-11-19 amendment) ---
+
+    @Test
+    fun aReceiptWhoseOwnSendGivesUpOrGoesUnansweredIsToldUndeliveredOnce() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)))
+            up(a)
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            settle(air.untilGiveUp())
+            assertEquals(listOf("r1" to "bob"), a.undelivered)
+
+            val quiet = FakeMeshtasticAir().apply { silent = { _, _ -> true } }
+            val (c, _) = pair(quiet)
+            c.dm("bob", "r2", kind = DirectKind.RECEIPT)
+            settle(LoraDirectPolicy.ANSWER_SLACK_MS + LoraDirectPolicy.deadlineMs(priced(hiPacket), LoraAirtime().slotTimeMs()))
+            assertEquals(1L, c.lora.loraDirectNoOutcome)
+            assertEquals(listOf("r2" to "bob"), c.undelivered)
+        }
+
+    @Test
+    fun aReceiptParkedBehindAFailedSendIsToldUndeliveredAndNeverTakesTheTurn() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)))
+            up(a)
+            a.dm("bob", "f1")
+            settle(1_000)
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            settle(air.untilGiveUp())
+            assertEquals(listOf("r1" to "bob"), a.undelivered)
+            assertEquals("nothing went next: no DM was typed", listOf("f1"), sentIds(a))
+        }
+
+    @Test
+    fun losingTheBoardTellsEveryReceiptParkedOrInFlight() =
+        runTest {
+            val air = FakeMeshtasticAir().apply { silent = { _, _ -> true } }
+            val (a, _) = pair(air)
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            settle(1_000)
+            a.dm("bob", "r2", kind = DirectKind.RECEIPT) // parked behind r1
+            settle(1_000)
+            a.config.value = null
+            settle(1_000)
+            assertEquals(setOf("r1" to "bob", "r2" to "bob"), a.undelivered.toSet())
+            assertEquals(2, a.undelivered.size)
+        }
+
+    @Test
+    fun aReceiptOurBoardRefusesForPaceIsToldUndeliveredAndOneTheirBoardRefusesIsNot() =
+        runTest {
+            val air = FakeMeshtasticAir().apply { silent = { _, _ -> true } }
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u), "carol" to holder(3u)))
+            up(a)
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            a.dm("carol", "r2", kind = DirectKind.RECEIPT)
+            settle(1_000)
+            val (toBob, toCarol) = a.link.sentIds
+            a.link.emitOutcome(PacketOutcome.Refused(toBob, RoutingError.DUTY_CYCLE_LIMIT, byDestination = false))
+            a.link.emitOutcome(PacketOutcome.Refused(toCarol, RoutingError.NO_CHANNEL, byDestination = true))
+            settle(1_000)
+            assertEquals("our board's pace, never their refusal", listOf("r1" to "bob"), a.undelivered)
+        }
+
+    @Test
+    fun aReceiptDroppedAtTheWriteForPaceIsToldUndelivered() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, _) = pair(air)
+            a.link.nakNext = RoutingError.DUTY_CYCLE_LIMIT
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            settle()
+            assertEquals(listOf("r1" to "bob"), a.undelivered)
+        }
+
+    @Test
+    fun aQueuedReceiptWhosePeerIsMarkedUnreachableWhileItWaitsIsToldOnceAtSend() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            lateinit var a: Node
+            // f1 acked: bob is reachable, so what follows queues straight; then bob's board goes quiet.
+            a =
+                node(air, 1u, "alice", mapOf("bob" to holder(2u)), log = {
+                    if (it == "lora direct acked f1 -> bob") air.silent = { _, _ -> true }
+                })
+            val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)))
+            up(a, b)
+            a.dm("bob", "f1")
+            settle()
+            a.dm("bob", "f2") // in flight, and it will go unanswered
+            settle(1_000)
+            a.link.free = 0
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT) // queued behind a full board
+            settle(LoraDirectPolicy.deadlineMs(priced(hiPacket), LoraAirtime().slotTimeMs()) + LoraDirectPolicy.ANSWER_SLACK_MS)
+            assertEquals(1, a.transport.status.value.direct.unreachable)
+            a.link.updateHeadroom(16)
+            settle()
+            assertEquals(mapOf(StaleAtSend.HELD.name to 1L), a.lora.loraStaleAtSendByReason)
+            assertEquals(listOf("r1" to "bob"), a.undelivered)
+        }
+
+    @Test
+    fun aReceiptACoverASlotOrAnotherBoardCarriesIsNeverToldUndelivered() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u), "dave" to holder(4u), "erin" to holder(5u)))
+            up(a)
+            a.transport.suppressDataPath(setOf("dave"))
+            a.transport.coveredByInternet(setOf("erin"))
+            a.dm("dave", "r1", kind = DirectKind.RECEIPT)
+            a.dm("erin", "r2", kind = DirectKind.RECEIPT)
+            a.dm("bob", "r3", kind = DirectKind.RECEIPT, body = "x".repeat(MeshtasticProto.MAX_PAYLOAD))
+            a.link.free = 0
+            a.dm("bob", "r4", kind = DirectKind.RECEIPT)
+            settle()
+            a.boards.value = mapOf("bob" to holder(2u, direct = false))
+            a.link.updateHeadroom(16)
+            settle()
+            assertEquals(1L, a.lora.loraStaleAtSendByReason[StaleAtSend.NOT_DIRECT.name])
+            assertTrue("a cover, a too-long seal and a dropped board: ${a.undelivered}", a.undelivered.isEmpty())
+        }
+
+    @Test
+    fun aReceiptToABoardBoundToSlotZeroIsNeverToldUndelivered() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)), knitIndex = 0)
+            a.transport.start()
+            runCurrent()
+            a.link.ready()
+            runCurrent()
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            settle()
+            assertEquals(1L, a.lora.loraDirectSlotZero)
+            assertTrue(a.undelivered.isEmpty())
+        }
+
+    @Test
+    fun theRadioReachedEdgeNamesThePeerTheSendWasFor() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, _) = pair(air)
+            a.dm("bob", "f1")
+            settle()
+            assertEquals(listOf("f1" to false), a.reached)
+            assertEquals(listOf("bob"), a.reachedPeers)
         }
 
     // --- the air ---
@@ -1994,6 +2362,31 @@ class LoraDirectTransportTest {
             assertEquals(1, a.transport.status.value.direct.unreachable)
             assertEquals(0, a.transport.status.value.direct.refused)
             assertTrue(b.delivered.isEmpty())
+        }
+
+    /**
+     * lora-reviewer's round 2: the second 35's give-up marks bob unreachable, not keyless, so the DM typed during that send
+     * gets the next attempt like any failure's — afresh, so its own 35 sends our NodeInfo once more and it goes again.
+     */
+    @Test
+    fun aSecondPeerKeyRefusalHandsItsTurnToTheDmTypedMeanwhile() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val logs = mutableListOf<String>()
+            val (a, b) = pair(air, log = { logs += it })
+            b.link.forget(1u)
+            a.dm("bob", "f1")
+            settle(3_000)
+            b.link.forget(1u)
+            a.dm("bob", "f2") // inside the re-offer's gap: parked behind it
+            settle(1_000)
+            assertEquals(1, a.transport.status.value.direct.parked)
+            settle(20_000)
+            assertEquals(2L, a.lora.loraDirectPeerLacksOurKey)
+            assertTrue(logs.any { it.startsWith("lora direct next f2 -> bob") })
+            settle(20_000)
+            assertEquals("f2 landed on its own attempt, and f1 followed its fresh ack", listOf("f2", "f1"), b.delivered.map { it.frameId })
+            assertEquals(0, a.transport.status.value.direct.parked)
         }
 
     // --- helpers ---

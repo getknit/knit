@@ -17,6 +17,10 @@ Status: Accepted (2026-08-27; `mesh/lora/LoraMeshTransport.coveredByLink`, `Lora
 
 **Superseded in part by ADR 2026-10.x9fa (2026-10-29):** the DM parts — the `FanoutHint.TICK` class of a DM-form tick (the compact ✓✓ is `DirectKind.RECEIPT`) and the recipient gate on DM-form frames; the link and spool covers now guard the compact DM.
 
+**Amended by ADR 2026-10.x9fa's 2026-11-19 amendment (draft):** decision 4 — a ✓✓ whose compact copy did not land
+(`LoraMeshTransport.onDirectUndelivered`) waits in a ride-only hold in `DmAckCoalescer`, rides the next DM the user types
+inline, and what did not fit is released as a compact tick on the next radio ack.
+
 Field report: casually texting one person over the mesh drove the LoRa airtime budget to 100 %, after which a
 LoRa-only peer stopped receiving anything for up to an hour. The person being texted was on a **Bluetooth
 link**. Three causes, all in code, none of them the radio:

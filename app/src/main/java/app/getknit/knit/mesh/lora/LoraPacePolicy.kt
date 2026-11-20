@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The outbound pacer for the LoRa plane: a bounded queue with a minimum inter-packet gap and a NAK
@@ -46,6 +47,12 @@ internal class LoraPacePolicy(
     private var brakeBlockedUntil = 0L
 
     /**
+     * When to look again at compact DMs held for a full flight table ([take]'s `directRoom`), while nothing else could go:
+     * a backstop only — every send that ends wakes the pacer, and every send ends by its deadline.
+     */
+    private var flightBlockedUntil = 0L
+
+    /**
      * The board's last channel-utilisation reading, in percent, and when it was taken on the caller's clock: what [braked]
      * reads. Only the board's live self-telemetry feeds it (ADR 2026-10.ug4a) — never the handshake's `NodeInfo`, whose
      * `device_metrics` can be hours old.
@@ -86,6 +93,7 @@ internal class LoraPacePolicy(
         // where a large one did not fit — so both deferrals are facts about the queue as it stood, not standing cool-downs.
         airtimeBlockedUntil = 0L
         brakeBlockedUntil = 0L
+        flightBlockedUntil = 0L
         // A snapshot replaces its own older copy before anything else is decided, so a superseded frame can
         // never cost the newcomer a queue slot or make the queue look fuller than it is. Never a part-sent copy:
         // the board already holds its first fragments, and dropping the rest strands them on the air (feb2d5a4).
@@ -105,6 +113,7 @@ internal class LoraPacePolicy(
         if (inFlight === frame) inFlight = null
         airtimeBlockedUntil = 0L
         brakeBlockedUntil = 0L
+        flightBlockedUntil = 0L
         lastSuperseded = 0
         return admit(frame)
     }
@@ -221,7 +230,7 @@ internal class LoraPacePolicy(
             if (lastSentAt == Long.MIN_VALUE) 0L else lastSentAt + minGapMs,
             nakUntil,
             lawHeldUntil,
-            soonestOf(airtimeBlockedUntil, brakeBlockedUntil),
+            soonestOf(airtimeBlockedUntil, soonestOf(brakeBlockedUntil, flightBlockedUntil)),
         )
 
     /**
@@ -313,16 +322,27 @@ internal class LoraPacePolicy(
      * ([drainNever]). The one exception: nothing is skipped *past* a direct frame the window's total refused, or the
      * smaller frames behind it would take the air it is waiting for, one packet's worth at a time, for as long as they
      * keep coming ([admitBest]). A room post the brake holds is skipped the same way and holds nothing.
+     *
+     * [directRoom] says whether the transport's table of compact DMs awaiting an answer has a place for a given compact
+     * frame ([BoardTraits.maxFlights], and the last place kept for a peer the plane is not waiting to confirm:
+     * `DirectFlightRoom`). Without one the frame waits here — skipped like a braked post, holding nothing and never asked for
+     * air — rather than flying and pushing the oldest live send out of the table, which would end it as no outcome: a false
+     * unreachable mark on a path just proven, and a late ack lost (ADR 2026-10.x9fa's 2026-11-19 amendment, the design
+     * pass's B2: MeshCore's table is two). It is asked under this monitor, so it must only read what the caller computed
+     * before the call. The transport calls [onFlightEnded] when a send ends.
      */
     @Synchronized
-    fun take(now: Long): OutboundFrame? {
+    fun take(
+        now: Long,
+        directRoom: (OutboundFrame) -> Boolean = { true },
+    ): OutboundFrame? {
         // Cleared on entry, not only where they are filled: this returns early on an empty queue, an unelapsed
         // gap or a full board, and a caller reading them after every call would otherwise re-report the last
         // call's holds on every wake — the per-wake counting the flags exist to avoid.
         lastAirtimeHolds = 0
         lastBandBrakes = 0
         if (!mayDrain(now)) return null
-        val best = admitBest(now)
+        val best = admitBest(now, directRoom)
         if (best < 0) {
             // Nothing may go: defer to the soonest the answer changes by itself. Air returning, for frames the window
             // refused — never null with one refused, since an empty ledger refuses only a frame no window admits, and
@@ -330,16 +350,22 @@ internal class LoraPacePolicy(
             // new reading ends it sooner, through [onBandReading].
             airtimeBlockedUntil = if (lastAirtimeRefusals > 0) airtime.nextReleaseAt(now) ?: 0L else 0L
             brakeBlockedUntil = if (lastBraked > 0) bandReadAt + brakeFreshMs + 1 else 0L
+            // A send ending is an event the transport wakes the pacer for; this is the backstop, never a tick.
+            flightBlockedUntil = if (lastFlightHeld > 0) now + FLIGHT_RECHECK_MS else 0L
             return null
         }
         airtimeBlockedUntil = 0L
         brakeBlockedUntil = 0L
+        flightBlockedUntil = 0L
         lastSentAt = now
         return queue.removeAt(best).also { inFlight = it }
     }
 
     /** Frames the brake skipped on the last [take]'s walk: a level, read only to set the braked deferral. */
     private var lastBraked = 0
+
+    /** Compact DMs a full flight table skipped on the last [take]'s walk: a level, read only to set its deferral. */
+    private var lastFlightHeld = 0
 
     private fun ArrayDeque<OutboundFrame>.removeAllReturningCount(predicate: (OutboundFrame) -> Boolean): Int {
         val before = size
@@ -375,27 +401,54 @@ internal class LoraPacePolicy(
      * flood ceiling (recorded in gsqu's Stage 5a-1 amendment): a room post that holds would let one long post freeze the
      * room behind it, and DMs still dequeue first.
      */
-    private fun admitBest(now: Long): Int {
+    private fun admitBest(
+        now: Long,
+        directRoom: (OutboundFrame) -> Boolean,
+    ): Int {
         val braking = braked(now)
         var brakedAt = BooleanArray(queue.size) { braking && queue[it].braked }
+        // A compact DM with no place in the flight table waits for one ([take]): not for air, so like a braked post it is
+        // neither asked nor a holder.
+        var flightHeldAt = BooleanArray(queue.size) { queue[it].direct != null && !directRoom(queue[it]) }
         // What is still owed, not the whole frame: a resumed frame's earlier fragments are already on the air and
         // already booked, so charging admission for them again would refuse a frame that fits. A braked frame is not
         // asked at all: it is not waiting for air, and its refusal must neither hold nor count as one.
         var refusals =
             queue.mapIndexed { i, frame ->
-                if (brakedAt[i]) null else airtime.refusal(frame.ceiling, frame.admissionSizes(), now, frame.price(airtime))
+                if (brakedAt[i] || flightHeldAt[i]) {
+                    null
+                } else {
+                    airtime.refusal(frame.ceiling, frame.admissionSizes(), now, frame.price(airtime))
+                }
             }
         // Only once the board's duty is known: under the kind's fallback (MeshCore's 0.1 %) a post or a DM the real band
         // carries reads NEVER, and is skipped until the duty lands rather than dropped.
         if (airtime.dutyKnown() && refusals.any { it == LoraAirtime.Refusal.NEVER }) {
             val keep = dropNever(refusals)
             brakedAt = BooleanArray(keep.size) { brakedAt[keep[it]] }
+            flightHeldAt = BooleanArray(keep.size) { flightHeldAt[keep[it]] }
             refusals = keep.map { refusals[it] }
         }
-        val best = bestAdmitted(refusals, brakedAt)
+        val skipped = BooleanArray(queue.size) { brakedAt[it] || flightHeldAt[it] }
+        lastFlightHeld = flightHeldAt.count { it }
+        val best = bestAdmitted(refusals, skipped)
         val holder = holderOf(refusals)
         // Everything admissible ranks behind the holder when the best of it does: it all waits with the holder.
         val blocked = best >= 0 && holder >= 0 && ranksBehind(best, holder)
+        countHolds(brakedAt, flightHeldAt, refusals, blocked)
+        return if (blocked) -1 else best
+    }
+
+    /**
+     * Records what [admitBest]'s walk held: [lastAirtimeRefusals], [lastAirtimeHolds], [lastBandBrakes] and [lastBraked],
+     * marking each frame's first hold of its kind. A compact DM waiting for a place in the flight table is neither.
+     */
+    private fun countHolds(
+        brakedAt: BooleanArray,
+        flightHeldAt: BooleanArray,
+        refusals: List<LoraAirtime.Refusal?>,
+        blocked: Boolean,
+    ) {
         var airHolds = 0
         var bandHolds = 0
         var waiting = 0
@@ -411,6 +464,9 @@ internal class LoraPacePolicy(
                     }
                 }
 
+                // Waiting for a place in the flight table, not for air: never an airtime hold.
+                flightHeldAt[i] -> {}
+
                 refusals[i] != null || blocked -> {
                     waiting++
                     if (!frame.heldForAir) {
@@ -424,7 +480,6 @@ internal class LoraPacePolicy(
         lastAirtimeHolds = airHolds
         lastBandBrakes = bandHolds
         lastBraked = braked
-        return if (blocked) -1 else best
     }
 
     /**
@@ -439,16 +494,16 @@ internal class LoraPacePolicy(
     }
 
     /**
-     * The best-ranked frame [refusals] admits that the brake does not hold, or -1: strictly-better class only, so the
-     * earliest of a class wins.
+     * The best-ranked frame [refusals] admits that is not [skipped] (braked, or a compact DM waiting for a place in the
+     * flight table), or -1: strictly-better class only, so the earliest of a class wins.
      */
     private fun bestAdmitted(
         refusals: List<LoraAirtime.Refusal?>,
-        brakedAt: BooleanArray,
+        skipped: BooleanArray,
     ): Int {
         var best = -1
         for (i in queue.indices) {
-            if (brakedAt[i] || refusals[i] != null) continue
+            if (skipped[i] || refusals[i] != null) continue
             if (best < 0 || queue[i].klass < queue[best].klass) best = i
         }
         return best
@@ -477,6 +532,15 @@ internal class LoraPacePolicy(
     @Synchronized
     fun onAirReturned() {
         airtimeBlockedUntil = 0L
+    }
+
+    /**
+     * A compact DM's send ended (ADR 2026-10.x9fa's 2026-11-19 amendment): a place in the flight table came back, so the
+     * deferral [take] set for frames waiting on one no longer stands.
+     */
+    @Synchronized
+    fun onFlightEnded() {
+        flightBlockedUntil = 0L
     }
 
     @Synchronized
@@ -513,6 +577,12 @@ internal class LoraPacePolicy(
         // that can hold that wait (≤ ~700 B a frame) sheds nothing a later window would have carried.
         private const val QUEUE_CAP_FRAMES = 32
         private const val NAK_BACKOFF_MS = 60_000L
+
+        /**
+         * How long a queue whose only movable frames wait on a full flight table sleeps before it looks again unwoken: a
+         * backstop, since every send ending wakes the pacer, and long enough that it is never a tick.
+         */
+        const val FLIGHT_RECHECK_MS = 30_000L
 
         /**
          * The channel utilisation at which a Knit room post waits (ADR 2026-10.ug4a): the firmware's
@@ -622,10 +692,18 @@ internal data class RideGate(
     val direct: Boolean = false,
     /**
      * Whether the enqueuing path held this direct frame back from a peer marked unreachable or refused, and so must
-     * drop it if the peer is marked while it waits. True on an offer; false on the resend after a hearing and the
-     * re-probe, which fly precisely to ask an unconfirmed peer again (ADR 2026-10.x9fa).
+     * drop it if the peer is marked while it waits. True on the offer of a ✓✓ or a reaction; false on the resend after a
+     * hearing and the re-probe, which fly precisely to ask an unconfirmed peer again (ADR 2026-10.x9fa), and on a DM the
+     * user typed, which asks [refusalHeld] instead.
      */
     val reachHeld: Boolean = false,
+    /**
+     * Whether the enqueuing path held this direct frame back only from a peer whose board refused us or whose key our
+     * board lacks ([LoraDirectPolicy.Reach.REFUSED], [LoraDirectPolicy.Reach.NO_KEY]), and so must drop it if the peer is
+     * marked so while it waits. True on the offer of a DM the user typed, which passes an unreachable mark and gets an
+     * attempt of its own (ADR 2026-10.x9fa's 2026-11-19 amendment): asking [reachHeld] at send would drop it there.
+     */
+    val refusalHeld: Boolean = false,
     /**
      * The frame a resend or a re-probe re-airs, asked again at send whether it is still unacked (ADR 2026-10.x9fa): a
      * ✓✓ that landed while it waited makes it redundant. Never behind a timer, and null on an offer, whose author just
@@ -654,7 +732,10 @@ internal enum class StaleAtSend {
      */
     NOT_DIRECT,
 
-    /** A compact DM offered to a peer that was marked unreachable or refused while it waited (ADR 2026-10.x9fa). */
+    /**
+     * A compact DM offered to a peer that was marked unreachable or refused while it waited (ADR 2026-10.x9fa); for a DM
+     * the user typed, only refused or keyless ([RideGate.refusalHeld]).
+     */
     HELD,
 
     /** A resend or re-probe of a DM whose ✓✓ landed while it waited (ADR 2026-10.x9fa). */
@@ -889,4 +970,13 @@ internal class DirectSend(
      * what its send books and what its ack and refusal refund — one number for all four (ADR 2026-11.gsqu, Stage 1a.1).
      */
     val airings: Int = LoraDirectPolicy.AIRINGS,
-)
+) {
+    private val undeliveredTold = AtomicBoolean(false)
+
+    /**
+     * Whether this is the first word that this send's compact copy did not land (`LoraMeshTransport.onDirectUndelivered`,
+     * ADR 2026-10.x9fa's 2026-11-19 amendment), and records it: one frame can reach more than one drop (a shed, then the
+     * oversize evict), and the app is told once per send.
+     */
+    fun firstUndelivered(): Boolean = undeliveredTold.compareAndSet(false, true)
+}

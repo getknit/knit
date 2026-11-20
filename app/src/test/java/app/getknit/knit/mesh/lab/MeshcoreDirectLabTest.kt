@@ -121,12 +121,14 @@ class MeshcoreDirectLabTest {
 
     /**
      * Bob's board is off — deaf and mute on the air — so alice's DM goes out with every attempt and her board gives up:
-     * unreachable, and the next DM is held, not aired. The board comes back, Bob posts, and alice's board hears it; once
+     * unreachable. The next DM she types gets an attempt of its own past the mark (ADR 2026-10.x9fa's 2026-11-19
+     * amendment), and gives up too. The board comes back, Bob posts, and alice's board hears it; once
      * the re-probe's gap since the failure has run the held DM is re-aired and lands, its ✓✓ following. Which re-air it is
      * stays open, as in `LoraDirectLabTest`: the hearing's resend when the gap had run by the time Bob's post was heard,
      * else the re-probe round once the clock passes it. Either way the first DM follows behind its board ack (#343).
      */
     @Test
+    @Suppress("LongMethod") // one scenario: two give-ups, the hearing, the re-air and the older DM behind its ack
     fun aBoardThatWasOffIsHeardAgainAndTheHeldDmLands() =
         runBlocking {
             val air = lab.meshcoreAir()
@@ -149,7 +151,13 @@ class MeshcoreDirectLabTest {
             lab.await(1) {
                 alice.metrics
                     .lora()
-                    .loraDirectHeld
+                    .loraDirectPastHold
+                    .toInt()
+            }
+            lab.await(2) {
+                alice.metrics
+                    .lora()
+                    .loraDirectUnreachable
                     .toInt()
             }
 
@@ -1008,6 +1016,105 @@ class MeshcoreDirectLabTest {
             assertEquals("its ✓✓ came back over the board", DeliveryPlane.LoRa, lab.awaitReceipt(alice, dm, bob))
             assertEquals("it landed once", 1, holds(bob, alice, dm))
             converge(alice, bob, atLeast = 3)
+        }
+
+    /**
+     * The 2026-11-19 field case (ADR 2026-10.x9fa's amendment of that day): Bob's ✓✓ for alice's DM is his only send, and
+     * from then on nothing alice's board airs reaches his — the ✓✓ lands, its ack back never does, and his ladder gives it
+     * up. The reply Bob typed while it was out was parked behind it; before, it went back to the source and waited for the
+     * re-probe, 15 minutes on. Now it gets the next attempt the moment the ✓✓ fails, and lands at alice within one flight's
+     * time of that failure.
+     */
+    @Test
+    @Suppress("LongMethod") // one scenario: the DM, the lost ✓✓ flight, the reply parked behind it, its own attempt
+    fun aReplyTypedDuringALostTicksFlightGoesTheMomentTheTickFailsNotAtTheReprobe() =
+        runBlocking {
+            val air = lab.meshcoreAir(channel = true)
+            val (alice, bob) = pair(air, bobLimits = fieldHold)
+            assertTrue(alice.sendDm(bob, "first"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "first")
+            lab.await(1) { holds(bob, alice, dm) }
+            lab.await(1) { if (dm in bob.manager.dmAcks.pending(alice.nodeId)) 1 else 0 }
+
+            // One way from here: Bob's board still reaches alice's, nothing of hers reaches his.
+            air.meshcoreEdit { lossy("alice", "bob") }
+            lab.clock.advance(46_000L) // past `DmAckCoalescer.HOLD_MS`, 45 s: the ✓✓ goes alone
+            bob.heal()
+            val tick = "lora tx direct:receipt:"
+            lab.await(1) { bob.loraLog.count { it.startsWith(tick) } }
+            val tickId =
+                bob.loraLog
+                    .first { it.startsWith(tick) }
+                    .removePrefix(tick)
+                    .substringBefore(' ')
+            assertTrue(bob.sendDm(alice, "are you getting these"))
+            val reply = bob.ownMessageId(bob.dmWith(alice), "are you getting these")
+
+            val failed = "lora direct unreachable $tickId -> ${alice.nodeId}"
+            lab.await(1) { bob.loraLog.count { it.startsWith(failed) } }
+            val failedAt = lab.clock.now()
+            assertTrue(
+                "the reply was not parked behind the ✓✓: ${bob.loraLog}",
+                lab.tryAwait(1) { bob.loraLog.count { it.startsWith("lora direct next $reply -> ${alice.nodeId}") } },
+            )
+            lab.await(1) { holds(alice, bob, reply) }
+            val landedIn = lab.clock.now() - failedAt
+            assertTrue("within one flight of the ✓✓'s failure: $landedIn ms", landedIn < MeshcoreSession.MAX_FLIGHT_MS)
+            assertTrue("well inside the re-probe's gap", landedIn < LoraReprobe.BASE_MS)
+            assertEquals(DeliveryPlane.LoRa, alice.receivedVia(alice.dmWith(bob), reply))
+            assertEquals("bob reprobed nothing", 0L, bob.metrics.lora().loraReprobed)
+            // The ride-only ✓✓ half — the lost ✓✓ riding Bob's next DM, or released behind its radio ack — is MeshManager's
+            // and asserted with it.
+
+            air.meshcoreEdit { lossless("alice", "bob") }
+            lab.link(alice, bob)
+            lab.clock.advance(46_000L) // past `DmAckCoalescer.HOLD_MS`: what either still holds flushes over the link
+            listOf(alice, bob).forEach { it.heal() }
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
+     * A board that is off, and a burst of five DMs typed at it: the first goes, every attempt of its ladder, and gives up;
+     * of the four typed while it was out only the newest gets an attempt of its own, which gives up too. Two flights, never
+     * five, and nothing more before the re-probe (ADR 2026-10.x9fa's 2026-11-19 amendment).
+     */
+    @Test
+    fun aBurstOfFiveDmsAtADeadBoardCostsAtMostTwoFlights() =
+        runBlocking {
+            val air = lab.meshcoreAir()
+            val (alice, bob) = pair(air)
+            val board = checkNotNull(bob.meshcoreBoard)
+            air.meshcoreEdit { board.powered = false }
+            val sent = alice.metrics.lora().loraDirectSent
+            val unreachable = alice.metrics.lora().loraDirectUnreachable
+
+            val texts = (1..5).map { "dm $it" }
+            texts.forEach { assertTrue(alice.sendDm(bob, it)) }
+            lab.await((unreachable + 2).toInt()) {
+                alice.metrics
+                    .lora()
+                    .loraDirectUnreachable
+                    .toInt()
+            }
+            val newest = alice.ownMessageId(alice.dmWith(bob), texts.last())
+            assertTrue(
+                "the newest never took the turn: ${alice.loraLog}",
+                alice.loraLog.any { it.startsWith("lora direct next $newest -> ${bob.nodeId}") },
+            )
+            // Whatever is still settling: no third flight comes of the burst.
+            assertFalse(
+                "a third flight: ${alice.loraLog}",
+                lab.tryAwait((sent + 3).toInt(), timeoutMs = 3_000L) {
+                    alice.metrics
+                        .lora()
+                        .loraDirectSent
+                        .toInt()
+                },
+            )
+            assertEquals("two flights, not five", sent + 2, alice.metrics.lora().loraDirectSent)
+
+            air.meshcoreEdit { board.powered = true }
+            converge(alice, bob, atLeast = 5)
         }
 
     /** The 6-byte prefix of [node]'s board key, as a `SEND_TXT_MSG` names its recipient. */
