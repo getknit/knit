@@ -310,7 +310,7 @@ free). Two invariants that are easy to break:
   link. Anything answered to what crossed a link stays inside its rule (`MeshTransport.pairView`): a digest is
   answered by the plane it crossed (`ReceivedDigest.via`), never by which plane holds the peer at reply time, and a frame
   pushed over a link that the peer's next digest still lacks is not pushed again until the receiver's seen window passes
-  or the peer links again (`LinkPushRounds`, the 2026-10-29 amendment, #235): the two ends' buckets for one sender differ
+  or the peer links again (`CarryLedger`'s memo, the 2026-10-29 amendment, #235): the two ends' buckets for one sender differ
   for good, and a rule keyed on unchanged digests re-pushed the gap every round. A link's peer is
   queried and asked last, and only for blobs its link carries; its copy never parks behind a radio feed.
 - **Group-root minting is damped; group-root adoption is not** (`GroupRootPolicy`, spec §3.2). Several

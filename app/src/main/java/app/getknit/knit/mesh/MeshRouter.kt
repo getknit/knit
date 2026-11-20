@@ -53,12 +53,14 @@ class MeshRouter(
     // so a rig with no pipeline drops every guarded copy. Before `onDeliver`, like `onRelayed`.
     private val verifyReopened: suspend (wire: WireEnvelope, envelope: RelayEnvelope) -> Boolean = { _, _ -> false },
     // [onLink]: the frame came in on a link, so [fromNodeId] is that link's peer ([InboundFrame.onLink], ADR 2026-11.264w).
+    // [proven]: that link proved it ([InboundFrame.proven]), which custody's carry ledger alone reads.
     private val onDeliver: suspend (
         wire: WireEnvelope,
         envelope: RelayEnvelope,
         fromNodeId: String,
         kind: TransportKind,
         onLink: Boolean,
+        proven: Boolean,
     ) -> Unit,
 ) {
     /**
@@ -96,7 +98,7 @@ class MeshRouter(
             // Deliberately not destructured: a positional destructuring silently drops any component past
             // the ones named, and the frame's kind (the plane it arrived on) would read as Other for every frame.
             transport.inbound.collect { frame ->
-                handleInbound(frame.wire, frame.envelope, frame.fromNodeId, frame.kind, frame.onLink)
+                handleInbound(frame.wire, frame.envelope, frame.fromNodeId, frame.kind, frame.onLink, frame.proven)
                 onHandled?.invoke(frame)
             }
         }
@@ -108,7 +110,7 @@ class MeshRouter(
      * indirect-reach tracker only — dedup, relay scheduling and split horizon never read it. Defaulted so a source with no radio (the
      * Internet plane's `ScopeSync` bridge) calls the three-argument form. [onLink] is [InboundFrame.onLink], handed on to
      * [onDeliver] alone (the unsigned blob control is acted on only from its sender's own link, ADR 2026-11.264w); false
-     * for every source that is not a link.
+     * for every source that is not a link. [proven] is [InboundFrame.proven], handed on to [onDeliver] alone.
      */
     suspend fun handleInbound(
         wire: WireEnvelope,
@@ -116,6 +118,7 @@ class MeshRouter(
         fromNodeId: String,
         kind: TransportKind = TransportKind.Other,
         onLink: Boolean = false,
+        proven: Boolean = false,
     ) {
         // Before the dedup, the meter and the verify: Android's database drops a leading U+FEFF from every id it binds,
         // so a twin under "\uFEFF" + X would pass the in-memory SeenSet and then take X's custody and message rows
@@ -127,7 +130,7 @@ class MeshRouter(
         // A reopened id stays unmarked until a copy of it opens (#347): ahead of the meter and the mark, a guarded copy is
         // delivered or dropped here and never marked, relayed or counted as an overhear. False when the guard ended while
         // this copy waited for its turn: it then takes the path below like any other.
-        if (seen.guardFor(envelope.id) != null && handleGuarded(wire, envelope, fromNodeId, kind, onLink)) return
+        if (seen.guardFor(envelope.id) != null && handleGuarded(wire, envelope, fromNodeId, kind, onLink, proven)) return
         // The ingress meter sits between the dedup *check* and the dedup *add*: a duplicate is never metered
         // (it is evidence of propagation, not a cost — see countOverheard), and a refused frame is never
         // marked seen, so the custody re-serve can bring it through later. The gap between the two lets the
@@ -158,7 +161,7 @@ class MeshRouter(
         // 2026-10.f82h). Nothing a delivery awaits blocks without bound: every send is an enqueue
         // (`FramedLink.send`) or a launch. Process death is outside this (#56).
         withContext(NonCancellable) {
-            onDeliver(wire, envelope, fromNodeId, kind, onLink)
+            onDeliver(wire, envelope, fromNodeId, kind, onLink, proven)
             scheduleRelay(wire, envelope, fromNodeId)
         }
     }
@@ -181,6 +184,7 @@ class MeshRouter(
         fromNodeId: String,
         kind: TransportKind,
         onLink: Boolean,
+        proven: Boolean,
     ): Boolean {
         val id = envelope.id
         val guard = seen.guardFor(id) ?: return false
@@ -202,7 +206,7 @@ class MeshRouter(
             }
             metrics.onReopenedDelivered()
             // Under NonCancellable for the reason a first-seen frame's delivery is (see handleInbound).
-            withContext(NonCancellable) { onDeliver(wire, envelope, fromNodeId, kind, onLink) }
+            withContext(NonCancellable) { onDeliver(wire, envelope, fromNodeId, kind, onLink, proven) }
             true
         }
     }

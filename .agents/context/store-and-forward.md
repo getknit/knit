@@ -97,9 +97,11 @@ custody envelopes, and `onDigest` answers a digest stamped `TransportKind.Direct
 (`MeshTransport.pairView`) — frames the view admits, a key for a sender whose profile it would admit, nothing once the
 link is gone — so the two filtered digests agree when the two views do. When they cannot (one end's bucket for a sender
 full and evicting while the other's, filled only through the view, is not; the global cap, a dead-on-arrival frame, a
-tombstone), `LinkPushRounds` remembers what each round handed the peer, and a frame the peer's next digest still lacks is
-marked not kept and not pushed again until the mark lapses after the seen window, or the peer links again (any link the link
-plane adopts, reported as it adopts it: `MeshManager.onDirectLinkUp`). Keyed on what the peer kept, never on its digest being
+tombstone), custody's memo (`CarryLedger`, which every proven link shares since the custody-carry-policy change) remembers
+what each answer released to the peer, and a frame the peer's next digest still lacks once the judging delay has passed is
+marked not kept and not released again until the mark lapses after the seen window, or the peer links again (any link the
+link plane adopts, reported as it adopts it: `MeshManager.onDirectLinkUp`). A direct-link digest is additive there: what it
+lists counts, and what it lacks judges only what a view-filtered answer released. Keyed on what the peer kept, never on its digest being
 unchanged: the receiver's digest moves with every frame it writes, and that rule re-pushed the gap every round (#235,
 ADR 2026-10.a5yj's 2026-10-29 amendment). Each push is link use, and the link would never idle out. Custody itself, the
 digest's fold and the carry gate are untouched.

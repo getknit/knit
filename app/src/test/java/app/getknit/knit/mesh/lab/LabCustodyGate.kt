@@ -71,6 +71,7 @@ class LabCustodyGate {
                 frame: CarriedFrame,
                 origin: Int,
                 now: Long,
+                source: String?,
             ): Boolean {
                 // The predicate before the latch: [hold] sets them in the other order, so a match reads its own latch.
                 if (matches?.invoke(frame.envelope) == true) {
@@ -81,7 +82,7 @@ class LabCustodyGate {
                         waiting.decrementAndGet()
                     }
                 }
-                return store.store(frame, origin, now)
+                return store.store(frame, origin, now, source)
             }
 
             override suspend fun liveIds(now: Long): List<String> {

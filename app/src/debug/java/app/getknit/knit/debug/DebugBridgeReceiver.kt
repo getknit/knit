@@ -1931,6 +1931,8 @@ class DebugBridgeReceiver :
             .put("custodyOversizeRefused", snap.frames.custodyOversizeRefused)
             // Profiles refused at the door or by custody for `signed` over the profile cap (#234); knit-ios reports the same key.
             .put("profileOversizeRefused", snap.frames.profileOversizeRefused)
+            // Not-kept marks custody's memo set (the custody-carry-policy contract's §8); knit-ios reports the same key.
+            .put("custodyNotKept", snap.frames.custodyNotKept)
             // Link proof (ADR 2026-11.264w): links registered as proven, failed proofs, unproven claims refused or closed.
             // knit-ios reports the same key.
             .put("linksProven", snap.frames.linksProven)

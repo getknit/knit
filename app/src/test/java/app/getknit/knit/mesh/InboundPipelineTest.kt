@@ -259,6 +259,9 @@ class InboundPipelineTest {
     private class FakeForwardStore : ForwardStore {
         private val frames = linkedMapOf<String, CarriedFrame>()
 
+        // id → the source each write named (custody-carry-policy §3), as the store was told it.
+        val sources = linkedMapOf<String, String?>()
+
         // id → how far [age] moved the row's expiry back.
         private val aged = mutableMapOf<String, Long>()
 
@@ -266,8 +269,10 @@ class InboundPipelineTest {
             frame: CarriedFrame,
             origin: Int,
             now: Long,
+            source: String?,
         ): Boolean {
             frames.putIfAbsent(frame.envelope.id, frame)
+            sources[frame.envelope.id] = source
             return true
         }
 
@@ -1150,6 +1155,31 @@ class InboundPipelineTest {
             assertTrue("relayed DM should be custodied", rig.forwardStore.has("dm2"))
             // ...but never deliver it locally (it isn't ours to read).
             assertFalse(rig.msgMap.containsKey("dm2"))
+        }
+
+    /**
+     * Custody names the neighbour a relayed frame came from as its source only when the frame came in on a link that
+     * proved that neighbour (custody-carry-policy §3): a proof stamped on a frame off no link names nobody.
+     */
+    @Test
+    fun aRelayedFrameNamesItsSourceOnlyWhenItsLinkProvedIt() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val other = party()
+            rig.pin(alice)
+            val offLink = rig.dmChat(alice, other, id = "d1", body = "one")
+            val onLink = rig.dmChat(alice, other, id = "d2", body = "two")
+            val unproven = rig.dmChat(alice, other, id = "d3", body = "three")
+
+            rig.pipeline.onDeliver(alice.sign(offLink), offLink, alice.nodeId, onLink = false, proven = true)
+            rig.pipeline.onDeliver(alice.sign(onLink), onLink, alice.nodeId, onLink = true, proven = true)
+            rig.pipeline.onDeliver(alice.sign(unproven), unproven, alice.nodeId, onLink = true, proven = false)
+
+            assertEquals(
+                mapOf("d1" to null, "d2" to alice.nodeId, "d3" to null),
+                rig.forwardStore.sources.filterKeys { it in setOf("d1", "d2", "d3") },
+            )
         }
 
     /**

@@ -342,6 +342,10 @@ class MeshManager(
     // without the Internet plane at all — which is what every unit test wants, and what keeps the mesh
     // seam free of any transitive knowledge of it. A plain parameter: only the [scopeSync] initializer reads it.
     spoolDialer: SpoolDialer? = null,
+    // Who holds each carried frame, and what each proven peer was released and did not keep (the custody-carry-policy
+    // contract's §3 and §6): the process's one instance, which the forward store reads `spread` from too (di/MeshModule).
+    // A fresh one by default, for the rigs that build a manager by hand.
+    carryLedger: CarryLedger = CarryLedger(metrics = metrics),
     // One event per *new* validated default network (`InternetGate.routeChanges`): the Internet plane's
     // cue to dial a relay it is backing off from again at once, because a socket the old route swallowed
     // says nothing about this one. The default never fires, which is every test and every build without
@@ -717,6 +721,7 @@ class MeshManager(
             // A sender whose backlog goes to a peer that may not hold their key, and whose profile custody no
             // longer holds: the pin store's copy goes first (ADR 2026-09.g64k).
             serveKey = { senderId, to -> keyExchange.serveKey(senderId, to) },
+            carry = carryLedger,
             // (The carry store grew → the store impl folds the id into StoreDigest, whose version change re-cues.)
         )
 
@@ -5578,7 +5583,7 @@ class MeshManager(
             // A neighbor advertised the custody ids it holds → push it just the frames it lacks (the id-diff).
             // By the plane it crossed: one off a contact's direct link is answered inside that link's rule (ADR 2026-10.a5yj).
             transport.incomingDigests.collect {
-                forwardSync.onDigest(it.fromNodeId, it.ids, it.via)
+                forwardSync.onDigest(it.fromNodeId, it.ids, it.via, it.proven, it.link)
                 onDigestAnswered?.invoke(it)
             }
         }

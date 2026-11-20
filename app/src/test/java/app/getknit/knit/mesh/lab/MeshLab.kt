@@ -86,6 +86,7 @@ import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.CARRIER_BLOB_BUDGET_BYTES
 import app.getknit.knit.mesh.CarriedFrame
+import app.getknit.knit.mesh.CarryLedger
 import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.ContributionLedger
 import app.getknit.knit.mesh.DmAckCoalescer
@@ -2228,6 +2229,9 @@ class LabNode internal constructor(
                 transact = { block -> db.withWriteTransaction { block() } },
             )
         peers = PeerRepository(db.peerDao(), settings, identity, fade = fade)
+        // One carry ledger per node, as `di/MeshModule` wires one per process: the store's row cap reads it, the manager's
+        // custody sync writes it. In memory, so a restart starts it empty.
+        val carryLedger = CarryLedger(metrics = metrics)
         forwardStore =
             ForwardRepository(
                 db.forwardDao(),
@@ -2242,6 +2246,7 @@ class LabNode internal constructor(
                 maxSignedBytes = limits.custodyMaxSignedBytes,
                 maxProfileSignedBytes = limits.custodyMaxProfileSignedBytes,
                 metrics = metrics,
+                carry = carryLedger,
             )
         // The leaves with a hardware or UI side. Text allowed unless [flaggedText], every picture unless [picturesExplicit],
         // notifications swallowed. (A relaxed ImageModerator mock hands back a mocked verdict whose `flagged`
@@ -2302,6 +2307,7 @@ class LabNode internal constructor(
                 metrics = metrics,
                 ledger = ledger,
                 db = db,
+                carryLedger = carryLedger,
                 clock = now,
                 tickDebounceMs = MeshLab.TICK_DEBOUNCE_MS,
                 rideHoldMs = limits.rideHoldMs,

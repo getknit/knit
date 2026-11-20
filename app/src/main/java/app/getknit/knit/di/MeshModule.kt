@@ -43,8 +43,10 @@ import app.getknit.knit.fieldlog.netEdges
 import app.getknit.knit.fieldlog.readBattery
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.BlobExchange
+import app.getknit.knit.mesh.CarryLedger
 import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.ContributionLedger
+import app.getknit.knit.mesh.CustodyProgress
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
@@ -169,6 +171,11 @@ val meshModule =
         // message set), MeshManager (folds in profile changes), and WifiAwareTransport (cues it to neighbors) —
         // a singleton so none has to construct the other (MeshManager already depends on the transport).
         single { StoreDigest() }
+        // Who holds each carried frame and what each proven peer did not keep (the custody-carry-policy contract's §3 and
+        // §6): one per process, written by ForwardSync inside MeshManager and read by ForwardRepository's row cap, and the
+        // custody progress the Wi-Fi Aware plane may read.
+        single { CarryLedger(metrics = get()) }
+        single<CustodyProgress> { get<CarryLedger>() }
         // Tracks screen/charge/battery state and feeds it to the transport's discovery duty cycle.
         single { PowerStateSource() }
         // Whether Knit's UI is on screen (KnitApplication attaches it to the process lifecycle); the BLE scan hunts
@@ -622,6 +629,8 @@ val meshModule =
                 // feature (`BuildConfig.COMMONS`), so no room is derived into the scope table, subscribed,
                 // posted to, or swept for members — the plane behaves exactly as it did before §7.4.
                 commons = if (BuildConfig.COMMONS) get() else null,
+                // The one carry ledger, the forward store's reader too (di/AppModule).
+                carryLedger = get(),
                 // The platform's validated-default-network stream (net/AndroidInternetGate): a new route
                 // re-dials a relay the plane is backing off from at once (work item 50).
                 routeChanges = get<InternetGate>().routeChanges,

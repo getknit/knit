@@ -36,6 +36,9 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -404,6 +407,42 @@ class DirectLinkTransportTest {
             a.transport.sendDigest(Peer(bob), listOf("m1-QQ", "r1-QQ", "gone-QQ"))
             assertEquals(listOf("m1-QQ"), withTimeout(WAIT_MS) { got.await() }.ids)
             assertTrue(a.uses.isEmpty() && b.uses.isEmpty())
+        }
+
+    /**
+     * A contact's link is proven by its lane, so what it delivers says so, stamped with the link it crossed: the object
+     * [DirectLinkTransport.linkToken] names, a new one when the link is replaced (custody-carry-policy §3 and §6).
+     */
+    @Test
+    fun whatALinkDeliversIsProvenAndStampedWithThatLinkAndARelinkIsANewOne() =
+        runBlocking<Unit> {
+            val a = End(alice)
+            val b = End(bob)
+            linked(a, b)
+            val token = b.transport.linkToken(alice)
+            assertNotNull(token)
+            val frameIn = async(start = CoroutineStart.UNDISPATCHED) { b.transport.inbound.first() }
+            val digestIn = async(start = CoroutineStart.UNDISPATCHED) { b.transport.incomingDigests.first() }
+            a.transport.send(frame("m20-QQ"), Peer(bob))
+            a.transport.sendDigest(Peer(bob), listOf("m1-QQ"))
+            val frame = withTimeout(WAIT_MS) { frameIn.await() }
+            val digest = withTimeout(WAIT_MS) { digestIn.await() }
+            assertTrue(frame.proven && digest.proven)
+            assertSame(token, frame.link)
+            assertSame(token, digest.link)
+            assertTrue(b.transport.carries(TransportKind.DirectLink, alice, token))
+
+            connect(a, b)
+            a.transport.adopt(bob, a.stream, offerer = true)
+            b.transport.adopt(alice, b.stream, offerer = false)
+            withTimeout(WAIT_MS) { while (a.ups.size < 2 || b.ups.size < 2) delay(POLL_MS) }
+            val relinked = b.transport.linkToken(alice)
+            assertNotNull(relinked)
+            assertNotSame("a relink is a new link", token, relinked)
+            assertFalse("the old link no longer carries the peer", b.transport.carries(TransportKind.DirectLink, alice, token))
+            val again = async(start = CoroutineStart.UNDISPATCHED) { b.transport.inbound.first() }
+            a.transport.send(frame("m21-QQ"), Peer(bob))
+            assertSame(relinked, withTimeout(WAIT_MS) { again.await() }.link)
         }
 
     @Test

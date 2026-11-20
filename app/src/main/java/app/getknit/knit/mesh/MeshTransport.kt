@@ -137,6 +137,12 @@ data class InboundFrame(
     // — so [fromNodeId] is that link's peer, not a name the frame gave itself (ADR 2026-11.264w). False for a side-channel
     // page, a hop-less fast frame, a LoRa packet and a spool pull. The unsigned blob control is acted on only when true.
     val onLink: Boolean = false,
+    // The link that delivered it proved [fromNodeId] (both ends carry the link proof, the link is sealed, or it is a
+    // contact's direct link): only then may custody count that peer as the frame's source (the custody-carry-policy
+    // contract's §3). Stamped by the child at its emit site; false for every off-link arrival and an older peer's link.
+    val proven: Boolean = false,
+    // The delivering link's identity, opaque and compared with `===` ([MeshTransport.linkToken]); null when unknown.
+    val link: Any? = null,
 )
 
 /** What a transferred file is, so the receiver can route an avatar apart from a chat attachment. */
@@ -263,6 +269,22 @@ data class ReceivedDigest(
     // The plane the digest crossed, stamped by the composite: the answer to one off a contact's direct link is filtered
     // by that link's [PairView], whatever the radios hold by the time it is answered.
     val via: TransportKind = TransportKind.Other,
+    // The link that delivered it proved [fromNodeId] ([InboundFrame.proven]): only a proven digest feeds custody's carry
+    // ledger and has a memo (the custody-carry-policy contract's §3 and §6). An unproven one is answered and leaves
+    // nothing behind, since its node id is only a claim. Stamped by the child that emitted it.
+    val proven: Boolean = false,
+    // The delivering link's identity, opaque and compared with `===` ([MeshTransport.linkToken]); null when unknown.
+    val link: Any? = null,
+)
+
+/**
+ * The plane [kind] and the link [link] that would carry a send to a peer now ([MeshTransport.carrier]): what custody's memo
+ * stamps a release with, so the release stops being pending when that link ends (the custody-carry-policy contract's §6).
+ * [link] is opaque and compared with `===`; null when the plane names no link object.
+ */
+class LinkCarrier(
+    val kind: TransportKind,
+    val link: Any?,
 )
 
 /**
@@ -609,6 +631,33 @@ interface MeshTransport {
      * for a transport (a single radio, a fake) that has no other kind of link.
      */
     fun radioLinked(nodeId: String): Boolean = neighbors.value.any { it.nodeId == nodeId }
+
+    /**
+     * The identity of this plane's live link to [nodeId], opaque and compared with `===`: a new link to the same peer is a
+     * new object, which is how custody tells a relink from the same link (the custody-carry-policy contract's §6). The same
+     * object the plane stamps on what that link delivers ([InboundFrame.link], [ReceivedDigest.link]), non-null and distinct
+     * per link. Default null: a plane that names no link object. A lock-free read that never calls into custody: custody
+     * asks it, and a plane may read custody's progress under its own lock.
+     */
+    fun linkToken(nodeId: String): Any? = null
+
+    /**
+     * The plane and link a send to [nodeId] would go over now, or null when nothing holds the peer: what custody stamps a
+     * release with. Default: this plane, when it holds the peer. [CompositeMeshTransport] answers with the child [send]
+     * uses, Bluetooth first. Lock-free, and never calls into custody, as [linkToken].
+     */
+    fun carrier(nodeId: String): LinkCarrier? =
+        if (neighbors.value.any { it.nodeId == nodeId }) LinkCarrier(kind, linkToken(nodeId)) else null
+
+    /**
+     * Whether a plane of [kind] still holds [link] as its live link to [nodeId]: false once that link ended or was replaced.
+     * Lock-free, and never calls into custody, as [linkToken].
+     */
+    fun carries(
+        kind: TransportKind,
+        nodeId: String,
+        link: Any?,
+    ): Boolean = kind == this.kind && neighbors.value.any { it.nodeId == nodeId } && linkToken(nodeId) === link
 
     /**
      * Whether a file to [nodeId] would go out over a plane that rides the Internet ([viaInternet]): such a copy shares no

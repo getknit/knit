@@ -809,6 +809,22 @@ class CompositeMeshTransport(
         if (fast != null) fast.send(wire, to) else send(wire, to)
     }
 
+    /** The link of the child [send] uses for [nodeId], Bluetooth first ([childHoldingLinkTo]). */
+    override fun linkToken(nodeId: String): Any? = childHoldingLinkTo(nodeId)?.linkToken(nodeId)
+
+    /**
+     * The child [send] would use for [nodeId] and its link: Bluetooth whenever a Bluetooth link holds the peer, whatever
+     * plane the digest being answered crossed (the custody-carry-policy contract's §2).
+     */
+    override fun carrier(nodeId: String): LinkCarrier? = childHoldingLinkTo(nodeId)?.let { LinkCarrier(it.kind, it.linkToken(nodeId)) }
+
+    /** Whether any child of [kind] still holds [link] to [nodeId]: a release ends with its own link, not the peer's last. */
+    override fun carries(
+        kind: TransportKind,
+        nodeId: String,
+        link: Any?,
+    ): Boolean = children.any { it.kind == kind && it.carries(kind, nodeId, link) }
+
     /** The answer of the child [sendLive] would use, not the Bluetooth-first holder [slowLinkTo] asks. */
     override fun liveLinkFading(nodeId: String): Boolean =
         (liveChildFor(nodeId) ?: childHoldingLinkTo(nodeId))?.liveLinkFading(nodeId) ?: false

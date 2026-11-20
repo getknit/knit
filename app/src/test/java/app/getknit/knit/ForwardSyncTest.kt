@@ -3,18 +3,20 @@ package app.getknit.knit
 import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.BlobStore
 import app.getknit.knit.mesh.CarriedFrame
+import app.getknit.knit.mesh.CarryLedger
+import app.getknit.knit.mesh.CarryReader
 import app.getknit.knit.mesh.FakeLoopTransport
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.ForwardSync
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.LinkCarrier
 import app.getknit.knit.mesh.MeshRouter
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.PairView
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
-import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.protocol.BlobReqContent
@@ -55,6 +57,8 @@ class ForwardSyncTest {
         private val ttlMs: Long = 60_000L,
         // Forces store() to refuse regardless of clocks (models a full/refusing repository).
         private val refuseAll: Boolean = false,
+        // Told what is held, as the repository tells its carry ledger; null for the cases that read no ledger.
+        private val carry: CarryReader? = null,
     ) : ForwardStore {
         private data class Row(
             val frame: CarriedFrame,
@@ -68,6 +72,7 @@ class ForwardSyncTest {
             frame: CarriedFrame,
             origin: Int,
             now: Long,
+            source: String?,
         ): Boolean {
             if (refuseAll) return false
             // Guard-faithful to ForwardRepository: the expiry is frame-global (sentAt + TTL, ADR 006) and a
@@ -76,6 +81,7 @@ class ForwardSyncTest {
             val expiresAt = frame.envelope.sentAt + ttlMs
             if (expiresAt < now) return false
             rows.putIfAbsent(frame.envelope.id, Row(frame, origin, expiresAt))
+            carry?.onKept(frame.envelope.id, source)
             return true
         }
 
@@ -93,11 +99,13 @@ class ForwardSyncTest {
 
         override suspend fun remove(id: String) {
             rows.remove(id)
+            carry?.onLeft(id)
         }
 
         override suspend fun sweepExpired(now: Long): Int {
             val before = rows.size
             rows.entries.removeIf { it.value.expiresAt < now }
+            carry?.retainOnly(rows.keys.toSet())
             return before - rows.size
         }
 
@@ -121,7 +129,18 @@ class ForwardSyncTest {
         // The direct link's view per peer ([pairView]): none, no link up.
         val views = mutableMapOf<String, PairView>()
 
+        // The plane and link a send to each peer goes over ([carrier]): none, nothing holds the peer.
+        val carriers = mutableMapOf<String, LinkCarrier>()
+
         override suspend fun pairView(nodeId: String): PairView? = views[nodeId]
+
+        override fun carrier(nodeId: String): LinkCarrier? = carriers[nodeId]
+
+        override fun carries(
+            kind: TransportKind,
+            nodeId: String,
+            link: Any?,
+        ): Boolean = carriers[nodeId]?.let { it.kind == kind && it.link === link } == true
 
         override val neighbors = MutableStateFlow<Set<Peer>>(emptySet()).asStateFlow()
         override val health = MutableStateFlow(TransportHealth.Healthy).asStateFlow()
@@ -503,9 +522,10 @@ class ForwardSyncTest {
                         frame: CarriedFrame,
                         origin: Int,
                         now: Long,
+                        source: String?,
                     ): Boolean {
                         sync.onAck(frame.envelope.id, senderId = "b")
-                        return fake.store(frame, origin, now)
+                        return fake.store(frame, origin, now, source)
                     }
                 }
             sync = ForwardSync(RecordingTransport(), racing, clock = { 0L })
@@ -643,18 +663,17 @@ class ForwardSyncTest {
         }
 
     /** A sync whose `serveKey` records (sender, peer, frames already sent) — the last says whether it went first. */
-    private inner class KeyedSync(
-        store: FakeForwardStore = FakeForwardStore(),
-    ) {
-        val transport = RecordingTransport()
+    private inner class KeyedSync {
+        val ledger = CarryLedger()
+        val transport = RecordingTransport().apply { carriers["z"] = LinkCarrier(TransportKind.DirectLink, Any()) }
         val keys = mutableListOf<Triple<String, String, Int>>()
         val sync =
-            ForwardSync(transport, store, clock = { 0L }, serveKey = {
+            ForwardSync(transport, FakeForwardStore(carry = ledger), clock = { 0L }, serveKey = {
                 sender,
                 to,
                 ->
                 keys += Triple(sender, to.nodeId, transport.sent.size)
-            })
+            }, carry = ledger)
 
         suspend fun carry(vararg envs: RelayEnvelope) = envs.forEach { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
     }
@@ -908,7 +927,7 @@ class ForwardSyncTest {
         val notified = mutableListOf<String>()
         private val seenDelivered = mutableSetOf<String>()
         val sync = ForwardSync(transport, store, clock = { 0L }, onCarried = { env, _ -> onCarried(env) })
-        private val router = MeshRouter(transport, scope, jitter = { 0L }) { wire, env, from, _, _ -> onDeliver(wire, env, from) }
+        private val router = MeshRouter(transport, scope, jitter = { 0L }) { wire, env, from, _, _, _ -> onDeliver(wire, env, from) }
 
         // Custody a carried chat frame's image: eager-pull the blob so a late joiner can pull it from us
         // (mirrors MeshManager.onCarriedFrame; no budget cap in the test).
@@ -1198,93 +1217,167 @@ class ForwardSyncTest {
             )
         }
 
+    /** A sync whose store tells [carry] what it holds, as the repository does, and whose peer "z" a direct link carries. */
+    private inner class MemoSync(
+        var now: Long = 0L,
+    ) {
+        val ledger = CarryLedger()
+        val store = FakeForwardStore(ttlMs = 60 * 60_000L, carry = ledger)
+        val transport = RecordingTransport().apply { carriers["z"] = LinkCarrier(TransportKind.DirectLink, Any()) }
+        val sync = ForwardSync(transport, store, clock = { now }, carry = ledger)
+
+        suspend fun carry(vararg envs: RelayEnvelope) = envs.forEach { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
+
+        fun releases(id: String) = transport.sent.count { it.first.frameId() == id }
+
+        // The link plane adopts a new link to "z": a new link object, then the link-up hook.
+        fun relink() {
+            transport.carriers["z"] = LinkCarrier(TransportKind.DirectLink, Any())
+            sync.linked(listOf("z"))
+        }
+    }
+
     /**
      * Two filtered views can differ for good (a full per-sender bucket on one end, the global cap, a frame dead on arrival,
-     * a tombstone): a frame pushed that the peer's next digest still lacks is not pushed again (#235, ADR 2026-10.a5yj's
-     * 2026-10-29 amendment) — not when their digest moves, which it does with every frame they originate, nor when ours
-     * does. The peer linking again, or the mark lapsing after the receiver's seen window, pushes it once more.
+     * a tombstone): a frame released that the peer's next digest still lacks is not released again (#235, the custody-carry-
+     * policy contract's §6) — not while it is pending, not when their digest moves, which it does with every frame they
+     * originate, nor when ours does. The peer linking again, or the mark lapsing, releases it once more.
      */
     @Test
     fun aDirectLinksPushThePeerDidNotKeepIsNotPushedAgainUntilItLapsesOrTheyLinkAgain() =
         runTest {
-            val transport = RecordingTransport()
-            var now = 0L
-            val sync = ForwardSync(transport, FakeForwardStore(ttlMs = 60 * 60_000L), clock = { now })
-            post("r1", "a").let { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
-            transport.views["z"] = SendersView(setOf("a", "b"))
-            val pushes = { id: String -> transport.sent.count { it.first.frameId() == id } }
+            val m = MemoSync()
+            m.carry(post("r1", "a"))
+            m.transport.views["z"] = SendersView(setOf("a", "b"))
+            val counts = { listOf(m.releases("r1"), m.releases("r2")) }
 
-            sync.onDigest("z", listOf("x"), TransportKind.DirectLink)
-            sync.onDigest("z", listOf("x"), TransportKind.DirectLink)
-            assertEquals("their next digest lacks it: not kept, not pushed again", 1, pushes("r1"))
+            m.sync.onDigest("z", listOf("x"), TransportKind.DirectLink)
+            m.sync.onDigest("z", listOf("x"), TransportKind.DirectLink)
+            assertEquals("pending: not released again", 1, m.releases("r1"))
 
-            sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
-            assertEquals("their digest moved, the gap stayed: nothing", 1, pushes("r1"))
+            m.now += CarryLedger.JUDGE_AFTER_FAST_MS
+            m.sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
+            assertEquals("judged not kept; their digest moved, the gap stayed: nothing", 1, m.releases("r1"))
 
-            post("r2", "b").let { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
-            sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
-            assertEquals("ours moved: the new frame alone", listOf(1, 1), listOf(pushes("r1"), pushes("r2")))
+            m.carry(post("r2", "b"))
+            m.sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
+            assertEquals("ours moved: the new frame alone", listOf(1, 1), counts())
 
-            sync.linked(listOf("z"))
-            sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
-            assertEquals("linked again: a push may have died with the old link", listOf(2, 2), listOf(pushes("r1"), pushes("r2")))
-            sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
-            assertEquals(listOf(2, 2), listOf(pushes("r1"), pushes("r2")))
+            m.relink()
+            m.sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
+            assertEquals("linked again: a release may have died with the old link", listOf(2, 2), counts())
+            m.sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
+            assertEquals(listOf(2, 2), counts())
 
-            now += SeenSet.DEFAULT_TTL_MS - 1
-            sync.onDigest("z", listOf("x", "y", "w"), TransportKind.DirectLink)
-            assertEquals("a digest that still lacks it never refreshes the mark", listOf(2, 2), listOf(pushes("r1"), pushes("r2")))
-            now += 1
-            sync.onDigest("z", listOf("x", "y", "w"), TransportKind.DirectLink)
-            assertEquals("the mark lapsed: pushed once more", listOf(3, 3), listOf(pushes("r1"), pushes("r2")))
-            sync.onDigest("z", listOf("x", "y", "w"), TransportKind.DirectLink)
-            assertEquals("and judged again", listOf(3, 3), listOf(pushes("r1"), pushes("r2")))
+            m.now += CarryLedger.JUDGE_AFTER_FAST_MS
+            m.sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
+            val marked = m.now
+            m.now = marked + CarryLedger.NOT_KEPT_LAPSE_MS - 1
+            m.sync.onDigest("z", listOf("x", "y", "w"), TransportKind.DirectLink)
+            assertEquals("a digest that still lacks it never refreshes the mark", listOf(2, 2), counts())
+            m.now = marked + CarryLedger.NOT_KEPT_LAPSE_MS
+            m.sync.onDigest("z", listOf("x", "y", "w"), TransportKind.DirectLink)
+            assertEquals("the mark lapsed: released once more", listOf(3, 3), counts())
+            m.sync.onDigest("z", listOf("x", "y", "w"), TransportKind.DirectLink)
+            assertEquals("and pending again", listOf(3, 3), counts())
 
-            sync.onDigest("z", listOf("x", "y"))
-            assertEquals("a radio's digest is never held back", listOf(4, 4), listOf(pushes("r1"), pushes("r2")))
+            m.sync.onDigest("z", listOf("x", "y"))
+            assertEquals("a digest whose link proved nothing is answered in full", listOf(4, 4), counts())
+        }
+
+    /** Custody counts the neighbour a frame came from among its holders only when that neighbour's link proved it (§3). */
+    @Test
+    fun aRelayedFramesSourceIsCountedOnlyOffAProvenLink() =
+        runTest {
+            val m = MemoSync()
+            val proven = post("p1", "a")
+            val unproven = post("u1", "a")
+            val own = post("o1", "a")
+
+            m.sync.onSeen(wireOf(proven), proven, ForwardStore.ORIGIN_RELAY, from = "n", fromProven = true)
+            m.sync.onSeen(wireOf(unproven), unproven, ForwardStore.ORIGIN_RELAY, from = "n")
+            m.sync.onSeen(wireOf(own), own, ForwardStore.ORIGIN_SELF)
+
+            assertEquals(listOf(1, 0, 0), listOf("p1", "u1", "o1").map(m.ledger::spread))
+        }
+
+    /**
+     * A digest whose link proved nothing is answered in full and leaves nothing behind (§3, §6): its node id is only a
+     * claim. A proven one names its peer a holder of what it lists, and what it is released stays pending.
+     */
+    @Test
+    fun onlyAProvenDigestFeedsTheLedgerAndHoldsBackWhatItWasReleased() =
+        runTest {
+            val m = MemoSync()
+            val link = Any()
+            m.transport.carriers["z"] = LinkCarrier(TransportKind.Bluetooth, link)
+            m.carry(post("r1", "a"), post("r2", "a"))
+
+            repeat(2) { m.sync.onDigest("z", listOf("r1"), TransportKind.Bluetooth) }
+            assertEquals("unproven: answered in full each time", 2, m.releases("r2"))
+            assertEquals("and no holder", 0, m.ledger.spread("r1"))
+
+            repeat(2) { m.sync.onDigest("z", listOf("r1"), TransportKind.Bluetooth, proven = true, link = link) }
+            assertEquals("proven: pending, not released again", 3, m.releases("r2"))
+            assertEquals(1, m.ledger.spread("r1"))
+        }
+
+    /** A recipient's own mail is never withheld on a memo's word (§6): it goes at every digest that lacks it. */
+    @Test
+    fun aFrameAddressedToThePeerIsReleasedAtEveryDigestThatLacksIt() =
+        runTest {
+            val m = MemoSync()
+            val link = Any()
+            m.transport.carriers["z"] = LinkCarrier(TransportKind.Bluetooth, link)
+            m.carry(dm("d1", "a", "z"), post("r1", "a"))
+
+            repeat(2) {
+                m.now += CarryLedger.JUDGE_AFTER_BLUETOOTH_MS
+                m.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = link)
+            }
+
+            assertEquals(listOf(2, 1), listOf(m.releases("d1"), m.releases("r1")))
         }
 
     /** A frame the peer kept shows in its digest, so it leaves the diff: nothing is marked and nothing held back. */
     @Test
     fun aDirectLinksPushThePeerKeptIsNeverMarked() =
         runTest {
-            val transport = RecordingTransport()
-            val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
-            post("r1", "a").let { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
-            transport.views["z"] = SendersView(setOf("a"))
+            val m = MemoSync()
+            m.carry(post("r1", "a"))
+            m.transport.views["z"] = SendersView(setOf("a"))
 
-            sync.onDigest("z", emptyList(), TransportKind.DirectLink)
-            sync.onDigest("z", listOf("r1"), TransportKind.DirectLink)
-            post("r2", "a").let { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
-            sync.onDigest("z", listOf("r1"), TransportKind.DirectLink)
-            assertEquals(listOf("r1", "r2"), transport.sent.map { it.first.frameId() })
+            m.sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+            m.now += CarryLedger.JUDGE_AFTER_FAST_MS
+            m.sync.onDigest("z", listOf("r1"), TransportKind.DirectLink)
+            m.carry(post("r2", "a"))
+            m.sync.onDigest("z", listOf("r1"), TransportKind.DirectLink)
+            assertEquals(listOf("r1", "r2"), m.transport.sent.map { it.first.frameId() })
 
-            // The peer kept r2 and has since evicted r1: r1 was never marked, so it goes again at once.
-            sync.onDigest("z", listOf("r2"), TransportKind.DirectLink)
-            assertEquals(listOf("r1", "r2", "r1"), transport.sent.map { it.first.frameId() })
+            // The peer kept r2 and has since evicted r1: r1 was judged kept and never marked, so it goes again at once.
+            m.now += CarryLedger.JUDGE_AFTER_FAST_MS
+            m.sync.onDigest("z", listOf("r2"), TransportKind.DirectLink)
+            assertEquals(listOf("r1", "r2", "r1"), m.transport.sent.map { it.first.frameId() })
         }
 
-    /** An id our custody no longer holds leaves the memo: carried again later, it is pushed as a frame never pushed. */
+    /** An id our custody no longer holds leaves the memo: carried again later, it is released as a frame never released. */
     @Test
     fun aDirectLinksMemoForgetsAFrameWeNoLongerHold() =
         runTest {
-            val transport = RecordingTransport()
-            val store = FakeForwardStore()
-            val sync = ForwardSync(transport, store, clock = { 0L })
+            val m = MemoSync()
             val r1 = post("r1", "a")
-            sync.onSeen(wireOf(r1), r1, ForwardStore.ORIGIN_RELAY)
-            transport.views["z"] = SendersView(setOf("a"))
-            val pushes = { transport.sent.count { it.first.frameId() == "r1" } }
+            m.carry(r1)
+            m.transport.views["z"] = SendersView(setOf("a"))
 
-            sync.onDigest("z", emptyList(), TransportKind.DirectLink)
-            sync.onDigest("z", emptyList(), TransportKind.DirectLink)
-            assertEquals(1, pushes())
+            m.sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+            m.sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+            assertEquals(1, m.releases("r1"))
 
-            store.remove("r1")
-            sync.onDigest("z", emptyList(), TransportKind.DirectLink)
-            sync.onSeen(wireOf(r1), r1, ForwardStore.ORIGIN_RELAY)
-            sync.onDigest("z", emptyList(), TransportKind.DirectLink)
-            assertEquals("carried again, after it left custody", 2, pushes())
+            m.store.remove("r1")
+            m.sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+            m.carry(r1)
+            m.sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+            assertEquals("carried again, after it left custody", 2, m.releases("r1"))
         }
 
     /**

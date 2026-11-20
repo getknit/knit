@@ -735,6 +735,7 @@ class MeshMetrics {
     private val digestsReplaced = AtomicLong()
     private val custodyOversizeRefused = AtomicLong()
     private val profileOversizeRefused = AtomicLong()
+    private val custodyNotKept = AtomicLong()
     private val linksProven = AtomicLong()
     private val linkProofFailed = AtomicLong()
     private val linkClaimRefused = AtomicLong()
@@ -1419,6 +1420,15 @@ class MeshMetrics {
      */
     fun onCustodyOversizeRefused() {
         custodyOversizeRefused.incrementAndGet()
+    }
+
+    /**
+     * A peer's digest showed it did not keep a frame custody released to it, and custody still holds that frame: the
+     * not-kept mark `CarryLedger` sets (the custody-carry-policy contract's §6). Not released to that peer again until the
+     * mark lapses or the peer links anew.
+     */
+    fun onCustodyNotKept() {
+        custodyNotKept.incrementAndGet()
     }
 
     /**
@@ -2228,6 +2238,7 @@ class MeshMetrics {
             digestsReplaced = digestsReplaced.get(),
             custodyOversizeRefused = custodyOversizeRefused.get(),
             profileOversizeRefused = profileOversizeRefused.get(),
+            custodyNotKept = custodyNotKept.get(),
             linksProven = linksProven.get(),
             linkProofFailed = linkProofFailed.get(),
             linkClaimRefused = linkClaimRefused.get(),
@@ -2563,6 +2574,8 @@ class MeshMetrics {
             val custodyOversizeRefused: Long = 0,
             // #234: a profile refused at the door or by custody because its `signed` bytes are over the profile cap.
             val profileOversizeRefused: Long = 0,
+            // custody-carry-policy §6: releases a peer's later digest showed it did not keep, while custody still held them.
+            val custodyNotKept: Long = 0,
             // ADR 2026-11.264w: links registered as proven, failed proofs, and unproven claims refused or closed.
             val linksProven: Long = 0,
             val linkProofFailed: Long = 0,

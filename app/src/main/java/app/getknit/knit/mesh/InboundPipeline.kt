@@ -378,6 +378,8 @@ class InboundPipeline(
         // It came in on a link, so [fromNodeId] is that link's peer ([InboundFrame.onLink]). Only the router's link
         // deliveries say so; a replay, a spool pull and every off-link plane leave it false.
         onLink: Boolean = false,
+        // That link proved [fromNodeId] ([InboundFrame.proven]): custody then counts it as the frame's source.
+        proven: Boolean = false,
     ) {
         // Strict authentication gate: a flooded frame that isn't signed by the key its senderId binds
         // to is dropped (not delivered locally). We still return normally so MeshRouter relays it
@@ -404,7 +406,7 @@ class InboundPipeline(
         // SeenSet window — the three digests disagreed for up to eleven minutes after every key request, and
         // the cue plane raised a reconcile with nothing to transfer (ADR 2026-09.7bu7, issue #49).
         if (env.isStorable() && (wire.relay || env.type == FrameType.PROFILE)) {
-            forwardSync.onSeen(wire, env, ForwardStore.ORIGIN_RELAY, from = fromNodeId)
+            forwardSync.onSeen(wire, env, ForwardStore.ORIGIN_RELAY, from = fromNodeId, fromProven = proven && onLink)
         }
         // Multi-hop coordination-plane fan-out: re-fan a small flood frame to our own neighbors so it spreads
         // across the mesh at message-plane speed (no data path), not just one hop from the originator. onDeliver

@@ -89,12 +89,6 @@ class ForwardRepository(
         frame: CarriedFrame,
         origin: Int,
         now: Long,
-    ): Boolean = store(frame, origin, now, source = null)
-
-    override suspend fun store(
-        frame: CarriedFrame,
-        origin: Int,
-        now: Long,
         source: String?,
     ): Boolean {
         val env = frame.envelope

@@ -121,7 +121,7 @@ class BlobExchangeTest {
                 partials = partials,
             )
         private val router =
-            MeshRouter(transport, scope) { _, env, fromNodeId, _, _ ->
+            MeshRouter(transport, scope) { _, env, fromNodeId, _, _, _ ->
                 if (env.type == FrameType.BLOB_REQ) {
                     WireCodec.decodePayload<BlobReqContent>(env.payload)?.let { exchange.onRequest(it.hash, fromNodeId, it.offset) }
                 }

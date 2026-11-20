@@ -294,9 +294,23 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   retention*, a local presentation bound; custody's per-sender quota and its frame-global order are untouched, and
   must stay so.
 
+- **When touching `CarryLedger` (holders, `spread`, the not-kept memo), `CustodyProgress`, `ReceivedDigest.proven` /
+  `InboundFrame.proven` / `.link`, `MeshTransport.linkToken` / `carrier` / `carries`, `ForwardSync.onSeen`'s `fromProven`,
+  or what `ForwardSync.onDigest` holds back from a proven peer:** READ the custody-carry-policy contract
+  (`~/source/knit-pair/orders/custody-carry-policy/contract.md` §3, §5, §6; its ADR is still owed, a draft until then).
+  Only a proven link (both ends carry the link proof, sealed, or a contact's direct link) feeds the ledger or has a memo:
+  an unproven digest is answered in full and leaves nothing behind, and an unproven arrival is never a frame's source, or
+  a link claiming another node's id could mark that node's mail not kept or push the real peers out of the 64-peer
+  table. A frame addressed to the peer is never pending or marked. A release is pending on the plane and link that
+  carried it (`MeshTransport.carrier`, Bluetooth first) and ends with that link (never on Wi-Fi Aware, whose every
+  exchange is a new path), or after `NOT_KEPT_LAPSE_MS`; a digest judges it only `CarryLedger.judgeAfterMs` after release
+  (`JUDGE_AFTER_BLUETOOTH_MS`, 20 s, and `JUDGE_AFTER_FAST_MS`, 5 s for Aware and a direct link). A direct-link digest
+  is additive. Only the global cap's choice of row reads `spread`; the event side runs under the repository's mutex and
+  never suspends, and the ledger asks the transport's links (`MeshTransport.carries`) with its own lock released. Unit: `CarryLedgerTest`,
+  `ForwardSyncTest`'s direct-link and proven-digest cases; lab: `DirectLinkPushLabTest`.
 - **When touching what a contact's direct Internet link does to blobs or custody — `MeshTransport.radioLinked` /
   `pairView` / `fileRidesInternet` / `PairView`, `ReceivedDigest.via` / `ReceivedFile.via`, `ForwardSync.onDigest`'s
-  `via` / `ForwardSync.linked` / `LinkPushRounds` / `MeshManager.onDirectLinkUp` (`DirectLinkTransport`'s `onLinkUp`), `BlobExchange.reachingFor` / `Rank.Internet` / `Tier.Internet` /
+  `via` / `ForwardSync.linked` / `CarryLedger` / `MeshManager.onDirectLinkUp` (`DirectLinkTransport`'s `onLinkUp`), `BlobExchange.reachingFor` / `Rank.Internet` / `Tier.Internet` /
   `Candidate.radio`, or which set `CarrierPullPolicy`, `confirmHeld`, `canAskHolder` and `watchIncomingFiles` read:**
   READ ADR 2026-10.a5yj's custody-and-blobs amendment and `docs/DIRECT_LINKS.md` §7. A link is a link to send
   on, never a radio: everything that meant *near* reads the radio set. A digest is answered by the plane it crossed,

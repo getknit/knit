@@ -257,12 +257,14 @@ class DirectLinkTransport(
         }
         val callbacks =
             object : LinkCallbacks {
+                // Stamped with this link: a contact's link is proven by its lane, and custody tells it from the next one
+                // to the same peer by identity (the custody-carry-policy contract's §3 and §6).
                 override suspend fun onInbound(frame: InboundFrame) {
-                    arrivals.trySend(frame)
+                    arrivals.trySend(frame.copy(proven = true, link = held[0]))
                 }
 
                 override fun onDigest(digest: ReceivedDigest) {
-                    _incomingDigests.tryEmit(digest)
+                    _incomingDigests.tryEmit(digest.copy(proven = true, link = held[0]))
                 }
 
                 override fun onFile(file: ReceivedFile) {
@@ -417,6 +419,9 @@ class DirectLinkTransport(
     // A link to send on, never a radio.
     override fun radioLinked(nodeId: String): Boolean = false
 
+    /** The live link to [nodeId]: the object its frames and digests are stamped with, a new one per link-up. */
+    override fun linkToken(nodeId: String): Any? = links[nodeId]
+
     // A walkie's hold (docs/VOICE_CALLS.md C-3.11-8): the link held through the call's pauses, or raised, while the plane
     // runs; the radios' own holds are their children's, asked beside this one.
     override fun holdLink(nodeId: String): Boolean = running && onHold(nodeId)
@@ -455,7 +460,7 @@ class DirectLinkTransport(
     // bookkeeping, which re-asks on its own rounds and would keep a link open for a blob nobody can supply: neither use nor
     // logged. Nor is a frame handed back to its [author] use: custody re-serves a sender's frames its full bucket has
     // evicted, and the conversation a link exists for is never a phone's own sends (defence in depth beside
-    // `LinkPushRounds`' not-kept memory, #235: the first round after each link-up and each lapse, and a far end on an older
+    // custody's not-kept memo, `CarryLedger`, #235: the first round after each link-up and each lapse, and a far end on an older
     // build). Logged by type and the id's tail, never its content, so a link that outlived its idle wait names what kept
     // it, and a trial sees custody's re-serves as `(not use)`; a sealed tick reads as `chat`, as on the wire, and the tail
     // because a profile's id opens with `profile-`.
