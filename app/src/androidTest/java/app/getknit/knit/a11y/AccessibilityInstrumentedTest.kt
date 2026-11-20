@@ -179,13 +179,14 @@ class AccessibilityInstrumentedTest : SeededUiTest() {
     @Test fun onboardingWelcome() = audit(route = "onboarding") { awaitTag("onboarding_page_welcome") }
 
     // Everyday picked, so the audit covers the selected card and the relay disclosure it opens, not only the
-    // unpicked group.
+    // unpicked group. The disclosure sits inside the selectable card, which merges its descendants, so its tag is
+    // only in the unmerged tree.
     @Test
     fun onboardingPreset() =
         audit(route = "onboarding") {
             toPresetPage()
             compose.onNodeWithTag("preset_everyday").performScrollTo().performClick()
-            awaitTag("preset_relay_disclosure")
+            awaitTag("preset_relay_disclosure", useUnmergedTree = true)
         }
 
     @Test

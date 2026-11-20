@@ -111,12 +111,17 @@ abstract class SeededUiTest {
         }.onFailure { Log.w("SeededUiTest", "screenshot '$name' failed", it) }
     }
 
-    /** Waits until at least one node tagged [tag] exists — absorbs the async seed + SQLCipher DB build. */
+    /**
+     * Waits until at least one node tagged [tag] exists — absorbs the async seed + SQLCipher DB build. A tag inside a
+     * clickable/selectable/toggleable parent is merged away (a child's test tag never survives into the merged tree),
+     * so a tag there needs [useUnmergedTree].
+     */
     protected fun awaitTag(
         tag: String,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+        useUnmergedTree: Boolean = false,
     ) = compose.waitUntil(timeoutMs) {
-        compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+        compose.onAllNodesWithTag(tag, useUnmergedTree = useUnmergedTree).fetchSemanticsNodes().isNotEmpty()
     }
 
     /** Waits until at least one node contains [text] (substring match). */
