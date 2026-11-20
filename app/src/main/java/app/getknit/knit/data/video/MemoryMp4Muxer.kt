@@ -27,6 +27,10 @@ import java.nio.ByteBuffer
 class MemoryMp4Muxer private constructor(
     output: MemoryMuxerOutput,
 ) : Muxer {
+    /** The latest presentation time of a sample written whole, in µs: how far into the clip the output got. */
+    var writtenUs = 0L
+        private set
+
     // Not streamable: moov goes at the end. Streamable output reserves space for moov ahead of mdat and pads what it
     // does not use with a `free` box — 373 KB of a 2.3 MB encode on the first trailer tried, 16 % of the file. A Knit
     // video is fetched whole and played from memory, so nothing gains from moov first.
@@ -44,7 +48,10 @@ class MemoryMp4Muxer private constructor(
         trackId: Int,
         byteBuffer: ByteBuffer,
         bufferInfo: BufferInfo,
-    ) = muxer.writeSampleData(trackId, byteBuffer, bufferInfo)
+    ) {
+        muxer.writeSampleData(trackId, byteBuffer, bufferInfo)
+        writtenUs = maxOf(writtenUs, bufferInfo.presentationTimeUs)
+    }
 
     override fun addMetadataEntry(metadataEntry: Metadata.Entry) {
         // The orientation is written from the video track's own format in addTrack; nothing the source carried is.
@@ -60,8 +67,9 @@ class MemoryMp4Muxer private constructor(
         private val maxBytes: Int,
     ) : Muxer.Factory {
         private var output: MemoryMuxerOutput? = null
+        private var muxer: MemoryMp4Muxer? = null
 
-        override fun create(path: String): Muxer = MemoryMp4Muxer(MemoryMuxerOutput(maxBytes).also { output = it })
+        override fun create(path: String): Muxer = MemoryMp4Muxer(MemoryMuxerOutput(maxBytes).also { output = it }).also { muxer = it }
 
         override fun getSupportedSampleMimeTypes(trackType: Int): ImmutableList<String> =
             when (trackType) {
@@ -72,5 +80,11 @@ class MemoryMp4Muxer private constructor(
 
         /** The finished MP4, or null when no muxer was made. */
         fun bytes(): ByteArray? = output?.toByteArray()
+
+        /** Whether the export ran past [maxBytes] (see [MemoryMuxerOutput.overflowed]). */
+        fun overflowed(): Boolean = output?.overflowed == true
+
+        /** How far into the clip the output got before it stopped, in µs (see [MemoryMp4Muxer.writtenUs]). */
+        fun writtenUs(): Long = muxer?.writtenUs ?: 0L
     }
 }

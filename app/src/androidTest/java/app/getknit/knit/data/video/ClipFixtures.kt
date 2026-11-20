@@ -2,6 +2,7 @@ package app.getknit.knit.data.video
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
@@ -10,9 +11,11 @@ import android.os.HandlerThread
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.MatrixTransformation
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
@@ -21,6 +24,7 @@ import org.junit.Assert.assertTrue
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.math.sin
 
 /** Source clips made on the device by Transformer from drawn stills, so a video test needs no asset. */
 @OptIn(UnstableApi::class)
@@ -51,6 +55,45 @@ object ClipFixtures {
                     .build()
             }
         export(context, Composition.Builder(EditedMediaItemSequence.withVideoFrom(items)).build(), out, configure)
+        return out
+    }
+
+    /**
+     * A [durationMs] clip of [still] turning and zooming on every frame at 30 fps, written to [out]: a busy clip,
+     * where every pixel moves each frame as in a camera pan, which a drawn still held in place is not. [configure] is
+     * [stillsClip]'s.
+     */
+    fun movingClip(
+        context: Context,
+        still: Bitmap,
+        durationMs: Long,
+        out: File,
+        configure: Transformer.Builder.() -> Unit = {},
+    ): File {
+        val png = File(out.parentFile, "${out.nameWithoutExtension}-still.png")
+        png.outputStream().use { still.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        // Zoomed in far enough that the turning frame never shows its corners.
+        val motion =
+            MatrixTransformation { presentationTimeUs ->
+                val s = presentationTimeUs / US_PER_S.toFloat()
+                Matrix().apply {
+                    postRotate(s * DEGREES_PER_S)
+                    val zoom = ZOOM + ZOOM_SWING * sin(s)
+                    postScale(zoom, zoom)
+                }
+            }
+        val item =
+            EditedMediaItem
+                .Builder(
+                    MediaItem
+                        .Builder()
+                        .setUri(Uri.fromFile(png))
+                        .setImageDurationMs(durationMs)
+                        .build(),
+                ).setFrameRate(FRAME_RATE)
+                .setEffects(Effects(emptyList(), listOf(motion)))
+                .build()
+        export(context, Composition.Builder(EditedMediaItemSequence.withVideoFrom(listOf(item))).build(), out, configure)
         return out
     }
 
@@ -113,4 +156,8 @@ object ClipFixtures {
     }
 
     private const val FRAME_RATE = 30
+    private const val US_PER_S = 1_000_000
+    private const val DEGREES_PER_S = 24f
+    private const val ZOOM = 2.2f
+    private const val ZOOM_SWING = 0.4f
 }

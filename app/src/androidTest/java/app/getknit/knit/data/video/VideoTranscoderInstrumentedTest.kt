@@ -1,5 +1,6 @@
 package app.getknit.knit.data.video
 
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -23,12 +24,13 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import java.io.File
+import java.util.Random
 
 /**
  * The whole short-video encode on a real codec stack (ADR 2026-10.hmfe): a 70 s 720 × 1280 clip carrying a GPS
- * location goes in, and what comes out is HEVC (or H.264 on a phone with no HEVC encoder that takes 480p in CBR),
- * encoded in CBR, 480 on its short side, cut to 61 s, under the ceiling, unpadded, with no location — and it yields a
- * poster small enough to ride inline.
+ * location goes in, and what comes out is HEVC (or H.264 where [VideoEncoderChoice] picks it), 480 on its short side,
+ * cut to 61 s, under the ceiling, unpadded, with no location — and it yields a poster small enough to ride inline. A
+ * busy 70 s clip comes out under the ceiling too, whatever mode the phone's encoders offer.
  *
  * The source is made here, by Transformer, from a drawn still, so the test needs no video asset. Runs on the emulator
  * (the platform's software HEVC encoder) and on hardware, where the encode time it logs is the number that matters.
@@ -69,10 +71,6 @@ class VideoTranscoderInstrumentedTest {
                 "on ${result.encoders}",
         )
 
-        // CBR is what makes the size the plan's whatever the picture: this drawn still is easy to encode, a busy
-        // camera clip is not, and under VBR Android 12+'s quality floor can put a 61 s clip past the ceiling (#353).
-        // A phone that fails here has no encoder that takes 480p in CBR, not even AOSP's software H.264 one.
-        assertEquals("bitrate mode on ${result.encoders}", BitrateMode.CBR, result.encoders?.mode)
         assertTrue("${bytes.size} B", bytes.size <= VideoEncodePolicy.CEILING_BYTES)
         assertTrue("trimmed", result.plan.trimmed)
         val meta = result.meta
@@ -85,6 +83,44 @@ class VideoTranscoderInstrumentedTest {
         val poster = result.poster
         assertTrue("a poster", poster.isNotEmpty())
         assertTrue("poster ${poster.size} B", poster.size <= VideoFrames.POSTER_MAX_BYTES)
+    }
+
+    /**
+     * A busy clip is sent, or at worst refused as too large, and never fails (#353). The geotagged clip above is a drawn
+     * still that any encoder undershoots; this one moves every pixel every frame, harder than a camera pan.
+     *
+     * An encoder may not hold the rate on it: the Redmi Note 13 Pro+'s HEVC encoder in CBR put it at 663 kbps for 350
+     * asked, and where every encoder that takes 480p offers only VBR, Android 12+'s quality floor (`VQApply`: 490 kbps
+     * lifted to 1.23 Mbps, QP held at 38 or under) outran the in-memory cap. Either pass must come back as an
+     * overshoot and be retried as a smaller picture, never fail as a muxer error, and on a phone with a CBR encoder
+     * the retry must fit. On the API 33 emulator this scene still came to
+     * 5.6 MB at 296p and is refused (2026-11-20), while a real 64 s camera clip on the API 34 emulator was sent at 284p
+     * in 4.19 MB.
+     */
+    @Test
+    fun aBusyLongClipIsSentOrRefusedAsTooLargeButNeverFails() {
+        val source =
+            ClipFixtures.movingClip(context, busyScene(), durationMs = 70_000, out = File(dir, "busy.mp4")) {
+                setVideoMimeType(MimeTypes.VIDEO_H264)
+            }
+        val transcoder = VideoTranscoder(context)
+        val result = runBlocking { transcoder.transcode(Uri.fromFile(source)) {} }
+        android.util.Log.i("VideoTranscoderTest", "busy fixture ${source.length()} B -> $result")
+        if (result == TranscodeResult.TooLarge) {
+            val choice = transcoder.encoderChoice()
+            assertTrue("refused as too large on $choice", choice?.mode != BitrateMode.CBR)
+            return
+        }
+        assertTrue("encode result $result", result is TranscodeResult.Success)
+        result as TranscodeResult.Success
+        android.util.Log.i(
+            "VideoTranscoderTest",
+            "busy: ${result.bytes.size} B in ${result.elapsedMs} ms, ${result.plan.videoMime} @ ${result.plan.videoBitrate} " +
+                "${result.plan.bitrateMode} short side ${result.plan.shortSide}, pass ${result.plan.attempt} on ${result.encoders}",
+        )
+        assertTrue("${result.bytes.size} B", result.bytes.size <= VideoEncodePolicy.CEILING_BYTES)
+        assertTrue("duration ${result.meta.durationMs}", result.meta.durationMs in 60_000..61_500)
+        assertTrue("short side", minOf(result.meta.width, result.meta.height) <= VideoEncodePolicy.SHORT_SIDE)
     }
 
     /**
@@ -111,6 +147,29 @@ class VideoTranscoderInstrumentedTest {
         assertTrue(result.bytes.size <= VideoEncodePolicy.CEILING_BYTES)
         assertTrue("no location", !result.bytes.containsAscii("\u00A9xyz", latin1 = true))
         assertTrue("no model", !result.bytes.containsAscii("com.android.model"))
+    }
+
+    /** A portrait scene full of edges and colour, drawn from a fixed seed, for [ClipFixtures.movingClip] to turn. */
+    private fun busyScene(): Bitmap {
+        val bitmap = createBitmap(720, 1280)
+        val random = Random(BUSY_SEED)
+        val paint = Paint().apply { isAntiAlias = true }
+        Canvas(bitmap).apply {
+            drawColor(Color.rgb(90, 110, 80))
+            repeat(BUSY_SHAPES) {
+                paint.color = Color.rgb(random.nextInt(256), random.nextInt(256), random.nextInt(256))
+                val x = random.nextFloat() * 720
+                val y = random.nextFloat() * 1280
+                val r = 4 + random.nextFloat() * 40
+                if (it % 2 == 0) drawCircle(x, y, r, paint) else drawRect(x, y, x + r * 2, y + r, paint)
+            }
+            paint.textSize = 28f
+            repeat(BUSY_LINES) { line ->
+                paint.color = if (line % 2 == 0) Color.WHITE else Color.BLACK
+                drawText("The quick brown fox jumps over the lazy dog $line", 12f, 30f + line * 32f, paint)
+            }
+        }
+        return bitmap
     }
 
     /** A [durationMs] portrait clip made from one drawn still, carrying a location, written to [dir]. */
@@ -146,6 +205,12 @@ class VideoTranscoderInstrumentedTest {
     ): Int {
         val needle = text.toByteArray(if (latin1) Charsets.ISO_8859_1 else Charsets.US_ASCII)
         return (0..size - needle.size).firstOrNull { i -> needle.indices.all { this[i + it] == needle[it] } } ?: -1
+    }
+
+    private companion object {
+        const val BUSY_SEED = 353L
+        const val BUSY_SHAPES = 4_000
+        const val BUSY_LINES = 40
     }
 
     private fun ByteArray.containsAscii(

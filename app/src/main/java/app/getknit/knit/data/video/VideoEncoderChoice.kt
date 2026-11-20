@@ -35,13 +35,15 @@ data class EncoderChoice(
  *
  * Every encoder offered takes the output size and supports the mode asked for, so Media3's filters cannot empty the
  * list. The order is:
- * 1. CBR before VBR. CBR makes the size the plan's whatever the picture: under VBR, on Android 12 and later, the
- *    platform's quality floor raised a 490 kbps request to 1.23 Mbps, which puts a 61 s clip at about 9 MB, twice the
- *    ceiling, on both passes.
+ * 1. CBR before VBR. Under VBR, on Android 12 and later, the platform's quality floor raised a 490 kbps request to
+ *    1.23 Mbps, which puts a busy 61 s clip at about 9 MB, twice the ceiling, whatever rate is asked. CBR is the mode
+ *    that floor leaves alone, though not every encoder holds it on a busy picture (`VideoEncodePolicy.next`).
  * 2. Hardware before software within a mode. A software CBR encoder is preferred to a hardware VBR one, at the cost
  *    of a slower encode on the phones that have no hardware CBR encoder.
- * 3. HEVC before H.264 within those. AOSP's software HEVC encoder stops at 512 × 512, so in practice a phone with no
- *    hardware CBR encoder gets software H.264 at the H.264 rate.
+ * 3. HEVC before H.264 within those. AOSP's software HEVC encoder stops at 512 × 512, so a phone with no hardware CBR
+ *    encoder gets software H.264 at the H.264 rate, where that encoder offers CBR. On the API 33 emulator it does not
+ *    (2026-11-20): there every encoder that takes 480p is VBR, and [VideoEncodePolicy.next]'s retry, a smaller picture,
+ *    is what keeps a busy clip under the ceiling.
  *
  * The choice is null when no encoder takes the output size. The encode then falls back to H.264 on Media3's default
  * list and lets Media3 fit the size. Pure, JVM-tested in `VideoEncoderChoiceTest`.

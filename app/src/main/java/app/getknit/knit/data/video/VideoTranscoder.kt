@@ -111,6 +111,14 @@ class VideoTranscoder(
             }
         }.onFailure { Log.w(TAG, "video probe failed: ${it.javaClass.simpleName}") }.getOrNull()
 
+    /** The codec, encoders and bitrate mode [transcode] asks Media3 for on this phone, or null for Media3's defaults. */
+    fun encoderChoice(): EncoderChoice? {
+        val hevc = candidates(VideoEncodePolicy.MIME_HEVC)
+        val h264 = candidates(VideoEncodePolicy.MIME_H264)
+        Log.d(TAG, "video encoder candidates: hevc $hevc, h264 $h264")
+        return VideoEncoderChoice.choose(hevc, h264)
+    }
+
     /** Re-encodes [uri], reporting progress in 0..1 through [onProgress] (on the encode's own thread). */
     override suspend fun transcode(
         uri: Uri,
@@ -118,49 +126,73 @@ class VideoTranscoder(
     ): TranscodeResult {
         val source = probe(uri) ?: return TranscodeResult.Unreadable
         val started = SystemClock.elapsedRealtime()
-        val choice = VideoEncoderChoice.choose(candidates(VideoEncodePolicy.MIME_HEVC), candidates(VideoEncodePolicy.MIME_H264))
+        val choice = encoderChoice()
         Log.d(TAG, "video encoders: $choice")
-        var plan = VideoEncodePolicy.plan(source, hevcEncoder = choice?.mime == VideoEncodePolicy.MIME_HEVC)
+        var plan =
+            VideoEncodePolicy.plan(
+                source,
+                hevcEncoder = choice?.mime == VideoEncodePolicy.MIME_HEVC,
+                bitrateMode = choice?.mode ?: BitrateMode.VBR,
+            )
         var hdrModes = HDR_MODES
         while (true) {
-            val bytes =
-                when (val pass = export(uri, plan, choice, hdrModes.first(), source.hasAudio, onProgress)) {
-                    is ExportOutcome.Done -> {
-                        pass.bytes
-                    }
-
-                    is ExportOutcome.Error -> {
-                        if (pass.errorCode !in HDR_FALLBACK_ERRORS || hdrModes.size == 1) {
-                            return TranscodeResult.Failed(pass.errorCode)
-                        }
-                        hdrModes = hdrModes.drop(1)
-                        Log.d(TAG, "video encode: retrying with HDR mode ${hdrModes.first()}")
-                        continue
-                    }
+            val pass = export(uri, plan, choice, hdrModes.first(), source.hasAudio, onProgress)
+            if (pass is ExportOutcome.Error) {
+                if (pass.errorCode !in HDR_FALLBACK_ERRORS || hdrModes.size == 1) {
+                    return TranscodeResult.Failed(pass.errorCode)
                 }
-            Log.d(TAG, "video encode pass ${plan.attempt}: ${plan.videoMime} ${plan.videoBitrate} b/s -> ${bytes.size} B")
-            when (val verdict = VideoEncodePolicy.next(plan, bytes.size.toLong())) {
-                VideoEncodeVerdict.Accept -> {
-                    val meta = VideoFrames.meta(bytes) ?: return TranscodeResult.Unreadable
-                    val poster = VideoFrames.poster(bytes) ?: ByteArray(0)
-                    val elapsedMs = SystemClock.elapsedRealtime() - started
-                    return TranscodeResult.Success(bytes, meta, poster, plan, choice, source, elapsedMs)
-                }
-
-                VideoEncodeVerdict.Refuse -> {
-                    return TranscodeResult.TooLarge
-                }
-
-                is VideoEncodeVerdict.Retry -> {
-                    plan = verdict.plan
-                }
+                hdrModes = hdrModes.drop(1)
+                Log.d(TAG, "video encode: retrying with HDR mode ${hdrModes.first()}")
+                continue
+            }
+            // An export that ran past the in-memory cap has no output, only an estimate of its size.
+            val bytes = (pass as? ExportOutcome.Done)?.bytes
+            val outputBytes = bytes?.size?.toLong() ?: overflowBytes(pass as ExportOutcome.Overflow, plan, source)
+            Log.d(
+                TAG,
+                "video encode pass ${plan.attempt}: ${plan.videoMime} ${plan.videoBitrate} b/s ${plan.bitrateMode} " +
+                    "short side ${plan.shortSide} -> $outputBytes B${if (bytes == null) " (estimated, over the cap)" else ""}",
+            )
+            // Only a finished export is under the ceiling: the cap is above it.
+            when (val verdict = VideoEncodePolicy.next(plan, source, outputBytes)) {
+                VideoEncodeVerdict.Accept -> return success(checkNotNull(bytes), plan, choice, source, started)
+                VideoEncodeVerdict.Refuse -> return TranscodeResult.TooLarge
+                is VideoEncodeVerdict.Retry -> plan = verdict.plan
             }
         }
+    }
+
+    /** What an export that stopped at the cap, [Overflow][ExportOutcome.Overflow], would have come to for the whole clip. */
+    private fun overflowBytes(
+        pass: ExportOutcome.Overflow,
+        plan: VideoEncodePlan,
+        source: VideoSource,
+    ): Long {
+        val plannedUs = (plan.clipEndMs ?: source.durationMs) * US_PER_MS
+        return VideoEncodePolicy.overflowEstimate(OUTPUT_MAX_BYTES.toLong(), pass.writtenUs, plannedUs)
+    }
+
+    /** The accepted encode of [bytes], with what its own bytes say about it and its poster. */
+    private fun success(
+        bytes: ByteArray,
+        plan: VideoEncodePlan,
+        choice: EncoderChoice?,
+        source: VideoSource,
+        started: Long,
+    ): TranscodeResult {
+        val meta = VideoFrames.meta(bytes) ?: return TranscodeResult.Unreadable
+        val poster = VideoFrames.poster(bytes) ?: ByteArray(0)
+        return TranscodeResult.Success(bytes, meta, poster, plan, choice, source, SystemClock.elapsedRealtime() - started)
     }
 
     private sealed interface ExportOutcome {
         class Done(
             val bytes: ByteArray,
+        ) : ExportOutcome
+
+        /** The output ran past [OUTPUT_MAX_BYTES] [writtenUs] into the clip: too big, not broken. */
+        class Overflow(
+            val writtenUs: Long,
         ) : ExportOutcome
 
         class Error(
@@ -223,9 +255,15 @@ class VideoTranscoder(
                             Log.w(
                                 TAG,
                                 "video encode failed: ${exportException.errorCodeName} (${plan.videoMime} " +
-                                    "${plan.videoBitrate} b/s, ${choice?.mode}): ${exportException.message}; $causes",
+                                    "${plan.videoBitrate} b/s, ${plan.bitrateMode}): ${exportException.message}; $causes",
                             )
-                            cont.resume(ExportOutcome.Error(exportException.errorCode))
+                            val outcome =
+                                if (muxers.overflowed()) {
+                                    ExportOutcome.Overflow(muxers.writtenUs())
+                                } else {
+                                    ExportOutcome.Error(exportException.errorCode)
+                                }
+                            cont.resume(outcome)
                         }
                     }
                 handler.post {
@@ -266,7 +304,8 @@ class VideoTranscoder(
                     EncoderSelector.DEFAULT.selectEncoderInfos(mime)
                 }
             }
-        val mode = if (offered != null && choice.mode == BitrateMode.CBR) BITRATE_MODE_CBR else BITRATE_MODE_VBR
+        // The plan's mode is the choice's, and with no choice it is VBR, so CBR only ever goes to the encoders offered.
+        val mode = if (plan.bitrateMode == BitrateMode.CBR) BITRATE_MODE_CBR else BITRATE_MODE_VBR
         val encoders =
             DefaultEncoderFactory
                 .Builder(context)
@@ -344,7 +383,12 @@ class VideoTranscoder(
             )
         }
 
-    /** Whether [info] encodes [mime] at the plan's largest output, 854 × 480 at 30 fps, either way up. */
+    /**
+     * Whether [info] encodes [mime] at the plan's largest output, 854 × 480 at 30 fps, either way up, once each side is
+     * rounded down to the encoder's own alignment, as Media3 rounds it. Unrounded, a MediaTek encoder that aligns widths
+     * to 16 reads as taking no 480p at all: on the Redmi Note 13 Pro+ every encoder did, and Media3 then encoded 848 ×
+     * 480 on its defaults (2026-11-20, #353).
+     */
     private fun takesOutputSize(
         info: MediaCodecInfo,
         mime: String,
@@ -354,7 +398,16 @@ class VideoTranscoder(
         val short = VideoEncodePolicy.SHORT_SIDE
         val rate = VideoEncodePolicy.MAX_FRAME_RATE.toDouble()
         val video = info.getCapabilitiesForType(mime).videoCapabilities ?: return false
-        return video.areSizeAndRateSupported(long, short, rate) || video.areSizeAndRateSupported(short, long, rate)
+
+        fun takes(
+            width: Int,
+            height: Int,
+        ): Boolean {
+            val w = width / video.widthAlignment * video.widthAlignment
+            val h = height / video.heightAlignment * video.heightAlignment
+            return video.areSizeAndRateSupported(w, h, rate)
+        }
+        return takes(long, short) || takes(short, long)
     }
 
     private inline fun <T> MediaMetadataRetriever.useRetriever(block: (MediaMetadataRetriever) -> T): T =
@@ -382,6 +435,7 @@ class VideoTranscoder(
         const val PROGRESS_POLL_MS = 250L
         const val PERCENT = 100f
         const val MS_PER_S = 1000f
+        const val US_PER_MS = 1000L
         const val LONG_SIDE_16_9 = 16
         const val SHORT_SIDE_16_9 = 9
         const val MAX_LOGGED_CAUSES = 4
