@@ -206,6 +206,25 @@ internal class LoraDirectPolicy(
         return true
     }
 
+    /** When a hearing through repeaters last lifted each peer's mark ([onHeardFar]), on the plane's clock. */
+    private val farLiftAt = HashMap<String, Long>()
+
+    /**
+     * [peerId]'s board was heard through repeaters ([BoardTraits.heardRoute] past zero hops, ADR 2026-11.gsqu's 2026-11-19
+     * amendment): [onHeard], at most once per [gapMs] (the re-probe's current gap for the peer) — lora-reviewer NB2: in an
+     * asymmetric pair, whose posts reach us while our floods never reach them, every post would otherwise re-arm a zero-hop
+     * write and a flood. A zero-hop hearing and an opened DM lift through [onHeard] freely.
+     */
+    @Synchronized
+    fun onHeardFar(
+        peerId: String,
+        now: Long,
+        gapMs: Long,
+    ): Boolean {
+        farLiftAt[peerId]?.let { if (now - it < gapMs) return false }
+        return onHeard(peerId).also { if (it) farLiftAt[peerId] = now }
+    }
+
     /**
      * [peerId]'s pinned profile changed (a new version, another board, another key or another rank): a refusal or a
      * missing key under the old one no longer stands.
@@ -390,6 +409,10 @@ internal class LoraDirectPolicy(
     /** Whether [handle] is a direct send still waiting, without ending it (an implicit ack does not end the wait). */
     @Synchronized
     fun isWaiting(handle: UInt): Boolean = handle in flights
+
+    /** The send still waiting under [handle], without ending it, or null: what a kind's flood rung asks about. */
+    @Synchronized
+    fun waitingFlight(handle: UInt): Flight? = flights[handle]
 
     /**
      * Whether a send of [frameId] is still waiting on its answer, on an `add_contact` or on its re-offer's gap: the "one

@@ -14,6 +14,8 @@ spike (MeshCore companion firmware v1.18.0 on two Heltec V4s). Nothing is built 
 
 **Amended by ADR 2026-11.gsqu (2026-11-12):** the build shape. One plane instance per board kind over a neutral core; the DM rides as a contact text DM pinned zero-hop on both boards; own room posts flood in up to two elided packets under `Ceiling.FLOOD`; the 4–5 part reassembly limit, the varying byte and the room-tick stop are moot under ADR 2026-10.rp3s.
 
+**Amended again by ADR 2026-11.gsqu's 2026-11-19 amendment (draft):** DMs follow MeshCore's own flood-then-learned-path routing — zero hops first, then one reset and flood — so the DM-form parts of points 2 and 5 and, for DMs, point 4 (floods under `Ceiling.FULL`, booked as our own board's air only) no longer hold, nor "Knit can't copy MeshCore's path learning".
+
 **What was observed.** MeshCore (MIT, the same boards as Meshtastic, not air-compatible with it) exposes a companion
 protocol over BLE (Nordic UART) that can carry Knit frames as `GRP_DATA` packets on a private channel. The spike
 measured it end to end:

@@ -2882,6 +2882,8 @@ class DebugBridgeReceiver :
                     .put("meshcorePathReturnsBooked", c?.pathReturnsBooked?.get() ?: 0)
                     .put("meshcoreAnswersReplayed", c?.answersReplayed?.get() ?: 0)
                     .put("meshcoreFloodSurcharges", c?.floodSurcharges?.get() ?: 0)
+                    .put("meshcorePathSurcharges", c?.pathSurcharges?.get() ?: 0)
+                    .put("meshcoreReciprocalsBooked", c?.reciprocalsBooked?.get() ?: 0)
                     .put("meshcoreLawHolds", c?.lawHolds?.get() ?: 0)
                     .put("meshcoreZeroHopKnitPosts", c?.zeroHopKnitPosts?.get() ?: 0)
                     .put("meshcoreTeachRefused", c?.teachRefused?.get() ?: 0)
@@ -2928,9 +2930,15 @@ class DebugBridgeReceiver :
                     // Stage 7: setups refused over another board's record, and claim grants a Forget fenced off.
                     .put("meshcoreDifferentBoards", sc.differentBoards.get())
                     .put("meshcoreClaimsFenced", c?.claimsFenced?.get() ?: 0)
+                    // The DM ladder (ADR 2026-11.gsqu's 2026-11-19 amendment): floods, resets, the last direct attempt's hops (a
+                    // gauge), zero-hop writes, floods the core no longer wanted, route reads; the pin's two keys are gone with it.
                     .put("meshcoreDirectFlooded", sc.directFlooded.get())
-                    .put("meshcorePinFailures", sc.pinFailures.get())
-                    .put("meshcoreRepinsDone", sc.repinsDone.get())
+                    .put("meshcoreRouteResets", sc.routeResets.get())
+                    .put("meshcoreRouteHops", sc.routeHops.get())
+                    .put("meshcoreZeroHopWrites", sc.zeroHopWrites.get())
+                    .put("meshcoreFloodsSkipped", sc.floodsSkipped.get())
+                    .put("meshcoreRouteReads", sc.routeReads.get())
+                    .put("meshcoreLadderWritesDeferred", sc.ladderWritesDeferred.get())
                     .put("meshcoreLiveTeachesWritten", sc.liveTeachesWritten.get())
                     .put("meshcoreLiveTeachesFailed", sc.liveTeachesFailed.get())
                     .put("meshcoreLiveTeachesDeferred", sc.liveTeachesDeferred.get())

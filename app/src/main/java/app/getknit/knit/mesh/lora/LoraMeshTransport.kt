@@ -335,6 +335,8 @@ internal class LoraMeshTransport(
 
             override fun onBoardKeyHeard(from: BoardAddr) = this@LoraMeshTransport.onBoardKeyHeard(from)
 
+            override suspend fun directStillWanted(handle: UInt): Boolean = this@LoraMeshTransport.directStillWanted(handle)
+
             override fun holdersMoved() {
                 rawBoardMap?.let { raw -> scope.launch { applyBoardMap(raw) } }
             }
@@ -1333,8 +1335,11 @@ internal class LoraMeshTransport(
     private suspend fun onBoardHeard(
         peerId: String,
         lifted: Boolean = false,
+        far: Boolean = false,
     ) {
-        val edge = direct.onHeard(peerId)
+        // A hearing through repeaters lifts a mark at most once a re-probe gap (lora-reviewer NB2 on ADR 2026-11.gsqu's
+        // 2026-11-19 amendment); a zero-hop hearing or an opened DM freely.
+        val edge = if (far) direct.onHeardFar(peerId, clock(), reprobe.gapOf(peerId)) else direct.onHeard(peerId)
         if (edge) {
             log("lora direct heard $peerId")
             publishStatus()
@@ -1960,12 +1965,12 @@ internal class LoraMeshTransport(
         // Lifted before delivery, so the ✓✓ the delivery coalesces passes skipCovered. Any authenticated compact frame
         // (a DM, a ✓✓, a reaction), but only a live reception: never off MQTT or out of a replayed queue (#294).
         val lifted = isLive(packet) && liftCover(opened.peerId)
-        // Their board heard by the kind's rule (ADR 2026-11.gsqu §5): on Meshtastic every opened DM, as ever; on MeshCore a
-        // live one at zero hops — `0xFF` trusts the pin, a flood with hops does not count — and fresh, in the room post's
-        // window: the seal opens for a day, and a DM re-aired direct once MeshCore's dedup forgot it is no hearing of a
-        // board that may be gone (the security review's N4). On a kind that vouches for no sender it lifts a mark but is
-        // never counted a radio (`boardsHeard`): a direct DM a repeater forwarded lands `0xFF` too, so its sender's radio may
-        // be out of range (ADR 2026-11.gsqu's Stage 5c-2a amendment). Only a verified zero-hop room post counts one there.
+        // Their board heard by the kind's rule: on Meshtastic every opened DM, as ever; on MeshCore a live one at any hop count
+        // (ADR 2026-11.gsqu's 2026-11-19 amendment: the firmware routes DMs beyond the neighbours now, so a far board whose DM
+        // reached us is worth asking again) and fresh, in the room post's window: the seal opens for a day, and a DM re-aired
+        // direct once MeshCore's dedup forgot it is no hearing of a board that may be gone (the security review's N4). On a
+        // kind that vouches for no sender it lifts a mark but is never counted a radio (`boardsHeard`, Stage 5c-2a). Only a
+        // verified zero-hop room post counts one there.
         val heard = heardDirect(packet, opened)
         scope.launch {
             runCatching { inbox.deliver(opened) }
@@ -2118,6 +2123,27 @@ internal class LoraMeshTransport(
             to in covered -> StaleAtSend.INTERNET
             else -> null
         }
+
+    /**
+     * Whether the direct send [handle] still carries a DM worth a flood (ADR 2026-11.gsqu's 2026-11-19 amendment), asked by
+     * a kind's link before it floods a retry ([PlaneCore.directStillWanted]): the questions its [RideGate] put at send —
+     * the covers (links, never sightings), DMs still on, the addressee still a direct board holder (a block or a removal
+     * drops them, security NB2) — and, for a DM a person wrote, whether it is still without its ✓✓,
+     * the one read of the database. A ✓✓ is our own frame's answer, so a ✓✓ or a reaction is wanted while the covers allow.
+     * A send the core no longer waits on (ended, evicted) is wanted: the link's own bound ends it.
+     */
+    private suspend fun directStillWanted(handle: UInt): Boolean {
+        val flight = direct.waitingFlight(handle) ?: return true
+        val to = flight.send.peerId
+        return when {
+            // A contact blocked or removed since the send leaves the board map (security NB2): no flood for them.
+            currentConfig?.dms != true || coverReason(to) != null || boardHolders?.get(to)?.direct != true -> false
+
+            flight.send.kind == DirectKind.MESSAGE -> source.isUnacked(flight.send.frameId)
+
+            else -> true
+        }
+    }
 
     /** A compact DM's own gates, asked again at send (ADR 2026-10.x9fa); none for a frame that never asked them. */
     private fun directStaleReason(
@@ -2730,11 +2756,15 @@ internal class LoraMeshTransport(
         publishStatus()
     }
 
-    /** Whether an opened compact DM hears its board: zero hops by the kind's rule and, where no sender is vouched for, fresh. */
+    /**
+     * Whether an opened compact DM hears its board, to lift a mark: by the kind's route rule ([BoardTraits.heardRoute]: any
+     * live hop count on MeshCore since ADR 2026-11.gsqu's 2026-11-19 amendment, every opened DM on Meshtastic) and, where no
+     * sender is vouched for, fresh. Never a radio counted (Stage 5c-2a).
+     */
     private fun heardDirect(
         packet: BoardPacket,
         opened: OpenedDirect,
-    ): Boolean = traits.heardZeroHop(packet) && (traits.hearsSender || isFresh(opened.sentAtMs))
+    ): Boolean = traits.heardRoute(packet) && (traits.hearsSender || isFresh(opened.sentAtMs))
 
     /** Whether a frame stamped [sentAtMs] is fresh enough to be a hearing: `-MAX_FUTURE_SKEW_MS..FRESH_MS` of our clock. */
     private fun isFresh(sentAtMs: Long): Boolean = wallClock() - sentAtMs in -Protocol.MAX_FUTURE_SKEW_MS..LoraFramePolicy.FRESH_MS
@@ -2755,10 +2785,12 @@ internal class LoraMeshTransport(
 
     /**
      * The hearing hook for a room post off a kind whose packets name no sender (MeshCore: `CHANNEL_DATA_RECV` names none,
-     * ADR 2026-11.gsqu §5), after decode: its author's radio is heard — counted ([noteAuthorRadio]) and, for a pinned
-     * board holder marked unreachable, the edge [onBoardHeard] acts on — only when all of these hold (lora-reviewer
-     * finding 4, the security pass's B6 and replay items, the Stage 5 decisions):
-     * - the post is live and at zero hops by the kind's rule ([BoardTraits.heardLive]);
+     * ADR 2026-11.gsqu §5), after decode: its author is heard — for a pinned board holder marked unreachable, the edge
+     * [onBoardHeard] acts on, and at zero hops its radio counted ([noteAuthorRadio]) — only when all of these hold
+     * (lora-reviewer finding 4, the security pass's B6 and replay items, the Stage 5 decisions):
+     * - the post is live, at any hop count to lift a mark ([BoardTraits.heardRoute]: a far author's board is reached through
+     *   the repeaters that carried its post, ADR 2026-11.gsqu's 2026-11-19 amendment) and at zero hops to count a radio
+     *   ([BoardTraits.heardLive]);
      * - its `sentAt` is within `-MAX_FUTURE_SKEW_MS..FRESH_MS` of our clock, so an honest post captured elsewhere and
      *   re-aired at `path_len 0` later is no hearing;
      * - its signature verifies against its author's pinned key ([authorCheck]), so nobody on the public Knit key can
@@ -2772,11 +2804,12 @@ internal class LoraMeshTransport(
         wire: WireEnvelope,
         env: RelayEnvelope,
     ) {
-        if (!traits.heardLive(packet, wallClock()) || !isFresh(env.sentAt)) {
+        if (!isLive(packet) || !traits.heardRoute(packet) || !isFresh(env.sentAt)) {
             metrics.onLoraHearingJudged()
             return
         }
         val author = env.senderId
+        val zeroHop = traits.heardLive(packet, wallClock())
         scope.launch {
             try {
                 val verified =
@@ -2786,10 +2819,10 @@ internal class LoraMeshTransport(
                         false
                     }
                 if (!verified) return@launch
-                noteAuthorRadio(author, packet)
+                if (zeroHop) noteAuthorRadio(author, packet)
                 if (boardHolders?.get(author) == null) return@launch
                 if (direct.reachOf(author, clock()) != LoraDirectPolicy.Reach.UNREACHABLE) return@launch
-                onBoardHeard(author)
+                onBoardHeard(author, far = !zeroHop)
             } finally {
                 // After the hearing's own effects (the radio counted, the mark lifted, the catch-up asked): never ahead of them.
                 metrics.onLoraHearingJudged()

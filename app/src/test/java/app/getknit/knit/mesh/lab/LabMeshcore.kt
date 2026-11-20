@@ -64,8 +64,8 @@ internal suspend fun MeshLab.awaitAuthor(
 }
 
 /**
- * Returns once [b]'s MeshCore board key is a contact on [a]'s board and [a]'s session holds it taught and pinned zero-hop on
- * this connection (`MeshcoreSession.taughtAndPinned`), and [a]'s plane holds [b] direct with [b] in its pair seal's index
+ * Returns once [b]'s MeshCore board key is a contact on [a]'s board and [a]'s session holds it taught, its route read on
+ * this connection (`MeshcoreSession.taughtAndRouted`), and [a]'s plane holds [b] direct with [b] in its pair seal's index
  * ([LabNode.meshcoreReadyFor]): what a compact DM from [a] to [b] waits for. The teach is asynchronous
  * after everything a meeting does — the sealed profile that carries the key, the board map, the hooks' taught set, the
  * session's write — so a scenario that sends right after [MeshLab.awaitAcquainted] would otherwise find `NO_RECORD`, or a
@@ -79,7 +79,7 @@ internal suspend fun MeshLab.awaitTaught(
     val ok = tryAwait(1) { if (a.meshcoreTaught(key) && a.meshcoreReadyFor(b.nodeId)) 1 else 0 }
     if (ok) return
     val state = a.meshcoreTeachState(b)
-    assertTrue("${a.name}'s board never held ${b.name}'s key taught and pinned: $state\n${report(listOf(a, b))}", ok)
+    assertTrue("${a.name}'s board never held ${b.name}'s key taught and routed: $state\n${report(listOf(a, b))}", ok)
 }
 
 /**

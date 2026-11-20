@@ -194,6 +194,14 @@ internal interface BoardTraits {
     fun heardZeroHop(packet: BoardPacket): Boolean
 
     /**
+     * Whether [packet], [live] already, lifts an unreachable mark when a verified, fresh Knit frame rode it: at any hop count
+     * on a kind whose firmware routes DMs beyond its neighbours (MeshCore, ADR 2026-11.gsqu's 2026-11-19 amendment), so a
+     * far contact's flooded post or opened DM asks its board again; [heardZeroHop] still alone counts a radio. Meshtastic
+     * reads no hop count here either.
+     */
+    fun heardRoute(packet: BoardPacket): Boolean = heardZeroHop(packet)
+
+    /**
      * Whether a packet's sender ([BoardPacket.from]) is the board's own word, which the core may key a hearing on. True on
      * Meshtastic (the node number in the packet's header, ADR 2026-10.x9fa). False on MeshCore: a contact DM's 6-byte
      * sender prefix is a claim behind a 2-byte MAC and channel data names no sender, so a hearing there comes only from a
@@ -255,7 +263,11 @@ internal enum class AirPurpose {
     /** An own Knit room post: a broadcast on the bound slot (Meshtastic), a scoped `GRP_DATA` flood (MeshCore). */
     ROOM_FLOOD,
 
-    /** A compact DM, its ✓✓ or a reaction: a PKI data unicast (Meshtastic), a zero-hop contact text DM (MeshCore). */
+    /**
+     * A compact DM, its ✓✓ or a reaction: a PKI data unicast (Meshtastic); a contact text DM (MeshCore), booked at zero hops,
+     * with what our board's flood or learned path adds booked apart (`MeshcoreAir.DirectRouted`, ADR 2026-11.gsqu's 2026-11-19
+     * amendment).
+     */
     DIRECT_DM,
 
     /** Our board's ACK of a compact DM to us. */

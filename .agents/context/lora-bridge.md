@@ -122,7 +122,7 @@ custody / relay all run unchanged.
 LoraMeshTransport (pure)      fastFanout/longRangeFanout · LoraFramePolicy (airs + isFresh) · LoraFrameCodec ·
                               LoraPacePolicy (class shedding + LoraAirtime budget) · reachable(isPresenceEvidence, 45min linger) ·
                               boardsHeard + its RxQuality (the signal row, same 45min linger) ·
-                              reofferTo on first hearing · LoraDmProbe + LoraReprobe (the probe and the re-probe)
+                              compact DMs (LoraDirectPolicy marks, catch-up on a hearing) · LoraReprobe (the re-probe)
   └─ MeshtasticLink (seam)    state / packets / outcomes / queue · suspend send()
        └─ MeshtasticSession   pure actor: want_config handshake · drain-until-empty on FromNum · 180s heartbeat ·
           (pure)              client packet ids ↔ queueStatus/NAK · reconnect-with-backoff (ConnectBackoffPolicy) ·
@@ -1034,19 +1034,42 @@ which subscribes before `start`, in a 1,024-packet backlog that drops its oldest
 have held it. RADIO stats feed `BoardAir` over a ≥ 60 s ring
   (`MeshcoreAirRing`, which also restarts on the same poll's CORE uptime going backwards). CORE uptime going backwards
   is a reboot: the ack table is dropped.
-- **A compact DM** is `SEND_TXT_MSG`, `TXT_TYPE_PLAIN`, text `COBS(seal)` ≤ 157 B (seal ≤ 156), written only after a
-  zero-hop pin that read back in this connection (`MeshcorePins`; a read-modify-write of the 144-B record, skipped when it
-  already reads 0). No key for the prefix, or a pin that fails, is refused unwritten (`MeshcoreRefusal.NO_RECORD` /
-  `UNPINNED`, both `RefusalClass.OWN_NO_KEY`). Attempts 0..2 keep the timestamp and change `attempt` (a same-attempt
-  retry is byte-identical and dropped unanswered, Q14), each after the firmware's `est_timeout` plus 1 s; a confirmation
-  of any attempt ends the flight as `Acked(VALID, flown = n)`, the last timeout `Unreachable(flown = 3)`, a dropped link
-  `NoOutcome(flown)`. A flight never outlives `MeshcoreSession.MAX_FLIGHT_MS`; the core's deadline is a backstop above it. A `SENT` with the flood flag is counted (`directFlooded`), reported as `MeshcoreAir.DirectFlooded`,
-  and no further attempt goes until a fresh pin reads back; a `0x81` for the key during the flight re-pins before the
-  next attempt. The board's 8-code ack table is circular and filled by every client's sends: `Busy` while eight codes are
+- **A compact DM** is `SEND_TXT_MSG`, `TXT_TYPE_PLAIN`, text `COBS(seal)` ≤ 157 B (seal ≤ 156), sent on the route the
+  board holds for the contact (ADR 2026-11.gsqu's 2026-11-19 amendment: no pin). A route this connection has not read is
+  read first; one that reads UNKNOWN is written to zero hops before attempt 0 (`writeZeroHop`, the Knit record at
+  `out_path_len 0`). No key for the prefix, or a read or write that fails, is refused unwritten
+  (`MeshcoreRefusal.NO_RECORD` / `ROUTE_UNWRITTEN`, both `RefusalClass.OWN_NO_KEY`). Attempts 0..2 keep the timestamp and
+  change `attempt` (a same-attempt retry is byte-identical and dropped unanswered, Q14), each after the firmware's
+  `est_timeout` (the route's: a flood's `500 + 16 × air`, a path's `500 + (6 × air + 250) × (hops + 1)`) plus 1 s; a
+  confirmation of any attempt ends the flight as `Acked(VALID, flown = n)`, a give-up `Unreachable(flown)`, a dropped
+  link `NoOutcome(flown)`. A flight never outlives `MeshcoreSession.MAX_FLIGHT_MS`; the core's deadline is a backstop
+  above it. The board's 8-code ack table is circular and filled by every client's sends: `Busy` while eight codes are
   unconfirmed inside their window; a confirmation after `Unreachable` is a late `Acked` under the same handle.
-- **Re-pins.** A `0x81` / `0x8F` for a key Knit taught queues one re-pin (or re-teach) of that key a minute; later pushes
-  only unverify it; a push for any other key is ignored. The full re-assert runs at Ready, in the order Stage 5's
-  `setKnitContacts` ranks, one job per tick under sends and the drain.
+- **The ladder** (`nextRung`, once per unanswered attempt, `Flight.routedFor`): a key no longer taught ends the flight
+  `NoOutcome` (`meshcore direct flight ended: no longer taught`); the record is read back, then
+  - N > 0 hops or UNKNOWN, zero hops not yet written this flight: zero hops (`writeZeroHop`, once a flight, never on a `0x81`);
+  - zero hops with fewer zero-hop attempts than the flight's two (one for a flight started on a learned path): again;
+  - otherwise, before any flood: the core asked whether the DM is still wanted (`floodWanted` → `directStillWanted`: link,
+    spool cover, DMs on, still a direct board holder, a person's DM still without its ✓✓; `meshcore direct flood skipped: no
+    longer wanted`, `NoOutcome`),
+    then `RESET_PATH` read back UNKNOWN (`meshcore route reset`, `meshcoreRouteResets`), and the next attempt floods
+    (`meshcore direct flooded`, `meshcoreDirectFlooded`);
+  - after the flight's one flood: one more `est_timeout` and the end (`meshcore direct flood unanswered`); a retry only along
+    a path a `0x81` named since this flight's reset, while attempts remain. Never a second flood.
+  - Each zero-hop write and reset spends one of the key's 24 a UTC day (`MeshcorePins.spendLadderWrite`); past them the
+    attempt goes on a known route as read, and on an UNKNOWN one not at all (`ROUTE_BUDGET_SPENT`, `RefusalClass.OTHER`: never a flood
+    before zero hops, never a teach; `meshcore ladder write deferred: …`, `meshcoreLadderWritesDeferred`).
+  - A path a `0x81` named since the reset, read back at N > 0 hops, is tried once before the next rung writes over it.
+  Each write runs inside `await`, which dispatches a late `SEND_CONFIRMED` inline: the flight is asked for again after it,
+  so a confirm during the reset stops the flood. A direct attempt's hops come back out of its `est_timeout`
+  (`MeshcoreTraits.directHopsOf`; `meshcore direct hops=N`, the gauge `meshcoreRouteHops`) and its surcharge over the
+  zero-hop price is reported (`MeshcoreAir.DirectRouted`); a confirmed flood owes the reciprocal PATH our board sent
+  (`MeshcoreAir.ReciprocalPath`, at the route's length once it is read).
+- **Route reads and re-teaches.** A `0x81` for a key Knit taught queues one read of its record (`MeshcorePins.Job.READ`,
+  `meshcoreRouteReads`): the cached route is forgotten until it lands, and the firmware's learned route then cached and kept,
+  never written; a send reads the record whenever the cache is empty or UNKNOWN. A `0x8F` forgets the route and
+  queues one re-teach a minute (`RETEACH_GAP_MS`). A push for any other key is ignored. The cache (`MeshcorePins.routeOf`)
+  empties at every Ready and refills from the Ready's listing; one job per tick under sends and the drain.
 - **Contacts.** `teach` writes a `Knit xxxx` (from the key), favourite, zero-hop contact only into a confirmed free slot
   (`GET_CONTACTS` past every `lastmod` is the count read), so overwrite-oldest never evicts the user's own; `readContact`,
   `removeContact`, `resetPath` read back what they did.
@@ -1143,17 +1166,24 @@ Debug builds only (`MESHCORE_PLANE`): `di/LoraWiring.loraPlaneOf` builds each ki
   `meshcoreFragmentsRefused`) — is counted and discarded as `PacketRoute.DROPPED`: never a hearing, never stored, logged,
   shown, relayed or in custody.
 - **Our board's answers**, booked from one place (`route`), for every **live** plain or signed-plain contact DM, Knit's or not
-  (`companion-v1.18.0`: a 6-B ack code for plain, 4 for signed): for a direct one the larger of one flooded ack and, along a
-  path, at most one multi-ack and the ack (`sendAckTo` sends one multi-ack whatever `multi_acks` reads); for a flooded one one
-  PATH return at `pathReturnPlaintext(pathLen, txtType)` (its hash size included); nothing for one replayed from the offline
-  queue. A DM of ours the board flooded (`MeshcoreAir.DirectFlooded`)
-  books only the flood's surcharge, the same packet flooded less direct (`LoraAirtime.recordMs`; no `AirPurpose` of its own).
-- **Hearing.** `BoardTraits.live` (any path; the cover's lift) and `heardZeroHop` (MeshCore: a live drain at zero hops,
-  a direct DM trusting the pin); `hearsSender` false, so `noteHeard` and `noteBoard` never run on a MeshCore sender. A
-  room post's author is heard only when the post is live and zero-hop, its `sentAt` within `-MAX_FUTURE_SKEW_MS..FRESH_MS`,
-  and its signature verifies against the author's pinned key (`LoraAuthorCheck`, `pinnedAuthorCheck`): its radio is
-  counted by author (`AuthorRadio`), and a board holder marked unreachable gets `onBoardHeard`. An opened DM hears its board only at zero hops and fresh (the same window), and since Stage 5c-2a it only lifts a mark: it never counts a radio, since a DM a repeater forwarded lands `0xFF` too. **The accepted cost:** two MeshCore users who only DM each other read "0 other radios in range" (`LoraRadioScreen`), because `boardsHeardAt` is fed by verified zero-hop room posts alone; a DM could count once a zero-hop proof exists (Stage 5d or later). So on MeshCore `heard` (fresh-frame authors,
-  any hop count, unverified) and `boardsHeard` (verified pinned zero-hop authors) read differently from Meshtastic: when the
+  (`companion-v1.18.0`: a 6-B ack code for plain, 4 for signed): for a direct one, along the route our record of the sender
+  holds as last read (`MeshcorePacket.senderRoute`) at most one multi-ack and the ack, each carrying the path's bytes
+  (`sendAckTo` sends one multi-ack whatever `multi_acks` reads), one flooded ack on an UNKNOWN record, the larger of the two
+  at zero hops with no read; for a flooded one one PATH return at `pathReturnPlaintext(pathLen, txtType)` (its hash size
+  included); nothing for one replayed from the offline queue. A DM of ours on a route other than zero hops
+  (`MeshcoreAir.DirectRouted`) books only what the route adds — a flood's transport codes, a path's bytes, the larger of the
+  two for an attempt with no `SENT` — and a reciprocal PATH (`MeshcoreAir.ReciprocalPath`) books whole, all through
+  `LoraAirtime.recordMs` under `Ceiling.FULL`; never a repeater's re-airing (ADR 2026-11.gsqu's 2026-11-19 amendment, the
+  user's decision; `meshcorePathSurcharges`, `meshcoreReciprocalsBooked`).
+- **Hearing.** `BoardTraits.live` (any path; the cover's lift), `heardRoute` (MeshCore: a live drain at any hop count, what
+  lifts a mark since ADR 2026-11.gsqu's 2026-11-19 amendment) and `heardZeroHop` (a live drain at zero hops; a direct DM only
+  by its own flood path length, never our record of its sender); `hearsSender` false, so `noteHeard`
+  and `noteBoard` never run on a MeshCore sender. A room post's author is heard only when the post is live, its `sentAt`
+  within `-MAX_FUTURE_SKEW_MS..FRESH_MS`, and its signature verifies against the author's pinned key (`LoraAuthorCheck`,
+  `pinnedAuthorCheck`): at any hop count a board holder marked unreachable gets `onBoardHeard` — through repeaters at most
+  once a re-probe gap (`LoraDirectPolicy.onHeardFar`) — and at zero hops its radio
+  is counted by author (`AuthorRadio`). An opened DM hears its board at any hop count, fresh (the same window), and since Stage 5c-2a it only lifts a mark: it never counts a radio, since a DM along a learned path lands `0xFF` too. **The accepted cost:** two MeshCore users who only DM each other read "0 other radios in range" (`LoraRadioScreen`), because `boardsHeardAt` is fed by verified zero-hop room posts alone; a DM could count once a zero-hop proof exists (Stage 5d or later). So on MeshCore `heard` (fresh-frame authors,
+  any hop count, unverified) and `boardsHeard` (verified zero-hop authors, their keys pinned) read differently from Meshtastic: when the
   airtime row reads 100 %, compare `boardsHeard` with the dump's `meshcoreZeroHopKnitPosts` (live zero-hop Knit **packets**,
   unverified: a two-part post counts 2 since Stage 5c-1) rather than with `heard`. Every room post's hearing, refused or
   not, ends in `loraHearingsJudged` (Stage 8): a dump where it climbs while `meshcoreZeroHopKnitPosts` stands is Knit posts
@@ -1225,13 +1255,13 @@ Debug builds only (`MESHCORE_PLANE`): `di/LoraWiring.loraPlaneOf` builds each ki
 The board is Knit's, so its contact table is the taught set. The hooks decide it (`MeshcoreContacts.wanted`) from each board
 map the core hands over (`BoardKindHooks.onBoardMap`; `MeshcoreContacts.holdersOf` turns `meshcoreBoardMap` into the core's
 holders: prefix-addressed, keyed, ranked, `direct` false when contested) and give it to the session
-(`setKnitContacts`): only those keys are ever sent to or pinned (`MeshcorePins.keyFor`, security B1), and a prefix another
+(`setKnitContacts`): only those keys are ever sent to or written (`MeshcorePins.keyFor`, security B1), and a prefix another
 key holds is refused (`learn`) or, listed on the board under another key, contested for the connection (`contest`, B3). A
 key that leaves the set is removed from the board; a refused DM teaches only a key in the set, once per (board, key) until a
 DM to it is acked. A key the set gains while a connection is Ready and no reconcile is pending is written at once (a live
 `TEACH` job, Stage 5c-2b: a read of the key, a count read when the Ready took no listing, at most one write): the firmware
 drops a DM from a sender it holds no contact for, so a new contact who writes first must not wait for our next Ready or our
-own send. It is outside the re-pin's once-a-minute gap (nothing pushed), bounded instead at
+own send. It is outside the deletion's once-a-minute re-teach gap (nothing pushed), bounded instead at
 `MeshcorePins.MAX_LIVE_TEACHES_PER_DAY` (4) writes a key a UTC day — past it the next Ready's reconcile writes the key, never
 dropped — and never for a contested prefix; a failed one is re-queued once. Every write the board took is charged, whatever
 its read-back found. Every write of a Knit record (the live teach, the reactive teach, the reconcile's) needs the key taught
@@ -1242,14 +1272,14 @@ the hooks dropped meanwhile ends `NOT_FOUND`, so the removal they queued behind 
 ```
 Ready ──(taught set known, board set up for Knit: Knit slot + consent)──► GET_CONTACTS since 0  (one a Ready)
    └─ MeshcoreContacts.plan: remove the untaught (≤ 16) → overwrite the changed (≤ 16) → write the missing (room)
-        one step a tick; a listed Knit record is pinned as read; a short or failed listing removes nothing
+        one step a tick; a listed Knit record's route is cached as read, a learned path kept; a short or failed listing removes nothing
 setup: reads → erase (REMOVE_CONTACT each, clear every slot but 0 and Knit's) → writes → plan from what is left
 restore: remove Knit's contacts (one listing) → slot → name, manual add, autoadd → forget the taught set
 ```
 
 **Nothing of the user's is touched off a board set up for Knit** (Knit's slot and consent; since ADR 2026-11.f4d3 the
 board's name is its owner's handle and no part of the gate, so a stock-app rename no longer hands the board back — only
-Restore does): no DM, pin, re-pin,
+Restore does): no DM, route write, route read,
 teach, path reset or removal (`NO_RECORD` under the send's handle, `ContactWrite.NOT_SET_UP`); only setup's erase and
 Restore's own removals bypass it. The gate also needs this phone's `meshcore_setup` record for the dialled address **and that board's key digest**, not
 pending, on a **bonded** link — the single source of consent, owned by the session's actor: read in the handshake before

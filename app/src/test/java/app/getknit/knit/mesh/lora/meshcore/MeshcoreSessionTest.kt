@@ -45,7 +45,7 @@ import org.junit.Test
 
 /**
  * Drives [MeshcoreSession] against [FakeNusChannel] on a [FakeMeshcoreAir] under virtual time (ADR 2026-11.gsqu, Stage
- * 3b): the handshake, matching under another client's answers, the lossy drain, the pin, the retries, the ack table,
+ * 3b): the handshake, matching under another client's answers, the lossy drain, the DM ladder, the ack table,
  * the headroom, setup and restore, and the reconnect. Never `advanceUntilIdle`: the ticker runs forever.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -151,7 +151,7 @@ class MeshcoreSessionTest {
     private fun TestScope.up(r: Rig) {
         r.session.start("AA:BB")
         runCurrent()
-        advanceTimeBy(5_000) // the Ready re-assert's pins, one per tick
+        advanceTimeBy(5_000) // the Ready's reconcile, one step a tick
         runCurrent()
     }
 
@@ -270,7 +270,7 @@ class MeshcoreSessionTest {
             assertTrue("no false ack for another client's confirmation", r.outcomes.isEmpty())
             assertEquals("the stray TABLE_FULL holds the headroom: the pool is full whoever drew it", 0, r.headroom.last())
             assertEquals(
-                "another client's flood is not our breach",
+                "another client's flood is not ours",
                 0L,
                 r.session.counters.directFlooded
                     .get(),
@@ -449,15 +449,25 @@ class MeshcoreSessionTest {
             assertNull(r.packets.single().rxSnr)
         }
 
-    // --- the pin (binding rule "sends" 1) ---
+    // --- the route (ADR 2026-11.gsqu's 2026-11-19 amendment: no pin, a ladder) ---
+
+    /** The `RESET_PATH` writes alice's session made of bob's record. */
+    private fun Rig.resets(): Int =
+        ch.writes.count { it[0].toInt() == MeshcoreProto.CMD_RESET_PATH && it.copyOfRange(1, 33).contentEquals(bob.key) }
+
+    /** The record writes alice's session made of bob's. */
+    private fun Rig.bobWrites(): Int =
+        ch.writes.count { it[0].toInt() == MeshcoreProto.CMD_ADD_UPDATE_CONTACT && it.copyOfRange(1, 33).contentEquals(bob.key) }
 
     @Test
-    fun aDmToAnUnpinnedContactIsPinnedReadBackAndThenSent() =
+    fun aFlightThatStartsOnAnUnknownRouteAirsZeroHopsFirst() =
         runTest {
+            // The user's decision (b): a contact whose record reads UNKNOWN (the last flight's reset, no path learned since) is
+            // tried at zero hops before anything floods, so a neighbour never pays a network flood.
             val r = rig(pinned = false, taught = false)
             up(r)
             assertTrue(r.session.readContact(r.bob.key) is ContactRead.Found)
-            // Taught after the Ready, so its re-assert has not pinned it: only a taught key is ever pinned (security B1).
+            // Taught after the Ready, so its listing did not read it.
             r.session.setKnitContacts(listOf(r.bob.key))
             val before = r.ch.writes.size
             assertTrue(r.dm() is SendResult.Queued)
@@ -466,32 +476,31 @@ class MeshcoreSessionTest {
                     .drop(before)
                     .map { it[0].toInt() }
             // The reconcile the taught set woke lists after it (a poll, then GET_CONTACTS).
-            assertEquals("read, write back zero-hop, read back, send", listOf(30, 9, 30, 2), codes.take(4))
-            assertEquals("the 144-B form, no lastmod", 144, r.ch.writes[before + 1].size)
+            assertEquals("read, write zero hops, read back, send", listOf(30, 9, 30, 2), codes.take(4))
             assertEquals(0, r.alice.contact(r.bob.key)?.outPathLen)
             assertEquals(
                 0L,
                 r.session.counters.directFlooded
                     .get(),
             )
+            assertEquals(
+                1L,
+                r.session.counters.zeroHopWrites
+                    .get(),
+            )
         }
 
     @Test
-    fun aPinThatTimesOutWritesNoDmAndIsAMissingKey() =
+    fun aRouteReadThatTimesOutSendsNothingAndIsAMissingKey() =
         runTest {
             val r = rig(pinned = false, taught = false)
             up(r)
             r.session.setKnitContacts(listOf(r.bob.key))
             r.ch.swallow = { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACT_BY_KEY }
             val result = r.dm()
-            assertTrue("$result", result is SendResult.Rejected && result.res == MeshcoreRefusal.UNPINNED)
+            assertTrue("$result", result is SendResult.Rejected && result.res == MeshcoreRefusal.ROUTE_UNWRITTEN)
             assertEquals(RefusalClass.OWN_NO_KEY, MeshcoreRefusal.classOf(result))
             assertTrue("nothing written", r.sendTexts().isEmpty())
-            assertEquals(
-                1L,
-                r.session.counters.pinFailures
-                    .get(),
-            )
         }
 
     @Test
@@ -506,13 +515,13 @@ class MeshcoreSessionTest {
         }
 
     @Test
-    fun aFloodedAttemptCancelsTheNextUntilAFreshPinIsReadBack() =
+    fun aFloodAnotherClientsResetCausedIsTheFlightsOneFloodAndItWaitsOnceThenEnds() =
         runTest {
             val r = rig()
             up(r)
             r.air.loseAck = { _, _, _ -> true }
             r.ch.writeResult = { f ->
-                // Between our pin and our send, another client resets the route: the board floods this attempt.
+                // Between our read and our send, another client resets the route: the board floods this attempt.
                 if (f[0].toInt() == MeshcoreProto.CMD_SEND_TXT_MSG) r.alice.driftPath(r.bob)
                 GattResult.Ok(Unit)
             }
@@ -523,37 +532,318 @@ class MeshcoreSessionTest {
                 r.session.counters.directFlooded
                     .get(),
             )
-            val flooded = r.airs.single() as MeshcoreAir.DirectFlooded
+            val flooded = r.airs.single() as MeshcoreAir.DirectRouted
             assertEquals((result as SendResult.Queued).id, flooded.handle)
-            r.ch.writeResult = { GattResult.Ok(Unit) }
-            r.ch.swallow = { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACT_BY_KEY }
+            assertTrue("booked as a flood", flooded.flooded)
             advanceTimeBy(30_000)
             runCurrent()
-            assertEquals("no attempt 1 without a fresh pin", 1, r.sendTexts().size)
+            // The flood went unanswered and the record still reads UNKNOWN: one more est_timeout, then the end — never a
+            // second flood, a reset or a zero-hop write.
+            assertEquals("no attempt after the flight's one flood", 1, r.sendTexts().size)
+            assertEquals(0, r.resets())
+            assertEquals(PacketOutcome.Unreachable(result.id, flown = 1), r.outcomes.single())
+            assertTrue(r.logs.contains("meshcore direct flood unanswered"))
+        }
+
+    @Test
+    fun aPathPushIsReadNeverWrittenAndALearnedRouteUnansweredFallsToZeroHopsBeforeAnyFlood() =
+        runTest {
+            val r = rig()
+            up(r)
+            advanceTimeBy(60_000)
+            runCurrent()
+            // The firmware learned a two-hop route (a PATH return): 0x81, read back and kept, nothing written.
+            r.alice.driftPath(r.bob, "r1", "r2")
+            val writes = r.bobWrites()
+            r.ch.inject(byteArrayOf(0x81.toByte()) + r.bob.key)
+            advanceTimeBy(2_000)
+            runCurrent()
+            assertEquals(
+                1L,
+                r.session.counters.routeReads
+                    .get(),
+            )
+            assertEquals("never a write on 0x81", writes, r.bobWrites())
+            assertEquals(2, r.alice.contact(r.bob.key)?.outPathLen)
+            // Its first attempt goes along the learned route; unanswered, the ladder writes zero hops and the next lands.
+            r.air.loseAck = { _, _, attempt -> attempt == 0 }
+            assertTrue(r.dm() is SendResult.Queued)
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertEquals("one zero-hop write a flight", writes + 1, r.bobWrites())
+            assertEquals(0, r.resets())
+            assertEquals(0, r.alice.contact(r.bob.key)?.outPathLen)
+            assertEquals(2, (r.outcomes.single() as PacketOutcome.Acked).flown)
+            assertEquals(
+                0L,
+                r.session.counters.directFlooded
+                    .get(),
+            )
+        }
+
+    @Test
+    fun twoZeroHopTimeoutsResetThePathAndTheLastAttemptFloodsUnderANewAttempt() =
+        runTest {
+            // The user's decision (2026-11-19): from zero hops, zero hops twice before the one flood — a lost ack is not a gone
+            // neighbour, and a neighbour never pays a flood for one.
+            val r = rig()
+            up(r)
+            r.air.loseAck = { _, _, attempt -> attempt <= 1 }
+            assertTrue(r.dm() is SendResult.Queued)
+            advanceTimeBy(20_000)
+            runCurrent()
+            val sends = r.sendTexts()
+            assertEquals(listOf(0, 1, 2), sends.map { it[2].toInt() })
+            assertEquals("one reset, before the last", 1, r.resets())
+            val send = MeshcoreProto.CMD_SEND_TXT_MSG
+            val codes =
+                r.ch.writes
+                    .map { it[0].toInt() }
+                    .filter { it == send || it == MeshcoreProto.CMD_RESET_PATH }
+            assertEquals(listOf(send, send, MeshcoreProto.CMD_RESET_PATH, send), codes)
+            assertEquals(
+                1L,
+                r.session.counters.directFlooded
+                    .get(),
+            )
+            assertEquals(
+                1L,
+                r.session.counters.routeResets
+                    .get(),
+            )
+            assertEquals(3, (r.outcomes.single() as PacketOutcome.Acked).flown)
+            // The flood's PATH return taught alice's board a route, and our board answered it with a reciprocal PATH: booked.
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals(1, r.airs.count { it is MeshcoreAir.ReciprocalPath })
+        }
+
+    @Test
+    fun aFloodThatTimesOutWaitsOnceForALatePathReturnAndNeverFloodsAgain() =
+        runTest {
+            val r = rig()
+            up(r)
+            r.air.loseAck = { _, _, _ -> true }
+            val result = r.dm() as SendResult.Queued
+            advanceTimeBy(40_000)
+            runCurrent()
+            assertEquals("zero hops, zero hops, the flood", listOf(0, 1, 2), r.sendTexts().map { it[2].toInt() })
+            assertEquals(
+                "one flood a flight",
+                1L,
+                r.session.counters.directFlooded
+                    .get(),
+            )
+            assertEquals(1, r.resets())
+            assertEquals(PacketOutcome.Unreachable(result.id, flown = 3), r.outcomes.single())
+            assertTrue(r.logs.contains("meshcore direct flood unanswered"))
+        }
+
+    @Test
+    fun anotherClientsZeroHopWriteAfterAnUnintendedFloodIsNoLearnedRoute() =
+        runTest {
+            // lora NB3: after this flight's flood the record reads zero hops — another client's write, no 0x81 — which is no
+            // path a PATH return taught; the flight waits once and ends, never retrying on it.
+            val r = rig()
+            up(r)
+            r.air.loseAck = { _, _, _ -> true }
+            r.ch.writeResult = { f ->
+                if (f[0].toInt() == MeshcoreProto.CMD_SEND_TXT_MSG) r.alice.driftPath(r.bob)
+                if (f[0].toInt() == MeshcoreProto.CMD_GET_CONTACT_BY_KEY && r.sendTexts().size == 1) {
+                    r.alice.contact(r.bob.key)?.outPathLen = 0
+                }
+                GattResult.Ok(Unit)
+            }
+            val result = r.dm() as SendResult.Queued
+            advanceTimeBy(40_000)
+            runCurrent()
+            assertEquals("the unintended flood alone", 1, r.sendTexts().size)
             assertEquals(PacketOutcome.Unreachable(result.id, flown = 1), r.outcomes.single())
         }
 
     @Test
-    fun aPathPushDuringTheFlightRepinsBeforeTheNextAttempt() =
+    fun aLearnedPathIsNeverOverwrittenByQueuedSendsAfterAConfirmedFlood() =
         runTest {
+            // lora NB1: the reset left UNKNOWN in the cache; the flood's PATH return taught the board a path and pushed 0x81.
+            // Three sends drained from a backlog right then read the record over BLE, find the path and go along it: one flood
+            // in all, and no zero-hop write over the learned route.
+            val r = rig()
+            up(r)
+            r.air.loseAck = { _, _, attempt -> attempt <= 1 }
+            assertTrue(r.dm() is SendResult.Queued)
+            advanceTimeBy(20_000)
+            runCurrent()
+            assertTrue(r.outcomes.single() is PacketOutcome.Acked)
+            r.air.loseAck = { _, _, _ -> false }
+            r.alice.driftPath(r.bob, "r1", "r2")
+            val writes = r.bobWrites()
+            r.ch.inject(byteArrayOf(0x81.toByte()) + r.bob.key)
+            // Three distinct DMs: one stamp a second, so the same bytes would be one packet the receiver drops as heard.
+            repeat(3) { n -> assertTrue(r.dm(seal + byteArrayOf((n + 1).toByte())) is SendResult.Queued) }
+            advanceTimeBy(20_000)
+            runCurrent()
+            assertEquals(
+                "one flood in all",
+                1L,
+                r.session.counters.directFlooded
+                    .get(),
+            )
+            assertEquals("no zero-hop write over the learned path", writes, r.bobWrites())
+            assertEquals(2, r.alice.contact(r.bob.key)?.outPathLen)
+            assertEquals(4, r.outcomes.count { it is PacketOutcome.Acked })
+        }
+
+    @Test
+    fun aKeyBlockedMidFlightEndsItWithNoOutcomeAndNothingFloods() =
+        runTest {
+            // security NB2: a contact blocked or removed leaves the taught set; the ladder airs nothing more to it.
+            val r = rig()
+            up(r)
+            r.air.loseAck = { _, _, _ -> true }
+            val result = r.dm() as SendResult.Queued
+            r.session.setKnitContacts(emptyList())
+            advanceTimeBy(40_000)
+            runCurrent()
+            assertEquals(1, r.sendTexts().size)
+            assertEquals(0, r.resets())
+            assertEquals(
+                0L,
+                r.session.counters.directFlooded
+                    .get(),
+            )
+            assertEquals(PacketOutcome.NoOutcome(result.id, flown = 1), r.outcomes.single())
+        }
+
+    @Test
+    fun theLaddersFlashWritesAreBoundedADayAndPastItTheDmGoesOnTheRouteAsRead() =
+        runTest {
+            // security NB3: a zero-hop write and a reset are flash writes; a peer gone for good costs at most the day's budget.
+            val r = rig()
+            up(r)
+            r.air.loseAck = { _, _, _ -> true }
+            repeat(MeshcorePins.MAX_LADDER_WRITES_PER_DAY / 2 + 2) {
+                r.dm()
+                advanceTimeBy(40_000)
+                runCurrent()
+            }
+            val c = r.session.counters
+            assertEquals(
+                "the budget, spent and no more",
+                MeshcorePins.MAX_LADDER_WRITES_PER_DAY.toLong(),
+                c.zeroHopWrites.get() + c.routeResets.get(),
+            )
+            assertTrue("past it, counted", c.ladderWritesDeferred.get() > 0)
+            // Past it, a record that reads UNKNOWN is refused, never flooded before zero hops (the user's decision (b)).
+            assertEquals(ContactWrite.WRITTEN, r.session.resetPath(r.bob.key))
+            val sends = r.sendTexts().size
+            val deferred = c.ladderWritesDeferred.get()
+            val reads = r.ch.writes.count { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACT_BY_KEY }
+            val refused = r.dm()
+            assertTrue("$refused", refused is SendResult.Rejected && refused.res == MeshcoreRefusal.ROUTE_BUDGET_SPENT)
+            assertEquals("a plain refusal, never a missing key", RefusalClass.OTHER, MeshcoreRefusal.classOf(refused))
+            assertTrue("one read at most", r.ch.writes.count { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACT_BY_KEY } - reads <= 1)
+            assertEquals("attempt 0 never aired", sends, r.sendTexts().size)
+            assertEquals(deferred + 1, c.ladderWritesDeferred.get())
+            // A known route past the budget is sent on as read: zero hops twice, then the third attempt with no reset and no
+            // flood (the rung writes nothing).
+            r.alice.contact(r.bob.key)?.outPathLen = 0
+            val resets = r.resets()
+            val floods = c.directFlooded.get()
+            assertTrue(r.dm(seal + byteArrayOf(99)) is SendResult.Queued)
+            advanceTimeBy(40_000)
+            runCurrent()
+            assertEquals("three attempts on the route as read", listOf(0, 1, 2), r.sendTexts().drop(sends).map { it[2].toInt() })
+            assertEquals("no reset", resets, r.resets())
+            assertEquals("no flood", floods, c.directFlooded.get())
+        }
+
+    @Test
+    fun aPathLearnedMidFlightIsTriedBeforeAnyRungWritesOverIt() =
+        runTest {
+            // lora's follow-up NB: a 0x81 during the flight, its record read back at one hop, is tried as it is — no zero-hop
+            // write over it, no reset.
             val r = rig()
             up(r)
             r.air.loseAck = { _, _, attempt -> attempt == 0 }
             assertTrue(r.dm() is SendResult.Queued)
-            r.alice.driftPath(r.bob)
+            val writes = r.bobWrites()
+            r.alice.driftPath(r.bob, "r1")
             r.ch.inject(byteArrayOf(0x81.toByte()) + r.bob.key)
+            advanceTimeBy(20_000)
             runCurrent()
-            val before = r.ch.writes.size
-            advanceTimeBy(5_000)
-            runCurrent()
-            val codes =
-                r.ch.writes
-                    .drop(before)
-                    .map { it[0].toInt() }
-                    .filter { it in setOf(30, 9, 2) }
-            assertTrue("re-pinned before attempt 1: $codes", codes.indexOf(9) in 0 until codes.indexOf(2))
-            assertEquals(0, r.alice.contact(r.bob.key)?.outPathLen)
+            assertEquals(listOf(0, 1), r.sendTexts().map { it[2].toInt() })
+            assertEquals("no write over the learned path", writes, r.bobWrites())
+            assertEquals(0, r.resets())
+            assertEquals(1, r.alice.contact(r.bob.key)?.outPathLen)
             assertEquals(2, (r.outcomes.single() as PacketOutcome.Acked).flown)
+        }
+
+    @Test
+    fun aConfirmationThatLandsDuringTheResetStopsTheFlood() =
+        runTest {
+            // The design pass's finding 1: `await` dispatches a push inline, so a late SEND_CONFIRMED for attempt 0 that lands
+            // while the reset is out ends the flight there, and nothing floods.
+            val r = rig()
+            up(r)
+            r.air.loseAck = { _, _, _ -> true }
+            assertTrue(r.dm() is SendResult.Queued)
+            val sent = r.sendTexts().single()
+            val code = MeshcoreProto.expectedAck(MeshcoreProto.u32(sent, 3), 0, sent.copyOfRange(13, sent.size), r.alice.key)
+            r.ch.writeResult = { f ->
+                if (f[0].toInt() == MeshcoreProto.CMD_RESET_PATH) {
+                    r.ch.inject(byteArrayOf(0x82.toByte()) + MeshcoreProto.u32(code.toLong()) + MeshcoreProto.u32(4_000))
+                }
+                GattResult.Ok(Unit)
+            }
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertEquals("the reset went out", 1, r.resets())
+            assertEquals("and no flood after it", 2, r.sendTexts().size)
+            assertEquals(2, (r.outcomes.single() as PacketOutcome.Acked).flown)
+            assertEquals(
+                0L,
+                r.session.counters.directFlooded
+                    .get(),
+            )
+        }
+
+    @Test
+    fun aFloodTheCoreNoLongerWantsIsSkippedAndTheFlightEndsWithNoOutcome() =
+        runTest {
+            // The design pass's finding 4: a link, a spool cover or the DM's ✓✓ since; the core is asked before the reset.
+            val r = rig()
+            val asked = mutableListOf<UInt>()
+            r.session.observer =
+                object : MeshcoreSessionObserver {
+                    override fun onIdentified(publicKey: ByteArray) = Unit
+
+                    override fun beforeReady(ready: BoardState.Ready) = Unit
+
+                    override fun onRadioStats(
+                        wallMs: Long,
+                        uptimeSecs: Long,
+                        txAirSecs: Long,
+                    ) = Unit
+
+                    override suspend fun floodWanted(handle: UInt): Boolean {
+                        asked += handle
+                        return false
+                    }
+                }
+            up(r)
+            r.air.loseAck = { _, _, _ -> true }
+            val result = r.dm() as SendResult.Queued
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertEquals(listOf(result.id), asked)
+            assertEquals(0, r.resets())
+            assertEquals("zero hops twice, then asked", 2, r.sendTexts().size)
+            assertEquals(PacketOutcome.NoOutcome(result.id, flown = 2), r.outcomes.single())
+            assertEquals(
+                1L,
+                r.session.counters.floodsSkipped
+                    .get(),
+            )
         }
 
     // --- retries and outcomes (binding rules "sends" 3 and 4) ---
@@ -584,6 +874,7 @@ class MeshcoreSessionTest {
             advanceTimeBy(30_000)
             runCurrent()
             val sends = r.sendTexts()
+            // Zero hops twice, then reset and flooded once; the record still UNKNOWN after it, the flight waits once and ends.
             assertEquals(listOf(0, 1, 2), sends.map { it[2].toInt() })
             assertEquals(1, sends.map { it.copyOfRange(3, 7).toList() }.toSet().size)
             assertEquals(1, sends.map { it.copyOfRange(13, it.size).toList() }.toSet().size)
@@ -628,10 +919,11 @@ class MeshcoreSessionTest {
         }
 
     @Test
-    fun aRetryHeldBehindAFullAckTableRepinsOnceNotEveryTick() =
+    fun aRetryHeldBehindAFullAckTableTakesItsRungOnceNotEveryTick() =
         runTest {
-            // 5c-2a round 2: an attempt whose ack window lapses re-pins before the next — once. Held behind a full table, the
-            // retry waits on every tick, and none of those ticks reads the record again.
+            // 5c-2a round 2, kept by the ladder: an attempt whose ack window lapses reads the record and takes its rung before
+            // the next — once. Held behind a full table, the retry waits on every tick, and none of those ticks reads the
+            // record or resets it again.
             val r = rig()
             up(r)
             r.air.loseAck = { _, _, _ -> true }
@@ -658,7 +950,8 @@ class MeshcoreSessionTest {
             val before = reads()
             advanceTimeBy(20_000)
             runCurrent()
-            assertEquals("one re-pin for the lapsed attempt", before + 1, reads())
+            assertEquals("one read for the lapsed attempt", before + 1, reads())
+            assertEquals("its rung is zero hops again: no reset", 0, r.resets())
             assertEquals("and no retry while the table is full", 1, r.sendTexts().size)
         }
 
@@ -828,10 +1121,10 @@ class MeshcoreSessionTest {
             assertEquals(MeshcorePublicSlot("friends", keyIsPublic = false, empty = false, knit = false), slot)
         }
 
-    // --- targeted re-pins (binding rule "sends" 2) ---
+    // --- targeted route reads (binding rule "sends" 2) ---
 
     @Test
-    fun aBurstOfPathPushesRepinsEachKnitKeyOnceAWindowAndSendsStillGo() =
+    fun aBurstOfPathPushesReadsEachKnitKeyNeverWritesAndSendsStillGo() =
         runTest {
             val r = rig()
             up(r)
@@ -841,10 +1134,10 @@ class MeshcoreSessionTest {
             repeat(15) { r.ch.inject(byteArrayOf(0x81.toByte()) + randomKey(kotlin.random.Random(it))) }
             r.ch.inject(byteArrayOf(0x81.toByte()) + r.bob.key)
             runCurrent()
-            advanceTimeBy(2_000) // the one re-pin runs
+            advanceTimeBy(2_000) // the one read runs
             runCurrent()
             repeat(15) { r.ch.inject(byteArrayOf(0x81.toByte()) + randomKey(kotlin.random.Random(100 + it))) }
-            repeat(4) { r.ch.inject(byteArrayOf(0x81.toByte()) + r.bob.key) } // inside the minute: unverified only
+            repeat(4) { r.ch.inject(byteArrayOf(0x81.toByte()) + r.bob.key) } // one read queued for the four
             runCurrent()
             advanceTimeBy(10_000)
             runCurrent()
@@ -854,15 +1147,16 @@ class MeshcoreSessionTest {
                     .drop(before)
                     .filter { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACT_BY_KEY }
             assertTrue("only bob's key, never a foreign one", reads.all { it.copyOfRange(1, 33).contentEquals(r.bob.key) })
-            assertEquals("one re-pin in the window, then the send's own pin", 2, reads.size)
+            assertEquals("one read a burst, and the send reads nothing: the route is cached", 2, reads.size)
+            assertEquals(
+                2L,
+                r.session.counters.routeReads
+                    .get(),
+            )
+            assertEquals("a path push never writes", 0, r.bobWrites())
             assertEquals(
                 30L,
                 r.session.counters.foreignPathPushes
-                    .get(),
-            )
-            assertEquals(
-                4L,
-                r.session.counters.repinsCoalesced
                     .get(),
             )
         }
@@ -1243,7 +1537,7 @@ class MeshcoreSessionTest {
             advanceTimeBy(40_000)
             runCurrent()
             flood.cancel()
-            assertEquals("every retry still fired", listOf(0, 1, 2), r.sendTexts().map { it[2].toInt() })
+            assertEquals("every rung still fired: zero hops twice, then the flood", listOf(0, 1, 2), r.sendTexts().map { it[2].toInt() })
             assertTrue(r.outcomes.single() is PacketOutcome.Unreachable)
         }
 
@@ -1257,12 +1551,12 @@ class MeshcoreSessionTest {
     // --- the third review's batch: a started op keeps its result ---
 
     @Test
-    fun aSendWhosePinOutlastsTheCallDeadlineStillReturnsItsFlightsHandle() =
+    fun aSendWhoseRouteReadOutlastsTheCallDeadlineStillReturnsItsFlightsHandle() =
         runTest {
             val r = rig(pinned = false, taught = false, callDeadlineMs = 2_000)
             up(r)
             r.session.setKnitContacts(listOf(r.bob.key))
-            // The pin's reads answer late: the op has started, so the caller waits for it rather than answering a timeout.
+            // The route's reads answer late: the op has started, so the caller waits for it rather than answering a timeout.
             r.ch.delayFrame = { f -> if (f[0].toInt() == MeshcoreProto.RESP_CONTACT) 2_500L else 0L }
             val result = r.dm()
             assertTrue("$result", result is SendResult.Queued)
@@ -1463,7 +1757,7 @@ class MeshcoreSessionTest {
     private fun Rig.listings(): Int = ch.writes.count { it[0].toInt() == MeshcoreProto.CMD_GET_CONTACTS && MeshcoreProto.u32(it, 1) == 0L }
 
     @Test
-    fun aContactTheBoardHoldsThatKnitDidNotTeachIsNeverPinnedOrSentTo() =
+    fun aContactTheBoardHoldsThatKnitDidNotTeachIsNeverWrittenOrSentTo() =
         runTest {
             val r = rig(pinned = false, taught = false)
             up(r)
@@ -1484,8 +1778,11 @@ class MeshcoreSessionTest {
             val dave = r.air.board("dave")
             val erin = r.air.board("erin")
             r.alice.addContact(carol, name = "Carol Smith", flags = 0) // not taught: removed
-            r.alice.addContact(dave, outPathLen = 3, name = "Dave") // taught, not Knit's record: overwritten
-            r.session.setKnitContacts(listOf(r.bob.key, dave.key, erin.key)) // erin is not on the board: written
+            r.alice.addContact(dave, outPathLen = 3, name = "Dave", flags = 0) // taught, not Knit's record: overwritten
+            // Taught, Knit's, on a route the firmware learned: kept as it is (ADR 2026-11.gsqu's 2026-11-19 amendment).
+            val frank = r.air.board("frank")
+            r.alice.addContact(frank, outPathLen = 2)
+            r.session.setKnitContacts(listOf(r.bob.key, dave.key, erin.key, frank.key)) // erin is not on the board: written
             up(r)
             advanceTimeBy(30_000)
             runCurrent()
@@ -1496,6 +1793,14 @@ class MeshcoreSessionTest {
             assertEquals(MeshcoreProto.CONTACT_FLAG_FAVOURITE, d.flags)
             assertEquals(0, r.alice.contact(erin.key)?.outPathLen)
             assertNotNull("bob was Knit's already", r.alice.contact(r.bob.key))
+            assertEquals("frank's learned route kept", 2, r.alice.contact(frank.key)?.outPathLen)
+            assertTrue(
+                "and never written",
+                r.ch.writes.none {
+                    it[0].toInt() == MeshcoreProto.CMD_ADD_UPDATE_CONTACT &&
+                        it.copyOfRange(1, 33).contentEquals(frank.key)
+                },
+            )
             assertEquals("one listing a Ready, never one a key", 1, r.listings())
             assertEquals("no count read either", 1, r.ch.codes.count { it == MeshcoreProto.CMD_GET_CONTACTS })
             val lines = r.logs.joinToString("\n")
@@ -1503,12 +1808,12 @@ class MeshcoreSessionTest {
                 assertFalse("no Knit name in a line", lines.contains(MeshcoreNames.forKey(board.key)))
                 assertFalse("no prefix in a line", lines.contains(board.key.copyOf(6).joinToString("") { "%02x".format(it) }))
             }
-            assertTrue(lines.contains("meshcore reconcile listed=3 "))
+            assertTrue(lines.contains("meshcore reconcile listed=4 "))
             val c = r.session.counters
             assertEquals(1L, c.reconcileRemoved.get())
             assertEquals(1L, c.reconcileOverwritten.get())
             assertEquals(1L, c.reconcileTaught.get())
-            // bob read back as Knit's record in the listing: pinned as read, sent to with no further read.
+            // bob read back as Knit's record in the listing: its route cached as read, sent to with no further read.
             val before = r.ch.writes.size
             assertTrue(r.dm() is SendResult.Queued)
             val codes =
@@ -1536,7 +1841,7 @@ class MeshcoreSessionTest {
             advanceTimeBy(10_000)
             runCurrent()
             assertEquals("written zero-hop, Knit's record", 0, r.alice.contact(carol.key)?.outPathLen)
-            assertTrue("taught and pinned", r.session.taughtAndPinned(carol.key))
+            assertTrue("taught and its route read", r.session.taughtAndRouted(carol.key))
             assertEquals("no listing for it", listings, r.listings())
             val writes = r.ch.codes.count { it == MeshcoreProto.CMD_ADD_UPDATE_CONTACT }
             r.session.setKnitContacts(listOf(r.bob.key, carol.key))
@@ -1569,7 +1874,7 @@ class MeshcoreSessionTest {
         advanceTimeBy(10_000)
         runCurrent()
         assertTrue("the drop ran inside the teach", dropped)
-        assertFalse("never taught again", r.session.taughtAndPinned(carol.key))
+        assertFalse("never taught again", r.session.taughtAndRouted(carol.key))
         assertEquals(
             "never counted written",
             0L,

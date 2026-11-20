@@ -54,9 +54,9 @@ import org.junit.Test
 /**
  * The hearing on a MeshCore plane (ADR 2026-11.gsqu §5 and its Stage 5a-2 amendment; lora-reviewer finding 4, the security
  * pass's B6 and replay items): the plane core over [MeshcoreTraits] and [MeshcoreHooks], a fake board link, and a board
- * holder whose DM went unanswered. A hearing comes only from a verified, fresh Knit post its author's radio aired at zero
- * hops — never from a sender prefix, a non-Knit DM, a replayed post or a flood that took hops — and its radio is counted by
- * author.
+ * holder whose DM went unanswered. A hearing comes only from a verified, fresh Knit frame — never from a sender prefix, a
+ * non-Knit DM or a replayed post. At any hop count it lifts the mark (ADR 2026-11.gsqu's 2026-11-19 amendment: the firmware
+ * routes a DM to a far board now); only one its author's radio aired at zero hops counts that radio, by author.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class MeshcoreHearingTest {
@@ -403,24 +403,23 @@ class MeshcoreHearingTest {
             val n = node()
             markBobUnreachable(n)
             val now = WALL + testScheduler.currentTime
-            hear(n, channelPacket(post(sentAt = now + 1), pathLen = 2))
-            assertEquals("a flood with hops", 1L, n.judged())
             hear(n, channelPacket(post(sentAt = now - LoraFramePolicy.FRESH_MS - 60_000)))
-            assertEquals("a stale post", 2L, n.judged())
+            assertEquals("a stale post", 1L, n.judged())
             hear(n, channelPacket(post(sentAt = now + 2), live = false))
-            assertEquals("a replay of the offline queue", 3L, n.judged())
+            assertEquals("a replay of the offline queue", 2L, n.judged())
             hear(n, channelPacket(post(sentAt = now + 3, sig0 = 9)))
-            assertEquals("a post whose author check failed", 4L, n.judged())
+            assertEquals("a post whose author check failed", 3L, n.judged())
             assertFalse("nothing so far was a hearing", n.heard())
             assertEquals(1, n.transport.status.value.direct.unreachable)
 
-            hear(n, channelPacket(post(sentAt = WALL + testScheduler.currentTime)))
-            assertEquals("the hearing itself", 5L, n.judged())
+            // A flood with hops lifts it since ADR 2026-11.gsqu's 2026-11-19 amendment: the hearing itself.
+            hear(n, channelPacket(post(sentAt = WALL + testScheduler.currentTime), pathLen = 2))
+            assertEquals("the hearing itself", 4L, n.judged())
             assertTrue("and it lifted the mark", n.heard())
             assertEquals(0, n.transport.status.value.direct.unreachable)
             hear(n, channelPacket(post(sentAt = WALL + testScheduler.currentTime + 1)))
-            assertEquals("a verified post with no mark left to lift", 6L, n.judged())
-            assertEquals("every post reached the router", 6, n.postsDecoded())
+            assertEquals("a verified post with no mark left to lift", 5L, n.judged())
+            assertEquals("every post reached the router", 5, n.postsDecoded())
         }
 
     /**
@@ -525,14 +524,41 @@ class MeshcoreHearingTest {
         }
 
     @Test
-    fun aMultiHopFloodIsNoHearing() =
+    fun aFarHearingLiftsAMarkAtMostOnceAGapAndAZeroHopOneFreely() =
         runTest {
+            // unit NB1 on ADR 2026-11.gsqu's 2026-11-19 amendment, through the transport: `onBoardHeard(far = !zeroHop)` with the
+            // re-probe's gap (lora NB2). A far post lifts; bob marked again, a second far post inside the base gap does not; a
+            // zero-hop post still does.
+            val n = node()
+            markBobUnreachable(n)
+            hear(n, channelPacket(post(sentAt = WALL + testScheduler.currentTime), pathLen = 2))
+            assertEquals("the first far post lifts", 0, n.transport.status.value.direct.unreachable)
+            n.transport.offer(BOB, "dm-2", WALL, byteArrayOf(4, 5, 6), DirectKind.MESSAGE)
+            runCurrent()
+            val handle = (n.board.sent.size).toUInt()
+            n.board.outcome.tryEmit(PacketOutcome.Unreachable(handle, flown = 3))
+            runCurrent()
+            assertEquals("marked again", 1, n.transport.status.value.direct.unreachable)
+            advanceTimeBy(60_000) // well inside LoraReprobe.BASE_MS
+            hear(n, channelPacket(post(sentAt = WALL + testScheduler.currentTime + 1), pathLen = 2))
+            assertEquals("a second far post inside the gap lifts nothing", 1, n.transport.status.value.direct.unreachable)
+            assertEquals(1, n.logs.count { it == "lora direct heard $BOB" })
+            hear(n, channelPacket(post(sentAt = WALL + testScheduler.currentTime + 2)))
+            assertEquals("a zero-hop post lifts freely", 0, n.transport.status.value.direct.unreachable)
+            assertEquals(2, n.logs.count { it == "lora direct heard $BOB" })
+        }
+
+    @Test
+    fun aMultiHopFloodLiftsTheMarkButCountsNoRadio() =
+        runTest {
+            // ADR 2026-11.gsqu's 2026-11-19 amendment: the firmware routes a DM to a far board now, so a verified, fresh post
+            // that came through repeaters asks bob's board again; only a zero-hop one counts his radio.
             val n = node()
             markBobUnreachable(n)
             hear(n, channelPacket(post(sentAt = WALL + testScheduler.currentTime), pathLen = 2))
             assertEquals("the post reached the router", 1, n.postsDecoded())
-            assertFalse(n.heard())
-            assertEquals(1, n.transport.status.value.direct.unreachable)
+            assertTrue(n.heard())
+            assertEquals(0, n.transport.status.value.direct.unreachable)
             assertEquals(0, n.transport.status.value.boardsHeard)
         }
 
@@ -595,7 +621,7 @@ class MeshcoreHearingTest {
         }
 
     @Test
-    fun aFreshOpenedDmAtZeroHopsHearsItsBoard() =
+    fun aFreshOpenedDirectDmHearsItsBoardWhateverItsPath() =
         runTest {
             val n = node()
             markBobUnreachable(n)
@@ -603,7 +629,7 @@ class MeshcoreHearingTest {
             assertEquals("the DM opened", 1, n.dmsOpened())
             assertTrue(n.heard())
             assertEquals(0, n.transport.status.value.direct.unreachable)
-            // It lifts the mark, but counts no radio: a DM a repeater forwarded lands `0xFF` too (Stage 5c-2a).
+            // It lifts the mark, but counts no radio: a DM along a learned path lands `0xFF` too (Stage 5c-2a).
             assertEquals(0, n.transport.status.value.boardsHeard)
         }
 
@@ -621,14 +647,15 @@ class MeshcoreHearingTest {
         }
 
     @Test
-    fun anOpenedFloodWithHopsIsNoHearing() =
+    fun anOpenedFloodWithHopsLiftsTheMarkButCountsNoRadio() =
         runTest {
+            // A far board's flooded DM reached us: its board is worth asking again (ADR 2026-11.gsqu's 2026-11-19 amendment).
             val n = node()
             markBobUnreachable(n)
             hear(n, dmFromBob(ageMs = 0, pathLen = 2))
             assertEquals("the DM opened", 1, n.dmsOpened())
-            assertFalse(n.heard())
-            assertEquals(1, n.transport.status.value.direct.unreachable)
+            assertTrue(n.heard())
+            assertEquals(0, n.transport.status.value.direct.unreachable)
             assertEquals(0, n.transport.status.value.boardsHeard)
         }
 

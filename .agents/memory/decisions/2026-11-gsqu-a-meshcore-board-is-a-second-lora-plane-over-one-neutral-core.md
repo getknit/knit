@@ -2327,3 +2327,130 @@ its text, never rebuilt into a quote: which post it answers is the sender's clai
 `MeshcoreMentionsTest`, `LoraPlaneWiringTest`, `InboundPipelineTest`'s MeshCore mention cases, `ChatViewModelTest`'s
 MeshCore reply and token cases. Board trial owed: from a stock client, reply to a Knit post and tag the board's name in
 another; the phone alerts on the Mentions channel. From Knit, reply to the stock client's post; it shows as a reply there.
+
+## Amendment 2026-11-19 — DMs follow MeshCore's own routing (draft)
+
+Status: Draft (2026-11-19), built under the lora-reviewer design pass of the same day (blocking and non-blocking findings
+folded in, below). **Supersedes** §3's zero-hop pin (re-asserted before a send, on `0x81` and after `0x8F`, a flooded
+`RESP_SENT` counted as a breach), the 5c-2a amendment's drift findings (the re-pin after an unanswered attempt, the
+coalesced `0x81`), and the DM-form parts of ADR 2026-10.jend's points 2 and 5 (DM-form traffic zero-hop, gated on a
+zero-hop reach set). jend's "Knit can't copy MeshCore's path learning" no longer holds: since §2 the compact DM is a
+contact text DM, and the firmware learns the path itself (a flooded DM's PATH return, `BaseChatMesh.cpp:250-254`; the
+sender's reciprocal PATH, `Mesh.cpp:173-178`).
+
+**What was observed.** The pin was the only thing keeping a MeshCore DM to a board's neighbours: nothing at send time
+reads a hop count, and the ack, the session's retries and the ledger already work along any route. `sendMessage` floods
+while the contact's `out_path_len` is UNKNOWN and otherwise sends direct along `out_path` (`BaseChatMesh.cpp:480`); its
+`RESP_SENT` says which and carries the route's `est_timeout` (`MyMesh.cpp:1132-1170`, `calcDirectTimeoutMillisFor`
+`MyMesh.cpp:891`); the firmware never notices a broken route (`onSendTimeout` is empty), so only `CMD_RESET_PATH` makes
+the next DM flood.
+
+**Decision** (the user's, 2026-11-19: (a) book only our own board's transmissions, never a repeater's re-airing — whether a
+repeater repeats is its operator's choice — and keep DMs under `Ceiling.FULL`; (b) with no working route, zero hops first,
+then reset and flood, so a neighbour never pays a network flood; (c) no hop cap of our own: the firmware's 64 and each
+repeater's region scope decide):
+
+- **No pin.** `ContactRecord.knit` still writes `out_path_len 0`, a new contact's first try; nothing re-asserts it.
+  `MeshcoreContacts.isKnitRouting` / `isKnitRecord` no longer read the route, so the Ready reconcile, a teach and Restore keep
+  a learned path. `ContactRecord.pinned`, `MeshcorePins`' verified set and its PIN job, the Ready re-assert and
+  `MeshcoreBoardOps.pinnedZeroHop` are gone; a `0x81` queues one read of the record (`MeshcorePins.Job.READ`, a BLE read,
+  never a write), a `0x8F` one re-teach a minute (`RETEACH_GAP_MS`).
+- **The route as last read** (`MeshcorePins.routeOf`, raw `out_path_len`): set by the Ready's listing, a teach's read-back,
+  the zero-hop write, the reset and a `0x81`'s read; cleared by `0x8F`, `NOT_FOUND`, a removal and every Ready. Empty is "not
+  known", never zero hops.
+- **The ladder** (`MeshcoreSession.nextRung`; the design pass's blocking finding, and the first review round's batch):
+  each rung chosen from the record's state, read back after every unanswered attempt, and a flight floods at most once:
+  - a flight that starts on a learned route of N > 0 hops: direct along it, then zero hops, then reset and flood;
+  - one that starts at 0 hops or UNKNOWN: zero hops (a send whose record reads UNKNOWN writes zero hops before attempt 0),
+    zero hops again, then reset and flood (the user's decision after the first review round: a lost ack is not a gone
+    neighbour, and a neighbour in range never pays a flood for one; what goes is the retry after the flood along a learned
+    path, which a PATH return makes needless — it carries the ack);
+  - the zero-hop rung is one `ADD_UPDATE_CONTACT` at `out_path_len 0` (`writeKnitRecord`), once a flight, never on `0x81`;
+  - the flood rung is `RESET_PATH` read back UNKNOWN, then `attempt + 1`; before it the core is asked whether the frame is
+    still wanted (`MeshcoreSessionObserver.floodWanted` → `PlaneCore.directStillWanted`: its `RideGate`'s link and spool
+    cover, DMs on, and a person's DM's ✓✓ since; 5 s bound, `FLOOD_GATE_TIMEOUT_MS`); not wanted ends the flight `NoOutcome`;
+  - once per unanswered attempt (`Flight.routedFor`, the `deferredSince` pattern), and the flight asked for again after each
+    rung's write, since `await` dispatches a late `SEND_CONFIRMED` inline: a confirm during the reset stops the flood;
+  - a flood that times out waits one more `est_timeout` for a late PATH return's ack, then ends `Unreachable`
+    (`meshcore direct flood unanswered`); never a second flood. A retry after an unintended flood (another client's reset)
+    goes only along a path a `0x81` named since this flight's reset (`Flight.pathPushed`, lora NB3);
+  - a key no longer taught (blocked, removed) ends the flight `NoOutcome` before any rung or retry (security NB2), and the
+    core's flood gate refuses a recipient no longer a direct board holder;
+  - every zero-hop write and reset spends one of the key's `MeshcorePins.MAX_LADDER_WRITES_PER_DAY` (24, in memory like the
+    live teach's bound); past it the attempt goes on a known route as read, and on an UNKNOWN one does not go at all — a
+    send is refused `ROUTE_BUDGET_SPENT` (classed `OTHER`, never `OWN_NO_KEY`: a missing-key refusal would teach, find the
+    contact present and re-offer into the same refusal, a loop the second follow-up found), a flight mid-ladder ends — so the budget never makes a flood the first try (decision
+    (b) kept; the re-probe asks again the next UTC day), counted (`meshcoreLadderWritesDeferred`, security NB3);
+  - a path a `0x81` named mid-flight (since the reset), read back at N > 0 hops, is tried once before any rung writes over
+    it (lora's follow-up);
+  - `ATTEMPTS` stays 3; `MAX_FLIGHT_MS` keeps a write term per rung (`ROUTE_WRITE_WORST_MS` × (attempts + 1)), the grace's
+    `est_timeout` and the gate's bound, and `MeshcoreTraits.deadlineMs` follows it.
+  - A send reads the record over BLE whenever the cache is empty or UNKNOWN, and a `0x81` and a confirmed flood forget the
+    cached route (lora NB1): a path the board just learned is never written over with zero hops by a backlog's sends.
+  - A read or write before attempt 0 that fails refuses the send unwritten (`MeshcoreRefusal.ROUTE_UNWRITTEN`, renamed from
+    `UNPINNED`, still `OWN_NO_KEY`).
+- **Air, ours only.** A DM is still booked at send as a zero-hop `DIRECT_DM` under `Ceiling.FULL`; the session reports what
+  its route added (`MeshcoreAir.DirectRouted`, replacing `DirectFlooded`), which the hooks book as milliseconds
+  (`LoraAirtime.recordMs`): a flood's 4 B of transport codes, or a learned path's bytes (hops recovered from `RESP_SENT`'s
+  `est_timeout` by inverting `calcDirectTimeoutMillisFor`, `MeshcoreTraits.directHopsOf`, else the route last read); an
+  attempt whose `SENT` never came at the larger of a flood and the path it was meant for. The reciprocal PATH our board sends
+  after a flooded DM of ours is confirmed (`MeshcoreAir.ReciprocalPath`) is booked whole once the route it went along is read
+  (the longest path when the read fails, or at the next Ready when the connection ended first). Our board's answer to a DM along a learned route is priced with that route's
+  bytes (`MeshcorePacket.senderRoute`). **DM floods sit under `Ceiling.FULL` by the user's decision, which supersedes jend
+  point 4 and §4's `Ceiling.FLOOD` text for DMs**: a DM is no repeater's load to book (ug4a).
+- **Hearing.** A verified, fresh Knit frame lifts an Unreachable mark at any hop count (`BoardTraits.heardRoute`: a far
+  contact's flooded post or opened DM asks its board again, `LoraDirectPolicy.onHeard`); a post heard through repeaters lifts
+  a peer's mark at most once per its re-probe gap (`LoraDirectPolicy.onHeardFar`, `LoraReprobe.gapOf`; lora NB2: an
+  asymmetric contact's every post would otherwise re-arm a zero-hop write and a flood), a zero-hop hearing and an opened DM
+  freely. A radio is still counted only at zero hops (`heardZeroHop`), and a contact DM counts as zero hops only by its own
+  flood path length — never by our record of its sender, which is our outbound route and may be our own write (lora NB4). This supersedes §5's "a flood never clears an Unreachable DM mark".
+- **Counters** (`…debug.LORA --es kind meshcore`): `meshcoreDirectFlooded` now counts DM floods; `meshcoreRouteResets`,
+  `meshcoreRouteHops` (a gauge: the last direct attempt's hops), `meshcoreZeroHopWrites`, `meshcoreFloodsSkipped`,
+  `meshcoreRouteReads`, `meshcoreLadderWritesDeferred`, `meshcorePathSurcharges`, `meshcoreReciprocalsBooked` added; `meshcorePinFailures` and
+  `meshcoreRepinsDone` dropped, deliberately (the design pass's finding 7). Log lines: `meshcore direct flooded`,
+  `meshcore route reset`, `meshcore direct flood skipped: no longer wanted`, `meshcore direct flood unanswered`,
+  `meshcore direct hops=N`, `meshcore zero-hop write failed`, `meshcore route reset failed`,
+  `meshcore direct flight ended: no longer taught`, `meshcore ladder write deferred: the key's daily budget is spent`.
+
+**What it costs.**
+
+- A far contact's first DM floods, and so does the first after a route breaks. **Every flooded DM is two floods** on the
+  network: the DM and the receiver's flooded PATH return; if the receiver holds no route to us, its ack floods too.
+- Past a key's 24 ladder writes in a UTC day, a contact whose record reads UNKNOWN gets no DM over LoRa until the next
+  day (refused `ROUTE_BUDGET_SPENT`, never flooded first; the frame is dropped from the queue and the re-probe asks again); one on a known route is sent on as read, with no rung written.
+- A neighbour in range whose board acks are lost twice running pays one flood: the ladder cannot tell two lost acks from
+  a neighbour gone.
+- Who is messaging whom (the two one-byte hashes) now travels as far as the flood does, not just to the neighbours.
+- A peer on an older build that still pins costs a direct airing, a flood and a PATH return on every DM, its pin undoing
+  the route each time. Only lab phones run this branch, so this is recorded, not gated by a capability.
+- Unbooked, by the user's decision (a): every repeater's re-airing. Unbooked as a gap: the reciprocal PATH our board
+  re-sends when a flooded ack reaches it while it holds a route (`handleReturnPathRetry`, `BaseChatMesh.cpp:385-390`) and a
+  reciprocal for a flood whose confirmation came after the flight ended — the phone sees neither.
+- A hidden pair of repeaters re-airing one flood inside one airtime collides at the receiver (the diamond scenario's first
+  run): the ladder's one flood is then lost, and the flight ends for the re-probe.
+- A reciprocal PATH along the same route as an earlier one is byte-identical to it (AES-ECB, no nonce), so a repeater or
+  board whose ring still holds the first drops it as heard: the receiver's stale record is then healed only by its own
+  ladder on its next DM (the chaos sweep's find, seed 736974568; owed to a board).
+
+**Tests.** `MeshcoreSessionTest` (a flight starting on UNKNOWN airs zero hops first; two zero-hop timeouts reset and flood
+under a new attempt, its reciprocal booked; a learned route unanswered falls to zero hops; a flood that times out waits once
+and never floods again; another client's zero-hop write is no learned route; a learned path survives a backlog's sends; a key
+blocked mid-flight ends it with no outcome; the ladder's daily write budget; a late confirm during the reset stops the flood; a flood the core no longer wants
+ends with no outcome; another client's reset is the flight's one flood; a `0x81` reads and never writes), `MeshcoreHooksTest`
+(an N-hop DM books exactly its path bytes, nothing for repeaters; acks along a read route), `MeshcoreTraitsTest`
+(`directHopsOf`, the routed prices, the split hearing), `MeshcoreFlushSwitchTest.theFloodRungAsksTheCoreTheFramesOwnGatesAgain`,
+`MeshcoreHearingTest`, `MeshcoreAirPhysicsTest`, `MeshcoreContactsTest`, `MeshcorePoliciesTest`, `BoardKindFramePolicyTest`;
+`LoraDirectPolicyTest.aHearingThroughRepeatersLiftsAMarkAtMostOnceAGap`; `MeshcoreDirectLabTest`: the asymmetric contact
+(`farPostsFromAnAsymmetricContactLiftItsMarkOnceAGapAndBoundTheLadder`), the block (`aContactBlockedMidFlightIsNeverFlooded`),
+and on the channel air the chain (`aDmClimbsTheLadderAcrossAChainLearnsItsRouteAndLearnsItAgainAfterABreak`),
+the dead neighbour (`aDeadNeighbourCostsOneFloodAndBackInRangeIsReachedAtZeroHops`), the diamond
+(`oneLadderHealsBothDirectionsOfADiamondWhoseLegWentOneWay`), and the flipped hearing
+(`aFloodedHearingLiftsAnUnreachableMarkAndTheLadderReachesTheFarBoard`), each ending in `assertConverged`.
+
+**Board trials owed** (P9, P7 and a third V4 as a repeater, the two out of each other's direct range): the first DM floods
+(`meshcoreDirectFlooded` +1) and is acked; the second goes direct through the repeater (`meshcoreRouteHops` 1); a receipt
+comes back the same way; the repeater off, the DM resets (`meshcoreRouteResets` +1) and ends Unreachable; the repeater back,
+a hearing lifts the hold and the queued DM lands; two boards in range still DM at zero hops with no flood. And, from the
+design pass: a dead neighbour over 2 h, every re-probe round airing zero hops first and at most one flood; a neighbour
+back in range after a give-up, acked at zero hops; a far first DM with no second flood before the ack; an upgrade over
+records pinned at zero hops; airtime and hearings reconciled against `tx_air`.

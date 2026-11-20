@@ -262,8 +262,50 @@ class MeshcoreTraitsTest {
             assertTrue("the backstop never under the session's own cap", traits.deadlineMs(air, 4.0) >= MeshcoreSession.MAX_FLIGHT_MS)
             assertEquals(2, traits.retriesBefore(3_600_000L, traits.retransmitMs(air, 4.0, 0)))
         }
-        // The direct est_timeout at zero hops (500 + 6 × air + 250) and the session's retry slack.
+        // The direct est_timeout at zero hops (500 + 6 × air + 250) and the session's retry slack: the core's fallback guess.
         assertEquals(500L + 6 * 300 + 250 + 1_000, traits.retransmitMs(300, 4.0, 0))
+    }
+
+    @Test
+    fun aRoutedDmIsPricedByItsOwnPathAndAFloodByItsTransportCodes() {
+        // ADR 2026-11.gsqu's 2026-11-19 amendment: our own board's airing only, never a repeater's.
+        val zero = MeshcoreTraits.contactTextPhyBytes(40, flooded = false)
+        assertEquals("the same packet as the price books at send", phy(AirPurpose.DIRECT_DM, 39), zero)
+        assertEquals(
+            "three one-byte hops ride the packet",
+            zero + 3,
+            MeshcoreTraits.contactTextPhyBytes(40, flooded = false, pathBytes = 3),
+        )
+        assertEquals("a flood: the transport codes, no path", zero + 4, MeshcoreTraits.contactTextPhyBytes(40, flooded = true))
+        assertEquals(2 + 2 + 6, MeshcoreTraits.ackPhyBytes(6, flooded = false, pathBytes = 2))
+        assertEquals(
+            "a flooded ack carries no path as our board airs it",
+            6 + 6,
+            MeshcoreTraits.ackPhyBytes(6, flooded = true, pathBytes = 2),
+        )
+        // The reciprocal PATH: header, path length, the route, two hashes, MAC, AES over path length + path + extra type.
+        assertEquals(2 + 2 + 2 + 2 + 16, MeshcoreTraits.reciprocalPathPhyBytes(2))
+        assertEquals(2, MeshcoreTraits.pathBytesOf(2))
+        assertEquals("two 2-byte hashes", 4, MeshcoreTraits.pathBytesOf(0x42))
+        assertEquals(2, MeshcoreTraits.hashSizeOf(0x42))
+    }
+
+    @Test
+    fun aDirectSendsHopsComeBackOutOfItsEstTimeout() {
+        // `calcDirectTimeoutMillisFor` (MyMesh.cpp:891): 500 + (6 × air + 250) × (hops + 1), air by `getEstAirtimeFor`.
+        val radio = RadioParams(spreadFactor = 8, bandwidthHz = 62_500, codingRate = 5)
+        for (hops in 0..5) {
+            val air =
+                LoraAirtime.formulaMs(
+                    MeshcoreTraits.contactTextPhyBytes(60, flooded = false, pathBytes = hops),
+                    radio,
+                    MeshcoreTraits.preambleSymbolsAt(8),
+                )
+            val est = 500 + (6 * air + 250) * (hops + 1)
+            assertEquals(hops, MeshcoreTraits.directHopsOf(est, 60, radio))
+            assertEquals("a few ms off the firmware's integer airtime still reads", hops, MeshcoreTraits.directHopsOf(est + 40, 60, radio))
+        }
+        assertEquals("far from every hop count", null, MeshcoreTraits.directHopsOf(500 + (6 * 400 + 250) / 2, 60, radio))
     }
 
     @Test
@@ -272,6 +314,7 @@ class MeshcoreTraitsTest {
             type: MeshcorePacket.Type,
             pathLen: Int,
             live: Boolean = true,
+            route: Int? = null,
         ) = BoardPacket(
             from = null,
             toUs = false,
@@ -281,7 +324,7 @@ class MeshcoreTraitsTest {
             rxRssi = null,
             hopsAway = null,
             rxTimeMs = null,
-            kind = MeshcorePacket(type, 1, pathLen, null, null, null, live, cobs = false, text = null),
+            kind = MeshcorePacket(type, 1, pathLen, null, null, null, live, cobs = false, text = null, senderRoute = route),
         )
         assertTrue(traits.heardLive(packet(MeshcorePacket.Type.CHANNEL_DATA, 0), 0))
         assertFalse("through a repeater", traits.heardLive(packet(MeshcorePacket.Type.CHANNEL_DATA, 1), 0))
@@ -290,11 +333,20 @@ class MeshcoreTraitsTest {
         // Live is any path (the cover's lift, #294); a hearing also needs zero hops.
         assertTrue(traits.live(packet(MeshcorePacket.Type.CHANNEL_DATA, 2), 0))
         assertFalse(traits.live(packet(MeshcorePacket.Type.CHANNEL_DATA, 0, live = false), 0))
-        // A direct DM trusts the pin; a flood with hops is no hearing, one at zero hops is.
-        assertTrue(traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 0xFF)))
+        // A direct DM lands 0xFF on any path (ADR 2026-11.gsqu's 2026-11-19 amendment), and our record of its sender is our own
+        // outbound route, a zero there perhaps our own write (lora NB4): never zero hops, whatever the record reads.
+        assertFalse("no route read is not zero hops", traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 0xFF)))
+        assertFalse("nor is our own zero-hop record", traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 0xFF, route = 0)))
+        assertFalse("a learned path", traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 0xFF, route = 2)))
+        assertFalse("a reset route", traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 0xFF, route = 0xFF)))
         assertTrue(traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 0)))
         assertFalse(traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 2)))
-        assertFalse(traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 0xFF, live = false)))
+        assertFalse(traits.heardZeroHop(packet(MeshcorePacket.Type.CONTACT_TEXT, 0xFF, live = false, route = 0)))
+        // What lifts a mark is any live hop count, a DM or a post alike; a replay never.
+        assertTrue(traits.heardRoute(packet(MeshcorePacket.Type.CONTACT_TEXT, 0xFF)))
+        assertTrue(traits.heardRoute(packet(MeshcorePacket.Type.CHANNEL_DATA, 3)))
+        assertFalse(traits.heardRoute(packet(MeshcorePacket.Type.CHANNEL_DATA, 0, live = false)))
+        assertTrue("Meshtastic reads no hop count", BoardTraits.MESHTASTIC.heardRoute(packet(MeshcorePacket.Type.CHANNEL_DATA, 3)))
         // Never keyed on the sender: a DM's prefix is a claim, channel data names none (the Stage 5 decisions).
         assertFalse("a sender prefix is a claim", traits.hearsSender)
         assertTrue(BoardTraits.MESHTASTIC.hearsSender)

@@ -114,10 +114,6 @@ class MeshcoreHooksTest {
             return teachResult
         }
 
-        var pinned = false
-
-        override fun pinnedZeroHop(from: BoardAddr.MeshCore): Boolean = pinned
-
         /** The board as the session published it: what the Public post's gate reads (Stage 6). */
         override var ready: BoardState.Ready? = null
 
@@ -290,6 +286,7 @@ class MeshcoreHooksTest {
         cobs: Boolean = false,
         txtType: Int? = if (type == MeshcorePacket.Type.CONTACT_TEXT) MeshcoreProto.TXT_TYPE_PLAIN else null,
         text: ByteArray? = null,
+        route: Int? = null,
     ) = BoardPacket(
         from = if (type == MeshcorePacket.Type.CONTACT_TEXT) BoardAddr.MeshCore(ByteArray(6) { 7 }) else null,
         toUs = type == MeshcorePacket.Type.CONTACT_TEXT,
@@ -299,7 +296,7 @@ class MeshcoreHooksTest {
         rxRssi = null,
         hopsAway = null,
         rxTimeMs = null,
-        kind = MeshcorePacket(type, slot, pathLen, txtType, dataType, null, live, cobs, text),
+        kind = MeshcorePacket(type, slot, pathLen, txtType, dataType, null, live, cobs, text, senderRoute = route),
     )
 
     private val seal = byteArrayOf(LORA_DIRECT_TAG) + ByteArray(LORA_DIRECT_OVERHEAD + 10) { 1 }
@@ -387,20 +384,32 @@ class MeshcoreHooksTest {
 
     // --- our board's answers, booked from one place ---
 
-    /** Part 2: a sender Knit taught and pinned zero-hop is answered along that path, so only the path's acks are booked. */
+    /**
+     * A sender whose route our board's record holds (as the session last read it) is answered along that route, so only the
+     * acks along it are booked, each carrying its path's bytes; one our record floods to is answered by one flooded ack (ADR
+     * 2026-11.gsqu's 2026-11-19 amendment).
+     */
     @Test
-    fun aDirectDmFromATaughtPinnedSenderBooksOnlyTheAcksAlongItsPath() {
+    fun aDirectDmFromASenderWhoseRouteWeReadBooksTheAcksAlongThatRoute() {
         hooks.beforeReady(ready(detail = detail(multiAcks = 3)))
         val air = core.airtime
 
         fun ms(
             payload: Int,
             flooded: Boolean,
-        ) = air.airMsOfPhy(MeshcoreTraits.ackPhyBytes(payload, flooded))
-        ops.pinned = true
-        hooks.route(packet(MeshcorePacket.Type.CONTACT_TEXT, slot = null, payload = seal, cobs = true, pathLen = 0xFF), null)
-        assertEquals(ms(7, flooded = false) + ms(6, flooded = false), air.usedMs(now))
-        assertEquals(1L, hooks.counters.acksBookedDirect.get())
+            pathBytes: Int = 0,
+        ) = air.airMsOfPhy(MeshcoreTraits.ackPhyBytes(payload, flooded, pathBytes))
+        val dm = MeshcorePacket.Type.CONTACT_TEXT
+        hooks.route(packet(dm, slot = null, payload = seal, cobs = true, pathLen = 0xFF, route = 0), null)
+        val zeroHop = ms(7, flooded = false) + ms(6, flooded = false)
+        assertEquals(zeroHop, air.usedMs(now))
+        hooks.route(packet(dm, slot = null, payload = seal, cobs = true, pathLen = 0xFF, route = 3), null)
+        val threeHops = ms(7, flooded = false, pathBytes = 3) + ms(6, flooded = false, pathBytes = 3)
+        assertTrue("a learned path's bytes ride each ack", threeHops > zeroHop)
+        assertEquals(zeroHop + threeHops, air.usedMs(now))
+        hooks.route(packet(dm, slot = null, payload = seal, cobs = true, pathLen = 0xFF, route = MeshcoreProto.PATH_UNKNOWN), null)
+        assertEquals(zeroHop + threeHops + ms(6, flooded = true), air.usedMs(now))
+        assertEquals("a reset route is no known one", 2L, hooks.counters.acksBookedDirect.get())
     }
 
     @Test
@@ -445,7 +454,7 @@ class MeshcoreHooksTest {
     @Test
     fun aDmOurBoardFloodedBooksOnlyTheFloodsSurchargeAndAPathReturnIsNeverBookedTwice() {
         hooks.beforeReady(ready())
-        ops.air.tryEmit(MeshcoreAir.DirectFlooded(1u, bytes = 120, atMs = now))
+        ops.air.tryEmit(MeshcoreAir.DirectRouted(1u, bytes = 120, flooded = true, pathBytes = 0, atMs = now))
         val direct = core.airtime.airMsOfPhy(MeshcoreTraits.contactTextPhyBytes(120, flooded = false))
         val flooded = core.airtime.airMsOfPhy(MeshcoreTraits.contactTextPhyBytes(120, flooded = true))
         assertTrue("a flood costs more", flooded > direct)
@@ -454,6 +463,35 @@ class MeshcoreHooksTest {
         assertEquals(flooded - direct, core.airtime.usedMs(now))
         assertEquals(1L, hooks.counters.floodSurcharges.get())
         assertEquals(1L, hooks.counters.pathReturnsSeen.get())
+    }
+
+    /**
+     * ADR 2026-11.gsqu's 2026-11-19 amendment, the user's decision (a): a DM along an N-hop path books exactly its own N path
+     * bytes over the zero-hop airing booked at send, and nothing for any repeater that re-airs it; an attempt whose `SENT`
+     * never came is booked at the larger of a flood and its path; the reciprocal PATH our board sends is booked whole.
+     */
+    @Test
+    fun aDmAlongAnNHopPathBooksExactlyItsPathBytesAndNothingForRepeaters() {
+        hooks.beforeReady(ready())
+        val air = core.airtime
+
+        fun phyMs(
+            pathBytes: Int,
+            flooded: Boolean = false,
+        ) = air.airMsOfPhy(MeshcoreTraits.contactTextPhyBytes(120, flooded, pathBytes))
+        ops.air.tryEmit(MeshcoreAir.DirectRouted(1u, bytes = 120, flooded = false, pathBytes = 8, atMs = now))
+        val alongEight = phyMs(8) - phyMs(0)
+        assertTrue("eight path bytes cost air", alongEight > 0)
+        assertEquals("eight path bytes, our own airing only", alongEight, air.usedMs(now))
+        assertEquals(1L, hooks.counters.pathSurcharges.get())
+        // No SENT: whichever of a flood and the meant path costs more.
+        ops.air.tryEmit(MeshcoreAir.DirectRouted(2u, bytes = 120, flooded = true, pathBytes = 12, atMs = now))
+        val unsent = maxOf(phyMs(0, flooded = true), phyMs(12)) - phyMs(0)
+        assertEquals(alongEight + unsent, air.usedMs(now))
+        ops.air.tryEmit(MeshcoreAir.ReciprocalPath(pathBytes = 3, atMs = now))
+        val reciprocal = air.airMsOfPhy(MeshcoreTraits.reciprocalPathPhyBytes(3))
+        assertEquals(alongEight + unsent + reciprocal, air.usedMs(now))
+        assertEquals(1L, hooks.counters.reciprocalsBooked.get())
     }
 
     // --- the slot guard ---

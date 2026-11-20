@@ -299,11 +299,11 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `MeshManager.meshcoreClaimForTest`. Edit the topology only through
   `air.meshcoreEdit { … }` (the air's serial context) and read it through `air.snapshot { … }`; `MeshLab.meetOverMeshcore`
   makes nodes contacts over a link and parts them, `awaitAcquainted` then `awaitTaught` each such pair (a link alone teaches
-  nothing; taught on the board, pinned, and the plane holding the peer direct with its pair seal's index built,
+  nothing; taught on the board, its route read, and the plane holding the peer direct with its pair seal's index built,
   `LabNode.meshcoreReadyFor` — a restart rebuilds both after its Ready), and `LabNode.awaitMeshcoreBack` waits out a board
   that went away (`LabLimits.meshcoreBackoffMs` shortens its redial). Three clocks: the session's is monotonic, so a
   jump moves the plane's decisions (the re-probe gap, the fragment window, a hold) and never the session's waits. Wait on
-  the receiving side's event — `loraBoundPartsTaken` at the receiver's plane, `meshcoreRepinsDone`, a counter or the board
+  the receiving side's event — `loraBoundPartsTaken` at the receiver's plane, `meshcoreRouteReads`, a counter or the board
   read back (`meshcoreCommands`, `meshcoreWrites`) — never on `air.airings`, which is written before the receiver's board,
   session or plane has run. `MeshcoreRoomLabTest`, `MeshcoreDirectLabTest`, `MeshcoreProfileLabTest`,
   `MeshcorePublicLabTest` and `MeshcoreMixedFleetLabTest` (a Meshtastic and a MeshCore fleet on two airs, Stage 8) are the

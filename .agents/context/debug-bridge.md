@@ -289,8 +289,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `meshcoreKeysWanted`, `meshcoreKeysSkipped`, `meshcoreRemovedUntaught`, `meshcoreAcksBookedDirect`, `meshcoreContactListings`,
   `meshcoreListingsShort`, `meshcoreReconciles`, `meshcoreReconcilesSkipped`, `meshcoreReconcileRemoved`, `…Overwritten`,
   `…Taught`, `…Failed`, `…Deferred`, `meshcoreReconcilesDropped`, `meshcorePrefixContests`, `meshcoreSetupErasedContacts`,
-  `meshcoreSetupClearedSlots`, and since Stage 5c-2b `meshcoreRepinsDone`, `meshcoreLiveTeachesWritten`, `…Failed`,
-  `…Deferred`) and the consent's refusals (`meshcoreKeyUnproven`,
+  `meshcoreSetupClearedSlots`, and since Stage 5c-2b `meshcoreLiveTeachesWritten`, `…Failed`, `…Deferred`; Stage 5c-2b's
+  `meshcoreRepinsDone` went with the pin in ADR 2026-11.gsqu's 2026-11-19 amendment, deliberately — its event is now
+  `meshcoreRouteReads`) and the consent's refusals (`meshcoreKeyUnproven`,
   `meshcoreProofUnanswered`, `meshcoreUnbondedInert`, `meshcoreConsentMismatches`, `meshcoreConsentReadFailures`,
   `meshcoreRecordReadFailures`, `meshcoreRecordWriteFailures`, `meshcoreRestoreMismatches`, `meshcoreConsentApplyFailures`),
   and since Stage 5d the bind's (`meshcoreBindUnanswered`: no answer, another client's command in the sign buffer, or a
@@ -308,16 +309,21 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   name: a reply is logged whole. `…debug.LORATX --es kind meshcore --es text <s>` is MeshCore's raw send through the plane's own
   path (`lora-bridge.md`, "Stage 7: the radio screen's half"): `result`, `slot`, `bookedMs`, `law`; never the text. Keys: `built`, `enabled`, `dms`, `bound`, `state`, `version`
   (cleaned), `versionCode`, `slot` (the board's Knit slot), `radio`, `multiAcks`, `defaultScope`, `queued`, `queueFree`,
-  `heard` (fresh-frame authors at any hop count, unverified), `boardsHeard` (radios counted by verified pinned zero-hop author:
+  `heard` (fresh-frame authors at any hop count, unverified), `boardsHeard` (radios counted by verified zero-hop author, whose key is pinned:
   on MeshCore compare it with `meshcoreZeroHopKnitPosts`, not `heard`), `direct`, `airtime` (`known`, `usedMs`, `allowanceMs`,
   `floodUsedMs`, `floodCeilingMs`, `braked`, the board's two utilisations), `law` (`dutyPercent`, `trailingTxSecs`,
   `limitSecs`, `holding`, `releaseInSecs`) and `counters` (`meshcoreForeignDms`, `meshcoreForeignPosts`, `meshcorePublicDiscarded`,
   `meshcoreFragmentsRefused`, `meshcoreAcksBooked`, `meshcorePathReturnsBooked`, `meshcoreAnswersReplayed`,
-  `meshcoreFloodSurcharges`, `meshcoreLawHolds`, `meshcoreZeroHopKnitPosts`, `meshcoreTeachRefused`, since Stage 6 the Public
+  `meshcoreFloodSurcharges`, since ADR 2026-11.gsqu's 2026-11-19 amendment `meshcorePathSurcharges` and
+  `meshcoreReciprocalsBooked`, `meshcoreLawHolds`, `meshcoreZeroHopKnitPosts`, `meshcoreTeachRefused`, since Stage 6 the Public
   mirror's `meshcorePublicHeard`, `meshcorePublicRoomOff`, `meshcorePublicRefused`, `meshcorePublicDelivered`,
   `meshcorePublicPostsQueued`, `meshcorePublicPostsRefused`, `meshcorePublicPostsSent`, `meshcorePublicPostsEnded`
-  (`meshcorePublicDiscarded` now counts slot 0's channel data alone), and the session's `meshcoreDirectFlooded`,
-  `meshcorePinFailures`, `meshcorePacketsDropped`, `meshcoreCommandsRefused`, `meshcoreUnexpected`, `meshcoreRejected`, and,
+  (`meshcorePublicDiscarded` now counts slot 0's channel data alone), and the session's `meshcoreDirectFlooded` (since the
+  2026-11-19 amendment a count of the DM ladder's floods, no longer a breach), its `meshcoreRouteResets`, `meshcoreRouteHops`
+  (a gauge: the last direct attempt's hops), `meshcoreZeroHopWrites`, `meshcoreFloodsSkipped`, `meshcoreRouteReads` and `meshcoreLadderWritesDeferred` (a zero-hop write
+  or reset skipped past the key's daily budget: a known route sent on as read, an UNKNOWN one refused
+  `ROUTE_BUDGET_SPENT`, a plain refusal, never a missing key)
+  (`meshcorePinFailures` dropped with the pin, deliberately), `meshcorePacketsDropped`, `meshcoreCommandsRefused`, `meshcoreUnexpected`, `meshcoreRejected`, and,
   since Stage 5c-1, the reassembler's `meshcoreFragCandidatesFull` (a waiting bound part replaced at random past its side's airtime
   cap), `meshcoreFragUnverified`, `meshcoreElidedUnverified`, read off the fast-path drops; `meshcoreFragmentsRefused` now counts any
   unbound `0x04` part and a bound one that does not parse).

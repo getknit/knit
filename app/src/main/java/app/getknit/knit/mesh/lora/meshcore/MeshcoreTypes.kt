@@ -127,7 +127,7 @@ internal interface MeshcoreBoardOps {
     /** This phone's consent for the board each Ready is on, from its setup record: the actor's alone, in its order. */
     val consent: StateFlow<MeshcoreConsent?>
 
-    /** The keys Knit teaches the board, ranked (`MeshcoreContacts`, Stage 5b-2): the only keys sent to or pinned. Any thread. */
+    /** The keys Knit teaches the board, ranked (`MeshcoreContacts`, Stage 5b-2): the only keys sent to or written. Any thread. */
     fun setKnitContacts(
         ranked: List<ByteArray>,
         withdrawn: Boolean = false,
@@ -138,13 +138,6 @@ internal interface MeshcoreBoardOps {
 
     /** Removes [key]'s contact, read back gone, unless it is taught again by then (lora N1). */
     suspend fun removeUntaught(key: ByteArray): ContactWrite
-
-    /**
-     * Whether our board's contact for [from] is a key Knit taught, its zero-hop pin read back on this connection: then our
-     * board answers a DM from it along that path, never by flood (`sendAckTo`). Only an air price reads it; no route,
-     * hearing or delivery keys on a prefix. Any thread.
-     */
-    fun pinnedZeroHop(from: app.getknit.knit.mesh.lora.BoardAddr.MeshCore): Boolean = false
 
     /**
      * The board as the session last published it, while it is Ready (`BoardLink.state`); null otherwise. What the Public
@@ -254,6 +247,15 @@ internal interface MeshcoreSessionObserver {
         uptimeSecs: Long,
         txAirSecs: Long,
     )
+
+    /**
+     * Whether the compact DM the session's flight [handle] carries is still wanted, asked on the actor right before the DM
+     * ladder's flood rung resets the route (ADR 2026-11.gsqu's 2026-11-19 amendment): the frame's own gates — a link, a
+     * spool cover, its ✓✓ since — as the core asked them when it sent. **The one exception to this interface's rule**: it
+     * may suspend (it reads the database), bounded by the session's own timeout; it never calls the session back. A flight
+     * the core no longer knows is wanted, so a race never strands a DM.
+     */
+    suspend fun floodWanted(handle: UInt): Boolean = true
 }
 
 /**
@@ -273,6 +275,13 @@ internal class MeshcorePacket(
     val live: Boolean,
     val cobs: Boolean,
     text: ByteArray?,
+    /**
+     * For a contact text, our board's record of its sender as this connection last read it ([MeshcorePins.routeOf], raw
+     * `out_path_len`): `0xFF` floods, else hops in the low six bits; null when nothing was read. What our board's answer is
+     * priced along, and what a DM's zero-hop hearing reads (ADR 2026-11.gsqu's 2026-11-19 amendment). Never a hop count of
+     * this packet: a direct DM reads `0xFF` whatever path it took.
+     */
+    val senderRoute: Int? = null,
 ) {
     enum class Type { CONTACT_TEXT, CHANNEL_TEXT, CHANNEL_DATA }
 
@@ -295,13 +304,28 @@ internal sealed interface MeshcoreAir {
     val atMs: Long
 
     /**
-     * A DM attempt of ours ([handle]) went out as a flood: our contact had no path (`RESP_SENT` flag 1). The airing
-     * itself was booked when it was sent; Stage 5 books only the flood's surcharge (every repeater's re-airing), never a
-     * second airing.
+     * A DM attempt of ours ([handle], a COBS text of [bytes]) went out on a route other than zero hops (ADR 2026-11.gsqu's
+     * 2026-11-19 amendment): [flooded] when our contact had no path (`RESP_SENT` flag 1), else direct along [pathBytes] of
+     * learned path. The airing itself was booked at send as a zero-hop DM; the core books only what **our own board's**
+     * airing adds — the flood's transport codes, or the path's bytes — never a repeater's re-airing (ADR 2026-10.ug4a, the
+     * user's decision of 2026-11-19). An attempt whose `SENT` never came is reported [flooded] with the path it was meant to
+     * take, and priced at the larger of the two.
      */
-    data class DirectFlooded(
+    data class DirectRouted(
         val handle: UInt,
         val bytes: Int,
+        val flooded: Boolean,
+        val pathBytes: Int,
+        override val atMs: Long,
+    ) : MeshcoreAir
+
+    /**
+     * A flooded DM of ours was confirmed through its receiver's PATH return, and our board answered that return with one
+     * reciprocal PATH sent direct along the route it just learned (`Mesh.cpp:173-178`): [pathBytes] of path, both on the
+     * packet and in its plaintext. Ours to book whole, under `Ceiling.FULL`.
+     */
+    data class ReciprocalPath(
+        val pathBytes: Int,
         override val atMs: Long,
     ) : MeshcoreAir
 
@@ -534,8 +558,12 @@ internal object MeshcoreRefusal {
     /** A DM to a board whose key no contact plumbing taught the session: nothing to address it by. */
     const val NO_RECORD = -10
 
-    /** A DM whose zero-hop pin failed or timed out in this connection: nothing was written (binding rule "sends" 1). */
-    const val UNPINNED = -11
+    /**
+     * A DM whose contact record could not be read or written at zero hops before its first attempt (a record left UNKNOWN by
+     * the last flight's reset, ADR 2026-11.gsqu's 2026-11-19 amendment): nothing was sent, since the attempt would flood
+     * before zero hops were tried.
+     */
+    const val ROUTE_UNWRITTEN = -11
 
     /** A room post to a slot that no longer reads as Knit's channel (binding rule "contacts" 2). */
     const val SLOT_NOT_KNIT = -12
@@ -562,14 +590,23 @@ internal object MeshcoreRefusal {
     const val NAME_UNPOSTABLE = -17
 
     /**
-     * What a synchronous refusal means: our own board without the destination's contact — no record, a pin that failed,
-     * the board's `NOT_FOUND` — is [RefusalClass.OWN_NO_KEY]; anything else refused is [RefusalClass.OTHER].
+     * A DM whose record reads UNKNOWN once the key's daily ladder writes are spent (`MeshcorePins.MAX_LADDER_WRITES_PER_DAY`,
+     * ADR 2026-11.gsqu's 2026-11-19 amendment): sending it would flood before zero hops were tried, so nothing was. Classed
+     * [RefusalClass.OTHER], never a missing key: the board holds the contact, and a teach would answer `ALREADY_PRESENT` and
+     * re-offer the frame into the same refusal (lora-reviewer's second follow-up, blocking). The re-probe asks again.
+     */
+    const val ROUTE_BUDGET_SPENT = -18
+
+    /**
+     * What a synchronous refusal means: our own board without the destination's contact — no record, a record write that
+     * failed, the board's `NOT_FOUND` — is [RefusalClass.OWN_NO_KEY]; anything else refused, [ROUTE_BUDGET_SPENT] among
+     * them, is [RefusalClass.OTHER].
      */
     fun classOf(result: SendResult): RefusalClass? =
         when (result) {
             is SendResult.Rejected -> {
                 when (result.res) {
-                    NO_RECORD, UNPINNED, MeshcoreProto.ERR_NOT_FOUND -> RefusalClass.OWN_NO_KEY
+                    NO_RECORD, ROUTE_UNWRITTEN, MeshcoreProto.ERR_NOT_FOUND -> RefusalClass.OWN_NO_KEY
                     else -> RefusalClass.OTHER
                 }
             }
@@ -766,23 +803,46 @@ internal class MeshcoreCounters {
     /** Every other push this build reads no further (`LOG_RX_DATA`, `CONTACTS_FULL` …). */
     val otherPushes = AtomicLong()
 
-    /** A DM attempt of ours that the board flooded (`meshcoreDirectFlooded`): a breach of the zero-hop pin. */
+    /**
+     * A DM attempt of ours that the board flooded (`meshcoreDirectFlooded`): the ladder's one flood a flight, or a record
+     * somebody else reset (ADR 2026-11.gsqu's 2026-11-19 amendment). Each is two floods on the network: it, and its
+     * receiver's flooded PATH return.
+     */
     val directFlooded = AtomicLong()
 
-    /** A pin that failed or timed out. */
-    val pinFailures = AtomicLong()
+    /** The DM ladder's `RESET_PATH`, written and read back UNKNOWN before a flood rung (`meshcoreRouteResets`). */
+    val routeResets = AtomicLong()
+
+    /**
+     * A gauge, not a count (`meshcoreRouteHops`): the hops of our last DM attempt the board sent direct, as its `RESP_SENT`'s
+     * `est_timeout` gives them back (else the route last read); 0 at zero hops.
+     */
+    val routeHops = AtomicLong()
+
+    /** The ladder's zero-hop write before an attempt (`meshcoreZeroHopWrites`), read back at zero hops. */
+    val zeroHopWrites = AtomicLong()
+
+    /**
+     * A ladder write (a zero-hop write or a reset) not made because the key's daily budget was spent
+     * (`meshcoreLadderWritesDeferred`, `MeshcorePins.MAX_LADDER_WRITES_PER_DAY`): the attempt went on a known route as read,
+     * or, on an UNKNOWN one, did not go (`MeshcoreRefusal.ROUTE_BUDGET_SPENT` at send, never a flood before zero hops).
+     */
+    val ladderWritesDeferred = AtomicLong()
+
+    /** A flood rung skipped because the core no longer wanted the DM (a link, a spool cover, its ✓✓): ended with no outcome. */
+    val floodsSkipped = AtomicLong()
 
     /** A path push or deletion for a key Knit did not teach: left alone. */
     val foreignPathPushes = AtomicLong()
 
-    /** A path push inside a key's rate limit: unverified only. */
-    val repinsCoalesced = AtomicLong()
+    /** A deletion inside a key's re-teach gap: its route forgotten, nothing written. */
+    val reteachesCoalesced = AtomicLong()
 
     /**
-     * A targeted re-pin a path push queued, run to its end and read back zero-hop (`meshcoreRepinsDone`, ADR 2026-11.gsqu's
-     * Stage 5c-2b amendment): written or found already pinned. What a scenario waits on after a `0x81` before the next send.
+     * A route read a path push queued, run to its end (`meshcoreRouteReads`): the record read back and its route cached,
+     * nothing written. What a scenario waits on after a `0x81`.
      */
-    val repinsDone = AtomicLong()
+    val routeReads = AtomicLong()
 
     /**
      * Live teaches (a key the taught set gained while Ready, or a contact the board deleted) written and read back

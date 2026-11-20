@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.mesh.lora.meshcore.ContactRecord
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreContacts
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreProto
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreTraits
 import app.getknit.knit.mesh.protocol.FrameType
@@ -24,7 +25,11 @@ import java.lang.reflect.Modifier
  * DM the session writes only after a zero-hop pin read back on this connection (`MeshcoreSession`, its tests).
  */
 class BoardKindFramePolicyTest {
-    private enum class Air { FLOOD, ZERO_HOP, REFUSED }
+    /**
+     * What a frame does on the air: floods; stays at zero hops; [ROUTED], zero hops first and then the firmware's own
+     * flood-then-learned-path routing (a MeshCore compact DM, ADR 2026-11.gsqu's 2026-11-19 amendment); or never airs.
+     */
+    private enum class Air { FLOOD, ZERO_HOP, ROUTED, REFUSED }
 
     /** Every [FrameType] constant, read off the object so a new one cannot be missed. */
     private val frameTypes: List<String> =
@@ -64,9 +69,9 @@ class BoardKindFramePolicyTest {
 
     /**
      * What becomes of a compact DM — any [DirectKind]: they share one carrier — on [traits]' kind, read off the production
-     * fact that decides it: Meshtastic's unicast `hop_limit`; on MeshCore the route of the contact record Knit teaches and
-     * re-pins ([ContactRecord.knit], [ContactRecord.pinned]), whose `out_path_len` 0 is what keeps the firmware from
-     * flooding the DM and its ack.
+     * facts that decide it: Meshtastic's unicast `hop_limit`; on MeshCore the contact record Knit teaches
+     * ([ContactRecord.knit]) at `out_path_len` 0, a new contact's zero-hop first try, and the reconcile's test
+     * ([MeshcoreContacts.isKnitRouting]) keeping whatever route the firmware learns after it: no pin holds it at zero hops.
      */
     private fun direct(traits: BoardTraits): Air =
         when (traits.kind) {
@@ -75,8 +80,25 @@ class BoardKindFramePolicyTest {
             }
 
             BoardKind.MESHCORE -> {
-                val taught = ContactRecord.knit(ByteArray(MeshcoreProto.KEY_BYTES) { 1 }, "Knit 0101")
-                if (taught.outPathLen == 0 && taught.pinned().outPathLen == 0) Air.ZERO_HOP else Air.FLOOD
+                val key = ByteArray(MeshcoreProto.KEY_BYTES) { 1 }
+                val taught = ContactRecord.knit(key, "Knit 0101")
+                // The record after a PATH return taught the firmware a two-hop route: still Knit's, so nothing rewrites it.
+                val learned =
+                    ContactRecord(
+                        key,
+                        MeshcoreProto.ADV_TYPE_CHAT,
+                        MeshcoreProto.CONTACT_FLAG_FAVOURITE,
+                        2,
+                        ByteArray(MeshcoreProto.PATH_FIELD),
+                        ByteArray(MeshcoreProto.NAME_FIELD),
+                        0L,
+                        ByteArray(8),
+                    )
+                when {
+                    taught.outPathLen != 0 -> Air.FLOOD
+                    MeshcoreContacts.isKnitRouting(learned) -> Air.ROUTED
+                    else -> Air.ZERO_HOP
+                }
             }
         }
 
@@ -102,7 +124,7 @@ class BoardKindFramePolicyTest {
     }
 
     @Test
-    fun onMeshcoreOnlyAnOwnRoomPostFloodsAndEveryCompactDmIsZeroHop() {
+    fun onMeshcoreOnlyAnOwnRoomPostFloodsAndEveryCompactDmRoutesAsTheBoardLearns() {
         val floods =
             frameTypes.flatMap { type -> Form.entries.map { type to it } }.filter { (type, form) ->
                 fanout(MeshcoreTraits, env(type, form)) == Air.FLOOD
@@ -110,7 +132,11 @@ class BoardKindFramePolicyTest {
         assertEquals(listOf(FrameType.CHAT to Form.ROOM), floods)
         assertEquals(Ceiling.FLOOD, MeshcoreTraits.roomCeiling)
         val kinds = DirectKind.entries.joinToString()
-        assertEquals("a compact DM ($kinds, one carrier) on MeshCore", Air.ZERO_HOP, direct(MeshcoreTraits))
+        assertEquals(
+            "a compact DM ($kinds, one carrier) on MeshCore: zero hops first, then the firmware's route",
+            Air.ROUTED,
+            direct(MeshcoreTraits),
+        )
         assertEquals("a compact DM ($kinds) on Meshtastic, a hop_limit-3 unicast", Air.FLOOD, direct(BoardTraits.MESHTASTIC))
         assertEquals("Meshtastic's room keeps the whole allowance", Ceiling.FULL, BoardTraits.MESHTASTIC.roomCeiling)
     }

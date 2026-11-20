@@ -53,6 +53,24 @@ class LoraDirectPolicyTest {
     }
 
     @Test
+    fun aHearingThroughRepeatersLiftsAMarkAtMostOnceAGap() {
+        // lora NB2 on ADR 2026-11.gsqu's 2026-11-19 amendment: five far posts after one give-up and a second give-up give one
+        // lift within the gap; a zero-hop hearing still lifts freely; past the gap a far one lifts again.
+        val p = policy()
+        val gap = 15 * 60_000L
+        p.onUnreachable("bob", now = 0)
+        val lifts =
+            (1..5).count { n ->
+                p.onHeardFar("bob", now = n * 1_000L, gapMs = gap).also { p.onUnreachable("bob", now = n * 1_000L) }
+            }
+        assertEquals("one lift within the gap", 1, lifts)
+        assertTrue("held still", p.holds("bob", 6_000))
+        assertTrue("a zero-hop hearing lifts freely", p.onHeard("bob"))
+        p.onUnreachable("bob", now = 7_000)
+        assertTrue("past the gap a far one lifts again", p.onHeardFar("bob", now = 1_000L + gap, gapMs = gap))
+    }
+
+    @Test
     fun aGiveUpHoldsOffersUntilTheBoardIsHeardOnceAndOnlyOnce() {
         val p = policy()
         p.onUnreachable("bob", now = 0)

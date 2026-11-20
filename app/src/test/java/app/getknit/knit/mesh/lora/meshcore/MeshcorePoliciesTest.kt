@@ -91,7 +91,7 @@ class MeshcorePoliciesTest {
         assertEquals(2L, p.refusedPrefixes)
         p.contest(MeshcorePins.addrOf(bob)!!)
         assertNull("contested for the connection", p.keyFor(MeshcorePins.addrOf(bob)!!))
-        p.onReady(now = 0)
+        p.onReady()
         assertNull("a new Ready keeps the last listing's contests (lora N3)", p.keyFor(MeshcorePins.addrOf(bob)!!))
         p.setContested(emptyList())
         assertTrue("until a whole listing clears them", p.keyFor(MeshcorePins.addrOf(bob)!!)!!.contentEquals(bob))
@@ -107,44 +107,72 @@ class MeshcorePoliciesTest {
         val boardB = MeshcorePins.addrOf(FakeMeshcoreAir.keyOf("b"))!!
         val addr = MeshcorePins.addrOf(bob)!!
         p.setTaught(listOf(bob))
-        p.onReady(now = 0, board = boardA)
+        p.onReady(board = boardA)
         p.setContested(listOf(addr))
-        p.onReady(now = 1, board = boardA)
+        p.onReady(board = boardA)
         assertNull("the same board, no whole listing yet (a short or cut one replaces nothing): kept", p.keyFor(addr))
         p.setContested(emptyList())
         assertTrue("a whole listing replaces them", p.keyFor(addr)!!.contentEquals(bob))
         p.setContested(listOf(addr))
-        p.onReady(now = 2, board = boardB)
+        p.onReady(board = boardB)
         assertTrue("a rebind to another board clears them", p.keyFor(addr)!!.contentEquals(bob))
     }
 
     @Test
-    fun aPushForATaughtKeyQueuesOneRepinAMinuteAndOnlyMarksInBetween() {
+    fun aPathPushForATaughtKeyQueuesOneReadNeverAWriteAndADeletionOneReteachAMinute() {
+        // ADR 2026-11.gsqu's 2026-11-19 amendment: a 0x81 is the firmware learning a path, read back and kept, never re-pinned.
         val p = MeshcorePins()
         p.setTaught(listOf(alice, bob))
-        p.onReady(now = -120_000)
         val addr = MeshcorePins.addrOf(bob)!!
-        p.onPinned(addr)
+        p.noteRoute(addr, 2)
         assertEquals(MeshcorePins.PushAction.IGNORED, p.onPush(mallory, deleted = false, now = 0))
-        assertEquals(MeshcorePins.PushAction.QUEUED, p.onPush(bob, deleted = false, now = 0))
-        assertFalse("a path push unverifies it", p.isVerified(addr))
-        repeat(10) { assertEquals(MeshcorePins.PushAction.MARKED, p.onPush(bob, deleted = false, now = 1_000L + it)) }
+        repeat(10) { assertEquals(MeshcorePins.PushAction.QUEUED, p.onPush(bob, deleted = false, now = it.toLong())) }
+        assertEquals("a path push keeps the route last read until its read lands", 2, p.routeOf(addr))
         val job = p.nextJob()!!
         assertTrue(job.first.contentEquals(bob))
-        assertEquals(MeshcorePins.Job.PIN, job.second)
-        assertNull("one job, however many pushes", p.nextJob())
+        assertEquals(MeshcorePins.Job.READ, job.second)
+        assertNull("one read, however many pushes", p.nextJob())
+        assertEquals(MeshcorePins.PushAction.QUEUED, p.onPush(bob, deleted = true, now = 0))
+        assertNull("a deletion forgets the route", p.routeOf(addr))
+        assertEquals("a deletion is re-taught", MeshcorePins.Job.TEACH, p.nextJob()!!.second)
+        p.onPush(bob, deleted = false, now = 1_000)
+        assertEquals(
+            "a deletion inside the minute writes nothing and drops a read of a gone contact",
+            MeshcorePins.PushAction.MARKED,
+            p.onPush(bob, deleted = true, now = 2_000),
+        )
+        assertNull(p.nextJob())
         assertEquals(MeshcorePins.PushAction.QUEUED, p.onPush(bob, deleted = true, now = 60_000))
-        assertEquals("a deletion is re-taught, not pinned", MeshcorePins.Job.TEACH, p.nextJob()!!.second)
     }
 
     @Test
-    fun readyEmptiesVerifiedAndReturnsTheRankedReassert() {
+    fun aKeysLadderWritesAreBoundedAUtcDay() {
+        // security NB3: the DM ladder's zero-hop writes and resets are flash writes.
+        val p = MeshcorePins()
+        val bob = MeshcorePins.addrOf(bob)!!
+        repeat(MeshcorePins.MAX_LADDER_WRITES_PER_DAY) { assertTrue(p.spendLadderWrite(bob, DAY)) }
+        assertFalse("past the day's budget", p.spendLadderWrite(bob, DAY))
+        assertTrue("another key has its own", p.spendLadderWrite(MeshcorePins.addrOf(alice)!!, DAY))
+        assertTrue("a new UTC day", p.spendLadderWrite(bob, DAY + 1))
+    }
+
+    @Test
+    fun routesAreKeptForTaughtKeysAloneAndAReadyForgetsThemAll() {
         val p = MeshcorePins()
         p.setTaught(listOf(bob, alice))
-        p.onPinned(MeshcorePins.addrOf(bob)!!)
-        val reassert = p.onReady(now = 0)
-        assertEquals(listOf(bob.toList(), alice.toList()), reassert.map { it.toList() })
-        assertFalse(p.isVerified(MeshcorePins.addrOf(bob)!!))
+        val bobAddr = MeshcorePins.addrOf(bob)!!
+        p.noteRoute(bobAddr, 0)
+        p.noteRoute(MeshcorePins.addrOf(mallory)!!, 1)
+        assertEquals(0, p.routeOf(bobAddr))
+        assertNull("nothing is kept about a contact Knit did not teach", p.routeOf(MeshcorePins.addrOf(mallory)!!))
+        p.queueRead(MeshcorePins.addrOf(alice)!!)
+        assertEquals(MeshcorePins.Job.READ, p.nextJob()!!.second)
+        p.setTaught(listOf(alice))
+        assertNull("a key that left the set forgets its route", p.routeOf(bobAddr))
+        p.setTaught(listOf(bob))
+        p.noteRoute(bobAddr, MeshcoreProto.PATH_UNKNOWN)
+        p.onReady()
+        assertNull("the board may have learned or lost a route while we were away", p.routeOf(bobAddr))
     }
 
     @Test
@@ -200,7 +228,7 @@ class MeshcorePoliciesTest {
         p.onLiveTeachSpent(alice, DAY, written = true)
         assertTrue("a write spends the retry anew", p.retryTeachOnce(alice))
         p.nextJob()
-        p.onReady(now = 0)
+        p.onReady()
         assertTrue("and so does a Ready", p.retryTeachOnce(alice))
     }
 

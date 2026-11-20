@@ -74,6 +74,13 @@ they are documented and out of scope for reports:
   default PIN signs for anyone in Bluetooth range while your phone is away, and a board's former owner keeps a valid
   signature, so two contacts can still both prove one board, and then Knit uses it for neither.
 
+- **A build that sends your private messages across a MeshCore network shows who you message to that network.** On
+  the same builds, a private message to a contact your board can't reach directly floods the MeshCore network once,
+  then follows the path it learned through repeaters. Its content stays end-to-end encrypted, but the two boards'
+  one-byte key hashes, its timing and its size reach every radio the flood reaches, and the repeaters it passes
+  through are named in its header, which can show roughly where both boards are. A gateway that forwards what it hears
+  to the Internet publishes all of this. Turning off *Private messages over LoRa* keeps private messages off the board.
+
 See the README's *Security note* and [`docs/`](docs/) for the full threat model and design detail. Novel
 issues **beyond** these documented trade-offs — key handling, the crypto envelope, signature
 verification, the CBOR wire parser, at-rest encryption, memory-safety in the radio layer — are in scope

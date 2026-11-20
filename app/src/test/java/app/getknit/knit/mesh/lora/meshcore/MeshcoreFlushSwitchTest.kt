@@ -96,6 +96,9 @@ class MeshcoreFlushSwitchTest {
         /** Runs inside a send, after the board took it and before the send returns: an answer that outruns its send. */
         var beforeReturn: (suspend (UInt) -> Unit)? = null
 
+        /** What a send answers instead of being taken, by its handle; null takes it. */
+        var refuse: ((UInt) -> SendResult)? = null
+
         override suspend fun send(
             payload: ByteArray,
             purpose: SendPurpose,
@@ -107,6 +110,7 @@ class MeshcoreFlushSwitchTest {
                 it.await()
             }
             val id = nextId++
+            refuse?.let { return BoardSend(it(id), 0) }
             beforeReturn?.invoke(id)
             return BoardSend(SendResult.Queued(id, QueueInfo(10, 16, 0)), 0)
         }
@@ -140,7 +144,12 @@ class MeshcoreFlushSwitchTest {
             withdrawn: Boolean,
         ) = Unit
 
-        override suspend fun teach(key: ByteArray): ContactWrite = ContactWrite.NOT_READY
+        var teaches = 0
+
+        override suspend fun teach(key: ByteArray): ContactWrite {
+            teaches++
+            return ContactWrite.NOT_READY
+        }
 
         override suspend fun removeUntaught(key: ByteArray): ContactWrite = ContactWrite.NOT_READY
     }
@@ -162,6 +171,10 @@ class MeshcoreFlushSwitchTest {
         ops: Ops,
         metrics: MeshMetrics,
         logs: MutableList<String>,
+        unacked: () -> Boolean = { true },
+        config: kotlinx.coroutines.flow.Flow<LoraConfig?> =
+            MutableStateFlow(LoraConfig(ADDRESS, MeshcoreHooks.NO_CONFIGURED_SLOT, dms = true)),
+        holders: kotlinx.coroutines.flow.Flow<Map<String, app.getknit.knit.mesh.lora.LoraBoardHolder>> = flowOf(bobHeld()),
     ): LoraMeshTransport =
         LoraMeshTransport(
             selfId = { "alice" },
@@ -169,7 +182,7 @@ class MeshcoreFlushSwitchTest {
                 BoardPlane(MeshcoreTraits, board) { core ->
                     MeshcoreHooks(ops, core, backgroundScope, { testScheduler.currentTime }, { line -> logs += line })
                 },
-            config = MutableStateFlow(LoraConfig(ADDRESS, MeshcoreHooks.NO_CONFIGURED_SLOT, dms = true)),
+            config = config,
             crypto = Seal,
             source =
                 object : LoraDirectSource {
@@ -180,22 +193,9 @@ class MeshcoreFlushSwitchTest {
                         maxBytes: Int,
                     ): List<DirectDm> = emptyList()
 
-                    override suspend fun isUnacked(frameId: String): Boolean = true
+                    override suspend fun isUnacked(frameId: String): Boolean = unacked()
                 },
-            boardMap =
-                flowOf(
-                    MeshcoreContacts.holdersOf(
-                        mapOf(
-                            BOB to
-                                MeshcoreBoardHolder(
-                                    Base64.getEncoder().encodeToString(BOB_KEY),
-                                    MeshcoreRank.ACCEPTED,
-                                    1,
-                                    false,
-                                ),
-                        ),
-                    ),
-                ),
+            boardMap = holders,
             scope = backgroundScope,
             metrics = metrics,
             clock = { testScheduler.currentTime },
@@ -256,6 +256,101 @@ class MeshcoreFlushSwitchTest {
             assertTrue("within the seal cap", tick.single().third.size <= MeshcoreProto.DIRECT_SEAL_CAP)
             assertEquals("never too long", 0L, metrics.snapshot().lora.loraDirectTooLong)
             assertTrue("nothing evicted at the new Ready", logs.none { it.startsWith("lora ready: evicted") })
+        }
+
+    /** Bob as the board map holds him: a direct contact with a MeshCore key, taught. */
+    private fun bobHeld(): Map<String, app.getknit.knit.mesh.lora.LoraBoardHolder> =
+        MeshcoreContacts.holdersOf(
+            mapOf(BOB to MeshcoreBoardHolder(Base64.getEncoder().encodeToString(BOB_KEY), MeshcoreRank.ACCEPTED, 1, false)),
+        )
+
+    /**
+     * The design pass's finding 4 (ADR 2026-11.gsqu's 2026-11-19 amendment): before the session's ladder floods a DM it asks
+     * the core, through the hooks, whether the frame is still wanted — the questions its `RideGate` put at send: a link to
+     * bob, a spool cover over him, a block (bob out of the board map), DMs switched off, and for a DM a person wrote its ✓✓
+     * since. A ✓✓ of ours asks no ✓✓, and a send the core no longer waits on is wanted.
+     */
+    @Test
+    fun theFloodRungAsksTheCoreTheFramesOwnGatesAgain() =
+        runTest {
+            val board = GatedBoard()
+            val ops = Ops()
+            val metrics = MeshMetrics()
+            val logs = mutableListOf<String>()
+            var unacked = true
+            val config = MutableStateFlow<LoraConfig?>(LoraConfig(ADDRESS, MeshcoreHooks.NO_CONFIGURED_SLOT, dms = true))
+            val holders = MutableStateFlow(bobHeld())
+            val transport = transportOver(board, ops, metrics, logs, { unacked }, config, holders)
+            requireNotNull(ops.observer).beforeReady(board.readyAs(1))
+            transport.start()
+            runCurrent()
+            transport.offer(BOB, "dm-1", WALL, byteArrayOf(1, 2, 3), DirectKind.MESSAGE)
+            runCurrent()
+            advanceTimeBy(1_000)
+            runCurrent()
+            val gate = requireNotNull(ops.observer)
+            assertTrue("waiting, unacked, no link, no cover", gate.floodWanted(1u))
+            unacked = false
+            assertTrue("its ✓✓ landed", !gate.floodWanted(1u))
+            unacked = true
+            transport.suppressDataPath(setOf(BOB))
+            assertTrue("linked: the link carries it", !gate.floodWanted(1u))
+            transport.suppressDataPath(emptySet())
+            transport.coveredByInternet(setOf(BOB))
+            runCurrent()
+            assertTrue("covered by a spool", !gate.floodWanted(1u))
+            transport.coveredByInternet(emptySet())
+            runCurrent()
+            assertTrue(gate.floodWanted(1u))
+            assertTrue("a send the core does not wait on", gate.floodWanted(99u))
+            // security NB2: blocked or removed, bob leaves the board map, and nothing floods to him.
+            holders.value = emptyMap()
+            runCurrent()
+            assertTrue("bob no longer a direct holder", !gate.floodWanted(1u))
+            holders.value = bobHeld()
+            runCurrent()
+            assertTrue(gate.floodWanted(1u))
+            config.value = LoraConfig(ADDRESS, MeshcoreHooks.NO_CONFIGURED_SLOT, dms = false)
+            runCurrent()
+            assertTrue("DMs switched off", !gate.floodWanted(1u))
+            config.value = LoraConfig(ADDRESS, MeshcoreHooks.NO_CONFIGURED_SLOT, dms = true)
+            runCurrent()
+            // A ✓✓ of ours never asks the ✓✓ read.
+            unacked = false
+            transport.offer(BOB, "tick-1", WALL, byteArrayOf(4, 5), DirectKind.RECEIPT)
+            board.outcomes.tryEmit(acked(1u))
+            runCurrent()
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals("the ✓✓ went once bob's board acked the DM", 2, board.sent.size)
+            assertTrue(gate.floodWanted(2u))
+        }
+
+    /**
+     * lora-reviewer's second follow-up (blocking): a DM the session refuses for a spent ladder budget on an UNKNOWN record is a
+     * plain refusal. Were it a missing key, the core would teach, find the contact present, and re-offer the frame into the
+     * same refusal, in a loop bounded by nothing but the BLE round trips. Here: one send, no teach, no missing-key count, and
+     * nothing re-offered short of the re-probe's gap.
+     */
+    @Test
+    fun aDmRefusedForASpentLadderBudgetIsAPlainRefusalNeverATeachLoop() =
+        runTest {
+            val board = GatedBoard()
+            val ops = Ops()
+            val metrics = MeshMetrics()
+            val logs = mutableListOf<String>()
+            val transport = transportOver(board, ops, metrics, logs)
+            board.refuse = { id -> SendResult.Rejected(id, MeshcoreRefusal.ROUTE_BUDGET_SPENT) }
+            requireNotNull(ops.observer).beforeReady(board.readyAs(1))
+            transport.start()
+            runCurrent()
+            transport.offer(BOB, "dm-1", WALL, byteArrayOf(1, 2, 3), DirectKind.MESSAGE)
+            runCurrent()
+            advanceTimeBy(60_000) // well inside the re-probe's 15-min base gap
+            runCurrent()
+            assertEquals("one send, never re-offered: ${logs.filter { it.startsWith("lora") }}", 1, board.sent.size)
+            assertEquals("no teach", 0, ops.teaches)
+            assertEquals("no missing key", 0L, metrics.snapshot().lora.loraDirectNoKey)
         }
 
     // --- an answer that outruns its send (ADR 2026-11.gsqu's Stage 5c-2b amendment, the lab's B) ---

@@ -175,7 +175,7 @@ internal class MeshcoreHooks(
 
     init {
         session.observer = this
-        // Our board's floods of a DM of ours (the pin did not hold): the surcharge over the direct airing booked at send.
+        // What our board's routing of a DM of ours added over the zero-hop airing booked at send, and its reciprocal PATH.
         scope.launch { session.air.collect(::onAir) }
         // The setup state the radio screen shows (Stage 7): the face is published again on every move. Not the flow's empty
         // start, and the core publishes nothing before its transport is built (lora-reviewer, Stage 7a).
@@ -257,7 +257,7 @@ internal class MeshcoreHooks(
         val mc = packet.kind as? MeshcorePacket ?: return PacketRoute.DROPPED
         return when (mc.type) {
             MeshcorePacket.Type.CONTACT_TEXT -> {
-                bookAnswer(mc, packet.from as? BoardAddr.MeshCore)
+                bookAnswer(mc)
                 if (isCompactDm(packet, mc)) PacketRoute.DIRECT else discard(counters.foreignDms)
             }
 
@@ -327,9 +327,11 @@ internal class MeshcoreHooks(
      * security pass's KIND-ack item; priced against `companion-v1.18.0` by lora-reviewer N6): every **live** plain or
      * signed-plain DM, Knit's or not — the board answers before the phone reads it. One drained from the offline queue was
      * answered while we were away and is booked by nobody (§2). The ack code is 6 B for a plain text, 4 for a signed one.
-     * - Direct (`path_len 0xFF`): which answer our board aired turns on its record of the sender, which this stage does not
-     *   know (5b's taught set is pinned zero-hop): one **flooded** ack with no path, or along a known path at most one
-     *   multi-ack and the ack ([MeshcoreTraits.boardAckPayloads]). The larger of the two is booked, as milliseconds.
+     * - Direct (`path_len 0xFF`): which answer our board aired turns on its record of the sender, as this connection last
+     *   read it ([MeshcorePacket.senderRoute]): along a known path of any hops at most one multi-ack and the ack
+     *   ([MeshcoreTraits.boardAckPayloads]), each carrying that path's bytes; one **flooded** ack with no path (UNKNOWN);
+     *   and with no read, the larger of a flooded ack and a zero-hop one, as milliseconds (a long path not read is
+     *   under-booked by its path bytes: ADR 2026-11.gsqu's 2026-11-19 amendment).
      * - Flooded: one flooded PATH return at its real size, over the path the DM came by, hash size included
      *   ([MeshcoreTraits.pathReturnPlaintext]), at [AirPurpose.PATH_RETURN]. The session's own `MeshcoreAir.PathReturn`
      *   for the same packet is counted, never booked again ([onAir]).
@@ -337,10 +339,7 @@ internal class MeshcoreHooks(
      * Under [app.getknit.knit.mesh.lora.Ceiling.FULL]: an answer is no room post, and a foreign DM must not eat the room's
      * flood share.
      */
-    private fun bookAnswer(
-        mc: MeshcorePacket,
-        from: BoardAddr.MeshCore?,
-    ) {
+    private fun bookAnswer(mc: MeshcorePacket) {
         val txtType = mc.txtType ?: return
         if (txtType !in MeshcoreSession.ACKED_TXT_TYPES) return
         if (!mc.live) {
@@ -351,18 +350,26 @@ internal class MeshcoreHooks(
         val now = clock()
         if (mc.direct) {
             val flooded = airtime.airMsOfPhy(MeshcoreTraits.ackPhyBytes(MeshcoreTraits.ackBytes(txtType), flooded = true))
+            // Our board answers along the route its record of the sender holds (`sendAckTo`), as the session last read it
+            // (ADR 2026-11.gsqu's 2026-11-19 amendment); a route not read may be anything, so the larger is booked. The
+            // prefix only prices air here: a forged one whose MAC fails draws no ack at all, and one whose MAC passes is
+            // answered on that very record.
+            val route = mc.senderRoute
+            val pathBytes = route?.takeIf { it != MeshcoreProto.PATH_UNKNOWN }?.let(MeshcoreTraits::pathBytesOf) ?: 0
             val alongPath =
                 MeshcoreTraits
                     .boardAckPayloads(
                         multiAcks,
                         txtType,
-                    ).sumOf { airtime.airMsOfPhy(MeshcoreTraits.ackPhyBytes(it, flooded = false)) }
-            // A sender Knit taught and pinned zero-hop on this connection is answered along that path (Stage 5b-2 part 2);
-            // anyone else's record may hold no path, so the larger is booked. The prefix only prices air here: a forged one
-            // whose MAC fails draws no ack at all, and one whose MAC passes is answered on that very record.
-            val pinned = from != null && session.pinnedZeroHop(from)
-            airtime.recordMs(if (pinned) alongPath else maxOf(flooded, alongPath), now)
-            if (pinned) counters.acksBookedDirect.incrementAndGet()
+                    ).sumOf { airtime.airMsOfPhy(MeshcoreTraits.ackPhyBytes(it, flooded = false, pathBytes = pathBytes)) }
+            val booked =
+                when (route) {
+                    null -> maxOf(flooded, alongPath)
+                    MeshcoreProto.PATH_UNKNOWN -> flooded
+                    else -> alongPath
+                }
+            airtime.recordMs(booked, now)
+            if (route != null && route != MeshcoreProto.PATH_UNKNOWN) counters.acksBookedDirect.incrementAndGet()
             counters.acksBooked.incrementAndGet()
         } else {
             airtime.record(MeshcoreTraits.pathReturnPlaintext(mc.pathLen, txtType), now, airtime.price(AirPurpose.PATH_RETURN))
@@ -393,22 +400,39 @@ internal class MeshcoreHooks(
     ): Int? = ready?.channel
 
     /**
-     * Air our board spent that no send of ours booked. A [MeshcoreAir.DirectFlooded] attempt of ours was booked at send as
-     * a zero-hop DM; the flood adds its scoped transport codes, so its **surcharge** is booked here: the same packet's
-     * airtime flooded less direct, through [app.getknit.knit.mesh.lora.LoraAirtime.recordMs]. Not an [AirPurpose] of its
-     * own: it is the difference of two airings of one packet, not a packet (decided in ADR 2026-11.gsqu's Stage 5a-2
-     * amendment). Repeaters' re-airings are not our ledger's (ug4a). A [MeshcoreAir.PathReturn] is counted only: [route]
-     * booked it off the packet, at the size its path gives.
+     * Air our board spent that no send of ours booked, all under [app.getknit.knit.mesh.lora.Ceiling.FULL] (a DM is no room
+     * post: ADR 2026-11.gsqu's 2026-11-19 amendment, by the user's decision, supersedes jend point 4 for DMs). Only our own
+     * board's airings: whether a repeater re-airs ours is its operator's choice, never our ledger's (ug4a).
+     * - A [MeshcoreAir.DirectRouted] attempt of ours was booked at send as a zero-hop DM; what its route adds — a flood's
+     *   transport codes, a learned path's bytes, the larger of the two for an attempt whose `SENT` never came — is its
+     *   **surcharge**, booked here: the same packet's airtime on that route less at zero hops, through
+     *   [app.getknit.knit.mesh.lora.LoraAirtime.recordMs]. Not an [AirPurpose] of its own: it is the difference of two
+     *   airings of one packet, not a packet (ADR 2026-11.gsqu's Stage 5a-2 amendment).
+     * - A [MeshcoreAir.ReciprocalPath] is a whole packet of ours, booked whole.
+     * - A [MeshcoreAir.PathReturn] is counted only: [route] booked it off the packet, at the size its path gives.
      */
     private fun onAir(air: MeshcoreAir) {
         when (air) {
-            is MeshcoreAir.DirectFlooded -> {
+            is MeshcoreAir.DirectRouted -> {
                 val airtime = core.airtime
-                val surcharge =
-                    airtime.airMsOfPhy(MeshcoreTraits.contactTextPhyBytes(air.bytes, flooded = true)) -
-                        airtime.airMsOfPhy(MeshcoreTraits.contactTextPhyBytes(air.bytes, flooded = false))
-                airtime.recordMs(surcharge, clock())
-                counters.floodSurcharges.incrementAndGet()
+                val direct = airtime.airMsOfPhy(MeshcoreTraits.contactTextPhyBytes(air.bytes, flooded = false, pathBytes = air.pathBytes))
+                val routed =
+                    if (air.flooded) {
+                        maxOf(
+                            airtime.airMsOfPhy(MeshcoreTraits.contactTextPhyBytes(air.bytes, flooded = true)),
+                            direct,
+                        )
+                    } else {
+                        direct
+                    }
+                val surcharge = routed - airtime.airMsOfPhy(MeshcoreTraits.contactTextPhyBytes(air.bytes, flooded = false))
+                if (surcharge > 0) airtime.recordMs(surcharge, clock())
+                if (air.flooded) counters.floodSurcharges.incrementAndGet() else counters.pathSurcharges.incrementAndGet()
+            }
+
+            is MeshcoreAir.ReciprocalPath -> {
+                core.airtime.let { it.recordMs(it.airMsOfPhy(MeshcoreTraits.reciprocalPathPhyBytes(air.pathBytes)), clock()) }
+                counters.reciprocalsBooked.incrementAndGet()
             }
 
             is MeshcoreAir.PathReturn -> {
@@ -666,6 +690,9 @@ internal class MeshcoreHooks(
             }
         if (save) core.limitersMoved()
     }
+
+    /** The core's answer for the session's flood rung ([MeshcoreSessionObserver.floodWanted]): the frame's own gates again. */
+    override suspend fun floodWanted(handle: UInt): Boolean = core.directStillWanted(handle)
 
     /**
      * Holds every frame while the law's verdict holds, until its `releaseInSecs` (re-asked at every sample, so a quieter
@@ -1089,7 +1116,7 @@ internal class MeshcorePlaneCounters {
     /** The seq ([MeshcoreConsent.seq]) of the last consent these hooks finished applying: a scenario waits for it to catch up. */
     val consentApplied = AtomicLong()
 
-    /** Of [acksBooked], those booked along the pinned path alone: the sender's contact taught and pinned zero-hop. */
+    /** Of [acksBooked], those booked along a known route alone: our record of the sender read on this connection, not UNKNOWN. */
     val acksBookedDirect = AtomicLong()
 
     /** A live flooded DM to us whose PATH return was booked. */
@@ -1101,8 +1128,14 @@ internal class MeshcorePlaneCounters {
     /** A DM replayed from the offline queue: answered while we were away, booked by nobody. */
     val answersReplayed = AtomicLong()
 
-    /** A DM attempt of ours our board flooded, whose surcharge was booked. */
+    /** A DM attempt of ours our board flooded (or whose `SENT` never came), whose surcharge was booked. */
     val floodSurcharges = AtomicLong()
+
+    /** A DM attempt of ours our board sent direct along a learned path, whose path bytes were booked. */
+    val pathSurcharges = AtomicLong()
+
+    /** A reciprocal PATH our board sent after a flooded DM of ours was confirmed, booked whole. */
+    val reciprocalsBooked = AtomicLong()
 
     /** A sample that started a hold of every frame under the band's law. */
     val lawHolds = AtomicLong()
@@ -1130,6 +1163,7 @@ internal class MeshcorePlaneCounters {
         "MeshcorePlaneCounters(foreignDms=$foreignDms, foreignPosts=$foreignPosts, publicDiscarded=$publicDiscarded, " +
             "fragmentsRefused=$fragmentsRefused, acksBooked=$acksBooked, pathReturnsBooked=$pathReturnsBooked, " +
             "pathReturnsSeen=$pathReturnsSeen, answersReplayed=$answersReplayed, floodSurcharges=$floodSurcharges, " +
+            "pathSurcharges=$pathSurcharges, reciprocalsBooked=$reciprocalsBooked, " +
             "lawHolds=$lawHolds, zeroHopKnitPosts=$zeroHopKnitPosts, acksBookedDirect=$acksBookedDirect, " +
             "teachRefused=$teachRefused, teachWritten=$teachWritten, " +
             "keysWanted=$keysWanted, keysSkipped=$keysSkipped, removedUntaught=$removedUntaught, " +

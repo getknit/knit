@@ -112,11 +112,12 @@ data class LoraFacts(
      */
     val roomBodyBytes: Int = LoraSizeHint.ROOM_BODY_BYTES,
     /**
-     * On a kind whose compact DM reaches direct neighbours alone (MeshCore, ADR 2026-11.gsqu §2), the peers whose boards
-     * this plane marks reachable now — acked within the linger (a zero-hop hearing never marks one: it shows their radio
-     * reaching us, not ours reaching them) — which the DM notice reads instead
-     * of the flood-fed `reachable` set (lora-reviewer finding 11): a peer heard through repeaters is not one a zero-hop DM
-     * reaches. Null on Meshtastic, whose DM notice reads the reachable set as it always did.
+     * On a kind whose compact DM is settled by the destination board's own ack (MeshCore, ADR 2026-11.gsqu §2), the peers
+     * whose boards this plane marks reachable now — acked within the linger, at whatever hop count the firmware routed the
+     * DM (ADR 2026-11.gsqu's 2026-11-19 amendment; a hearing never marks one: it shows their radio reaching us, not ours
+     * reaching them) — which the DM notice reads instead of the flood-fed `reachable` set (lora-reviewer finding 11): a peer
+     * whose post a repeater carried to us is not one our DM has reached yet. Null on Meshtastic, whose DM notice reads the
+     * reachable set as it always did.
      */
     val directReach: Set<String>? = null,
     /**

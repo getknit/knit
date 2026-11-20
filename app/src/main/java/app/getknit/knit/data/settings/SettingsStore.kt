@@ -534,9 +534,11 @@ class SettingsStore(
 
     /**
      * Whether sealed 1:1 DMs may ride the LoRa plane (ADR 039) — **default on** whenever the plane is on. The
-     * content stays end-to-end encrypted either way; what this controls is metadata exposure: on a public-PSK
-     * rendezvous channel a DM's sender/recipient ids, timing and size are visible to any LoRa radio in range
-     * (kilometres, where the phone radios exposed them at tens of metres). Off keeps DMs on the radios and the
+     * content stays end-to-end encrypted either way; what this controls is metadata exposure: a DM's sender and
+     * recipient (Meshtastic node ids, MeshCore key hashes), timing and size are visible to every radio that hears or
+     * relays it — Meshtastic's three hops, or a whole MeshCore network when a DM floods (ADR 2026-11.gsqu's 2026-11-19
+     * amendment) — and to the Internet wherever a gateway uplinks what it hears; a MeshCore route also names the
+     * repeaters between the two boards. The phone radios exposed it at tens of metres. Off keeps DMs on the radios and the
      * spool while the Nearby room keeps riding LoRa. Gated on `BuildConfig.LORA_PLANE` like [loraEnabled].
      */
     val loraDmEnabled: Flow<Boolean> =

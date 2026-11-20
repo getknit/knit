@@ -129,6 +129,13 @@ internal class LoraReprobe(
     }
 
     /**
+     * [recipientId]'s current gap — its earned backoff, or the base gap with none tracked: what bounds how often a hearing
+     * through repeaters may lift its mark (ADR 2026-11.gsqu's 2026-11-19 amendment, lora-reviewer NB2).
+     */
+    @Synchronized
+    fun gapOf(recipientId: String): Long = tracked[recipientId]?.gapMs ?: baseMs
+
+    /**
      * Not this round — the peer is covered, has a send queued or in flight, refused us, or the board map has not
      * reported: ask again one gap on, without doubling it, since nothing went on the air. Only [forget] ends a
      * schedule.

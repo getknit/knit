@@ -3,32 +3,34 @@ package app.getknit.knit.mesh.lora.meshcore
 import app.getknit.knit.mesh.lora.BoardAddr
 
 /**
- * What the session knows about the zero-hop pins on its board's contacts (ADR 2026-11.gsqu §3; binding rules "sends" 1
- * and 2). Pure bookkeeping; the session does the reads and writes.
+ * What the session knows about the contacts Knit taught its board (ADR 2026-11.gsqu §3; binding rule "sends" 2), and the
+ * route each was last read on. Pure bookkeeping; the session does the reads and writes.
  *
- * - **The key map is the taught set** (security B1, Stage 5b-2). A DM is addressed by a 6-byte prefix, a pin by the 32-byte
- *   key: the map is fed only by the keys Knit taught — the ranked list `MeshcoreContacts` hands it, and a teach this session
- *   wrote — never by a read of a contact or an advert, so a key that is someone else's contact on the board is never
- *   pinned or sent to. A send to a prefix with no taught key is refused ([keyFor] null: `NO_RECORD`).
+ * - **The key map is the taught set** (security B1, Stage 5b-2). A DM is addressed by a 6-byte prefix, a record by the
+ *   32-byte key: the map is fed only by the keys Knit taught — the ranked list `MeshcoreContacts` hands it, and a teach this
+ *   session wrote — never by a read of a contact or an advert, so a key that is someone else's contact on the board is never
+ *   written or sent to. A send to a prefix with no taught key is refused ([keyFor] null: `NO_RECORD`).
  * - **One key a prefix** (security B3). The board takes the first contact a prefix matches, so a prefix another key holds
  *   is refused ([learn]), and one a listed contact of another key shares is contested for the connection ([contest]).
- * - **Verified.** A DM is written only after a pin that succeeded in this connection: the set empties at every Ready
- *   ([onReady]) and loses a key whenever the board may have moved its route — a path push, a contact deleted, a flooded
- *   send, an `Unreachable`.
- * - **Targeted re-pins.** A path push or a deletion for a key Knit taught queues one re-pin (or re-teach) of that key, at
- *   most once per [repinGapMs]; a later push in the window only unverifies it, so the next send pins it. A push for any
- *   other key is ignored: the user's own contacts are theirs to route. The full re-assert runs only at Ready, in the
- *   taught list's ranked order.
+ * - **The route as last read** ([routeOf], ADR 2026-11.gsqu's 2026-11-19 amendment). The firmware routes a DM itself — by
+ *   flood while the record's `out_path_len` is UNKNOWN, else direct along the path a PATH return taught it — and nothing
+ *   pins it: the session's DM ladder only writes zero hops and resets. The cache holds each taught key's raw `out_path_len`
+ *   as this connection last read or wrote it: set by the Ready's listing, a teach's read-back, the ladder's zero-hop write
+ *   and reset, and the read a `0x81` queues; cleared by a deletion, a `NOT_FOUND` and every Ready. Empty is "not known",
+ *   never "zero hops": what the hearing and our board's answer read only as a fact this connection saw.
+ * - **Targeted jobs.** A path push (`0x81`) for a key Knit taught queues one read of its record (a BLE read, no air, no
+ *   flash); a deletion (`0x8F`) one re-teach, at most once per [reteachGapMs], since a teach writes flash. A push for any
+ *   other key is ignored: the user's own contacts are theirs to route.
  *
  * Every entry point `@Synchronized`, though only the session's actor reaches it.
  */
 internal class MeshcorePins(
-    private val repinGapMs: Long = REPIN_GAP_MS,
+    private val reteachGapMs: Long = RETEACH_GAP_MS,
 ) {
     /** What a queued job does to a taught key. */
     enum class Job {
-        /** Read it back and pin it zero-hop (a path push). */
-        PIN,
+        /** Read its record back and cache its route (a path push, or a confirmed flood's reciprocal PATH). Never a write. */
+        READ,
 
         /** Write it again, after a free slot is confirmed (the board deleted it). */
         TEACH,
@@ -39,21 +41,23 @@ internal class MeshcorePins(
         /** Not a key Knit taught: nothing. */
         IGNORED,
 
-        /** Queued for a re-pin or re-teach. */
+        /** Queued for a read or a re-teach. */
         QUEUED,
 
-        /** Inside the rate limit: unverified only, so the next send pins it. */
+        /** A deletion inside the re-teach gap: its route forgotten; the send's `NOT_FOUND` or the next Ready teaches it. */
         MARKED,
     }
 
     private val keys = HashMap<BoardAddr.MeshCore, ByteArray>()
     private val taught = LinkedHashSet<BoardAddr.MeshCore>()
-    private val verified = HashSet<BoardAddr.MeshCore>()
+
+    /** Each taught key's raw `out_path_len` as this connection last read or wrote it ([routeOf]). */
+    private val routes = HashMap<BoardAddr.MeshCore, Int>()
     private val contested = HashSet<BoardAddr.MeshCore>()
 
     /** Our own board the [contested] prefixes were listed on (the last [onReady]'s), or null before one. */
     private var contestBoard: BoardAddr.MeshCore? = null
-    private val lastJobAt = HashMap<BoardAddr.MeshCore, Long>()
+    private val lastTeachAt = HashMap<BoardAddr.MeshCore, Long>()
     private val queued = LinkedHashMap<BoardAddr.MeshCore, Job>()
 
     /** Keys [learn] refused, their prefix held by another key: counted for the dump, never named. */
@@ -80,7 +84,7 @@ internal class MeshcorePins(
 
     /**
      * The keys Knit taught this board, ranked most-wanted first (`MeshcoreContacts` decides): the only keys a DM is sent to
-     * or a pin written for, the targets of a targeted re-pin and the order of the Ready re-assert. It replaces the set: a
+     * or a record written for, and the targets of a targeted read or re-teach. It replaces the set: a
      * key dropped from the list is forgotten, so a DM to it is refused unwritten. Answers the keys taught now that were not
      * before, ranked: what a connection already Ready writes at once ([queueTeach]).
      */
@@ -90,7 +94,7 @@ internal class MeshcorePins(
         taught.clear()
         keys.clear()
         ranked.forEach(::learn)
-        verified.retainAll(taught)
+        routes.keys.retainAll(taught)
         queued.keys.retainAll(taught)
         return taught.filter { it !in before }.mapNotNull { keys[it]?.copyOf() }
     }
@@ -115,7 +119,7 @@ internal class MeshcorePins(
 
     /**
      * Queues a write of [key], taught since the last Ready, unless a job for it is queued already (ADR 2026-11.gsqu's
-     * Stage 5c-2b amendment): outside the push rate limit, since nothing pushed. A key no longer taught, or contested on
+     * Stage 5c-2b amendment): outside the deletion's re-teach gap, since nothing pushed. A key no longer taught, or contested on
      * this connection, queues nothing ([TeachQueue.REFUSED]); one past [MAX_LIVE_TEACHES_PER_DAY] live writes on UTC [day]
      * is left to the next Ready's reconcile ([TeachQueue.DEFERRED]) — a board map that flaps a key in and out costs its
      * flash a removal and a write each time, and the removal of a key that left the set is never bounded.
@@ -189,49 +193,52 @@ internal class MeshcorePins(
     @Synchronized
     fun contest(addr: BoardAddr.MeshCore) {
         contested += addr
-        verified -= addr
     }
-
-    @Synchronized
-    fun isVerified(addr: BoardAddr.MeshCore): Boolean = addr in verified
 
     @Synchronized
     fun isTaught(addr: BoardAddr.MeshCore): Boolean = addr in taught
 
-    /** A pin of [addr] read back zero-hop in this connection. */
+    /**
+     * [addr]'s record read (or written and read back) at the raw `out_path_len` [outPathLen] on this connection: kept for a
+     * taught key only, so nothing about another's contact is remembered.
+     */
     @Synchronized
-    fun onPinned(addr: BoardAddr.MeshCore) {
-        verified += addr
+    fun noteRoute(
+        addr: BoardAddr.MeshCore,
+        outPathLen: Int,
+    ) {
+        if (addr in taught) routes[addr] = outPathLen
     }
 
-    /** The board may have moved [addr]'s route: the next send pins it first. */
+    /** [addr]'s raw `out_path_len` as last read on this connection, or null when nothing was: never read as zero hops. */
     @Synchronized
-    fun unverify(addr: BoardAddr.MeshCore) {
-        verified -= addr
+    fun routeOf(addr: BoardAddr.MeshCore): Int? = routes[addr]
+
+    /** The board may hold no record for [addr] any more (a deletion, a `NOT_FOUND`, a removal): its route is not known. */
+    @Synchronized
+    fun forgetRoute(addr: BoardAddr.MeshCore) {
+        routes -= addr
     }
 
     /**
-     * A new connection is Ready: nothing is verified, nothing queued from the last one, and the ranked taught keys are the
-     * full re-assert to run (each counted against the rate limit as of [now]).
+     * A new connection is Ready: no route known (the board may have learned or lost one while we were away; its listing
+     * fills them again), nothing queued from the last one.
      */
     @Synchronized
-    fun onReady(
-        now: Long,
-        board: BoardAddr.MeshCore? = null,
-    ): List<ByteArray> {
-        verified.clear()
+    fun onReady(board: BoardAddr.MeshCore? = null) {
+        routes.clear()
         // The last listing's contests stand until this connection's listing replaces them ([setContested], lora N3), but only
         // on the board they were read on: our own [board] changed (a rebind), and they say nothing about this one.
         if (board != contestBoard) contested.clear()
         contestBoard = board
         queued.clear()
         teachRetried.clear()
-        return taught.mapNotNull { addr -> keys[addr]?.copyOf().also { lastJobAt[addr] = now } }
     }
 
     /**
-     * A path push (`0x81`, [deleted] false) or a deletion (`0x8F`) for [key] at [now]. Unverifies it whatever it is, and
-     * queues one job for a key Knit taught when its rate limit allows.
+     * A path push (`0x81`, [deleted] false) or a deletion (`0x8F`) for [key] at [now]. A path push queues one read of a taught
+     * key's record (never a write: the firmware's route is kept, ADR 2026-11.gsqu's 2026-11-19 amendment); a deletion forgets
+     * the route and queues one re-teach when the gap allows, and outranks a queued read.
      */
     @Synchronized
     fun onPush(
@@ -240,17 +247,47 @@ internal class MeshcorePins(
         now: Long,
     ): PushAction {
         val addr = addrOf(key) ?: return PushAction.IGNORED
-        verified -= addr
         if (addr !in taught) return PushAction.IGNORED
-        val last = lastJobAt[addr]
-        if (last != null && now - last < repinGapMs) {
-            // A deletion still outranks a queued pin: the contact is gone, and a pin of it can only fail.
-            if (deleted && queued[addr] == Job.PIN) queued[addr] = Job.TEACH
+        if (!deleted) {
+            queued.putIfAbsent(addr, Job.READ)
+            return PushAction.QUEUED
+        }
+        routes -= addr
+        val last = lastTeachAt[addr]
+        if (last != null && now - last < reteachGapMs) {
+            // The contact is gone: a read of it can only find nothing.
+            if (queued[addr] == Job.READ) queued.remove(addr)
             return PushAction.MARKED
         }
-        lastJobAt[addr] = now
-        queued[addr] = if (deleted) Job.TEACH else Job.PIN
+        lastTeachAt[addr] = now
+        queued[addr] = Job.TEACH
         return PushAction.QUEUED
+    }
+
+    /** Ladder writes (a zero-hop write or a reset) each key has had: the UTC day they were counted on, and how many. */
+    private val ladderWrites = HashMap<BoardAddr.MeshCore, Pair<Long, Int>>()
+
+    /**
+     * Spends one of [addr]'s ladder writes for UTC [day] — the DM ladder's zero-hop `ADD_UPDATE_CONTACT` or its `RESET_PATH`,
+     * each a flash write (security NB3 on ADR 2026-11.gsqu's 2026-11-19 amendment) — at most [MAX_LADDER_WRITES_PER_DAY]; false
+     * past it, when the session sends on the route as read. In memory, as the live teach's bound: a restart resets it.
+     */
+    @Synchronized
+    fun spendLadderWrite(
+        addr: BoardAddr.MeshCore,
+        day: Long,
+    ): Boolean {
+        val (counted, n) = ladderWrites[addr] ?: (day to 0)
+        val used = if (counted == day) n else 0
+        if (used >= MAX_LADDER_WRITES_PER_DAY) return false
+        ladderWrites[addr] = day to used + 1
+        return true
+    }
+
+    /** Queues one read of [addr]'s record, unless a job for it is queued already (a confirmed flood's reciprocal PATH). */
+    @Synchronized
+    fun queueRead(addr: BoardAddr.MeshCore) {
+        if (addr in taught) queued.putIfAbsent(addr, Job.READ)
     }
 
     /** The next queued job, oldest first, or null. */
@@ -271,14 +308,22 @@ internal class MeshcorePins(
     fun hasJobs(): Boolean = queued.isNotEmpty()
 
     companion object {
-        /** At most one targeted re-pin per key a minute (binding rule "sends" 2). */
-        const val REPIN_GAP_MS = 60_000L
+        /** At most one re-teach of a deleted key a minute (binding rule "sends" 2): a teach writes flash. */
+        const val RETEACH_GAP_MS = 60_000L
 
         /**
          * Live teach writes a key may have a UTC day ([queueTeach], ADR 2026-11.gsqu's Stage 5c-2b amendment): what a flapping
          * board map can cost the board's flash per contact; past it the next Ready's reconcile writes the key.
          */
         const val MAX_LIVE_TEACHES_PER_DAY = 4
+
+        /**
+         * Ladder writes a key may cost the board's flash a UTC day ([spendLadderWrite]): at most two a flight (a zero-hop
+         * write, a reset), so twelve flights. A dead neighbour's first day is about ten — the give-up, then re-probe rounds
+         * ramping from `LoraReprobe.BASE_MS` (15 min) by doubling to the 4-h cap (15 min, 30, 1 h, 2 h, then every 4 h) —
+         * leaving a little for the user's own DMs.
+         */
+        const val MAX_LADDER_WRITES_PER_DAY = 24
 
         /** A key's address: its first six bytes, or null for a key that is not 32. */
         fun addrOf(key: ByteArray): BoardAddr.MeshCore? =

@@ -10,9 +10,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * The face of a MeshCore plane (ADR 2026-11.gsqu's Stage 5a-2 amendment, lora-reviewer finding 11): a DM reaches direct
- * neighbours alone, so the LoRa-only notice reads the per-board direct mark and never the flood-fed reachable set; the
- * room's saturated notice reads the flood share; and the room composer's budget is the kind's one packet.
+ * The face of a MeshCore plane (ADR 2026-11.gsqu's Stage 5a-2 amendment, lora-reviewer finding 11): a DM is settled by the
+ * destination board's own ack, at whatever hop count the firmware routed it (the 2026-11-19 amendment), so the LoRa-only
+ * notice reads the per-board acked mark and never the flood-fed reachable set; the room's saturated notice reads the flood
+ * share; and the room composer's budget is the kind's one packet.
  */
 class MeshcoreLoraReachTest {
     private val boardOnly = setOf(TransportKind.LoRa)
@@ -21,11 +22,11 @@ class MeshcoreLoraReachTest {
     @Test
     fun aMeshcoreDmIsLoraOnlyByTheDirectMarkNeverTheFloodFedReachableSet() {
         assertEquals(LoraReach.LoraOnly, loraReachFor("ana", meshcore, boardOnly, RelayReach.Silent))
-        // Heard through repeaters (reachable), but no zero-hop mark: a DM would not reach them.
+        // Heard through repeaters (reachable), but no board's ack yet: nothing says a DM reaches them.
         assertEquals(LoraReach.Silent, loraReachFor("bo", meshcore, boardOnly, RelayReach.Silent))
         // Marked, but another radio carries them.
         assertEquals(LoraReach.Silent, loraReachFor("ana", meshcore, setOf(TransportKind.LoRa, TransportKind.Bluetooth), RelayReach.Silent))
-        // Marked, and not in the reachable set at all: the mark is what a zero-hop DM rides on.
+        // Marked, and not in the reachable set at all: the board's ack is what the DM notice rides on.
         assertEquals(LoraReach.LoraOnly, loraReachFor("ana", meshcore, null, RelayReach.Silent))
     }
 

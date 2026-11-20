@@ -21,7 +21,7 @@ import kotlin.concurrent.thread
 class MeshcoreRefusalStage5Test {
     @Test
     fun everyCodeTheSessionCanAnswerHasOneMeaning() {
-        val own = listOf(MeshcoreRefusal.NO_RECORD, MeshcoreRefusal.UNPINNED, MeshcoreProto.ERR_NOT_FOUND)
+        val own = listOf(MeshcoreRefusal.NO_RECORD, MeshcoreRefusal.ROUTE_UNWRITTEN, MeshcoreProto.ERR_NOT_FOUND)
         for (code in own) assertEquals("$code", RefusalClass.OWN_NO_KEY, MeshcoreRefusal.classOf(SendResult.Rejected(1u, code)))
         // The firmware's other codes and the session's own: refused, never paced (MeshCore refuses nothing for duty) and never
         // a destination's word (it reports none).
@@ -29,6 +29,8 @@ class MeshcoreRefusalStage5Test {
             listOf(
                 MeshcoreRefusal.SLOT_NOT_KNIT,
                 MeshcoreRefusal.UNSUPPORTED,
+                // A spent ladder budget is no missing key: a teach would find the contact and re-offer into it.
+                MeshcoreRefusal.ROUTE_BUDGET_SPENT,
                 MeshcoreProto.ERR_UNSUPPORTED_CMD,
                 MeshcoreProto.ERR_BAD_STATE,
                 MeshcoreProto.ERR_FILE_IO,

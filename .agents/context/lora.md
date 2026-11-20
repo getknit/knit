@@ -271,7 +271,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `BoardKindHooks`, `BoardTraits`, `BoardKind`, `Ceiling.FLOOD`, `meshcoreKey` (there is no `CAP_MESHCORE_DIRECT`: the next entry) or anything
   under `mesh/lora/meshcore/` / `mesh/bluetooth/meshcore/`:** READ ADR 2026-11.gsqu (the build shape: one plane
   instance per board kind over a neutral core, a ledger per board; the compact DM as a COBS-framed contact text DM,
-  pinned zero-hop on both boards and retried by Knit; own room posts in up to two elided packets under
+  routed by the firmware and retried by Knit up its own ladder since the 2026-11-19 amendment; own room posts in up to two elided packets under
   `Ceiling.FLOOD`; the zero-hop hearing hook), then ADR 2026-10.jend for the scope it amends, then "The layers" in
   `lora-bridge.md`. Stage 1 (built): the core reads the board through `BoardLink` / `MeshtasticBoardLink` (`BoardState`,
   `BoardPacket`, `SendPurpose`, `BoardSend`), a kind's numbers through `BoardTraits` / `MeshtasticTraits`, refusals through
@@ -304,14 +304,16 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   flooded post. Floods are scoped to the board's region when one is set, and booked as every repeater's airtime under
   `AirBucket.PUBLIC` (the ledger is one total since ADR 2026-10.ug4a; MeshCore's `GET_STATS` fills the same
   `BoardAir` the brake reads).
-  <!-- doc-lint: allow AirBucket — jend's booking as it decided it, before ADR 2026-10.ug4a --> Every DM-form frame, every room tick and all machine traffic stays zero-hop, or one hop through
-  a named repeater. DM-form traffic is gated on a direct-reach set (frames heard at hop count 0), never on
-  `reachable`. ADR 2026-10.rp3s narrows this on both boards: only the user's own frames air. ADR 2026-10.x9fa built the
-  board-neutral seam a second board needs (`LinkDestination`, `BoardAddr`, `PacketOutcome`) and a compact DM that fits
-  MeshCore's 164-B cap (113 B of plaintext); the per-peer reach marks (`LoraDirectPolicy`) are where its "heard at hop 0"
-  set plugs in. Every transmission carries a byte that varies per send, because MeshCore drops byte-identical packets
-  network-wide. The Meshtastic plane's ADRs above do not carry over: no signing cliff, no `hop_limit`, no
-  `BoardQuiet`.
+  <!-- doc-lint: allow AirBucket — jend's booking as it decided it, before ADR 2026-10.ug4a --> Every room tick and all
+  machine traffic stays zero-hop. ADR 2026-10.rp3s narrows this on both boards: only the user's own frames air. ADR
+  2026-10.x9fa built the board-neutral seam a second board needs (`LinkDestination`, `BoardAddr`, `PacketOutcome`) and a
+  compact DM that fits MeshCore's 164-B cap (113 B of plaintext), settled by the destination board's ack and marked per
+  peer (`LoraDirectPolicy`). Since ADR 2026-11.gsqu's 2026-11-19 amendment the compact DM (a message, a reaction, a ✓✓:
+  one carrier) is no longer held to the neighbours: the firmware's own flood-then-learned-path routing carries it, zero
+  hops tried first and at most one flood a flight (the routed-DM entry below), its floods under `Ceiling.FULL`, booked as
+  our own board's air only, and a verified frame heard at any hop count lifts its board's mark. Every transmission carries
+  a byte that varies per send, because MeshCore drops byte-identical packets network-wide. The Meshtastic plane's ADRs
+  above do not carry over: no signing cliff, no `hop_limit`, no `BoardQuiet`.
 
 - **Before touching what our profile claims about a board — `MeshManager.ownLora` / `OwnLora`, `Protocol.CAP_LORA_DIRECT` as
   we claim it, `MeshManager.bindMeshcoreDirect` / `ownMeshcoreKey` / `watchMeshcoreClaim` /
@@ -354,8 +356,8 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   the 2026-11-13 design passes' binding rules), then "The MeshCore client" in `lora-bridge.md`. The board answers every
   connected client: drained data (7, 8, 16, 17, 27) is never matched to a request and never discarded; `SENT` is ours only
   by the ack code the phone computes, `SEND_CONFIRMED` only by our table, a bare `OK` / `ERR` is followed by a barrier on
-  a timeout and every relied-on write is read back. A DM is written only after a zero-hop pin read back in this
-  connection; its attempts 0..2 keep the timestamp and change `attempt`; its outcome carries the exact count that flew
+  a timeout and every relied-on write is read back. A DM goes on the route the board holds, up the session's ladder (the
+  routed-DM entry, next); its attempts 0..2 keep the timestamp and change `attempt`; its outcome carries the exact count that flew
   (`flown`), which the core's refund reads instead of the elapsed-time guess (Meshtastic leaves it null). The ack table is
   the board's circular eight, filled by every client. Teaching writes only into a confirmed free slot; setup reads first,
   erases (Stage 5b-2, the next entry), then writes `[38, 1]`, auto-add off, `Knit abcd` (only on a board this phone holds
@@ -366,6 +368,33 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   The Android half (Stage 3c, `mesh/bluetooth/meshcore/MeshcoreGatt` over the shared `BoardGatt`) is routed in
   `bluetooth.md`; a dial whose own subscribe failed the bond is terminal (`NusDialResult.BondRefused`), as a first write's; after a close
   under an op that started unbonded the bond is read settled (`BondSettle`, ≤ 2 s), never a `BONDING` the disconnect beat.
+
+- **Before touching how a MeshCore DM is routed — `MeshcoreSession.nextRung` / `writeZeroHop` / `floodRung` / `afterFlood` /
+  `runRead` / `taughtAndRouted` / `stillTaught`, `ROUTE_WRITE_WORST_MS`, `FLOOD_GATE_TIMEOUT_MS`, `MAX_FLIGHT_MS`, `MeshcorePins.routeOf` /
+  `noteRoute` / `forgetRoute` / `queueRead` / `Job.READ` / `RETEACH_GAP_MS` / `spendLadderWrite` / `MAX_LADDER_WRITES_PER_DAY`, `MeshcoreContacts.isKnitRouting`, `ContactRecord.knit`,
+  `MeshcoreAir.DirectRouted` / `ReciprocalPath`, `MeshcorePacket.senderRoute`, `MeshcoreTraits.directHopsOf` / `pathBytesOf` /
+  `isZeroHopRoute` / `reciprocalPathPhyBytes` / `contactTextPhyBytes` / `ackPhyBytes`, `BoardTraits.heardRoute`,
+  `MeshcoreSessionObserver.floodWanted`, `PlaneCore.directStillWanted`, `LoraDirectPolicy.waitingFlight` / `onHeardFar`,
+  `LoraReprobe.gapOf`,
+  `MeshcoreRefusal.ROUTE_UNWRITTEN` / `ROUTE_BUDGET_SPENT`, or the `meshcoreDirectFlooded` / `meshcoreRouteResets` / `meshcoreRouteHops` /
+  `meshcoreZeroHopWrites` / `meshcoreFloodsSkipped` / `meshcoreRouteReads` / `meshcoreLadderWritesDeferred` / `meshcorePathSurcharges` /
+  `meshcoreReciprocalsBooked` counters:** READ ADR 2026-11.gsqu's 2026-11-19 amendment (draft), then "The MeshCore client" in
+  `lora-bridge.md`. No pin: the firmware routes a DM by flood with no path and along the path a PATH return taught it, and
+  Knit keeps that path (a reconcile, a teach or a `0x81` never rewrites it; a `0x81` is one read). The session's ladder
+  reads the record back after every unanswered attempt and picks the rung from it — a flight started on N > 0 hops: zero
+  hops once (one `ADD_UPDATE_CONTACT`, never on `0x81`), then reset and flood; one started at 0 or UNKNOWN: zero hops twice,
+  then reset and flood — and floods at most once a flight, asking the core first whether the frame is still wanted (its
+  `RideGate`: link, spool cover, a direct holder still, ✓✓), re-checking the flight after every write (a late confirm stops
+  the flood), and waiting one more `est_timeout` after an unanswered flood before it ends. A key no longer taught ends the
+  flight `NoOutcome`; each key's zero-hop writes and resets are bounded a UTC day. A send reads the record whenever the cache
+  is empty or UNKNOWN, and a `0x81` forgets the cache, so a learned path is never written over; a send whose record reads
+  UNKNOWN writes zero hops before attempt 0.
+  Booked: our own board's airing only (the route's surcharge over the zero-hop price, the reciprocal PATH), under
+  `Ceiling.FULL`, never a repeater's (the user's decision). A verified, fresh frame lifts a mark at any hop count
+  (`heardRoute`), one heard through repeaters at most once a re-probe gap (`onHeardFar`); only zero hops counts a radio, and a
+  contact DM only by its own flood path length. Regression: `MeshcoreSessionTest`'s route block, `MeshcoreHooksTest`,
+  `MeshcoreTraitsTest`, `MeshcoreFlushSwitchTest.theFloodRungAsksTheCoreTheFramesOwnGatesAgain`, `MeshcoreDirectLabTest`'s
+  chain, dead-neighbour and diamond scenarios on the channel air.
 
 - **Before touching MeshCore's price, band or law — `MeshcoreTraits` (`phyBytes`, `airMs`, `preambleSymbolsAt`, `FIXED_MS`,
   `pathReturnPlaintext`, `dutyPolicy`, `maxFlights`, `deadlineMs`), `LoraBand` (`holding`, `dutyPercent`,
@@ -401,7 +430,8 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   counts and discards everything not Knit's as `DROPPED`, never a hearing (Public's channel data, and a `0x04` fragment of
   more than two parts or none that parses; Stage 5c-1 reads the rest, the next entry but one; a text on Public slot 0 is the
   kind's since Stage 6, the MeshCore Public entry below). Our board's answers are booked in `route` for every live acked contact DM, Knit's or not;
-  a flooded DM of ours books only its surcharge. A hearing on MeshCore is a verified, fresh, live, zero-hop Knit frame alone,
+  a DM of ours books only what its route adds and its reciprocal PATH (the routed-DM entry). A hearing that lifts a mark on
+  MeshCore is a verified, fresh, live Knit frame at any hop count; one that counts a radio is zero-hop as well,
   its radio counted by author; never a sender prefix. The ledger takes the board's radio and band before Ready (or forgets
   the last board's), and the duty law holds the pacer to its release, its rings persisted per board digest and its hold on the face (`lawHeld`). An unbonded board is never dialled in the
   background's place (only the hourly direct net), and a board without NUS twice in a row is terminal. An opened DM is a
@@ -418,8 +448,8 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `lora-bridge.md`. **And for `MeshcorePins.setTaught` / `queueTeach` / `retryTeachOnce` / `MAX_LIVE_TEACHES_PER_DAY`, the
   live teach (`runLiveTeach`) or `writeKnitRecord`'s taught checks:** the 5c-2b amendment too — a key the set gains while
   Ready is written at once, at most 4 times a key a UTC day (past it the next Ready's reconcile), never when contested, and
-  a write is made and kept only for a key the set still holds before the write and after the read-back. The board is Knit's: its table is the taught set. The session sends to and pins only taught keys
-  (security B1), and nothing at all — no DM, pin, teach or removal — off a board set up for Knit, which needs this phone's
+  a write is made and kept only for a key the set still holds before the write and after the read-back. The board is Knit's: its table is the taught set. The session sends to and writes only taught keys
+  (security B1), and nothing at all — no DM, route write, teach or removal — off a board set up for Knit, which needs this phone's
   `meshcore_setup` record for the dialled address and the board's key digest, not pending (the single source of consent,
   read and written by the session's actor alone — in its handshake before Ready, and in its own setup, Restore and unbind —
   and only on a bonded link whose board signed a fresh challenge with the key it reports (`MeshcoreProto.signStart` /
@@ -468,7 +498,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
 - **Before touching `MeshLab.meshcoreAir`, `MeshLab.node(meshcore = …)`, `MeshLab.awaitTaught`, `MeshLab.meetOverMeshcore`,
   `LabNode.meshcoreOn` / `awaitMeshcoreBack` / `meshcoreWrites` / `postPublic` / `meshcorePostsHandled` /
   `meshcoreOutOfRange`, `StockMeshcoreNode`, `MeshcoreRoomLabTest`, `MeshcoreDirectLabTest`, `MeshcorePublicLabTest`,
-  `MeshcoreSession.taughtAndPinned`, `MeshcoreCounters.repinsDone` / `reconcilesDropped`, `MeshMetrics`' `loraBoundPartsTaken` /
+  `MeshcoreSession.taughtAndRouted`, `MeshcoreCounters.routeReads` / `reconcilesDropped`, `MeshMetrics`' `loraBoundPartsTaken` /
   `loraNotOurs`, `LoraMeshTransport.resolvesAuthor`, `MeshLab.awaitAuthor`, `LabNode.meshcoreReadyFor`,
   `LabLimits.meshcoreBackoffMs` or
   `MeshManager.onDmAcksInlined`:** READ ADR 2026-11.gsqu's Stage 5c-2b amendment (and its Stage 6 amendment, part 6c, for
@@ -478,7 +508,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   air, on three clocks (the session monotonic; the plane, hooks and session wall clock `LabClock`; the board's uptime the lab's calendar),
   its air on a lab-owned serial scope. Boot returns at Ready with consent and the claim minted; a pair that are each
   other's direct contacts is taught both ways before `awaitAcquainted` returns. Every wait reads the receiving side's event
-  (a plane counter, the board read back, the session's re-pin), never the air's record.
+  (a plane counter, the board read back, the session's route read), never the air's record.
 
 - **Before touching `MeshMetrics`' `loraHearingsJudged` / `loraDirectDuplicates`, `LoraMeshTransport.hearAuthor`'s exits,
   `LoraMeshTransport.airtimeUsedMs`, `FakeMeshcoreAir.loseAck`, `FakeMeshcoreBoard.noPeerDrops` or

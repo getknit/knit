@@ -546,6 +546,14 @@ internal interface PlaneCore {
     fun holdForLaw(untilMs: Long?) = Unit
 
     /**
+     * Whether the compact DM the direct send [handle] carries is still wanted, asked by a kind whose link retries a DM on
+     * routes of its own right before one that floods (MeshCore's ladder, ADR 2026-11.gsqu's 2026-11-19 amendment): the gates
+     * the frame's own path asked, asked again — no link to its addressee and no spool cover over it, DMs still switched on,
+     * and for a DM a person wrote, still without its ✓✓ (a database read). True for a send the core no longer waits on.
+     */
+    suspend fun directStillWanted(handle: UInt): Boolean = true
+
+    /**
      * The kind's answer to [BoardKindHooks.offered] moved without a new board map (MeshCore: a board's capacity read at Ready
      * cut or grew the taught set): the core asks it again over the last map. Never called from inside a core callback.
      */

@@ -1467,7 +1467,7 @@
     <string name="settings_lora_subtitle_any">通过 Bluetooth 配对 Meshtastic 或 MeshCore 开发板，借助远距离 LoRa 扩大“附近”聊天室和私信的覆盖范围。群组、输入状态和照片仍只通过手机之间的无线模块传送。</string>
     <string name="lora_off_note">关闭后将断开与开发板的连接。群组和附件从不通过 LoRa 传送。</string>
     <string name="lora_dm_title">通过 LoRa 发送私信</string>
-    <string name="lora_dm_subtitle">私信仍保持端到端加密，但谁在给谁发消息、何时发送，范围内的任何 LoRa 电台都能看到，而这个范围以公里计，不是以米计。关闭此功能，私信将只通过手机之间的无线模块传送。</string>
+    <string name="lora_dm_subtitle">私信可经其他 LoRa 电台转发，送达你的开发板覆盖范围之外的联系人。私信仍保持端到端加密，但谁在给谁发消息、何时发送，每个接收或转发它的电台都能看到，范围可能覆盖整个 LoRa 网络；如果有电台把收到的内容转发到互联网，任何在线的人也能看到。消息经过的路线还可能大致暴露你和联系人的位置。关闭此功能，私信将只通过手机之间的无线模块传送。</string>
     <string name="lora_board_section">开发板</string>
     <string name="lora_board_none">未找到已配对的 Meshtastic 开发板。请先在 Bluetooth 设置中配对一块（开发板会在屏幕上显示 PIN 码）。</string>
     <string name="lora_board_none_any">未找到已配对的 LoRa 开发板。请先在 Bluetooth 设置中配对一块 Meshtastic 或 MeshCore 开发板，输入它屏幕上显示的 PIN 码，或之前为它设定的 PIN 码。</string>

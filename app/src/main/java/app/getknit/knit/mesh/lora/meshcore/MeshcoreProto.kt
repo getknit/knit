@@ -264,7 +264,7 @@ internal object MeshcoreProto {
     /** A contact record without `lastmod` or a position: what a teach writes (the board stamps `lastmod` itself). */
     const val CONTACT_BASIC_SIZE = 1 + KEY_BYTES + 3 + PATH_FIELD + NAME_FIELD + 4
 
-    /** A contact record with the position and without `lastmod`: what a pin writes back. */
+    /** A contact record with the position and without `lastmod`: a record written back as it was read. */
     const val CONTACT_PIN_SIZE = CONTACT_BASIC_SIZE + 8
 
     /** A contact record as the board writes it (`writeContactRespFrame`, `MyMesh.cpp:171`). */
@@ -404,7 +404,7 @@ internal object MeshcoreProto {
 
     /**
      * `ADD_UPDATE_CONTACT` of [contact] (`MyMesh.cpp:1328`, `updateContactFromFrame`). [withPosition] writes the record
-     * back with the position it was read with (the pin's 144-B form); without it the 136-B form, which an existing
+     * back with the position it was read with (the 144-B form); without it the 136-B form, which an existing
      * contact's position survives. Never `lastmod`: the board stamps its own clock.
      */
     fun addUpdateContact(
@@ -1004,7 +1004,7 @@ internal sealed interface McFrame {
 }
 
 /**
- * One contact as the board keeps it (`ContactInfo`): what a pin reads and writes back and a teach writes. Held only
+ * One contact as the board keeps it (`ContactInfo`): what a route read and a teach read back, and a teach writes. Held only
  * between a read and its write: the [nameField] may be a person's name and the position theirs, so `toString` prints
  * neither, nor the key.
  */
@@ -1022,9 +1022,6 @@ internal class ContactRecord(
         require(key.size == MeshcoreProto.KEY_BYTES && outPath.size == MeshcoreProto.PATH_FIELD)
         require(nameField.size == MeshcoreProto.NAME_FIELD && position.size == POSITION_BYTES)
     }
-
-    /** This record with its route pinned zero-hop: `out_path_len 0`, the path cleared (ADR 2026-11.gsqu §3). */
-    fun pinned(): ContactRecord = ContactRecord(key, type, flags, 0, ByteArray(MeshcoreProto.PATH_FIELD), nameField, lastAdvert, position)
 
     /** Whether the board's name for this contact is [name] exactly. */
     fun named(name: String): Boolean = MeshcoreProto.cBytes(nameField, 0, MeshcoreProto.NAME_FIELD).contentEquals(name.encodeToByteArray())
@@ -1055,8 +1052,10 @@ internal class ContactRecord(
         private const val U32_BYTES = 4
 
         /**
-         * A contact Knit teaches (ADR 2026-11.gsqu §3): a companion, favourite and nothing else (no permissions), routed
-         * zero-hop, named [name] — `Knit xxxx` from the key, never a display name.
+         * A contact Knit teaches (ADR 2026-11.gsqu §3): a companion, favourite and nothing else (no permissions), named [name]
+         * — `Knit xxxx` from the key, never a display name — and routed at zero hops, which makes zero hops a new contact's
+         * first try. The firmware learns any longer route itself and Knit keeps it (the 2026-11-19 amendment): the same
+         * write is the DM ladder's zero-hop rung.
          */
         fun knit(
             key: ByteArray,

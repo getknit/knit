@@ -355,9 +355,8 @@ class MeshcoreAirPhysicsTest {
         rig.air.repeater("relay", "alice", "bob")
         val alice = rig.node(a, listOf("bob"))
         val bob = rig.node(b, listOf("alice"))
-        // Past the re-pin gap since the Ready's teach: a push inside it is coalesced (`MeshcorePins.REPIN_GAP_MS`), and the
-        // field's teach is far older than one DM.
-        rig.settle(MeshcorePins.REPIN_GAP_MS)
+        // Past the re-teach gap since the Ready's teach, as the field's teach is far older than one DM.
+        rig.settle(MeshcorePins.RETEACH_GAP_MS)
         return Triple(rig, alice, bob)
     }
 
@@ -365,7 +364,7 @@ class MeshcoreAirPhysicsTest {
         air.airings.filter { it.atMs >= t }.map { "${it.from} ${it.type} ${if (it.flood) "flood" else "direct"}" }
 
     @Test
-    fun aFloodedAckDrawsTheQ13PathTheReceiverRepinsAndTheNextDmGoesDirectBothWays() =
+    fun aFloodedAckDrawsTheQ13PathTheReceiverReadsAndKeepsAndTheNextDmGoesDirectBothWays() =
         runTest {
             val (rig, alice, bob) = q13Pair()
             // Bob's record of alice drifts to UNKNOWN, silently (RESET_PATH pushes nothing).
@@ -385,8 +384,8 @@ class MeshcoreAirPhysicsTest {
             val path = rig.air.airings.first { it.atMs >= t0 && it.from == "alice" && it.type == "path" }
             val gap = path.atMs - (ack.atMs + ack.airMs)
             assertTrue("about 3 s after the ack landed: $gap", gap in 3_000L..3_500L)
-            // 0x81 drew the session's pin job: it read the record back, found the PATH had already left it at zero hops, and
-            // wrote nothing. A PATH that came through the repeater leaves one hop, and the job writes (the next case).
+            // 0x81 drew the session's route read: it read the record back and wrote nothing (ADR 2026-11.gsqu's 2026-11-19
+            // amendment: the firmware's route is kept). A PATH that came through the repeater leaves one hop, kept too.
             assertEquals("bob's session read alice's record back after the push", readsBefore + 1, bob.readsOf(alice.board))
             assertEquals("and needed no write", pinsBefore, bob.pinsOf(alice.board).size)
             assertEquals("bob's record reads zero hops", 0, bob.board.contact(alice.board.key)?.outPathLen)
@@ -406,7 +405,7 @@ class MeshcoreAirPhysicsTest {
         }
 
     @Test
-    fun aQ13PathThatCameThroughTheRepeaterDriftsTheReceiverToOneHopAndItsRepinUndoesIt() =
+    fun aQ13PathThatCameThroughTheRepeaterLeavesTheReceiverAtOneHopWhichItKeeps() =
         runTest {
             val (rig, alice, bob) = q13Pair()
             bob.board.driftPath(alice.board)
@@ -419,18 +418,28 @@ class MeshcoreAirPhysicsTest {
             assertTrue("alice missed bob's own copy", "alice" in own.lostAt)
             assertTrue("and heard the relay's", rig.air.airings.any { it.from == "relay" && it.type == "ack" && "alice" in it.heardBy })
             assertTrue("then aired the Q13 PATH", rig.air.airings.any { it.from == "alice" && it.type == "path" && "bob" in it.heardBy })
-            assertTrue("bob's session re-pinned: ${bob.pinsOf(alice.board)}", bob.pinsOf(alice.board).drop(pinsBefore).contains(0))
-            assertEquals("back to zero hops", 0, bob.board.contact(alice.board.key)?.outPathLen)
+            // The firmware's route, read and kept: nothing written (ADR 2026-11.gsqu's 2026-11-19 amendment, no pin).
+            rig.settle(5_000)
+            assertEquals("bob's session wrote nothing: ${bob.pinsOf(alice.board)}", pinsBefore, bob.pinsOf(alice.board).size)
+            assertEquals("one hop through the relay, kept", 1, bob.board.contact(alice.board.key)?.outPathLen)
+            // The relay up, the kept route delivers: bob's next DM goes direct through it, no flood.
+            val t1 = testScheduler.currentTime
+            rig.dm(bob, alice, "dm-2")
+            rig.settle(10_000)
+            val tries = rig.air.airings.filter { it.atMs >= t1 && it.from == "bob" && it.type == "msg" }
+            assertEquals("one attempt, direct along the hop", listOf(1), tries.map { it.hops })
+            assertTrue(tries.none { it.flood })
+            assertTrue("the relay carried it", rig.air.airings.any { it.atMs >= t1 && it.from == "relay" && it.type == "msg" && !it.flood })
+            assertEquals("delivered once", 1, alice.delivered.size)
         }
 
     @Test
-    fun aSilentOneHopDriftWithTheRepeaterGoneCostsOneAttemptAndTheRepinDeliversTheNext() =
+    fun aSilentOneHopDriftWithTheRepeaterGoneCostsOneAttemptAndTheZeroHopRungDeliversTheNext() =
         runTest {
             // Design pass B3: the drift the fake could not show. Bob's record of alice reads one hop through the relay, and
-            // nothing pushed; the relay is then powered off. The session believes its pin, so the first attempt goes direct
-            // along the stale route and alice, in range, drops it (not the next hop). An attempt that drew no ack re-pins
-            // before the next (round 1): the read finds one hop, the write puts it back to zero, and the second attempt
-            // lands — one retry gap lost, no air spent on the re-pin.
+            // nothing pushed; the relay is then powered off. The first attempt goes direct along the dead route and alice, in
+            // range, drops it (not the next hop). The ladder (ADR 2026-11.gsqu's 2026-11-19 amendment) reads the record back,
+            // finds one hop, and its zero-hop rung writes zero: the second attempt lands — one retry gap lost, no flood.
             val (rig, alice, bob) = q13Pair()
             bob.board.driftPath(alice.board, "relay")
             rig.air.power("relay", on = false)
@@ -443,7 +452,13 @@ class MeshcoreAirPhysicsTest {
             assertTrue("both direct, alice heard both", tries.none { it.flood } && tries.all { "alice" in it.heardBy })
             assertEquals("the first through the dead relay", 1, tries[0].hops)
             assertEquals("the second zero-hop", 0, tries[1].hops)
-            assertTrue("the re-pin wrote zero hops: ${bob.pinsOf(alice.board)}", bob.pinsOf(alice.board).drop(pinsBefore).contains(0))
+            assertTrue("the rung wrote zero hops: ${bob.pinsOf(alice.board)}", bob.pinsOf(alice.board).drop(pinsBefore).contains(0))
+            assertEquals(
+                "and never flooded",
+                0L,
+                bob.session.counters.directFlooded
+                    .get(),
+            )
             assertEquals("delivered once", 1, alice.delivered.size)
             assertEquals("never marked unreachable", 0, bob.transport.status.value.direct.unreachable)
             assertEquals(0, bob.board.contact(alice.board.key)?.outPathLen)
@@ -452,9 +467,9 @@ class MeshcoreAirPhysicsTest {
     @Test
     fun aDmRoutedThroughARepeaterLiftsNoRadioCount() =
         runTest {
-            // Round 1's decision: through a repeater a direct DM lands reported `0xFF` (`MyMesh.cpp:453`), which
-            // MeshcoreTraits.heardZeroHop still reads as zero hops (it trusts the pin) for lifting a mark — but a DM never
-            // counts its sender's radio in `boardsHeard` on MeshCore, so an out-of-range peer is no heard board.
+            // Round 1's decision: through a repeater a direct DM lands reported `0xFF` (`MyMesh.cpp:453`), which lifts a mark
+            // at any hop count (MeshcoreTraits.heardRoute, ADR 2026-11.gsqu's 2026-11-19 amendment) — but a DM never counts its
+            // sender's radio in `boardsHeard` on MeshCore, so an out-of-range peer is no heard board.
             val rig = rig()
             val a = rig.board("alice")
             val b = rig.board("bob")

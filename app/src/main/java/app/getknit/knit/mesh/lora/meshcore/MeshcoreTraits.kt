@@ -70,9 +70,11 @@ internal object MeshcoreTraits : BoardTraits {
     override val cwMax: Int get() = 0
 
     /**
-     * The session's gap between two attempts of a zero-hop DM of [airMs]: the firmware's direct `est_timeout` at zero hops
-     * (`calcDirectTimeoutMillisFor`: 500 ms + (6 × air + 250 ms) × 1, `MyMesh.cpp:891`) and the session's retry slack. It
-     * sets only the core's guess of what flew when no outcome says ([PacketOutcome.flown] always does on this kind).
+     * The core's fallback guess at the gap between two attempts of a DM of [airMs]: the firmware's direct `est_timeout` at
+     * zero hops (`calcDirectTimeoutMillisFor`: 500 ms + (6 × air + 250 ms) × 1, `MyMesh.cpp:891`) and the session's retry
+     * slack. The session's real gap follows the route each attempt took (a flood's `est_timeout`, a learned path's per-hop
+     * term, ADR 2026-11.gsqu's 2026-11-19 amendment); this only sets what the core would guess flew with no count, and
+     * [PacketOutcome.flown] always gives one on this kind.
      */
     override fun retransmitMs(
         airMs: Long,
@@ -149,13 +151,14 @@ internal object MeshcoreTraits : BoardTraits {
     ): Boolean = (packet.kind as? MeshcorePacket)?.live == true
 
     /**
-     * A live drain that came straight from the radio that aired it (§5, Q15, the Stage 5 decisions):
+     * A live drain that came straight from the radio that aired it (§5, Q15, the Stage 5 decisions): what counts a radio
+     * (`boardsHeard`), never what lifts a mark ([heardRoute] does).
      * - channel data or text at `path_len != 0xFF && (path_len & 0x3F) == 0` — a flood heard before any repeater re-aired
      *   it; `0xFF` reads direct through a repeater too, so it is not one;
-     * - a contact DM at `0xFF` (direct): it cannot prove zero hops by itself, so the pin both phones hold on their own
-     *   boards is trusted (§3) — for lifting an unreachable mark only: a DM a repeater forwarded along a drifted route
-     *   lands `0xFF` too, so the core never counts a DM's radio in `boardsHeard` (Stage 5c-2a); a flood at zero hops
-     *   counts, and one with hops does not.
+     * - a contact DM only when it flooded and arrived at zero hops, by its own `path_len`. A direct DM reads `0xFF` on any
+     *   path, and our record of its sender ([MeshcorePacket.senderRoute]) is our outbound route, a zero there possibly our
+     *   own ladder's write — no evidence of how their packet came (lora-reviewer NB4 on ADR 2026-11.gsqu's 2026-11-19
+     *   amendment). The core never counts a DM's radio in `boardsHeard` anyway (Stage 5c-2a).
      *
      * Never a replay ([live]). Never keyed on the DM's sender prefix: the core keys a hearing on an opened seal or a
      * verified author alone ([hearsSender]).
@@ -163,12 +166,29 @@ internal object MeshcoreTraits : BoardTraits {
     override fun heardZeroHop(packet: BoardPacket): Boolean {
         val mc = packet.kind as? MeshcorePacket ?: return false
         if (!mc.live) return false
-        val zeroHops = !mc.direct && (mc.pathLen and MeshcoreProto.PATH_HOPS_MASK) == 0
-        return when (mc.type) {
-            MeshcorePacket.Type.CHANNEL_DATA, MeshcorePacket.Type.CHANNEL_TEXT -> zeroHops
-            MeshcorePacket.Type.CONTACT_TEXT -> mc.direct || zeroHops
-        }
+        // One rule for every type since lora NB4: the packet's own flood path length, never our record.
+        return !mc.direct && (mc.pathLen and MeshcoreProto.PATH_HOPS_MASK) == 0
     }
+
+    /**
+     * The bytes a known raw `out_path_len` [route] puts on a direct packet: its hop count (the low six bits) times its hash
+     * size (the top two bits, plus one; `Packet.h:79-80`). Never asked of UNKNOWN.
+     */
+    fun pathBytesOf(route: Int): Int = (route and MeshcoreProto.PATH_HOPS_MASK) * hashSizeOf(route)
+
+    /** The hash size a raw `out_path_len` [route] carries in its top two bits, plus one: 1 to 4 bytes a hop. */
+    fun hashSizeOf(route: Int): Int = ((route and BYTE_MASK) shr HASH_SIZE_SHIFT) + 1
+
+    /** Whether a raw `out_path_len` [route] is a known route of zero hops: never UNKNOWN, never one not read (null). */
+    fun isZeroHopRoute(route: Int?): Boolean =
+        route != null && route != MeshcoreProto.PATH_UNKNOWN && route and MeshcoreProto.PATH_HOPS_MASK == 0
+
+    /**
+     * A live drain at any hop count (ADR 2026-11.gsqu's 2026-11-19 amendment): with DMs routed by the firmware, a far
+     * contact's board reaches ours through repeaters, and its verified, fresh frame — a flooded room post, an opened DM — is
+     * what lifts an unreachable mark ([LoraDirectPolicy.onHeard], once per give-up). Never a replay.
+     */
+    override fun heardRoute(packet: BoardPacket): Boolean = (packet.kind as? MeshcorePacket)?.live == true
 
     /** A sender prefix is a claim and channel data names no sender (the Stage 5 decisions): never a hearing's key. */
     override val hearsSender: Boolean get() = false
@@ -309,24 +329,66 @@ internal object MeshcoreTraits : BoardTraits {
     }
 
     /**
-     * The bytes on the air of one ack of [payloadBytes]: direct along a known path (header and path length, the path empty
-     * for a zero-hop contact), or [flooded] when our board's record of the sender has no path (`sendFloodScoped`: the
-     * transport codes too, and no multi-ack beside it).
+     * The bytes on the air of one ack of [payloadBytes]: direct along a known path of [pathBytes] (header, path length and
+     * the path, empty for a zero-hop contact), or [flooded] when our board's record of the sender has no path
+     * (`sendFloodScoped`: the transport codes too, no path as our board airs it, and no multi-ack beside it).
      */
     fun ackPhyBytes(
         payloadBytes: Int,
         flooded: Boolean,
-    ): Int = (if (flooded) FLOOD_HEAD else DIRECT_HEAD) + payloadBytes
+        pathBytes: Int = 0,
+    ): Int = (if (flooded) FLOOD_HEAD else DIRECT_HEAD + pathBytes) + payloadBytes
 
     /**
-     * The bytes on the air of a contact text DM whose COBS text is [cobsTextBytes], as our board airs it: zero-hop direct, or
-     * [flooded] — the same packet with a scoped flood's 4 B of transport codes (`sendFloodScoped`). What a `DirectFlooded`
-     * surcharge is the difference of: the airing itself was booked at send, direct.
+     * The bytes on the air of a contact text DM whose COBS text is [cobsTextBytes], as our board airs it: direct along
+     * [pathBytes] of learned path (none at zero hops), or [flooded] — the packet with a scoped flood's 4 B of transport codes
+     * and no path (`sendFloodScoped`). What a `DirectRouted` surcharge is the difference of: the airing itself was booked at
+     * send, direct at zero hops.
      */
     fun contactTextPhyBytes(
         cobsTextBytes: Int,
         flooded: Boolean,
-    ): Int = (if (flooded) FLOOD_HEAD else DIRECT_HEAD) + 2 * HASH_BYTES + MAC_BYTES + aesPadded(TEXT_HEADER + cobsTextBytes)
+        pathBytes: Int = 0,
+    ): Int = (if (flooded) FLOOD_HEAD else DIRECT_HEAD + pathBytes) + 2 * HASH_BYTES + MAC_BYTES + aesPadded(TEXT_HEADER + cobsTextBytes)
+
+    /**
+     * The bytes on the air of the reciprocal PATH our board sends direct after a flooded PATH return reached it
+     * (`Mesh.cpp:173-178`, `createPathReturn` with no extra): header, path length, [pathBytes] of route on the packet, the two
+     * hashes, the MAC, and AES over the path length byte, the path it returns ([pathBytes] too: the way back has as many
+     * hops) and the extra type.
+     */
+    fun reciprocalPathPhyBytes(pathBytes: Int): Int =
+        DIRECT_HEAD + pathBytes + 2 * HASH_BYTES + MAC_BYTES + aesPadded(PATH_LEN_BYTES + pathBytes + 1)
+
+    /**
+     * The hop count a direct DM's `RESP_SENT` reports through its `est_timeout` (ADR 2026-11.gsqu's 2026-11-19 amendment):
+     * the firmware's `calcDirectTimeoutMillisFor` (`MyMesh.cpp:891`, 500 + (6 × air + 250) × (hops + 1)) inverted, the air
+     * taken for each candidate at its own length (a path of [hashSize]-byte hashes rides the packet) by the formula and the
+     * firmware's preamble (`getEstAirtimeFor`, no [FIXED_MS]). The nearest count, or null when none lies within half a hop's
+     * step of [estTimeoutMs]: what the session books our own attempt along, never what routes it.
+     */
+    fun directHopsOf(
+        estTimeoutMs: Long,
+        cobsTextBytes: Int,
+        radio: RadioParams,
+        hashSize: Int = 1,
+    ): Int? {
+        var best: Int? = null
+        var bestErr = Long.MAX_VALUE
+        var bestStep = 0L
+        for (hops in 0..MeshcoreProto.PATH_HOPS_MASK) {
+            val phy = contactTextPhyBytes(cobsTextBytes, flooded = false, pathBytes = hops * hashSize)
+            val air = LoraAirtime.formulaMs(phy, radio, preambleSymbolsAt(radio.spreadFactor))
+            val step = air * DIRECT_PERHOP_FACTOR + DIRECT_PERHOP_EXTRA_MS
+            val err = kotlin.math.abs(SEND_TIMEOUT_BASE_MS + step * (hops + 1) - estTimeoutMs)
+            if (err < bestErr) {
+                best = hops
+                bestErr = err
+                bestStep = step
+            }
+        }
+        return best?.takeIf { bestErr * 2 <= bestStep }
+    }
 
     /**
      * The duty a board on [freqKhz] at [bandwidthHz] transmits under: its band's ([LoraBand]), never more, and never a
@@ -381,6 +443,7 @@ internal object MeshcoreTraits : BoardTraits {
     private const val PLAIN_ACK_BYTES = 6
     private const val SIGNED_ACK_BYTES = 4
     private const val HASH_SIZE_SHIFT = 6
+    private const val BYTE_MASK = 0xFF
 
     /** A flood's bytes before its payload: header, transport codes, path length (and no path as our board airs it). */
     private const val FLOOD_HEAD = HEADER_BYTES + TRANSPORT_CODES_BYTES + PATH_LEN_BYTES

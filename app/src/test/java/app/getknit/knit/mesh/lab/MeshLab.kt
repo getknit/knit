@@ -2628,8 +2628,8 @@ class LabNode internal constructor(
 
     /**
      * Back from a board that went away (powered off, its link lost): its session Ready again on the record's consent, and
-     * every contact taught and pinned once more — the Ready re-assert. What a scenario waits on before this node's board
-     * can carry anything.
+     * every contact taught with its route read once more — the Ready's listing. What a scenario waits on before this node's
+     * board can carry anything.
      */
     internal suspend fun awaitMeshcoreBack() {
         awaitMeshcoreReady()
@@ -2667,7 +2667,7 @@ class LabNode internal constructor(
         return "row keyed=${peers.find(peer.nodeId)?.meshcoreKey != null}, in board map=${manager.meshcoreBoardMap().first().containsKey(
             peer.nodeId,
         )}, contact=${checkNotNull(meshcoreAir).snapshot { meshcoreBoard?.contact(key) != null }}, " +
-            "pinned=${meshcoreSession?.taughtAndPinned(key)}, consent=${meshcoreSession?.consent?.value}, " +
+            "routed=${meshcoreSession?.taughtAndRouted(key)}, consent=${meshcoreSession?.consent?.value}, " +
             "wanted=${c.keysWanted} skipped=${c.keysSkipped} written=${c.teachWritten} refused=${c.teachRefused}, " +
             "lora: ${loraLog.takeLast(MeshLab.WINDOW_LORA)}"
     }
@@ -2687,15 +2687,18 @@ class LabNode internal constructor(
 
     /**
      * Whether [key] is a contact on this node's MeshCore board, read on the air's serial context, and its session holds it
-     * taught and pinned ([MeshcoreSession.taughtAndPinned]).
+     * taught with its route read on this connection ([MeshcoreSession.taughtAndRouted]).
      */
     internal suspend fun meshcoreTaught(key: ByteArray): Boolean {
         val board = meshcoreBoard ?: return false
         val session = meshcoreSession ?: return false
-        return checkNotNull(meshcoreAir).snapshot { board.contact(key) != null } && session.taughtAndPinned(key)
+        return checkNotNull(meshcoreAir).snapshot { board.contact(key) != null } && session.taughtAndRouted(key)
     }
 
-    /** Every MeshCore key this node's board map holds, taught and pinned: a restart's [awaitTaught][MeshLab.awaitTaught] for each. */
+    /**
+     * Every MeshCore key this node's board map holds, taught and its route read: a restart's [awaitTaught][MeshLab.awaitTaught]
+     * for each.
+     */
     private suspend fun awaitMeshcoreTaught() {
         if (meshcoreSession == null) return
         val holders = manager.meshcoreBoardMap().first().mapValues { b64d(it.value.key) }

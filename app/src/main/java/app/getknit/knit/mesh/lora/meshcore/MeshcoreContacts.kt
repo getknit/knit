@@ -214,7 +214,7 @@ internal class MeshcoreContacts(
         val overwrites: List<ByteArray>,
         /** Taught keys not listed, ranked, as many as the board has room for once the removals read back. */
         val teaches: List<ByteArray>,
-        /** Taught keys listed as Knit's record, zero-hop: pinned as read, nothing written. */
+        /** Taught keys listed as Knit's record (any route): kept as read, nothing written. */
         val verified: List<ByteArray>,
         /** A taught key's prefix → the listed key of another that shares it, whose removal must read back first. */
         val blockedBy: Map<ByteBuffer, ByteArray>,
@@ -269,20 +269,22 @@ internal class MeshcoreContacts(
         private fun rankOf(rank: MeshcoreRank): Int = MeshcoreRank.entries.size - rank.ordinal
 
         /**
-         * Whether [record] is exactly the contact Knit writes for its key: a CHAT favourite, `Knit xxxx`, pinned zero-hop. What
-         * Restore identifies Knit's contacts by, what the setup's erase keeps and what a teach's read-back believes.
+         * Whether [record] is exactly the contact Knit writes for its key: a CHAT favourite named `Knit xxxx`, on whatever
+         * route the board holds for it. What Restore identifies Knit's contacts by, what the setup's erase keeps and what a
+         * teach's read-back believes.
          */
         fun isKnitRecord(record: ContactRecord): Boolean = isKnitRouting(record) && record.named(MeshcoreNames.forKey(record.key))
 
         /**
-         * Whether [record] routes as Knit's does — a CHAT favourite pinned zero-hop — whatever its name: what the reconcile's
-         * overwrite and verify, and a teach's overwrite decision, read (ADR 2026-11.f4d3, the plan's §5). A heard advert
-         * rewrites a contact's name to the peer's own (lora N4: `BaseChatMesh.cpp:191-193`), and with handles every peer's
-         * board may carry one, so the name would cost a flash write per taught peer a Ready for nothing it routes by.
+         * Whether [record] is Knit's as a contact — a CHAT favourite with no permissions — whatever its name and its route: what
+         * the reconcile's overwrite and verify, and a teach's overwrite decision, read (ADR 2026-11.f4d3, the plan's §5). A
+         * heard advert rewrites a contact's name to the peer's own (lora N4: `BaseChatMesh.cpp:191-193`), and with handles
+         * every peer's board may carry one, so the name would cost a flash write per taught peer a Ready for nothing it routes
+         * by. **Never the route** (ADR 2026-11.gsqu's 2026-11-19 amendment): the firmware learns a far contact's path off a
+         * flooded DM's PATH return, and a reconcile or a teach that read a learned path as foreign would wipe it at every Ready.
          */
         fun isKnitRouting(record: ContactRecord): Boolean =
-            record.type == MeshcoreProto.ADV_TYPE_CHAT && record.flags == MeshcoreProto.CONTACT_FLAG_FAVOURITE &&
-                record.outPathLen == 0
+            record.type == MeshcoreProto.ADV_TYPE_CHAT && record.flags == MeshcoreProto.CONTACT_FLAG_FAVOURITE
 
         /**
          * One Ready's reconcile over the board's own [listing] ([listedCount] the count its `CONTACTS_START` gave, which a

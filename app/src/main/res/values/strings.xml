@@ -1837,7 +1837,7 @@
     <string name="settings_lora_subtitle_any">Extend the reach of the Nearby room and your private messages over long-range LoRa by pairing a Meshtastic or MeshCore board over Bluetooth. Groups, typing and photos stay on the phone-to-phone radios.</string>
     <string name="lora_off_note">Turning this off closes the board connection. Groups and attachments never travel over LoRa.</string>
     <string name="lora_dm_title">Private messages over LoRa</string>
-    <string name="lora_dm_subtitle">Direct messages stay end-to-end encrypted, but who is messaging whom, and when, is visible to any LoRa radio in range — kilometres, not metres. Turn this off to keep private messages on the phone-to-phone radios.</string>
+    <string name="lora_dm_subtitle">Private messages can reach contacts beyond your board\'s range, passed on by other LoRa radios. They stay end-to-end encrypted, but who is messaging whom, and when, is visible to every radio that hears or passes them on, which can span a whole LoRa network, and to anyone online where a radio forwards what it hears to the internet. The route a message takes can also show roughly where you and your contact are. Turn this off to keep private messages on the phone-to-phone radios.</string>
     <string name="lora_board_section">Board</string>
     <string name="lora_board_none">No paired Meshtastic boards found. Pair one in Bluetooth settings first (the board shows a PIN on its screen).</string>
     <string name="lora_board_none_any">No paired LoRa boards found. Pair a Meshtastic or MeshCore board in Bluetooth settings first, with the PIN its screen shows or the one it was set to.</string>

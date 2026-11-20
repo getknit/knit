@@ -86,9 +86,11 @@ import kotlin.random.Random
  *   back. Anything else nobody waited on is counted and dropped ([MeshcoreCounters.unexpected]).
  * - **Every frame handler is guarded**: one bad frame never ends the actor.
  *
- * **A compact DM** rides as a contact text DM, `COBS(frame)` ([Cobs]), and is written only after a zero-hop pin that
- * succeeded in this connection ([MeshcorePins]). The session runs its own attempts 0..2 — the same timestamp, a new
- * `attempt` each, since a same-attempt retry is byte-identical and dropped unanswered (Q14) — on the firmware's
+ * **A compact DM** rides as a contact text DM, `COBS(frame)` ([Cobs]), on the route the firmware keeps for the contact —
+ * by flood with none, then along the path a PATH return taught it — up a ladder of the session's own (ADR 2026-11.gsqu's
+ * 2026-11-19 amendment, [nextRung]): zero hops before any flood, at most one flood a flight. The session runs its own
+ * attempts 0..2 — the same timestamp, a new `attempt` each, since a same-attempt retry is byte-identical and dropped
+ * unanswered (Q14) — on the firmware's
  * `est_timeout`, and reports the exact count that flew on the outcome ([PacketOutcome.flown]).
  *
  * Android-free (the only `android.bluetooth.*` is the dialer's, Stage 3c), honouring `.agents/rules/mesh.md`. The
@@ -174,6 +176,12 @@ internal class MeshcoreSession(
 
     private val ackTable = MeshcoreAckTable()
     private val pins = MeshcorePins()
+
+    /**
+     * Contacts a flooded DM of ours was confirmed to: their reciprocal PATH is booked once their route is read ([runRead]),
+     * or at the longest path at the next Ready if the connection ended first. The actor's alone.
+     */
+    private val reciprocalOwed = HashSet<BoardAddr.MeshCore>()
     private val headroomPolicy = MeshcoreHeadroom()
     private val airRing = MeshcoreAirRing()
     private val waits = ElapsedWait(now)
@@ -451,12 +459,12 @@ internal class MeshcoreSession(
         call({ ContactWrite.NOT_READY }, { ContactWrite.FAILED }) { c -> runTeach(c, key) }
 
     /**
-     * Whether [key] is a key Knit taught this board and its zero-hop pin read back on this connection: what a DM to it waits
-     * for. Read off the pins' own lock, never the actor's, for the mesh lab's readiness wait (ADR 2026-11.gsqu's Stage 5c-2b
-     * amendment); nothing in the app reads it.
+     * Whether [key] is a key Knit taught this board and its record's route was read on this connection (the Ready's listing,
+     * a teach's read-back): what a DM to it waits for. Read off the pins' own lock, never the actor's, for the mesh lab's
+     * readiness wait (ADR 2026-11.gsqu's Stage 5c-2b amendment); nothing in the app reads it.
      */
-    internal fun taughtAndPinned(key: ByteArray): Boolean =
-        MeshcorePins.addrOf(key)?.let { pins.teaches(key) && pins.isVerified(it) } == true
+    internal fun taughtAndRouted(key: ByteArray): Boolean =
+        MeshcorePins.addrOf(key)?.let { pins.teaches(key) && pins.routeOf(it) != null } == true
 
     /** Removes [key]'s contact and reads it gone. */
     suspend fun removeContact(key: ByteArray): ContactWrite =
@@ -471,7 +479,7 @@ internal class MeshcoreSession(
             if (pins.teaches(key)) ContactWrite.NOT_FOUND else runRemove(c, key)
         }
 
-    /** Resets [key]'s route to flood (`RESET_PATH`) and reads it back; the next DM to it pins it again. */
+    /** Resets [key]'s route to flood (`RESET_PATH`) and reads it back; the next DM to it airs zero hops first. */
     suspend fun resetPath(key: ByteArray): ContactWrite =
         call({ ContactWrite.NOT_READY }, { ContactWrite.FAILED }) { c -> runResetPath(c, key) }
 
@@ -506,11 +514,9 @@ internal class MeshcoreSession(
             onActor ?: unbindAway(address).also { refreshSetup(null, address) }
         }
 
-    override fun pinnedZeroHop(from: BoardAddr.MeshCore): Boolean = pins.keyFor(from) != null && pins.isVerified(from)
-
     /**
-     * The keys Knit teaches this board, ranked (`MeshcoreContacts`): the only keys a DM is sent to or a pin written for
-     * (security B1), the targets of a targeted re-pin, and what the Ready reconcile makes the board's table on a board set up
+     * The keys Knit teaches this board, ranked (`MeshcoreContacts`): the only keys a DM is sent to or a record written for
+     * (security B1), the targets of a targeted read or re-teach, and what the Ready reconcile makes the board's table on a board set up
      * for Knit. Until the first call no reconcile runs, so a Ready that beats the board map removes nothing. Any thread.
      */
     override fun setKnitContacts(
@@ -1266,7 +1272,6 @@ internal class MeshcoreSession(
         }
         val run = if (read != null) restoreWith(c) else RestoreRun(unreadRecord())
         c.steps.clear()
-        c.reassert.clear()
         pins.clearJobs()
         if (run.cleared == RecordOutcome.DONE) return MeshcoreUnbind.CLEARED
         // No mark yet (an unread record, another board's): the mark is the one write, under the rule.
@@ -1569,12 +1574,14 @@ internal class MeshcoreSession(
         return end
     }
 
-    /** A connection comes up: nothing verified, the Ready re-assert queued, the first drain due, then [publishReady]. */
+    /** A connection comes up: no route known (the reconcile's listing reads them), the first drain due, then [publishReady]. */
     private fun ready(c: Conn) {
+        // A reciprocal PATH our board sent before the last connection ended, its route never read: booked at the longest path.
+        reciprocalOwed.forEach { _ -> _air.tryEmit(MeshcoreAir.ReciprocalPath(MeshcoreProto.PATH_FIELD, now())) }
+        reciprocalOwed.clear()
         headroomPolicy.reset()
         airRing.reset()
-        c.reassert.clear()
-        c.reassert.addAll(pins.onReady(now(), c.self?.key?.let(MeshcorePins::addrOf)))
+        pins.onReady(c.self?.key?.let(MeshcorePins::addrOf))
         c.steps.clear()
         c.removalFailed.clear()
         c.contacts = null
@@ -1586,7 +1593,7 @@ internal class MeshcoreSession(
         // The consent the handshake read, before anything reads this board as Ready.
         publishConsent(c)
         publishReady(c)
-        // The reconcile's decision is owed at once (a board not set up for Knit drops it there), and the re-assert after it.
+        // The reconcile's decision is owed at once (a board not set up for Knit drops it there).
         poke.trySend(Unit)
     }
 
@@ -1942,8 +1949,21 @@ internal class MeshcoreSession(
         f: McFrame.ContactMessage,
     ) {
         val decoded = if (f.txtType == MeshcoreProto.TXT_TYPE_PLAIN) Cobs.decode(f.text) else null
+        // Our record of the sender as last read here: what our board's answer is priced along, and a DM's zero-hop hearing.
+        val route = pins.routeOf(BoardAddr.MeshCore(f.prefix))
         val kind =
-            MeshcorePacket(MeshcorePacket.Type.CONTACT_TEXT, null, f.pathLen, f.txtType, null, f.timestamp, c.live, decoded != null, f.text)
+            MeshcorePacket(
+                MeshcorePacket.Type.CONTACT_TEXT,
+                null,
+                f.pathLen,
+                f.txtType,
+                null,
+                f.timestamp,
+                c.live,
+                decoded != null,
+                f.text,
+                senderRoute = route,
+            )
         emitPacket(
             BoardPacket(
                 from = BoardAddr.MeshCore(f.prefix),
@@ -1985,22 +2005,29 @@ internal class MeshcoreSession(
 
     private fun hopsOf(pathLen: Int): Int? = if (pathLen == MeshcoreProto.PATH_UNKNOWN) null else pathLen and MeshcoreProto.PATH_HOPS_MASK
 
-    /** A `0x81` / `0x8F` for [key]: unverified, and a targeted, rate-limited job when Knit taught it (binding rule "sends" 2). */
+    /**
+     * A `0x81` / `0x8F` for [key] (binding rule "sends" 2): when Knit taught it, a read of its learned route — never a write:
+     * the firmware's path is kept (ADR 2026-11.gsqu's 2026-11-19 amendment) — or a rate-limited re-teach of a deleted one.
+     */
     private fun onPathPush(
         c: Conn,
         key: ByteArray,
         deleted: Boolean,
     ) {
         val addr = MeshcorePins.addrOf(key) ?: return
+        if (!deleted) {
+            // The firmware learned a route: what the cache held is stale until the queued read lands (lora NB1), and a flight
+            // to it past its reset may count the path as learned (lora NB3).
+            if (pins.isTaught(addr)) pins.forgetRoute(addr)
+            flights.values.filter { it.to == addr }.forEach { it.pathPushed = true }
+        }
         // A contact gone frees its slot in the count the Ready's listing read (Stage 5b-2: one listing a Ready, kept here).
         if (deleted) c.contacts = c.contacts?.let { (it - 1).coerceAtLeast(0) }
-        flights.values.filter { it.to == addr }.forEach { it.repinNeeded = true }
         when (pins.onPush(key, deleted, now())) {
             MeshcorePins.PushAction.IGNORED -> counters.foreignPathPushes.incrementAndGet()
-            MeshcorePins.PushAction.MARKED -> counters.repinsCoalesced.incrementAndGet()
+            MeshcorePins.PushAction.MARKED -> counters.reteachesCoalesced.incrementAndGet()
             MeshcorePins.PushAction.QUEUED -> poke.trySend(Unit)
         }
-        if (c.reassert.isNotEmpty()) poke.trySend(Unit)
     }
 
     // --- the drain ---
@@ -2093,25 +2120,41 @@ internal class MeshcoreSession(
     /**
      * One low-priority contact job under sends and the drain: a consent re-read or an owed bind (Stage 5d) when due, the
      * Ready reconcile's listing first (a board set up for Knit, once the taught set is known), then its steps one at a time,
-     * then the Ready re-assert, then a targeted re-pin.
+     * then a targeted route read or re-teach.
      */
     private suspend fun runOneJob(c: Conn) {
         if (runConsentJob(c)) return
         if (reconcileOrDrop(c)) return
         val step = c.steps.removeFirstOrNull()
-        val reassert = if (step == null) c.reassert.removeFirstOrNull() else null
         if (step != null) {
             runStep(c, step)
-        } else if (reassert != null) {
-            pinKey(c, reassert)
         } else {
             val (key, job) = pins.nextJob() ?: return
             when (job) {
-                MeshcorePins.Job.PIN -> if (pinKey(c, key)) counters.repinsDone.incrementAndGet()
+                MeshcorePins.Job.READ -> runRead(c, key)
                 MeshcorePins.Job.TEACH -> runLiveTeach(c, key)
             }
         }
-        if (c.steps.isNotEmpty() || c.reassert.isNotEmpty() || pins.hasJobs()) poke.trySend(Unit)
+        if (c.steps.isNotEmpty() || pins.hasJobs()) poke.trySend(Unit)
+    }
+
+    /**
+     * A route read a path push (or a confirmed flood) queued: [key]'s record read back and its route cached, nothing written.
+     * When a flooded DM of ours was confirmed to it, the reciprocal PATH our board sent along the route it learned is reported
+     * at that route's length ([MeshcoreAir.ReciprocalPath]), or at the longest path when the read failed, so it is never
+     * under-booked.
+     */
+    private suspend fun runRead(
+        c: Conn,
+        key: ByteArray,
+    ) {
+        val addr = MeshcorePins.addrOf(key) ?: return
+        val route = readRoute(c, key)
+        counters.routeReads.incrementAndGet()
+        if (reciprocalOwed.remove(addr)) {
+            val pathBytes = route?.takeIf { it != MeshcoreProto.PATH_UNKNOWN }?.let(MeshcoreTraits::pathBytesOf) ?: MeshcoreProto.PATH_FIELD
+            _air.tryEmit(MeshcoreAir.ReciprocalPath(pathBytes, now()))
+        }
     }
 
     /**
@@ -2140,7 +2183,7 @@ internal class MeshcoreSession(
     }
 
     /**
-     * The Ready reconcile's turn, or a board Knit did not set up, whose pin, re-pin and re-teach jobs are dropped (the 5b-2
+     * The Ready reconcile's turn, or a board Knit did not set up, whose route reads and re-teach jobs are dropped (the 5b-2
      * review's B1). True when the tick is spent.
      */
     private suspend fun reconcileOrDrop(c: Conn): Boolean {
@@ -2159,7 +2202,6 @@ internal class MeshcoreSession(
             return true
         }
         if (!knit) {
-            c.reassert.clear()
             c.steps.clear()
             pins.clearJobs()
         }
@@ -2362,8 +2404,13 @@ internal class MeshcoreSession(
         }
 
     /**
-     * A compact DM to [to]: refused unless the session holds its key and a pin succeeded in this connection (written now
-     * if not), then attempt 0. The answer is the first attempt's; the rest are the flight's ([flightsDue]).
+     * A compact DM to [to] (ADR 2026-11.gsqu §2 and its 2026-11-19 amendment): refused unless the session holds its key on
+     * a board set up for Knit, then attempt 0 on the route the board holds. A route this connection has not read, or holds
+     * as UNKNOWN, is read first (a BLE read, no air: lora NB1); one that reads UNKNOWN — the last flight's reset with no
+     * path learned since — is written to zero hops before the attempt, so a contact's first try is never a network flood
+     * (the user's decision (b)); a read or a write that fails refuses it with nothing sent
+     * ([MeshcoreRefusal.ROUTE_UNWRITTEN]). A record missing reads nothing and answers the send's own `NOT_FOUND`, which
+     * the core teaches from. The answer is the first attempt's; the rest are the flight's ladder ([flightsDue]).
      */
     private suspend fun sendDirect(
         c: Conn,
@@ -2372,15 +2419,37 @@ internal class MeshcoreSession(
         handle: UInt,
     ): SendResult {
         if (payload.isEmpty() || payload.size > MeshcoreProto.DIRECT_SEAL_CAP) return SendResult.TooLarge
-        // Off a board set up for Knit nothing is sent or pinned (the 5b-2 review's B1): the user's own contacts stay theirs.
+        // Off a board set up for Knit nothing is sent or written (the 5b-2 review's B1): the user's own contacts stay theirs.
         // Refused under this send's own handle, so the core acts on every refusal, not the first (lora N2).
         val key = pins.keyFor(to)?.takeIf { knitBoard(c) } ?: return SendResult.Rejected(handle, MeshcoreRefusal.NO_RECORD)
         if (ackTable.full(now()) || headroomPolicy.holding) return SendResult.Busy
-        if (!pins.isVerified(to) && !pinKey(c, key)) return SendResult.Rejected(handle, MeshcoreRefusal.UNPINNED)
         val flight = Flight(handle, to, key, Cobs.encode(payload), wallClock() / MS_PER_SECOND, startedAt = now())
+        if (!firstRoute(c, flight)) {
+            val code = if (flight.budgetRefused) MeshcoreRefusal.ROUTE_BUDGET_SPENT else MeshcoreRefusal.ROUTE_UNWRITTEN
+            return SendResult.Rejected(handle, code)
+        }
         val result = attempt(c, flight)
         if (result is SendResult.Queued || result is SendResult.Timeout) flights[handle] = flight
         return result
+    }
+
+    /**
+     * [flight]'s route before attempt 0: read over BLE whenever the cache holds nothing or UNKNOWN (lora NB1: a path the board
+     * learned since a reset, its `0x81` not yet read back, is never written over with zero hops by a send replayed from a
+     * backlog), and written to zero hops when it reads UNKNOWN. False when a read or that write failed.
+     */
+    private suspend fun firstRoute(
+        c: Conn,
+        flight: Flight,
+    ): Boolean {
+        val cached = pins.routeOf(flight.to)
+        if (cached == null || cached == MeshcoreProto.PATH_UNKNOWN) {
+            val found = readContactOn(c, flight.key) ?: return false
+            found.record?.let { pins.noteRoute(flight.to, it.outPathLen) }
+        }
+        val route = pins.routeOf(flight.to)
+        flight.startedOnPath = route != null && route != MeshcoreProto.PATH_UNKNOWN && !MeshcoreTraits.isZeroHopRoute(route)
+        return route != MeshcoreProto.PATH_UNKNOWN || writeZeroHop(c, flight)
     }
 
     /**
@@ -2398,45 +2467,94 @@ internal class MeshcoreSession(
         val answer = requestMatched(c, bytes) { it is McFrame.Sent && it.expectedAck == code }
         return when (answer) {
             is McFrame.Sent -> {
-                onAttemptSent(flight, code, answer.estTimeoutMs, answer.flood)
+                onAttemptSent(c, flight, code, answer)
                 SendResult.Queued(flight.handle, QueueInfo(lastHeadroom ?: MeshcoreHeadroom.POOL, MeshcoreHeadroom.POOL, now()))
             }
 
             is McFrame.Err -> {
-                if (answer.code == MeshcoreProto.ERR_NOT_FOUND) pins.unverify(flight.to)
+                if (answer.code == MeshcoreProto.ERR_NOT_FOUND) pins.forgetRoute(flight.to)
                 onSendErr(flight.handle, answer.code, notFoundIsBusy = false)
             }
 
             else -> {
                 // It may be on the board: counted as flown, its code kept, so a confirmation still finds it.
-                onAttemptSent(flight, code, DEFAULT_EST_TIMEOUT_MS, flood = false)
+                onAttemptSent(c, flight, code, null)
                 SendResult.Timeout(flight.handle)
             }
         }
     }
 
+    /**
+     * An attempt the board took ([sent] its `RESP_SENT`, or null when none came): its ack window opened, and the route it
+     * took reported for booking ([MeshcoreAir.DirectRouted]) when it was not zero hops, and a flood marked (the ladder's one). A
+     * flood is the board's own word (`RESP_SENT` flag 1); a direct attempt's hops come back out of its `est_timeout`
+     * ([MeshcoreTraits.directHopsOf]), else off the route last read. An attempt with no `SENT` is booked at the larger of a
+     * flood and the path it was meant to take (the design pass's finding 3).
+     */
     private fun onAttemptSent(
+        c: Conn,
         flight: Flight,
         code: Int,
-        estTimeoutMs: Long,
-        flood: Boolean,
+        sent: McFrame.Sent?,
     ) {
         flight.attemptsSent++
         flight.attemptAt = now()
-        flight.estTimeoutMs = estTimeoutMs.coerceIn(MIN_EST_TIMEOUT_MS, MAX_EST_TIMEOUT_MS)
+        flight.estTimeoutMs = (sent?.estTimeoutMs ?: DEFAULT_EST_TIMEOUT_MS).coerceIn(MIN_EST_TIMEOUT_MS, MAX_EST_TIMEOUT_MS)
         flight.deferredSince = null
         ackTable.onSent(code, flight.handle, now(), ackWindow(flight.estTimeoutMs))
-        if (flood) {
-            // Our pin did not hold: this airing flooded, and no further attempt goes until a fresh pin is read back.
-            counters.directFlooded.incrementAndGet()
-            log("meshcore direct flooded")
-            pins.unverify(flight.to)
-            flight.repinNeeded = true
-            _air.tryEmit(MeshcoreAir.DirectFlooded(flight.handle, flight.text.size, now()))
-        }
+        val held = pins.routeOf(flight.to)?.takeIf { it != MeshcoreProto.PATH_UNKNOWN }
+        val heldBytes = held?.let(MeshcoreTraits::pathBytesOf) ?: 0
+        val air =
+            when {
+                sent == null -> {
+                    if (pins.routeOf(flight.to) == MeshcoreProto.PATH_UNKNOWN) flight.flooded = true
+                    if (MeshcoreTraits.isZeroHopRoute(pins.routeOf(flight.to))) flight.zeroAttempts++
+                    MeshcoreAir.DirectRouted(flight.handle, flight.text.size, flooded = true, pathBytes = heldBytes, atMs = now())
+                }
+
+                sent.flood -> {
+                    // No path on the record: the flight's one flood (the ladder's, or a reset another client wrote).
+                    flight.flooded = true
+                    counters.directFlooded.incrementAndGet()
+                    log("meshcore direct flooded")
+                    MeshcoreAir.DirectRouted(flight.handle, flight.text.size, flooded = true, pathBytes = 0, atMs = now())
+                }
+
+                else -> {
+                    directAiring(c, flight, sent, held)
+                }
+            }
+        air?.let(_air::tryEmit)
     }
 
-    /** A `SEND_CONFIRMED` for a code of ours ends that DM's flight, whichever attempt it confirms; a late one too. */
+    /**
+     * A direct attempt's route as [sent] reports it: its hops out of the `est_timeout` ([MeshcoreTraits.directHopsOf]), else
+     * off the record [held] as last read; the gauge set, and what the path adds reported, if anything.
+     */
+    private fun directAiring(
+        c: Conn,
+        flight: Flight,
+        sent: McFrame.Sent,
+        held: Int?,
+    ): MeshcoreAir? {
+        val hashSize = held?.let(MeshcoreTraits::hashSizeOf) ?: 1
+        val hops =
+            c.self?.let(::saneRadio)?.let { MeshcoreTraits.directHopsOf(sent.estTimeoutMs, flight.text.size, it, hashSize) }
+                ?: held?.and(MeshcoreProto.PATH_HOPS_MASK)
+                ?: 0
+        counters.routeHops.set(hops.toLong())
+        // Counted off the record it was sent on (read back just before), never the inverted guess.
+        if (MeshcoreTraits.isZeroHopRoute(pins.routeOf(flight.to))) flight.zeroAttempts++
+        if (hops == 0) return null
+        log("meshcore direct hops=$hops")
+        return MeshcoreAir.DirectRouted(flight.handle, flight.text.size, false, hops * hashSize, now())
+    }
+
+    /**
+     * A `SEND_CONFIRMED` for a code of ours ends that DM's flight, whichever attempt it confirms; a late one too. A flight
+     * that flooded was confirmed through its receiver's PATH return, which our board answered with a reciprocal PATH
+     * (`Mesh.cpp:173-178`): owed to the ledger once the route it went along is read ([runRead]).
+     */
     private fun onConfirmed(f: McFrame.SendConfirmed) {
         val handle = ackTable.onConfirmed(f.ack) ?: return
         val flight = flights.remove(handle)
@@ -2445,48 +2563,245 @@ internal class MeshcoreSession(
             _outcomes.tryEmit(PacketOutcome.Acked(handle, byDestination = true, proof = AckProof.VALID))
             return
         }
+        if (flight.flooded) {
+            reciprocalOwed += flight.to
+            // The board just learned a route (the PATH return): the UNKNOWN the reset read back is stale (lora NB1).
+            pins.forgetRoute(flight.to)
+            pins.queueRead(flight.to)
+            poke.trySend(Unit)
+        }
         _outcomes.tryEmit(PacketOutcome.Acked(handle, byDestination = true, proof = AckProof.VALID, flown = flight.attemptsSent))
     }
 
-    /** Retries whose attempt timed out, each after a fresh pin where its route may have moved; the last one ends it. */
+    /**
+     * The flights whose attempt went unanswered, each taken up its ladder ([advance]); one waiting out the grace after its
+     * flood ends when that runs out, as one past [MAX_FLIGHT_MS] does.
+     */
     private suspend fun flightsDue(c: Conn) {
         for (flight in flights.values.toList()) {
             if (flight.handle !in flights) continue
+            val grace = flight.graceUntil
             when {
                 // The session's own bound, which the core's deadline backs (Stage 5).
                 now() - flight.startedAt >= MAX_FLIGHT_MS -> {
                     endFlight(flight, unreachable = true)
                 }
 
-                // An attempt that drew no ack re-pins before the next: the route may have drifted silently (another
-                // client's write, a PATH whose 0x81 we missed), and a read costs BLE, not air (ADR 2026-11.gsqu's 5c-2a
-                // amendment). Once per unanswered attempt: a retry held behind a full table or pool (`deferredSince`,
-                // cleared by the next attempt's SENT) is not re-pinned every tick.
+                grace != null -> {
+                    if (now() >= grace) {
+                        log("meshcore direct flood unanswered")
+                        endFlight(flight, unreachable = true)
+                    }
+                }
+
                 now() >= flight.attemptAt + flight.estTimeoutMs + RETRY_SLACK_MS -> {
-                    if (flight.deferredSince == null) flight.repinNeeded = true
                     advance(c, flight)
                 }
             }
         }
     }
 
-    /** One due [flight]: ended after its last attempt or a failed re-pin, held behind a full table or pool, or retried. */
+    /**
+     * One due [flight]: its next rung prepared once per unanswered attempt ([nextRung]; a retry held behind a full table or
+     * pool keeps the rung it already wrote, as the 5c-2a amendment's round 2 kept one read a held retry), then held or
+     * retried. Every rung's write runs inside `await`, which dispatches a late `SEND_CONFIRMED` inline, so the flight is
+     * asked for again after each.
+     */
     private suspend fun advance(
         c: Conn,
         flight: Flight,
     ) {
-        val needsPin = flight.repinNeeded || !pins.isVerified(flight.to)
-        when {
-            flight.attemptsSent >= ATTEMPTS -> endFlight(flight, unreachable = true)
-            needsPin && !pinKey(c, flight.key) -> endFlight(flight, unreachable = true)
-            ackTable.full(now()) || headroomPolicy.holding -> hold(flight)
-            else -> retry(c, flight)
+        if (flight.routedFor != flight.attemptsSent) {
+            flight.routedFor = flight.attemptsSent
+            if (!nextRung(c, flight) || flight.handle !in flights) return
+        }
+        if (!stillTaught(flight)) return
+        if (ackTable.full(now()) || headroomPolicy.holding) hold(flight) else retry(c, flight)
+    }
+
+    /**
+     * Whether [flight]'s key is still one Knit teaches (security NB2): a contact blocked or removed mid-flight leaves the taught
+     * set, and nothing more airs to it — the flight ends with no outcome.
+     */
+    private fun stillTaught(flight: Flight): Boolean {
+        if (pins.teaches(flight.key)) return true
+        log("meshcore direct flight ended: no longer taught")
+        endFlight(flight, unreachable = false)
+        return false
+    }
+
+    /**
+     * The ladder (ADR 2026-11.gsqu's 2026-11-19 amendment: the lora-reviewer design pass, and the user's decision of the same
+     * day for a flight that starts at zero hops): each rung chosen from the record's state, read back first (a BLE read, no
+     * air: the route may have moved silently, as the 5c-2a amendment found), and a flight flooding at most once:
+     * - a flight that starts on a learned path of N > 0 hops: along it, then zero hops, then reset and flood;
+     * - one that starts at zero hops or UNKNOWN: zero hops, zero hops again, then reset and flood;
+     * - the zero-hop rung is one `ADD_UPDATE_CONTACT` at `out_path_len 0` a flight, never on a `0x81` ([writeZeroHop]), and
+     *   only where the record does not already read zero hops;
+     * - the flood rung asks the core first ([floodRung]); after the flood, one more `est_timeout` and the end ([afterFlood]).
+     * A key no longer taught ends the flight with no outcome, asked before the read and after it (security NB2). False when the
+     * flight ended or waits out its grace instead; a record gone or unread, or a rung's write that fails, ends it `Unreachable`.
+     */
+    private suspend fun nextRung(
+        c: Conn,
+        flight: Flight,
+    ): Boolean {
+        if (!flight.flooded && flight.attemptsSent >= ATTEMPTS) {
+            endFlight(flight, unreachable = true)
+            return false
+        }
+        if (!stillTaught(flight)) return false
+        val route = readRoute(c, flight.key)
+        if (flight.handle !in flights || !stillTaught(flight)) return false
+        return when {
+            flight.flooded -> {
+                afterFlood(flight, route)
+            }
+
+            route == null -> {
+                endFlight(flight, unreachable = true)
+                false
+            }
+
+            else -> {
+                beforeFlood(c, flight, route)
+            }
+        }
+    }
+
+    /**
+     * The rung before the flight's flood on a record read at [route]: along a path a `0x81` named since the reset, once; zero
+     * hops written where it reads otherwise and none was
+     * this flight; zero hops again while fewer zero-hop attempts went than the flight's two (one started on a learned path);
+     * else the flood rung.
+     */
+    private suspend fun beforeFlood(
+        c: Conn,
+        flight: Flight,
+        route: Int,
+    ): Boolean {
+        val zeroHop = MeshcoreTraits.isZeroHopRoute(route)
+        val zeroTries = if (flight.startedOnPath) 1 else 2
+        return when {
+            // A path the board learned mid-flight (a 0x81 since the reset, read back at N > 0 hops) is tried before any rung
+            // writes over it (lora's follow-up NB); spent once, so a later rung falls through to the ladder.
+            flight.pathPushed && !zeroHop && route != MeshcoreProto.PATH_UNKNOWN && flight.attemptsSent < ATTEMPTS -> {
+                flight.pathPushed = false
+                true
+            }
+
+            !zeroHop && !flight.zeroWritten -> {
+                writeZeroHop(c, flight).also { if (!it) endFlight(flight, unreachable = true) }
+            }
+
+            zeroHop && flight.zeroAttempts < zeroTries -> {
+                true
+            }
+
+            else -> {
+                floodRung(c, flight)
+            }
+        }
+    }
+
+    /**
+     * The ladder's zero-hop rung: [flight]'s contact written as Knit's record at `out_path_len 0` and read back — one
+     * `ADD_UPDATE_CONTACT`, at most once a flight (the design pass's blocking finding), and only for a key the taught set
+     * still holds ([writeKnitRecord]). True when it reads back at zero hops. Past the key's daily ladder writes (security NB3,
+     * [MeshcorePins.spendLadderWrite]) nothing is written: true on a known route, sent on as read; false on UNKNOWN, which
+     * would flood before zero hops — refused at send ([MeshcoreRefusal.ROUTE_BUDGET_SPENT], never a missing key), the flight
+     * ended mid-ladder.
+     */
+    private suspend fun writeZeroHop(
+        c: Conn,
+        flight: Flight,
+    ): Boolean {
+        flight.zeroWritten = true
+        // Past the budget a known route is sent on as read; an UNKNOWN one is refused, never flooded before zero hops were
+        // tried (the user's decision (b), kept over the budget: the re-probe asks again the next UTC day).
+        if (!spendLadderWrite(flight)) {
+            flight.budgetRefused = pins.routeOf(flight.to) == MeshcoreProto.PATH_UNKNOWN
+            return !flight.budgetRefused
+        }
+        val written =
+            writeKnitRecord(c, flight.key, fresh = false) == ContactWrite.WRITTEN && MeshcoreTraits.isZeroHopRoute(pins.routeOf(flight.to))
+        if (written) counters.zeroHopWrites.incrementAndGet() else log("meshcore zero-hop write failed")
+        return written
+    }
+
+    /** One of [flight]'s key's daily ladder writes, or false — counted (`meshcoreLadderWritesDeferred`) — past the budget. */
+    private fun spendLadderWrite(flight: Flight): Boolean {
+        if (pins.spendLadderWrite(flight.to, utcDay())) return true
+        counters.ladderWritesDeferred.incrementAndGet()
+        log("meshcore ladder write deferred: the key's daily budget is spent")
+        return false
+    }
+
+    /**
+     * The ladder's flood rung: the core asked first whether the DM is still wanted (its `RideGate`: a link, a spool cover, a
+     * block, its ✓✓ since — the design pass's finding 4), ending the flight with no outcome when it is not; then `RESET_PATH`,
+     * read back UNKNOWN, so the next attempt floods and its PATH return teaches both boards the route. A confirmation that
+     * lands while the core is asked or the reset is out ends the flight there, and nothing floods. Past the key's daily ladder
+     * writes nothing is reset, and the attempt goes on the route as read.
+     */
+    private suspend fun floodRung(
+        c: Conn,
+        flight: Flight,
+    ): Boolean {
+        val wanted =
+            runCatching { withTimeoutOrNull(FLOOD_GATE_TIMEOUT_MS) { observer?.floodWanted(flight.handle) ?: true } }
+                .getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it else null } == true
+        if (flight.handle !in flights) return false
+        if (!wanted) {
+            counters.floodsSkipped.incrementAndGet()
+            log("meshcore direct flood skipped: no longer wanted")
+            endFlight(flight, unreachable = false)
+            return false
+        }
+        if (!spendLadderWrite(flight)) return true
+        flight.pathPushed = false
+        val reset = runResetPath(c, flight.key) == ContactWrite.WRITTEN
+        if (flight.handle !in flights) return false
+        if (!reset) {
+            log("meshcore route reset failed")
+            endFlight(flight, unreachable = true)
+            return false
+        }
+        counters.routeResets.incrementAndGet()
+        log("meshcore route reset")
+        return true
+    }
+
+    /**
+     * After the flight's one flood went unanswered (the design pass's finding 2), its record's [route] as just read back: an
+     * attempt along a path the board learned since this flight's reset — a `0x81` for it came ([Flight.pathPushed], lora
+     * NB3: another flight's zero-hop write is no learned path) — while attempts remain; else one more `est_timeout` for a late
+     * PATH return's ack ([Flight.graceUntil]), then the end. Never a second flood.
+     */
+    private fun afterFlood(
+        flight: Flight,
+        route: Int?,
+    ): Boolean {
+        val learned = route != null && route != MeshcoreProto.PATH_UNKNOWN && flight.pathPushed
+        return when {
+            learned && flight.attemptsSent < ATTEMPTS -> {
+                true
+            }
+
+            flight.graceUntil == null -> {
+                flight.graceUntil = now() + flight.estTimeoutMs
+                false
+            }
+
+            else -> {
+                endFlight(flight, unreachable = true)
+                false
+            }
         }
     }
 
     /** A due retry held behind a full ack table or pool; past [DEFER_LIMIT_MS] the DM ends. */
     private fun hold(flight: Flight) {
-        flight.repinNeeded = false // pinned (or never needing it) by now: the hold does not repeat the pin
         val since = flight.deferredSince ?: now().also { flight.deferredSince = it }
         if (now() - since > DEFER_LIMIT_MS) endFlight(flight, unreachable = true)
     }
@@ -2495,7 +2810,6 @@ internal class MeshcoreSession(
         c: Conn,
         flight: Flight,
     ) {
-        flight.repinNeeded = false
         val result =
             try {
                 attempt(c, flight)
@@ -2517,7 +2831,6 @@ internal class MeshcoreSession(
         flights.remove(flight.handle) ?: return
         val outcome =
             if (unreachable) {
-                pins.unverify(flight.to) // re-pin after any Unreachable
                 PacketOutcome.Unreachable(flight.handle, flown = flight.attemptsSent)
             } else {
                 PacketOutcome.NoOutcome(flight.handle, flown = flight.attemptsSent)
@@ -2533,7 +2846,7 @@ internal class MeshcoreSession(
 
     private fun ackWindow(estTimeoutMs: Long): Long = estTimeoutMs.coerceIn(MIN_EST_TIMEOUT_MS, MAX_EST_TIMEOUT_MS) + RETRY_SLACK_MS
 
-    // --- contacts: the pin and the plumbing ---
+    // --- contacts: the route and the plumbing ---
 
     /** What a contact read found: [record] null for a key the board does not hold. */
     private class Found(
@@ -2555,32 +2868,22 @@ internal class MeshcoreSession(
     }
 
     /**
-     * Pins [key]'s contact zero-hop: a read-modify-write of the 144-B form, skipped when it already reads 0, verified by
-     * reading it back. False — counted, and the DM refused — when the contact is missing or anything fails. Only a key Knit
-     * taught is ever pinned (security B1): another's contact on the board keeps the route its owner gave it.
+     * [key]'s record read and its route cached ([MeshcorePins.noteRoute], a taught key only): its raw `out_path_len`, or null
+     * when the board holds no record for it (the route forgotten) or nothing answered. A BLE read, nothing on the air.
      */
-    private suspend fun pinKey(
+    private suspend fun readRoute(
         c: Conn,
         key: ByteArray,
-    ): Boolean {
-        val addr = MeshcorePins.addrOf(key)?.takeIf { pins.teaches(key) && knitBoard(c) } ?: return false
-        val pinned = pin(c, key)
-        if (pinned) pins.onPinned(addr) else counters.pinFailures.incrementAndGet()
-        return pinned
-    }
-
-    private suspend fun pin(
-        c: Conn,
-        key: ByteArray,
-    ): Boolean {
-        val record = readContactOn(c, key)?.record ?: return false
-        if (record.outPathLen == 0) return true
-        if (writeAnswered(c, MeshcoreProto.addUpdateContact(record.pinned(), withPosition = true), FLASH_TIMEOUT_MS) !=
-            Answer.OK
-        ) {
-            return false
-        }
-        return readContactOn(c, key)?.record?.outPathLen == 0
+    ): Int? {
+        val addr = MeshcorePins.addrOf(key) ?: return null
+        val found = readContactOn(c, key) ?: return null
+        val record =
+            found.record ?: run {
+                pins.forgetRoute(addr)
+                return null
+            }
+        if (pins.teaches(key)) pins.noteRoute(addr, record.outPathLen)
+        return record.outPathLen
     }
 
     /**
@@ -2617,6 +2920,7 @@ internal class MeshcoreSession(
         if (!knitBoard(c)) return ContactWrite.NOT_SET_UP
         val existing = MeshcorePins.addrOf(key)?.let { readContactOn(c, key) } ?: return ContactWrite.FAILED
         val record = existing.record ?: return teachFresh(c, key)
+        MeshcorePins.addrOf(key)?.takeIf { pins.teaches(key) }?.let { pins.noteRoute(it, record.outPathLen) }
         // A board set up for Knit is Knit's: a contact on a taught key is made Knit's record. Any other board's is the user's.
         // By its routing alone (ADR 2026-11.f4d3): a peer's own advert renames its contact, which is no reason to rewrite it.
         val overwrite = knitBoard(c) && pins.teaches(key) && !MeshcoreContacts.isKnitRouting(record)
@@ -2673,8 +2977,9 @@ internal class MeshcoreSession(
 
     /**
      * Writes [key]'s Knit record (a CHAT favourite named `Knit xxxx`, zero-hop) and reads it back as exactly that; a [fresh]
-     * one takes a slot in the local count. Its pin verified. Only for a key the taught set holds, asked right before the
-     * write and again after the read-back (the 5c-2b review's B1): the hooks may drop it (a block, a removal, a contest)
+     * one takes a slot in the local count. Its route is cached as read back; also the DM ladder's zero-hop rung. Only for a
+     * key the taught set holds, asked right before the write and again after the read-back (the 5c-2b review's B1): the
+     * hooks may drop it (a block, a removal, a contest)
      * while the reads before the write are out, and a key written for nobody would stand on the board until the next Ready,
      * its DMs decrypted and acked. One dropped meanwhile is [ContactWrite.NOT_FOUND] and never taught again here, so the
      * removal the hooks queued behind this write ([removeUntaught]) finds it untaught and removes it.
@@ -2700,7 +3005,7 @@ internal class MeshcoreSession(
             // Dropped while the write was out: never taught back, so the queued removal removes it.
             !pins.teaches(key) -> ContactWrite.NOT_FOUND
 
-            else -> ContactWrite.WRITTEN.also { pins.onPinned(addr) }
+            else -> ContactWrite.WRITTEN
         }
     }
 
@@ -2715,6 +3020,7 @@ internal class MeshcoreSession(
         c.teachWriteLanded = true
         if (fresh) c.contacts = c.contacts?.plus(1)
         val back = readContactOn(c, key)?.record ?: return false
+        MeshcorePins.addrOf(key)?.takeIf { pins.teaches(key) }?.let { pins.noteRoute(it, back.outPathLen) }
         return MeshcoreContacts.isKnitRecord(back)
     }
 
@@ -2736,7 +3042,7 @@ internal class MeshcoreSession(
             Answer.ERR -> return if (err == MeshcoreProto.ERR_NOT_FOUND) ContactWrite.NOT_FOUND else ContactWrite.FAILED
             Answer.NONE -> return ContactWrite.FAILED
         }
-        MeshcorePins.addrOf(key)?.let(pins::unverify)
+        MeshcorePins.addrOf(key)?.let(pins::forgetRoute)
         val gone = readContactOn(c, key)?.let { it.record == null } == true
         if (gone) c.contacts = c.contacts?.let { (it - 1).coerceAtLeast(0) }
         return if (gone) ContactWrite.WRITTEN else ContactWrite.FAILED
@@ -2839,8 +3145,8 @@ internal class MeshcoreSession(
     /**
      * The Ready reconcile on a board set up for Knit (the maintainer's Stage 5 decisions): one listing, then
      * [MeshcoreContacts.plan] makes the table the taught set — removals, then overwrites, then fresh writes, one a tick,
-     * bounded per Ready. A taught key listed as Knit's record is pinned as read. A listing that failed or came short leaves
-     * the Ready re-assert (a pin per taught key) as it was, and removes nothing.
+     * bounded per Ready. Every taught key's listed route is cached as read (a learned path kept: ADR 2026-11.gsqu's
+     * 2026-11-19 amendment). A listing that failed or came short removes nothing; a send reads the route it needs.
      */
     private suspend fun reconcile(c: Conn) {
         val listing = listContacts(c)
@@ -2861,13 +3167,11 @@ internal class MeshcoreSession(
         val capacity = requireNotNull(c.info).maxContactsHalf * 2
         val plan = MeshcoreContacts.plan(pins.taughtKeys(), records, count, capacity)
         c.contacts = maxOf(count, records.size)
-        plan.verified.forEach { key -> MeshcorePins.addrOf(key)?.let(pins::onPinned) }
+        records.forEach { r -> MeshcorePins.addrOf(r.key)?.takeIf { pins.teaches(r.key) }?.let { pins.noteRoute(it, r.outPathLen) } }
         // This listing's contests replace the last connection's, which held until now (lora N3).
         pins.setContested(plan.contested.mapNotNull(MeshcorePins::addrOf))
         counters.prefixContests.addAndGet(plan.contested.size.toLong())
         counters.reconcileDeferred.addAndGet(plan.deferred.toLong())
-        // The plan covers every taught key: what it verified, overwrites or writes needs no separate pin.
-        c.reassert.clear()
         c.steps.clear()
         plan.removals.forEach { c.steps += Step.Remove(it) }
         plan.overwrites.forEach { c.steps += Step.Write(it, fresh = false, blockedBy = plan.blockedBy[ByteBuffer.wrap(it)]) }
@@ -2944,8 +3248,7 @@ internal class MeshcoreSession(
             Answer.ERR -> return if (err == MeshcoreProto.ERR_NOT_FOUND) ContactWrite.NOT_FOUND else ContactWrite.FAILED
             Answer.NONE -> return ContactWrite.FAILED
         }
-        MeshcorePins.addrOf(key)?.let(pins::unverify)
-        return if (readContactOn(c, key)?.record?.outPathLen == MeshcoreProto.PATH_UNKNOWN) ContactWrite.WRITTEN else ContactWrite.FAILED
+        return if (readRoute(c, key) == MeshcoreProto.PATH_UNKNOWN) ContactWrite.WRITTEN else ContactWrite.FAILED
     }
 
     // --- setup and restore (§4) ---
@@ -3350,7 +3653,6 @@ internal class MeshcoreSession(
         if (clearContacts && failed.isEmpty()) {
             pins.setTaught(emptyList())
             c.steps.clear()
-            c.reassert.clear()
         }
         log("meshcore restore cleared=${done.slotCleared} contacts=${contactsRemoved ?: "failed"} left=${done.leftAsFound} failed=$failed")
         return done.copy(failed = failed, contactsRemoved = contactsRemoved ?: 0)
@@ -3542,7 +3844,6 @@ internal class MeshcoreSession(
         var drainWanted = false
         var lastUptime: Long? = null
         var lastPollAt = 0L
-        val reassert = ArrayDeque<ByteArray>()
 
         /** The board's contact count: the Ready listing's, kept as writes and removals read back; null before one. */
         var contacts: Int? = null
@@ -3598,7 +3899,7 @@ internal class MeshcoreSession(
         val removalFailed = HashSet<ByteBuffer>()
     }
 
-    /** One compact DM's attempts: the same [timestamp] and [text] each, a new attempt number each (Q14). */
+    /** One compact DM's attempts: the same [timestamp] and [text] each, a new attempt number each (Q14), up its ladder. */
     private class Flight(
         val handle: UInt,
         val to: BoardAddr.MeshCore,
@@ -3610,8 +3911,31 @@ internal class MeshcoreSession(
         var attemptsSent = 0
         var attemptAt = 0L
         var estTimeoutMs = DEFAULT_EST_TIMEOUT_MS
-        var repinNeeded = false
         var deferredSince: Long? = null
+
+        /** The attempt count the next rung was prepared for: one rung an unanswered attempt, never one a held tick. */
+        var routedFor = -1
+
+        /** Whether the zero-hop rung was written: once a flight. */
+        var zeroWritten = false
+
+        /** Whether an attempt flooded: once a flight. */
+        var flooded = false
+
+        /** The zero-hop rung found the key's daily ladder writes spent on an UNKNOWN record: refused, never flooded. */
+        var budgetRefused = false
+
+        /** Whether the flight started on a learned path of N > 0 hops: one zero-hop try then, else two (the user's decision). */
+        var startedOnPath = false
+
+        /** The attempts that went at zero hops. */
+        var zeroAttempts = 0
+
+        /** A `0x81` for the contact came since this flight's reset (lora NB3): only then is a route after the flood learned. */
+        var pathPushed = false
+
+        /** Past its flood, with no path learned: when the last wait for a late PATH return's ack ends. */
+        var graceUntil: Long? = null
     }
 
     private class SessionEnd(
@@ -3769,15 +4093,26 @@ internal class MeshcoreSession(
         /** A retry held behind a full ack table or pool longer than this ends the DM. */
         private const val DEFER_LIMIT_MS = 30_000L
 
-        /** A pin at its slowest: a read, a write and a read-back, each timing out into a barrier. */
-        const val PIN_WORST_MS = 2 * (REQUEST_TIMEOUT_MS + BARRIER_TIMEOUT_MS) + FLASH_TIMEOUT_MS + BARRIER_TIMEOUT_MS
+        /**
+         * One rung at its slowest: a read, a write (a flash write for the zero-hop rung, `RESET_PATH`'s lazy one) and a
+         * read-back, each timing out into a barrier.
+         */
+        const val ROUTE_WRITE_WORST_MS = 2 * (REQUEST_TIMEOUT_MS + BARRIER_TIMEOUT_MS) + FLASH_TIMEOUT_MS + BARRIER_TIMEOUT_MS
+
+        /** The longest the actor waits on the core's answer before a flood rung: past it, no flood (the DM ends with no outcome). */
+        const val FLOOD_GATE_TIMEOUT_MS = 5_000L
 
         /**
-         * The longest a compact DM's flight lives in the session: every attempt at the longest `est_timeout` it takes
-         * plus the retry slack, two holds at [DEFER_LIMIT_MS], and a pin at its slowest before each attempt. Past it the
-         * flight ends `Unreachable`. Stage 5's `MeshcoreTraits.deadlineMs` is a backstop above this, never below.
+         * The longest a compact DM's flight lives in the session: every attempt at the longest `est_timeout` it takes plus
+         * the retry slack, the flood's last wait for a late PATH return, two holds at [DEFER_LIMIT_MS], a rung at its
+         * slowest before every attempt and after the last (the read before attempt 0, the zero-hop write, the reset, the
+         * read after the flood — the design pass kept a write term for each rung that writes flash), and the core's answer
+         * before the flood. Past it the flight ends `Unreachable`. Stage 5's `MeshcoreTraits.deadlineMs` is a backstop above
+         * this, never below.
          */
-        const val MAX_FLIGHT_MS = ATTEMPTS * (MAX_EST_TIMEOUT_MS + RETRY_SLACK_MS) + 2 * DEFER_LIMIT_MS + ATTEMPTS * PIN_WORST_MS
+        const val MAX_FLIGHT_MS =
+            ATTEMPTS * (MAX_EST_TIMEOUT_MS + RETRY_SLACK_MS) + MAX_EST_TIMEOUT_MS + 2 * DEFER_LIMIT_MS +
+                (ATTEMPTS + 1) * ROUTE_WRITE_WORST_MS + FLOOD_GATE_TIMEOUT_MS
 
         private const val BYTE_MASK = 0xFF
 
