@@ -219,7 +219,7 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   `onDigestServes…Key…` cases.
 - **When touching `ForwardRepository`'s quotas or TTLs (`DEFAULT_MAX_ROWS` / `_PER_SENDER` / `_PER_GROUP` /
   `_BROADCAST`, `DEFAULT_MAX_SIGNED_BYTES`, `DEFAULT_TTL_MS`, `DEFAULT_BROADCAST_TTL_MS`), its eviction order (`insertAndTrim`,
-  `ForwardDao.evictFairest` / `evictOldestBy*`), its group gate (`ForwardRepository.carriesGroup`), `StoreDigest`,
+  `ForwardDao.largestBucketRows` with `CapEviction`, `evictOldestBy*`), its group gate (`ForwardRepository.carriesGroup`), `StoreDigest`,
   `ForwardStore`'s live reads, `ForwardDao.deleteLongerThan`, or anything else the custody digest folds over:** READ ADR
   006, ADR 2026-10.7mqm, ADR 2026-10.mqzv and
   the "Bounds" and "A bounded custody quota must be *convergent*" sections of `.agents/context/store-and-forward.md`.

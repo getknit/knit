@@ -8,6 +8,8 @@ import app.getknit.knit.data.forward.ForwardEntity
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.CarriedFrame
+import app.getknit.knit.mesh.CarryReader
+import app.getknit.knit.mesh.CarrySnapshot
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.SeenSet
@@ -680,11 +682,13 @@ class ForwardRepositoryTest : RoomDbTest() {
         }
 
     @Test
-    fun `with one quota binding, any two arrival orders keep the same set`() =
+    fun `with one quota binding and the empty carry reader, any two arrival orders keep the same set`() =
         runTest {
             // The global cap alone binds (per-sender quotas far above it), then the per-sender quota alone. Each set of
-            // frames arrives in two seeded orders on two nodes; the kept sets must be equal, which is what lets two
-            // nodes holding the same frames agree on a digest.
+            // frames arrives in two seeded orders on two nodes; the kept sets must be equal. The per-sender case is a law
+            // whatever the carry reader says (the quota trims never read it). The cap case holds only with
+            // no holders recorded (CarryReader.EMPTY), whose keys are the frame's own: with a real ledger the cap's choice
+            // reads who holds what, and stores at the cap may keep different rows for good (custody-carry-policy §5).
             for (seed in 1..8) {
                 val random = Random(seed)
                 val frames = (1..40).map { dm("f%02d".format(it), sender = "s${random.nextInt(6)}", sentAt = random.nextLong(1L, 30L)) }
@@ -709,8 +713,10 @@ class ForwardRepositoryTest : RoomDbTest() {
         }
 
     @Test
-    fun `stores whose quotas bind together converge by exchanging what each lacks`() =
+    fun `with the empty carry reader, stores whose quotas bind together converge by exchanging what each lacks`() =
         runTest {
+            // The global cap binds here, so this is a property of CarryReader.EMPTY (frame-only keys), not of custody at
+            // the cap: a real ledger's spreads may keep two full stores apart for good (custody-carry-policy §9).
             // The custody exchange as the mesh runs it, between two and three stores at once: each round every store
             // serves each other one the live frames it lacks, newest-received first, and a receiver drops an id it saw
             // inside the router's seen window (served again only once the window lapses). The room, a sender, and the
@@ -774,6 +780,223 @@ class ForwardRepositoryTest : RoomDbTest() {
                     }
                 }
             }
+        }
+
+    /**
+     * A carry reader the cap tests set by hand: each id's [holders], a write's source counted among its newcomer's, every
+     * spread capped at [cap] as the ledger caps it. It records what the repository told it and how many snapshots it was
+     * asked for.
+     */
+    private class TestCarry(
+        val holders: MutableMap<String, Set<String>> = mutableMapOf(),
+        val cap: Int = 8,
+    ) : CarryReader {
+        var snapshots = 0
+        val kept = mutableListOf<Pair<String, String?>>()
+        val retained = mutableListOf<Set<String>>()
+        val left = mutableListOf<String>()
+
+        override fun snapshot(
+            newcomer: String,
+            source: String?,
+        ): CarrySnapshot {
+            snapshots++
+            val held = holders.toMap()
+            return CarrySnapshot { id ->
+                val peers = held[id].orEmpty() + listOfNotNull(source.takeIf { id == newcomer })
+                minOf(cap, peers.size)
+            }
+        }
+
+        override fun onKept(
+            id: String,
+            source: String?,
+        ) {
+            kept += id to source
+        }
+
+        override fun retainOnly(liveIds: Set<String>) {
+            retained += liveIds
+        }
+
+        override fun onLeft(id: String) {
+            left += id
+        }
+    }
+
+    /** [count] distinct peer ids, the holders a test gives a row. */
+    private fun peers(count: Int): Set<String> = (1..count).map { "p$it" }.toSet()
+
+    /** A store whose quotas sit far above [maxRows], so only the global cap binds. */
+    private fun capped(
+        maxRows: Int,
+        carry: CarryReader,
+        database: KnitDatabase = db,
+    ) = ForwardRepository(database.forwardDao(), StoreDigest(), database, maxRows = maxRows, carry = carry)
+
+    private suspend fun ForwardRepository.keep(vararg frames: CarriedFrame) =
+        frames.forEach { assertTrue(it.envelope.id, store(it, ForwardStore.ORIGIN_RELAY, now = 0L)) }
+
+    @Test
+    fun `at the cap, the largest bucket's row with more holders goes before an older one`() =
+        runTest {
+            // Key 2 (custody-carry-policy §5), then keys 3 and 4 once spread ties.
+            val carry = TestCarry(mutableMapOf("held" to peers(3), "older" to peers(1)))
+            val repo = capped(maxRows = 4, carry)
+            repo.keep(dm("oldest", "big", 0L), dm("older", "big", 2L), dm("held", "big", 3L), dm("other", "small", 4L))
+            repo.keep(dm("n1", "n1", 5L))
+            assertFalse("most holders goes first", repo.has("held"))
+            repo.keep(dm("n2", "n2", 6L))
+            assertFalse("then more holders before the older row with none", repo.has("older"))
+            carry.holders.clear()
+            repo.keep(dm("b", "big", 1L))
+            assertFalse("spread ties: the oldest sentAt goes", repo.has("oldest"))
+            assertFalse(
+                "then, at one sentAt, the lowest id: the newcomer itself",
+                repo.store(dm("a", "big", 1L), ForwardStore.ORIGIN_RELAY, now = 0L),
+            )
+            assertEquals(listOf("b", "n1", "n2", "other"), repo.liveIds(0L).sorted())
+        }
+
+    @Test
+    fun `key 1 still comes first, whatever spread says`() =
+        runTest {
+            // A fully spread row in a smaller bucket outlives a spread-0 row of the largest: spread picks which row a
+            // largest bucket loses, never which bucket.
+            val carry = TestCarry(mutableMapOf("spread" to peers(8)))
+            val repo = capped(maxRows = 3, carry)
+            repo.keep(dm("keep1", "big", 1L), dm("keep2", "big", 2L), dm("spread", "small", 0L))
+            repo.keep(dm("n1", "n1", 3L))
+            assertTrue(repo.has("spread"))
+            assertFalse("the largest bucket loses its row", repo.has("keep1"))
+        }
+
+    @Test
+    fun `two buckets tied for largest, spread picks the bucket`() =
+        runTest {
+            val carry = TestCarry(mutableMapOf("b2" to peers(2)))
+            val repo = capped(maxRows = 4, carry)
+            repo.keep(dm("a1", "A", 1L), dm("a2", "A", 2L), dm("b1", "B", 3L), dm("b2", "B", 4L))
+            repo.keep(dm("n1", "n1", 9L))
+            assertFalse("B's held row, though A's rows are older", repo.has("b2"))
+            assertEquals(listOf("a1", "a2", "b1", "n1"), repo.liveIds(0L).sorted())
+        }
+
+    @Test
+    fun `a newcomer counts its source as a holder in its own write`() =
+        runTest {
+            // Two linked full stores settle (custody-carry-policy §5): a frame a peer serves back arrives already held
+            // by that peer, ties with the rows the peer holds, and is evicted by its own write when it is the oldest.
+            val carry = TestCarry(mutableMapOf("f1" to setOf("peer"), "f2" to setOf("peer")))
+            val repo = capped(maxRows = 3, carry)
+            repo.keep(dm("f1", "big", 2L), dm("f2", "big", 3L), dm("x", "small", 4L))
+            assertFalse(
+                "the oldest of the rows the peer holds",
+                repo.store(dm("back", "big", 1L), ForwardStore.ORIGIN_RELAY, now = 0L, source = "peer"),
+            )
+            assertEquals(listOf("f1", "f2", "x"), repo.liveIds(0L).sorted())
+            assertTrue("a newcomer its own write evicted is not reported kept", carry.kept.none { it.first == "back" })
+
+            assertTrue(
+                "without the source it holds nobody, and an older held row goes instead",
+                repo.store(dm("back", "big", 1L), ForwardStore.ORIGIN_RELAY, now = 0L),
+            )
+            assertFalse(repo.has("f1"))
+            assertTrue(
+                "a kept newcomer reports its source",
+                repo.store(dm("fresh", "fresh", 9L), ForwardStore.ORIGIN_RELAY, now = 0L, source = "peer"),
+            )
+            assertEquals("fresh" to "peer", carry.kept.last())
+        }
+
+    @Test
+    fun `a sender-quota trim never reads carry`() =
+        runTest {
+            // The oldest (sentAt, id) goes though it has no holders and the newer rows eight each: the quota trims stay
+            // newest-N on every node (ADR 006, custody-carry-policy §5).
+            val carry = TestCarry(mutableMapOf("s2" to peers(8), "s3" to peers(8), "s4" to peers(8)))
+            val repo = ForwardRepository(db.forwardDao(), StoreDigest(), db, maxPerSender = 3, carry = carry)
+            repo.keep(dm("s1", "peer", 1L), dm("s2", "peer", 2L), dm("s3", "peer", 3L), dm("s4", "peer", 4L))
+            assertEquals(listOf("s2", "s3", "s4"), repo.liveIds(0L).sorted())
+            assertEquals("under the cap, no write took a snapshot", 0, carry.snapshots)
+        }
+
+    @Test
+    fun `below the cap a carry reader changes nothing`() =
+        runTest {
+            val random = Random(7)
+            val frames = (1..40).map { dm("f%02d".format(it), "s${random.nextInt(4)}", random.nextLong(1L, 30L)) }
+            val adversarial = TestCarry(frames.associate { it.envelope.id to peers(random.nextInt(9)) }.toMutableMap())
+            val kept =
+                listOf<CarryReader>(CarryReader.EMPTY, adversarial).map { carry ->
+                    val database = newDb()
+                    val store = ForwardRepository(database.forwardDao(), StoreDigest(), database, maxPerSender = 6, carry = carry)
+                    frames.forEach { store.store(it, ForwardStore.ORIGIN_RELAY, now = 0L, source = "peer") }
+                    store.liveIds(0L).toSet()
+                }
+            assertEquals(kept[0], kept[1])
+            assertEquals("the sender trims bound, the cap never did", 0, adversarial.snapshots)
+        }
+
+    @Test
+    fun `one snapshot serves every eviction of a write`() =
+        runTest {
+            val carry = TestCarry()
+            capped(maxRows = 6, CarryReader.EMPTY).keep(*(1..6).map { dm("f$it", "s$it", it.toLong()) }.toTypedArray())
+            val tighter = capped(maxRows = 3, carry)
+            tighter.keep(dm("n", "n", 9L))
+            assertEquals(3, tighter.liveIds(0L).size)
+            assertEquals("four evictions, one snapshot", 1, carry.snapshots)
+        }
+
+    @Test
+    fun `the flood bound holds under an adversarial reader`() =
+        runTest {
+            // Custody-carry-policy §5 and §9: spread picks which row a largest bucket loses, never how many or from
+            // which smaller bucket. Holders that claim every honest row is fully spread leave the very bucket sizes the
+            // old rule (no holders) left, and every honest frame held.
+            val now = 1_000_000L
+            val honest = (1..4).flatMap { s -> (1..3).map { i -> dm("h$s-$i", "honest$s", now - 60_000L * (5 - i)) } }
+            val edge = now + Protocol.MAX_FUTURE_SKEW_MS - 1
+            val flood = (1..5).flatMap { s -> (1..10).map { i -> dm("s$s-%02d".format(i), "sybil$s", edge - i) } }
+            val adversarial = TestCarry(honest.associate { it.envelope.id to peers(8) }.toMutableMap())
+            val buckets =
+                listOf<CarryReader>(CarryReader.EMPTY, adversarial).map { carry ->
+                    val database = newDb()
+                    val repo =
+                        ForwardRepository(
+                            database.forwardDao(),
+                            StoreDigest { now },
+                            database,
+                            maxRows = 50,
+                            maxPerSender = 10,
+                            carry = carry,
+                        )
+                    (honest + flood).forEach { repo.store(it, ForwardStore.ORIGIN_RELAY, now) }
+                    val held = repo.liveIds(now).toSet()
+                    assertTrue("every honest frame is kept", held.containsAll(honest.map { it.envelope.id }))
+                    (honest + flood).filter { it.envelope.id in held }.groupingBy { it.envelope.senderId }.eachCount()
+                }
+            assertEquals(buckets[0], buckets[1])
+            assertTrue(adversarial.snapshots > 0)
+        }
+
+    @Test
+    fun `the repository tells its carry reader what it holds`() =
+        runTest {
+            val carry = TestCarry()
+            val repo = ForwardRepository(db.forwardDao(), StoreDigest(), db, maxPerSender = 2, carry = carry)
+            repo.keep(dm("a", "peer", 2L), dm("b", "peer", 3L))
+            assertEquals(listOf("a" to null, "b" to null), carry.kept)
+            assertFalse(repo.store(dm("old", "peer", 1L), ForwardStore.ORIGIN_RELAY, now = 0L, source = "n"))
+            assertEquals("a frame its own write trimmed is not kept", 2, carry.kept.size)
+            assertEquals("the trim's rebuild names the live set", setOf("a", "b"), carry.retained.last())
+            repo.keep(dm("c", "peer", 4L))
+            assertEquals(setOf("b", "c"), carry.retained.last())
+            repo.remove("b")
+            assertEquals(listOf("b"), carry.left)
+            repo.sweepExpired(now = 0L)
+            assertEquals(setOf("c"), carry.retained.last())
         }
 
     @Test

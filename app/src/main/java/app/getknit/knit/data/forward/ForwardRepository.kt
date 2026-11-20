@@ -6,6 +6,8 @@ import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.CarriedAttachment
 import app.getknit.knit.mesh.CarriedFrame
+import app.getknit.knit.mesh.CarryReader
+import app.getknit.knit.mesh.CarrySnapshot
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.RoomAttachments
@@ -32,7 +34,8 @@ import kotlinx.coroutines.sync.withLock
  *  - a **per-group quota** ([maxPerGroup]) so one busy group can't monopolize the buffer either;
  *  - a **broadcast quota** ([maxBroadcast]) so ambient broadcast chatter can't crowd out addressed messages;
  *  - a **global cap** ([maxRows]) that evicts from the **largest sender bucket** first, one row at a time, so a
- *    flood of free identities displaces its own frames before anyone else's (ADR 2026-10.7mqm);
+ *    flood of free identities displaces its own frames before anyone else's (ADR 2026-10.7mqm); which of that
+ *    bucket's rows goes reads [carry], how many peers hold each (the custody-carry-policy contract's §5);
  *  - a **byte cap** ([maxSignedBytes]) on each frame's `signed` bytes, so the row cap bounds what custody holds on disk
  *    and re-serves too (#227): without it a thousand rows of any size were a few hundred megabytes on every carrier;
  *  - a **profile cap** ([maxProfileSignedBytes]) on a `profile` frame's `signed` bytes, under the byte cap: the inbound
@@ -40,9 +43,12 @@ import kotlinx.coroutines.sync.withLock
  *    profile no peer would read (#234).
  *
  * The sender, group and room quotas keep their newest-N by the frame-global `(sentAt, id)`. Origin plays no part in
- * any of them: our own sends are bounded exactly like relayed traffic (ADR 006). A frame naming a group is carried
- * only when its roster derives to the group's id and names its sender (ADR 2026-10.7mqm), so nobody outside a group
- * can fill its quota.
+ * any of them: our own sends are bounded exactly like relayed traffic (ADR 006). Every refusal, the TTL, those trims
+ * and the digest fold read the frame and the held set alone, so two stores under [maxRows] holding the same frames keep
+ * the same ones. Only the global cap's choice of row reads per-node state, who is believed to hold what, so stores at
+ * the cap may differ for good; whatever eviction reads, a peer can read back from our digest. A frame naming a group is
+ * carried only when its roster derives to the group's id and names its sender (ADR 2026-10.7mqm), so nobody outside a
+ * group can fill its quota.
  *
  * Every bound is evaluated over **live** rows only, and the digest folds only live ids — an expired-but-unswept
  * row is per-node state (sweep ticks phase independently), so letting it into any rule would de-converge the
@@ -65,6 +71,9 @@ class ForwardRepository(
     private val maxBroadcast: Int = DEFAULT_MAX_BROADCAST,
     // Counts the frames [store] refuses for their size or their group's roster; null in the rigs that do not read it.
     private val metrics: MeshMetrics? = null,
+    // The carry ledger's read side: the global cap's key 2 (spread), and the events that keep its held set in step with
+    // the table, each called under [mutex]. EMPTY orders the cap by the frame alone.
+    private val carry: CarryReader = CarryReader.EMPTY,
 ) : ForwardStore {
     // Serializes store/remove/sweepExpired so each in-memory [digest] update commits atomically with its
     // forward_store row write: a Room transaction can't enroll the in-memory digest, and a concurrent sweep's
@@ -80,6 +89,13 @@ class ForwardRepository(
         frame: CarriedFrame,
         origin: Int,
         now: Long,
+    ): Boolean = store(frame, origin, now, source = null)
+
+    override suspend fun store(
+        frame: CarriedFrame,
+        origin: Int,
+        now: Long,
+        source: String?,
     ): Boolean {
         val env = frame.envelope
         // The byte cap (#227) comes first, before anything reads the payload. A frame whose `signed` is longer than
@@ -175,21 +191,31 @@ class ForwardRepository(
                 attachmentHash = attachmentHash,
                 expiresAt = expiresAt,
             )
-        // The row insert + quota eviction (atomic under withWriteTransaction) and the in-memory digest update are one
-        // critical section (mutex). The digest update runs AFTER commit but still under the lock, so a rolled-back
-        // transaction never leaves the digest ahead of the table and no concurrent store/sweep interleaves between
-        // the commit and the update.
-        val trimmed =
-            mutex.withLock {
-                val trimmed = db.withWriteTransaction { insertAndTrim(row, isBroadcastChat, now) }
-                // Eviction removed ids we don't track individually here, so rebuild the fingerprint wholesale;
-                // otherwise fold the single new id in incrementally (the hot path when no bucket is over quota).
-                if (trimmed.evicted) rebuildDigest(now) else digest.add(row.id, row.expiresAt, now)
-                trimmed
-            }
         // A frame its own write trimmed is one we do not hold: the caller must not pull its attachment for it.
-        return trimmed.kept
+        return commit(row, isBroadcastChat, now, source)
     }
+
+    /**
+     * Writes [row] and trims, then brings the digest and [carry] up to date; returns whether [row] is held afterwards.
+     * The row insert + quota eviction (atomic under withWriteTransaction) and the in-memory digest update are one
+     * critical section (mutex). The digest update runs AFTER commit but still under the lock, so a rolled-back
+     * transaction never leaves the digest ahead of the table and no concurrent store/sweep interleaves between the
+     * commit and the update.
+     */
+    private suspend fun commit(
+        row: ForwardEntity,
+        isBroadcastChat: Boolean,
+        now: Long,
+        source: String?,
+    ): Boolean =
+        mutex.withLock {
+            val trimmed = db.withWriteTransaction { insertAndTrim(row, isBroadcastChat, now, source) }
+            // Eviction removed ids we don't track individually here, so rebuild the fingerprint wholesale;
+            // otherwise fold the single new id in incrementally (the hot path when no bucket is over quota).
+            if (trimmed.evicted) rebuildDigest(now) else digest.add(row.id, row.expiresAt, now)
+            if (trimmed.kept) carry.onKept(row.id, source)
+            trimmed.kept
+        }
 
     /** What [insertAndTrim] did: whether any row went, and whether the row it inserted is still held. */
     private class Trimmed(
@@ -198,9 +224,8 @@ class ForwardRepository(
     )
 
     /**
-     * Inserts [row] and trims each over-quota bucket in the fixed order (sender, group, room, global), so every node
-     * keeps the identical set; returns whether any eviction ran and whether [row] survived it. Runs inside the
-     * caller's [db] transaction.
+     * Inserts [row] and trims each over-quota bucket in the fixed order (sender, group, room, global); returns whether any
+     * eviction ran and whether [row] survived it. Runs inside the caller's [db] transaction.
      *
      * A bucket over its quota loses rows rather than refusing the new one, and the quotas apply to our own sends
      * (ORIGIN_SELF) too (ADR 006). The old scheme (refuse-when-full, and never cap our own outbox) let an originator
@@ -208,23 +233,26 @@ class ForwardRepository(
      * the cue-plane digests never matched and the mesh churned NDPs forever — observed with a 117-frame sender against
      * the 100 per-sender quota.
      *
-     * The sender, group and room trims keep their newest-N by the frame-global `(sentAt, id)`. The global cap evicts
-     * one row at a time from the sender holding the most, oldest first, recounting after each
-     * ([ForwardDao.evictFairest], ADR 2026-10.7mqm): five free identities stamping a thousand frames inside the future
-     * window used to evict every honest frame on every node, and every honest frame for the next five minutes in the
-     * write that stored it. The room and group trims stay newest-N on purpose: every shipped build and knit-ios trim
-     * that way, and a busy room sitting at its quota would otherwise split an old node from a new one for good.
+     * The sender, group and room trims keep their newest-N by the frame-global `(sentAt, id)` and never read [carry]. The
+     * global cap evicts one row at a time from the sender holding the most, recounting after each ([evictAtCap], ADR
+     * 2026-10.7mqm): five free identities stamping a thousand frames inside the future window used to evict every honest
+     * frame on every node, and every honest frame for the next five minutes in the write that stored it. The room and
+     * group trims stay newest-N on purpose: every shipped build and knit-ios trim that way, and a busy room sitting at its
+     * quota would otherwise split an old node from a new one for good.
      *
-     * A just-stored frame the rules put outside what is kept is evicted here too: we converge on the same set whatever
-     * the arrival order. Counts and evictions are live-filtered (`expiresAt >= now`): buckets mix TTL classes, so an
-     * expired-unswept row can be newer by sentAt than a live one — counting it would evict a live frame on the unswept
-     * node only, and which rows are evicted would then depend on the local sweep phase, not a frame-global rule (work
-     * item #8).
+     * A just-stored frame the rules put outside what is kept is evicted here too. Below the cap, with one quota binding,
+     * that makes the kept set the same whatever the arrival order. It is not a law beyond that: with two bounds binding
+     * at once the order of the trims already let arrival order split two stores (#349), and at the cap the choice now
+     * reads this phone's carry ledger ([source] counts as a holder of [row] there). Counts and evictions are
+     * live-filtered (`expiresAt >= now`): buckets mix TTL classes, so an expired-unswept row can be newer by sentAt than a
+     * live one — counting it would evict a live frame on the unswept node only, and which rows are evicted would then
+     * depend on the local sweep phase (work item #8).
      */
     private suspend fun insertAndTrim(
         row: ForwardEntity,
         isBroadcastChat: Boolean,
         now: Long,
+        source: String?,
     ): Trimmed {
         dao.insert(row)
         val senderId = row.senderId
@@ -236,8 +264,30 @@ class ForwardRepository(
         if (isBroadcastChat) {
             evicted = trim(dao.countBroadcast(now) - maxBroadcast) { dao.evictOldestBroadcast(it, now) } || evicted
         }
-        evicted = trim(dao.count(now) - maxRows) { over -> repeat(over) { dao.evictFairest(now) } } || evicted
+        evicted = trim(dao.count(now) - maxRows) { over -> evictAtCap(over, row.id, source, now) } || evicted
         return Trimmed(evicted, kept = !evicted || dao.exists(row.id))
+    }
+
+    /**
+     * Evicts [over] rows for the global cap, one at a time, recounting the buckets after each: among the rows of the
+     * sender buckets tied for the most live rows ([ForwardDao.largestBucketRows], key 1), the first by spread descending,
+     * `sentAt` ascending and id bytewise ([CapEviction], keys 2 to 4; the custody-carry-policy contract's §5). [carry] is
+     * read once for the whole write, and only here, so a write under the cap never reads it; its snapshot already counts
+     * [source] as a holder of [newcomer]. The newcomer is a candidate like any row, so a frame can still be evicted by its
+     * own write.
+     */
+    private suspend fun evictAtCap(
+        over: Int,
+        newcomer: String,
+        source: String?,
+        now: Long,
+    ) {
+        var snapshot: CarrySnapshot? = null
+        repeat(over) {
+            val seen = snapshot ?: carry.snapshot(newcomer, source).also { taken -> snapshot = taken }
+            val id = CapEviction.choose(dao.largestBucketRows(now), seen) ?: return
+            dao.delete(id)
+        }
     }
 
     /** Evicts [over] rows via [evict] when a bucket exceeds its quota; returns whether anything was removed. */
@@ -350,6 +400,7 @@ class ForwardRepository(
         mutex.withLock {
             dao.delete(id)
             digest.remove(id)
+            carry.onLeft(id)
         }
     }
 
@@ -377,9 +428,14 @@ class ForwardRepository(
             expired + oversize + profiles
         }
 
-    /** Re-syncs the digest to the table's live `(id, expiresAt)` set — the only rebuild source. */
+    /**
+     * Re-syncs the digest to the table's live `(id, expiresAt)` set — the only rebuild source — and tells [carry] the
+     * same set, which is how a row the trims or the sweep removed leaves the ledger without the trims' SQL naming it.
+     */
     private suspend fun rebuildDigest(now: Long) {
-        digest.setMessages(dao.liveIdExpiries(now).map { it.id to it.expiresAt }, now)
+        val live = dao.liveIdExpiries(now)
+        digest.setMessages(live.map { it.id to it.expiresAt }, now)
+        carry.retainOnly(live.mapTo(HashSet(live.size)) { it.id })
     }
 
     // Internal rather than private: the spool plane's attachment deferral is bounded by how long a frame
@@ -392,7 +448,7 @@ class ForwardRepository(
         /** Carry a broadcast-room message for a shorter window (ambient, higher-volume, no ack to purge it). */
         const val DEFAULT_BROADCAST_TTL_MS = 6 * 60 * 60_000L
 
-        /** Cap total carried frames; past it the largest sender bucket loses its oldest frame (ADR 2026-10.7mqm). */
+        /** Cap total carried frames; past it the largest sender bucket loses a frame ([evictAtCap], ADR 2026-10.7mqm). */
         const val DEFAULT_MAX_ROWS = 1_000
 
         /**

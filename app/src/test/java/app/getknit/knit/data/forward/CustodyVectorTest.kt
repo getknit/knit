@@ -3,6 +3,8 @@ package app.getknit.knit.data.forward
 import app.getknit.knit.data.RoomDbTest
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.CarriedFrame
+import app.getknit.knit.mesh.CarryReader
+import app.getknit.knit.mesh.CarrySnapshot
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.ChatContent
@@ -41,7 +43,9 @@ import org.junit.Test
  * write, expired residue that counts toward nothing, the dead-on-arrival and future-window refusals, the group gate, and
  * the byte cap (#227): a frame of exactly `maxSignedBytes` kept, one byte over refused, and an oversize frame that also
  * fails the group gate refused; and the profile cap after it (#234): a `profile` of exactly `maxProfileSignedBytes`
- * kept, one byte over refused, and a chat frame of that same size kept. Each step records the length of the `signed`
+ * kept, one byte over refused, and a chat frame of that same size kept; and the global cap's spread key (custody-carry-policy
+ * §5): a step's optional `carry.holders` names who holds which frame, and the cap evicts a largest bucket's most widely
+ * held row first, capped at `limits.spreadMax`, the quota trims never reading it. Each step records the length of the `signed`
  * bytes the store is handed (`signedBytes`), which a port reproduces before it replays the step, so a padded frame that
  * encodes differently fails as that and not as a custody disagreement.
  *
@@ -55,14 +59,23 @@ class CustodyVectorTest : RoomDbTest() {
         runTest {
             assumeFalse("KNIT_WRITE_VECTORS=1 rewrites the file instead", VectorFiles.writing)
             val file = VectorFiles.read(FILE)
-            val store = store(file.getValue("limits").jsonObject)
+            val limits = file.getValue("limits").jsonObject
+            val rig = RigCarry(limits.getValue("spreadMax").jsonPrimitive.int)
+            val store = store(limits, rig)
             file.getValue("steps").jsonArray.forEachIndexed { n, element ->
                 val step = element.jsonObject
                 val now = step.getValue("now").jsonPrimitive.long
                 val frame = frameOf(step.getValue("frame").jsonObject)
                 val label = "step ${n + 1} (${step.getValue("note").jsonPrimitive.content})"
                 assertEquals("$label: signedBytes", step.getValue("signedBytes").jsonPrimitive.int, WireCodec.encodeEnvelope(frame).size)
-                val outcome = apply(store, frame, now)
+                val holders =
+                    step["carry"]
+                        ?.jsonObject
+                        ?.get("holders")
+                        ?.jsonObject
+                        ?.mapValues { (_, peers) -> peers.strings() }
+                        .orEmpty()
+                val outcome = apply(store, rig, frame, now, holders)
                 assertEquals("$label: kept", step.getValue("kept").jsonPrimitive.boolean, outcome.kept)
                 assertEquals("$label: evicted", step.getValue("evicted").strings(), outcome.evicted)
                 assertEquals("$label: held", step.getValue("held").strings(), outcome.held)
@@ -93,13 +106,37 @@ class CustodyVectorTest : RoomDbTest() {
         val now: Long,
         val frame: RelayEnvelope,
         val note: String,
+        val holders: Map<String, List<String>> = emptyMap(),
     )
+
+    /**
+     * The rig's carry ledger: each frame's holders as the steps set them, every spread the distinct holders capped at
+     * `spreadMax`. A step's `carry.holders` replaces the holders of each id it names (an empty list clears one) before
+     * its frame is stored, and stays for later steps; a step that evicts or refuses an id forgets its holders, as an
+     * entry dies with its row. A newcomer's source is given by naming its own id, so the store is told no source.
+     */
+    private class RigCarry(
+        val spreadMax: Int,
+    ) : CarryReader {
+        val holders = mutableMapOf<String, Set<String>>()
+
+        override fun snapshot(
+            newcomer: String,
+            source: String?,
+        ): CarrySnapshot {
+            val held = holders.toMap()
+            return CarrySnapshot { id -> minOf(spreadMax, held[id].orEmpty().size) }
+        }
+    }
 
     private suspend fun apply(
         store: ForwardRepository,
+        rig: RigCarry,
         frame: RelayEnvelope,
         now: Long,
+        holders: Map<String, List<String>>,
     ): Outcome {
+        holders.forEach { (id, peers) -> if (peers.isEmpty()) rig.holders.remove(id) else rig.holders[id] = peers.toSet() }
         val before = store.liveIds(now).toSet()
         val kept =
             store.store(
@@ -108,10 +145,16 @@ class CustodyVectorTest : RoomDbTest() {
                 now,
             )
         val after = store.liveIds(now).toSet()
-        return Outcome(kept, (before - after).sorted(), after.sorted())
+        val evicted = (before - after).sorted()
+        evicted.forEach { rig.holders.remove(it) }
+        if (!kept) rig.holders.remove(frame.id)
+        return Outcome(kept, evicted, after.sorted())
     }
 
-    private fun store(limits: JsonObject): ForwardRepository =
+    private fun store(
+        limits: JsonObject,
+        rig: RigCarry,
+    ): ForwardRepository =
         ForwardRepository(
             db.forwardDao(),
             StoreDigest(),
@@ -124,21 +167,30 @@ class CustodyVectorTest : RoomDbTest() {
             maxPerSender = limits.getValue("maxPerSender").jsonPrimitive.int,
             maxPerGroup = limits.getValue("maxPerGroup").jsonPrimitive.int,
             maxBroadcast = limits.getValue("maxBroadcast").jsonPrimitive.int,
+            carry = rig,
         )
 
     /** The vector, built by running [scenario] through a store with [LIMITS]. */
     private suspend fun build(): JsonObject {
         val limits = limitsJson()
-        val store = store(limits)
+        val rig = RigCarry(SPREAD_MAX)
+        val store = store(limits, rig)
         return buildJsonObject {
             put("about", ABOUT)
             put("limits", limits)
             putJsonArray("steps") {
                 scenario().forEach { step ->
-                    val outcome = apply(store, step.frame, step.now)
+                    val outcome = apply(store, rig, step.frame, step.now, step.holders)
                     addJsonObject {
                         put("note", step.note)
                         put("now", step.now)
+                        if (step.holders.isNotEmpty()) {
+                            putJsonObject("carry") {
+                                putJsonObject("holders") {
+                                    step.holders.forEach { (id, peers) -> putJsonArray(id) { peers.forEach { add(it) } } }
+                                }
+                            }
+                        }
                         put("frame", frameJson(step.frame))
                         put("signedBytes", WireCodec.encodeEnvelope(step.frame).size)
                         put("isRoomChat", isRoomChat(step.frame))
@@ -163,6 +215,7 @@ class CustodyVectorTest : RoomDbTest() {
             put("ttlMs", TTL_MS)
             put("broadcastTtlMs", BROADCAST_TTL_MS)
             put("maxFutureSkewMs", Protocol.MAX_FUTURE_SKEW_MS)
+            put("spreadMax", SPREAD_MAX)
         }
 
     private fun isRoomChat(frame: RelayEnvelope): Boolean = frame.type == FrameType.CHAT && frame.recipientId == null && frame.group == null
@@ -256,8 +309,10 @@ class CustodyVectorTest : RoomDbTest() {
      * The steps, each with the reason it is here. The outcomes are the store's, never written by hand; a note that no
      * longer matches its step's outcome is a note to fix, and the regeneration test shows the step that moved.
      */
+    private fun scenario(): List<Step> = frameRules() + spreadRules()
+
     @Suppress("LongMethod") // one flat list of steps reads better than any split of it
-    private fun scenario(): List<Step> {
+    private fun frameRules(): List<Step> {
         val t = T0
         val later = T0 + 45_000L
         return listOf(
@@ -338,6 +393,75 @@ class CustodyVectorTest : RoomDbTest() {
         )
     }
 
+    /**
+     * The global cap's spread key (custody-carry-policy §5), from the full store [frameRules] leaves: every sender there
+     * holds one row. A few steps only set the store up for the next, and say so.
+     */
+    @Suppress("LongMethod") // one flat list of steps reads better than any split of it
+    private fun spreadRules(): List<Step> {
+        val t = T0
+        val later = T0 + 45_000L
+        val expiredE3 = T0 + 71_000L // past e3's expiry, before g4's
+        val muchLater = T0 + 145_000L // past f2, g4, h2 and p1
+        return listOf(
+            Step(
+                later,
+                dm("e3", "erin", t - 30_000),
+                "spread: erin's bucket is the largest, and e2, held by one peer, goes before the older e3, held by none",
+                mapOf("e2" to listOf("n1")),
+            ),
+            Step(
+                later,
+                dm("f2", "frank", later - 800),
+                "spread is capped at spreadMax: f2's four holders tie with f1's three, so the older f1 goes",
+                mapOf("f1" to listOf("n1", "n2", "n3"), "f2" to listOf("n1", "n2", "n3", "n4")),
+            ),
+            Step(
+                later,
+                dm("h2", "heidi", later - 700),
+                "key 1 first: heidi's h1 goes, and frank's fully spread f2 in a smaller bucket stays",
+            ),
+            Step(expiredE3, dm("h3", "heidi", expiredE3 - 500), "setup: e3 has expired, so h3 fits under the cap and heidi holds two"),
+            Step(
+                expiredE3,
+                dm("w5", "walt", expiredE3 - 400),
+                "heidi and walt tie for largest; spread picks walt's bucket and w4 goes, not heidi's older h2",
+                mapOf("w4" to listOf("n1")),
+            ),
+            Step(
+                expiredE3,
+                dm("h0", "heidi", later - 1_000),
+                "a newcomer naming its source ties with the rows that peer holds; it is the oldest of them, evicted by its own write",
+                mapOf("h0" to listOf("nina"), "h2" to listOf("nina"), "h3" to listOf("nina")),
+            ),
+            Step(
+                muchLater,
+                dm("w6", "walt", muchLater - 1_000),
+                "below the cap (f2, g4, h2 and p1 have expired), a step with holders set evicts nothing",
+                mapOf("w6" to listOf("n1", "n2", "n3")),
+            ),
+            Step(muchLater, dm("w7", "walt", muchLater - 900), "setup: walt's bucket fills, below the cap"),
+            Step(muchLater, dm("w8", "walt", muchLater - 800), "setup: walt's bucket is full at 4"),
+            Step(
+                muchLater,
+                dm("w9", "walt", muchLater - 700),
+                "sender quota ignores carry: walt keeps his newest 4, and the oldest, w5, goes though w6 has more holders",
+            ),
+            Step(muchLater, dm("x1", "xena", muchLater - 600), "setup: the store is at its cap of 8 again"),
+            Step(
+                muchLater,
+                dm("y1", "yan", muchLater - 500),
+                "setup: walt's bucket is the largest, and w6, held by three, goes before w9, held by one",
+                mapOf("w9" to listOf("n1")),
+            ),
+            Step(
+                muchLater,
+                dm("w6", "walt", muchLater - 1_000),
+                "holders die with their row: w6 returns with none, since its eviction forgot them, so w9, held by one, goes",
+            ),
+        )
+    }
+
     private val founding =
         GroupInfo(
             id = Conversations.groupIdFor(listOf("alice", "bob", "carol")),
@@ -359,14 +483,22 @@ class CustodyVectorTest : RoomDbTest() {
         const val BROADCAST_TTL_MS = 60_000L
         const val MAX_SIGNED_BYTES = 2_048
 
+        // Low, so a frame's holders saturate the spread key in a step or two.
+        const val SPREAD_MAX = 3
+
         // Below the byte cap, so a profile between the two shows the profile cap's own refusal (#234).
         const val MAX_PROFILE_SIGNED_BYTES = 1_024
         val EMPTY: ByteArray = WireCodec.encodePayload(ChatContent(body = ""))
         const val ABOUT =
-            "Knit's custody rule (ADR 006, ADR 2026-10.7mqm). Replay `steps` in order through one store with `limits`, " +
-                "each frame stored at its step's `now`. A sender's, group's or room's bucket over its quota keeps its newest " +
-                "by (sentAt, id). Then, while the live rows exceed maxRows, evict one: the oldest (sentAt, id) frame of the " +
-                "sender holding the most live rows, a tie for most going to the sender whose oldest frame is oldest. Counts " +
+            "Knit's custody rule (ADR 006, ADR 2026-10.7mqm, custody-carry-policy). Replay `steps` in order through one store " +
+                "with `limits`, each frame stored at its step's `now`. A sender's, group's or room's bucket over its quota keeps " +
+                "its newest by (sentAt, id), never reading holders. Then, while the live rows exceed maxRows, evict one live row: " +
+                "among the rows of the senders holding the most live rows, the one with the highest spread, then the smallest " +
+                "sentAt, then the smallest id; recount after each. A row's spread is its distinct holders, capped at spreadMax. " +
+                "A step's optional `carry.holders` maps frame ids to peer ids and, before the step's frame is stored, replaces " +
+                "the holders of each id it names (an empty list clears one); it may name the step's own frame, and it stays " +
+                "for later steps. When a step evicts or refuses an id, forget that id's holders. With no holders every spread " +
+                "is 0. Counts " +
                 "and evictions read live rows only (expiresAt >= now; expiresAt = sentAt + broadcastTtlMs for room chat, " +
                 "ttlMs otherwise). Refuse a frame with expiresAt < now, with sentAt > now + maxFutureSkewMs, or naming a " +
                 "group whose members + departed do not derive to its id or whose sender is not a member. Before all of those, " +

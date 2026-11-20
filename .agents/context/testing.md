@@ -983,6 +983,7 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   the cap, the machine spent fifteen cores in `ForwardDao.evictFairest`, and the run was stopped. Read the
   custody line before the delivery lines, and pin a big run to half the machine: `taskset -c 0-11
   scripts/gradle-turn.sh ./gradlew --no-daemon …`.
+  <!-- doc-lint: allow evictFairest — the 2026-11-14 run's profile named the statement that was there then -->
 - **Forty-eight walkers fill custody, and the gathered field converges late, not stuck** (seeds 1 to 3,
   2026-11-15, unbounded queues). Every DM arrived, and every store came to hold the same 1,000 ids, custody's
   cap, about 93% of them chat frames, 60 to 106 s after the gather. The last gap was each store short one id at

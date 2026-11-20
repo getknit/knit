@@ -120,7 +120,8 @@ TTL than DMs/groups), a **per-sender quota**, a **per-group quota**, a **broadca
 each enforced by evicting rather than refusing the new frame, and applied to **our own sends too** (not just relayed
 traffic). The three buckets keep their **newest-N by the frame-global `(sentAt, id)`**. The global cap evicts **one
 row at a time from the largest sender bucket**: the oldest `(sentAt, id)` frame of the sender holding the most live
-frames, and on a tie for most, the sender whose oldest frame is oldest (`ForwardDao.evictFairest`, ADR 2026-10.7mqm).
+frames, and on a tie for most, the sender whose oldest frame is oldest (`ForwardDao.largestBucketRows` and `CapEviction`,
+ADR 2026-10.7mqm).
 Both keys read only the frame and the held set, so every node holding the same frames keeps the same ones and their
 content digests converge. A frame its own write evicts is one `store` answers false for, so nothing pulls its blob.
 

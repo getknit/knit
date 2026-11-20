@@ -1,5 +1,5 @@
 {
-  "about": "Knit's custody rule (ADR 006, ADR 2026-10.7mqm). Replay `steps` in order through one store with `limits`, each frame stored at its step's `now`. A sender's, group's or room's bucket over its quota keeps its newest by (sentAt, id). Then, while the live rows exceed maxRows, evict one: the oldest (sentAt, id) frame of the sender holding the most live rows, a tie for most going to the sender whose oldest frame is oldest. Counts and evictions read live rows only (expiresAt >= now; expiresAt = sentAt + broadcastTtlMs for room chat, ttlMs otherwise). Refuse a frame with expiresAt < now, with sentAt > now + maxFutureSkewMs, or naming a group whose members + departed do not derive to its id or whose sender is not a member. Before all of those, refuse a frame whose signed bytes are longer than maxSignedBytes (the signature is not counted), and right after it a frame of type `profile` whose signed bytes are longer than maxProfileSignedBytes; a frame over both counts as the byte cap's. A frame's `bodyLength` (absent means 0) pads its chat body with that many \"x\"; a `profile` frame's payload is that same chat payload, since custody never decodes a profile's payload; `signedBytes` is the length of the encoded envelope the store is handed, which a port must reproduce before replaying the step. `kept` is whether the store holds the frame after its own write; `evicted` the live ids that write removed; `held` the live set after it. Ids and sender ids compare bytewise.",
+  "about": "Knit's custody rule (ADR 006, ADR 2026-10.7mqm, custody-carry-policy). Replay `steps` in order through one store with `limits`, each frame stored at its step's `now`. A sender's, group's or room's bucket over its quota keeps its newest by (sentAt, id), never reading holders. Then, while the live rows exceed maxRows, evict one live row: among the rows of the senders holding the most live rows, the one with the highest spread, then the smallest sentAt, then the smallest id; recount after each. A row's spread is its distinct holders, capped at spreadMax. A step's optional `carry.holders` maps frame ids to peer ids and, before the step's frame is stored, replaces the holders of each id it names (an empty list clears one); it may name the step's own frame, and it stays for later steps. When a step evicts or refuses an id, forget that id's holders. With no holders every spread is 0. Counts and evictions read live rows only (expiresAt >= now; expiresAt = sentAt + broadcastTtlMs for room chat, ttlMs otherwise). Refuse a frame with expiresAt < now, with sentAt > now + maxFutureSkewMs, or naming a group whose members + departed do not derive to its id or whose sender is not a member. Before all of those, refuse a frame whose signed bytes are longer than maxSignedBytes (the signature is not counted), and right after it a frame of type `profile` whose signed bytes are longer than maxProfileSignedBytes; a frame over both counts as the byte cap's. A frame's `bodyLength` (absent means 0) pads its chat body with that many \"x\"; a `profile` frame's payload is that same chat payload, since custody never decodes a profile's payload; `signedBytes` is the length of the encoded envelope the store is handed, which a port must reproduce before replaying the step. `kept` is whether the store holds the frame after its own write; `evicted` the live ids that write removed; `held` the live set after it. Ids and sender ids compare bytewise.",
   "limits": {
     "maxRows": 8,
     "maxSignedBytes": 2048,
@@ -9,7 +9,8 @@
     "maxBroadcast": 3,
     "ttlMs": 100000,
     "broadcastTtlMs": 60000,
-    "maxFutureSkewMs": 300000
+    "maxFutureSkewMs": 300000,
+    "spreadMax": 3
   },
   "steps": [
     {
@@ -918,6 +919,409 @@
         "p1",
         "s3",
         "w4",
+        "z3"
+      ]
+    },
+    {
+      "note": "spread: erin's bucket is the largest, and e2, held by one peer, goes before the older e3, held by none",
+      "now": 1800000045000,
+      "carry": {
+        "holders": {
+          "e2": [
+            "n1"
+          ]
+        }
+      },
+      "frame": {
+        "id": "e3",
+        "type": "chat",
+        "senderId": "erin",
+        "recipientId": "bob",
+        "sentAt": 1799999970000
+      },
+      "signedBytes": 73,
+      "isRoomChat": false,
+      "expiresAt": 1800000070000,
+      "kept": true,
+      "evicted": [
+        "e2"
+      ],
+      "held": [
+        "e3",
+        "f1",
+        "g4",
+        "h1",
+        "p1",
+        "s3",
+        "w4",
+        "z3"
+      ]
+    },
+    {
+      "note": "spread is capped at spreadMax: f2's four holders tie with f1's three, so the older f1 goes",
+      "now": 1800000045000,
+      "carry": {
+        "holders": {
+          "f1": [
+            "n1",
+            "n2",
+            "n3"
+          ],
+          "f2": [
+            "n1",
+            "n2",
+            "n3",
+            "n4"
+          ]
+        }
+      },
+      "frame": {
+        "id": "f2",
+        "type": "chat",
+        "senderId": "frank",
+        "recipientId": "bob",
+        "sentAt": 1800000044200
+      },
+      "signedBytes": 74,
+      "isRoomChat": false,
+      "expiresAt": 1800000144200,
+      "kept": true,
+      "evicted": [
+        "f1"
+      ],
+      "held": [
+        "e3",
+        "f2",
+        "g4",
+        "h1",
+        "p1",
+        "s3",
+        "w4",
+        "z3"
+      ]
+    },
+    {
+      "note": "key 1 first: heidi's h1 goes, and frank's fully spread f2 in a smaller bucket stays",
+      "now": 1800000045000,
+      "frame": {
+        "id": "h2",
+        "type": "chat",
+        "senderId": "heidi",
+        "recipientId": "bob",
+        "sentAt": 1800000044300
+      },
+      "signedBytes": 74,
+      "isRoomChat": false,
+      "expiresAt": 1800000144300,
+      "kept": true,
+      "evicted": [
+        "h1"
+      ],
+      "held": [
+        "e3",
+        "f2",
+        "g4",
+        "h2",
+        "p1",
+        "s3",
+        "w4",
+        "z3"
+      ]
+    },
+    {
+      "note": "setup: e3 has expired, so h3 fits under the cap and heidi holds two",
+      "now": 1800000071000,
+      "frame": {
+        "id": "h3",
+        "type": "chat",
+        "senderId": "heidi",
+        "recipientId": "bob",
+        "sentAt": 1800000070500
+      },
+      "signedBytes": 74,
+      "isRoomChat": false,
+      "expiresAt": 1800000170500,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "f2",
+        "g4",
+        "h2",
+        "h3",
+        "p1",
+        "s3",
+        "w4",
+        "z3"
+      ]
+    },
+    {
+      "note": "heidi and walt tie for largest; spread picks walt's bucket and w4 goes, not heidi's older h2",
+      "now": 1800000071000,
+      "carry": {
+        "holders": {
+          "w4": [
+            "n1"
+          ]
+        }
+      },
+      "frame": {
+        "id": "w5",
+        "type": "chat",
+        "senderId": "walt",
+        "recipientId": "bob",
+        "sentAt": 1800000070600
+      },
+      "signedBytes": 73,
+      "isRoomChat": false,
+      "expiresAt": 1800000170600,
+      "kept": true,
+      "evicted": [
+        "w4"
+      ],
+      "held": [
+        "f2",
+        "g4",
+        "h2",
+        "h3",
+        "p1",
+        "s3",
+        "w5",
+        "z3"
+      ]
+    },
+    {
+      "note": "a newcomer naming its source ties with the rows that peer holds; it is the oldest of them, evicted by its own write",
+      "now": 1800000071000,
+      "carry": {
+        "holders": {
+          "h0": [
+            "nina"
+          ],
+          "h2": [
+            "nina"
+          ],
+          "h3": [
+            "nina"
+          ]
+        }
+      },
+      "frame": {
+        "id": "h0",
+        "type": "chat",
+        "senderId": "heidi",
+        "recipientId": "bob",
+        "sentAt": 1800000044000
+      },
+      "signedBytes": 74,
+      "isRoomChat": false,
+      "expiresAt": 1800000144000,
+      "kept": false,
+      "evicted": [],
+      "held": [
+        "f2",
+        "g4",
+        "h2",
+        "h3",
+        "p1",
+        "s3",
+        "w5",
+        "z3"
+      ]
+    },
+    {
+      "note": "below the cap (f2, g4, h2 and p1 have expired), a step with holders set evicts nothing",
+      "now": 1800000145000,
+      "carry": {
+        "holders": {
+          "w6": [
+            "n1",
+            "n2",
+            "n3"
+          ]
+        }
+      },
+      "frame": {
+        "id": "w6",
+        "type": "chat",
+        "senderId": "walt",
+        "recipientId": "bob",
+        "sentAt": 1800000144000
+      },
+      "signedBytes": 73,
+      "isRoomChat": false,
+      "expiresAt": 1800000244000,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "h3",
+        "s3",
+        "w5",
+        "w6",
+        "z3"
+      ]
+    },
+    {
+      "note": "setup: walt's bucket fills, below the cap",
+      "now": 1800000145000,
+      "frame": {
+        "id": "w7",
+        "type": "chat",
+        "senderId": "walt",
+        "recipientId": "bob",
+        "sentAt": 1800000144100
+      },
+      "signedBytes": 73,
+      "isRoomChat": false,
+      "expiresAt": 1800000244100,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "h3",
+        "s3",
+        "w5",
+        "w6",
+        "w7",
+        "z3"
+      ]
+    },
+    {
+      "note": "setup: walt's bucket is full at 4",
+      "now": 1800000145000,
+      "frame": {
+        "id": "w8",
+        "type": "chat",
+        "senderId": "walt",
+        "recipientId": "bob",
+        "sentAt": 1800000144200
+      },
+      "signedBytes": 73,
+      "isRoomChat": false,
+      "expiresAt": 1800000244200,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "h3",
+        "s3",
+        "w5",
+        "w6",
+        "w7",
+        "w8",
+        "z3"
+      ]
+    },
+    {
+      "note": "sender quota ignores carry: walt keeps his newest 4, and the oldest, w5, goes though w6 has more holders",
+      "now": 1800000145000,
+      "frame": {
+        "id": "w9",
+        "type": "chat",
+        "senderId": "walt",
+        "recipientId": "bob",
+        "sentAt": 1800000144300
+      },
+      "signedBytes": 73,
+      "isRoomChat": false,
+      "expiresAt": 1800000244300,
+      "kept": true,
+      "evicted": [
+        "w5"
+      ],
+      "held": [
+        "h3",
+        "s3",
+        "w6",
+        "w7",
+        "w8",
+        "w9",
+        "z3"
+      ]
+    },
+    {
+      "note": "setup: the store is at its cap of 8 again",
+      "now": 1800000145000,
+      "frame": {
+        "id": "x1",
+        "type": "chat",
+        "senderId": "xena",
+        "recipientId": "bob",
+        "sentAt": 1800000144400
+      },
+      "signedBytes": 73,
+      "isRoomChat": false,
+      "expiresAt": 1800000244400,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "h3",
+        "s3",
+        "w6",
+        "w7",
+        "w8",
+        "w9",
+        "x1",
+        "z3"
+      ]
+    },
+    {
+      "note": "setup: walt's bucket is the largest, and w6, held by three, goes before w9, held by one",
+      "now": 1800000145000,
+      "carry": {
+        "holders": {
+          "w9": [
+            "n1"
+          ]
+        }
+      },
+      "frame": {
+        "id": "y1",
+        "type": "chat",
+        "senderId": "yan",
+        "recipientId": "bob",
+        "sentAt": 1800000144500
+      },
+      "signedBytes": 72,
+      "isRoomChat": false,
+      "expiresAt": 1800000244500,
+      "kept": true,
+      "evicted": [
+        "w6"
+      ],
+      "held": [
+        "h3",
+        "s3",
+        "w7",
+        "w8",
+        "w9",
+        "x1",
+        "y1",
+        "z3"
+      ]
+    },
+    {
+      "note": "holders die with their row: w6 returns with none, since its eviction forgot them, so w9, held by one, goes",
+      "now": 1800000145000,
+      "frame": {
+        "id": "w6",
+        "type": "chat",
+        "senderId": "walt",
+        "recipientId": "bob",
+        "sentAt": 1800000144000
+      },
+      "signedBytes": 73,
+      "isRoomChat": false,
+      "expiresAt": 1800000244000,
+      "kept": true,
+      "evicted": [
+        "w9"
+      ],
+      "held": [
+        "h3",
+        "s3",
+        "w6",
+        "w7",
+        "w8",
+        "x1",
+        "y1",
         "z3"
       ]
     }

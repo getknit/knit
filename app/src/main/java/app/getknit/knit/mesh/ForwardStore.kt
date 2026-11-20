@@ -39,13 +39,28 @@ interface ForwardStore {
      * (its `signed` is over the byte cap, checked first, ADR 2026-10.mqzv; dead on arrival — its frame-global expiry
      * has passed, e.g. a skewed-clock peer re-served a frame every node has swept; dated past the future window; or a
      * group frame whose roster is not its own, ADR 2026-10.7mqm), or the caps **evicted it in the write that stored
-     * it**, as every node holding the same frames does.
+     * it**. Below the row cap every node holding the same frames answers alike; at the cap the choice reads who holds
+     * what (the custody-carry-policy contract's §5).
      */
     suspend fun store(
         frame: CarriedFrame,
         origin: Int,
         now: Long,
     ): Boolean
+
+    /**
+     * [store], told [source]: the proven neighbour [frame] arrived from, or null when unknown or our own. The source
+     * counts as one of the frame's holders in its own write, and is recorded only if the row is held afterwards (the
+     * custody-carry-policy contract's §3 and §5). The default drops [source], which is right for every fake that
+     * models no carry ledger. A decorator built with `by` delegation forwards this overload straight to the store it
+     * wraps, so one that intercepts writes must override this overload as well as the three-argument one.
+     */
+    suspend fun store(
+        frame: CarriedFrame,
+        origin: Int,
+        now: Long,
+        source: String?,
+    ): Boolean = store(frame, origin, now)
 
     /** Non-expired carried frames (at [now]), newest first, for re-offering to a freshly-joined neighbor. */
     suspend fun liveFrames(now: Long): List<CarriedFrame>
