@@ -46,8 +46,8 @@ lines.
   hand back altered bytes on cue while `files/keystore-alter` holds a count (the 2026-11-05 amendment).
   A new key is asked for through `StrongBoxFirst`: the StrongBox first, and the TEE under the same alias on any
   exception from that attempt, never a bare `setIsStrongBoxBacked(true)` with a catch of its own. A Xiaomi 14's
-  StrongBox is there and refuses every key, which left a fresh install on "Waiting for secure storage" for good (#351,
-  the 2026-11-19 amendment). The one warning it logs names a constant label, never a derived alias, and
+  StrongBox refused every key for a whole Test Lab run, which left each fresh install on "Waiting for secure storage",
+  and made them all on the next run (#351, the 2026-11-19 amendment). The one warning it logs names a constant label, never a derived alias, and
   `ShareSigningKey` decides it has no key with `getKey` like the rest. Debug builds refuse
   the next StrongBox generations on cue while `files/keystore-strongbox` holds a count.
   Regression: `KeystoreSecretTest`, `StrongBoxFirstTest`, `DatabaseKeyRecoveryTest`, `IdentityKeyStoreRecoveryTest`,

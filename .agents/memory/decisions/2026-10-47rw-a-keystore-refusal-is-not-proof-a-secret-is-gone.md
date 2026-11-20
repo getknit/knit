@@ -254,8 +254,8 @@ the rule, and the debug injector could not refuse the StrongBox alone.
 **What it costs and does not cover.** One StrongBox error at a mint, on a phone whose StrongBox works, leaves that key
 in the TEE for as long as the install lives, and only the key's own `KeyInfo` records it. The TEE is where every phone
 without a StrongBox already keeps the same key. Not checked: whether every Xiaomi 14 does this or only this unit's
-secure element ("Error in sending" reads like a HAL that cannot reach it), and whether #311's Redmi, also HyperOS, has
-a StrongBox behind its misread identity. `ShareSigningKey` looks once where `KeystoreSecret` looks three times, so
+secure element ("Error in sending" reads like a HAL that cannot reach it); #311's Redmi, also HyperOS, is taken up
+below. `ShareSigningKey` looks once where `KeystoreSecret` looks three times, so
 on API 29/30 a dead keystore daemon still reads as no key there, and no test reaches that object (it has no seam).
 The trap: a new key path asks through `StrongBoxFirst`, never `setIsStrongBoxBacked(true)` with a catch of its own.
 Regression: `StrongBoxFirstTest`, `KeystoreSecretTest`, `DatabaseKeyRecoveryTest`; on a device, `DatabaseKeyTest`
@@ -264,6 +264,26 @@ Regression: `StrongBoxFirstTest`, `KeystoreSecretTest`, `DatabaseKeyRecoveryTest
 Proven on `Knit_A11y_API34`, an emulator with no StrongBox, a debug build with `files/keystore-strongbox` at 99 over
 cleared data: `StrongBox refused db.key after 0 ms; making it in the TEE` and the same line for `identity.key`, the
 app past the storage gate, the same node id after a cold restart with the marker still at 97, and no line at all with
-no marker. `DatabaseKeyTest` passes on the managed `pixel8api34`. Not proven: the Xiaomi itself, which a Firebase Test
-Lab run on `houji@35` owes, and that a key a real StrongBox refused ends outside it, which only a phone with one can
-show (`DatabaseKeyTest`'s security-level line holds trivially everywhere else).
+no marker. `DatabaseKeyTest` passes on the managed `pixel8api34`.
+
+**The next run on the Xiaomi did not refuse.** `matrix-15d05t2lbacqi`, `houji@35`, three hours after the run above and
+with this change: 80 tests passed, 19 were skipped, none failed, and no screen read "Waiting for secure storage". But
+its logcat has no `Error in sending generateKey` at all and 412
+`javacard.strongbox.keymint.operation-impl: (finish) completed Successfully`, where `matrix-1261cld3vxsmd` had 99 of
+the first and none of the second. So "on every attempt" above holds for that one run and no further: the refusal is
+one unit, or one unit's bad spell, and Test Lab's logcat does not say which phone a run was given. Two things follow.
+The fallback has met a real refusal nowhere yet, only the injected one. And the cost above is no longer hypothetical: a
+phone that installs Knit during such a spell keeps its keys in the TEE after its StrongBox answers again. What the run
+does show is that a working StrongBox still gets the keys (no `StrongBoxFirst` line for `db.key` or `identity.key`),
+and that `DatabaseKeyTest`'s security-level line holds on a phone with a StrongBox, the only place it can fail.
+
+**What ties #311 to this, and what does not.** Play's device catalog lists `android.hardware.strongbox_keystore` for
+the Redmi of #311 (`amethyst`), and the StrongBox has been asked first since v2.1.0, so that phone's identity key is in
+its StrongBox unless the StrongBox called itself unavailable on the day. The Xiaomi 14's StrongBox is AOSP's JavaCard
+KeyMint (`external/libese`, `ready_se/google/keymint`): the two log tags above are its `LOG_TAG`s. That HAL hands the
+secure element 256 bytes at a time (`MAX_CHUNK_SIZE`) and holds a GCM tag back across the pieces. A database passphrase
+is 32 bytes, one piece. An identity runs past 600, three pieces at least, and byte 512 falls inside `sigPriv`, the field
+the parse of #311 stops in. Against it: this same Xiaomi sealed and opened its identity through the whole run above,
+and `sigPriv` is two fifths of the file wherever a fault lands. Not checked: which StrongBox the Redmi has, and the
+offset its parse stops at, which only a report from 2.11.0 or later carries. A stop at a multiple of 256 would settle
+it.
