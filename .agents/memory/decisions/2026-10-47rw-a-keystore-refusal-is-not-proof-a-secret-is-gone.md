@@ -287,3 +287,75 @@ the parse of #311 stops in. Against it: this same Xiaomi sealed and opened its i
 and `sigPriv` is two fifths of the file wherever a fault lands. Not checked: which StrongBox the Redmi has, and the
 offset its parse stops at, which only a report from 2.11.0 or later carries. A stop at a multiple of 256 would settle
 it.
+
+## Amendment (2026-11-20): the Xiaomi's StrongBox refuses because its applet is not ready
+
+**What was observed.** A standalone instrumentation probe, kept outside this repository and holding no Knit code, asks
+for a key exactly as `AndroidKeystoreCipher.generate` does, then seals and opens payloads of 0 to 2,048 bytes in it.
+It also reads the StrongBox HAL's log through the shell user, APDUs included. On 2026-11-20 it ran three times on Test
+Lab's `houji@35`, and each run got a different unit, told apart by serial number or uptime.
+
+- `matrix-1vv1px1qhe058`, a unit up 34 minutes, and `matrix-26d1om48etwxt`, a unit up 32 hours: every request for a
+  StrongBox key failed with keystore2's `Error::Km(r#UNIMPLEMENTED)`. That was 13 requests on the first unit, and on
+  the second 40 generations and 2 imports, its sweep key asked 34 times over 309 seconds.
+- The APDU trace shows where the refusal comes from. The secure element answered every `generateKey` (INS 0x21),
+  every `importKey` (0x22) and Android's own RKP key request (0x3C) with `81 18 64` and status 9000. That is a CBOR
+  array holding 100, the applet's `KMError.UNIMPLEMENTED`. The same applet answered its RKP hardware query (0x3B) and
+  `addRngEntropy` (0x29).
+- `matrix-1261cld3vxsmd`, above, carries the same answer 99 times, and `matrix-15d05t2lbacqi` none.
+- `matrix-2vqh4ft763kph`, a unit up 6 hours: every key was made, and the sweep found no fault (below).
+
+The StrongBox is NXP's, `android.hardware.security.keymint-service.strongbox-nxp`: KeyMint 3 on AOSP's JavaCard HAL,
+reaching an eSE through Qualcomm's secure-element HAL.
+
+**What it is.** AOSP's KeyMint 3 applet (`external/libese`, `ready_se/google/keymint/KM300/Applet`,
+`KMKeymasterApplet.isKeyMintReady`) refuses every command but ten until three steps of the current boot have succeeded:
+
+- the system properties (`INS_INIT_STRONGBOX`);
+- the shared secret (`INS_COMPUTE_SHARED_HMAC`);
+- the boot parameters, through a root-of-trust exchange that needs the shared secret first.
+
+RKP hardware info and add-entropy are among the ten. Generate, import and `begin` are not. The commands refused and
+answered above fall exactly on that line.
+
+One thing does not match: AOSP's gate answers `UNKNOWN_ERROR` (1000), not 100. NXP's applet is not AOSP's, so "not
+ready" is the reading that fits the evidence, not one the source proves. In AOSP's applet nothing retries a step that
+failed, so the state lasts until something sends that step again. The unit up 32 hours suggests that on this phone
+that means the next boot.
+
+**What it means for keys already in a StrongBox.** `begin` (0x30) sits behind the same gate. So while a StrongBox is
+not ready, a key already in it can neither seal nor open, and the 2026-11-19 amendment's fallback helps only a key
+being made. An install whose `db.key` or `identity.key` lives in such a StrongBox gets `UNIMPLEMENTED` from the open.
+`KeystoreFailure.classify` finds no proof of loss in that, so it is a refusal: nothing is wiped, and the app waits on
+"Waiting for secure storage" with Try again for as long as the StrongBox stays that way. Not seen: neither refusing
+unit held a key from before. Two of the three units the probe drew were in this state. All three had unlocked
+bootloaders (`ro.secureboot.lockstate`), the working one too, and retail phones ship locked. The root of trust the
+applet waits for carries that lock state, so how often a user's Xiaomi 14 meets this is not known. Nothing captured
+told a refusing unit from the working one; the boot-time steps happen before Test Lab's logcat begins.
+
+**What it means for #311.** On the ready unit the probe made 414 payloads in its 900-second budget:
+
+- every length within 40 bytes of 256, 512, 768 and 1,024, and every length from 1,240 to 1,288;
+- 144 of the 370 lengths a Knit identity takes (674 to 1,043 bytes);
+- four payloads shaped like Knit's CBOR.
+
+Each payload went three ways, 1,656 StrongBox operations in all, and none failed:
+
+- a generated key sealed and opened it;
+- an imported key sealed it and software checked the wrap byte for byte;
+- software sealed it and the StrongBox opened it.
+
+Wraps sealed in one process opened in the next. Sealing grows by about 140 ms per 256 bytes, which shows the HAL
+handing the element 256-byte pieces, and the pieces come back right. So the chunking theory above has no fault behind
+it on this phone, and a StrongBox that is not ready refuses rather than handing back wrong bytes. Neither explains the
+identity of #311, which verifies and does not parse.
+
+Not checked:
+
+- the CBOR-shaped band of 560 to 1,120 bytes, and lengths past 1,288;
+- which StrongBox the Redmi of #311 has. AWS Device Farm's six Xiaomi phones (the Redmi Note 13+ and 13, the Xiaomi
+  13 Pro, 13 and 12, the Redmi Note 10 5G) have no StrongBox at all, so this Xiaomi 14 is the only Xiaomi StrongBox
+  reached so far.
+
+**What changes.** Nothing in code. #351 stays open on what a phone in this state should be told, given that Try again
+cannot help it before a reboot might.
