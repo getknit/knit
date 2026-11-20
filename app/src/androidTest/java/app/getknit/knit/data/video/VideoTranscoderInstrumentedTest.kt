@@ -26,8 +26,9 @@ import java.io.File
 
 /**
  * The whole short-video encode on a real codec stack (ADR 2026-10.hmfe): a 70 s 720 × 1280 clip carrying a GPS
- * location goes in, and what comes out is HEVC (or H.264 on a phone with no HEVC encoder), 480 on its short side, cut
- * to 61 s, under the ceiling, unpadded, with no location — and it yields a poster small enough to ride inline.
+ * location goes in, and what comes out is HEVC (or H.264 on a phone with no HEVC encoder that takes 480p in CBR),
+ * encoded in CBR, 480 on its short side, cut to 61 s, under the ceiling, unpadded, with no location — and it yields a
+ * poster small enough to ride inline.
  *
  * The source is made here, by Transformer, from a drawn still, so the test needs no video asset. Runs on the emulator
  * (the platform's software HEVC encoder) and on hardware, where the encode time it logs is the number that matters.
@@ -64,9 +65,14 @@ class VideoTranscoderInstrumentedTest {
         val bytes = result.bytes
         android.util.Log.i(
             "VideoTranscoderTest",
-            "encoded ${bytes.size} B in ${result.elapsedMs} ms, ${result.plan.videoMime} @ ${result.plan.videoBitrate}",
+            "encoded ${bytes.size} B in ${result.elapsedMs} ms, ${result.plan.videoMime} @ ${result.plan.videoBitrate} " +
+                "on ${result.encoders}",
         )
 
+        // CBR is what makes the size the plan's whatever the picture: this drawn still is easy to encode, a busy
+        // camera clip is not, and under VBR Android 12+'s quality floor can put a 61 s clip past the ceiling (#353).
+        // A phone that fails here has no encoder that takes 480p in CBR, not even AOSP's software H.264 one.
+        assertEquals("bitrate mode on ${result.encoders}", BitrateMode.CBR, result.encoders?.mode)
         assertTrue("${bytes.size} B", bytes.size <= VideoEncodePolicy.CEILING_BYTES)
         assertTrue("trimmed", result.plan.trimmed)
         val meta = result.meta
@@ -100,7 +106,7 @@ class VideoTranscoderInstrumentedTest {
             "VideoTranscoderTest",
             "${source.name}: ${result.source} -> ${result.bytes.size} B ${meta.width}x${meta.height} " +
                 "${meta.durationMs} ms in ${result.elapsedMs} ms, ${result.plan.videoMime} @ ${result.plan.videoBitrate} " +
-                "pass ${result.plan.attempt}, poster ${poster.size} B",
+                "pass ${result.plan.attempt} on ${result.encoders}, poster ${poster.size} B",
         )
         assertTrue(result.bytes.size <= VideoEncodePolicy.CEILING_BYTES)
         assertTrue("no location", !result.bytes.containsAscii("\u00A9xyz", latin1 = true))

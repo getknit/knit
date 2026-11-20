@@ -8,7 +8,7 @@ topics: [attachments, wire, moderation]
 
 # ADR 2026-10.hmfe — A short video is re-encoded small before it is sent
 
-Status: Accepted (2026-10-16); amended 2026-10-17 (below: the file button, the receiver's re-label, the poster), 2026-10-19 (below: the screen's frames) and 2026-10-31 (below: a long pick asks first). Amends ADR 2026-10.js2p (a room post now declares its size, so a large room
+Status: Accepted (2026-10-16); amended 2026-10-17 (below: the file button, the receiver's re-label, the poster), 2026-10-19 (below: the screen's frames), 2026-10-31 (below: a long pick asks first) and 2026-11-20 (below: the bitrate mode is chosen for the encoder that runs). Amends ADR 2026-10.js2p (a room post now declares its size, so a large room
 attachment is held like a sealed one), ADR 2026-10.9rh6 (the room screens a video's frames on the way out) and ADR
 2026-10.unqn (a video is never passed through). Additive wire: `ChatContent.attachmentSize` and `.video`,
 `MessageContent.video` (`MessageContentV2` label 16), all null and omitted by default; three vectors added, none
@@ -37,6 +37,7 @@ video is about 12 minutes per copy (ADR 2026-10.8jwn's 4 KiB/s), and every neigh
    - **CBR, not VBR.** Under VBR the platform's quality floor (`VQApply`, Android 12+) raised a 490 kbps request to
      1.23 Mbps at 480p on the codecs that carry its tuning, and a 28 s clip came out at 4.7 MB on both passes. CBR is
      the mode that floor leaves alone (`VideoTranscoder.bitrateModeFor`), and a static scene still undershoots it.
+     <!-- doc-lint: allow bitrateModeFor — replaced by VideoEncoderChoice in the 2026-11-20 amendment below -->
    - **Not streamable.** Streamable output reserves room for moov ahead of mdat and pads the rest with a `free` box:
      373 KB of a 2.3 MB encode. A video is fetched whole and played from memory, so moov goes at the end.
    - **The metadata is an allow-list.** Transformer forwards every entry the source carried (`©xyz` location,
@@ -178,3 +179,39 @@ the original goes by Direct file send. Guards: `VideoEncodePolicyTest.theCompose
 `ChatScreenContentTest.aLongVideoAsksWithItsLengthAndBothAnswersReachTheViewModel`. Device trial owed: a two-minute
 pick from each button asks before the encode tile shows, Cancel leaves the composer empty, and Send stages the first
 61 s.
+
+## Amendment 2026-11-20 — the bitrate mode is chosen for the encoder that runs (#353)
+
+AWS Device Farm run `820aaa87` (2026-11-20) found that no video could be sent from the Galaxy A51 (Android 10) or the
+Redmi Note 13 Pro+ 5G (Android 15). Every export failed with `ERROR_CODE_ENCODING_FORMAT_UNSUPPORTED` before an encoder
+opened, and the person saw "Couldn't read that video". `bitrateModeFor` asked for CBR when any encoder for the MIME
+type offered it, software ones included. Media3's `EncoderSelector.DEFAULT` keeps only the hardware encoders when there
+are any, and `DefaultEncoderFactory` then drops each one that lacks the requested mode. No hardware encoder on those
+two phones offered CBR, so the factory was left with nothing. The failure was in every release since 2.10.0, on any
+phone of that shape, whatever the clip.
+
+1. **Codec, encoders and mode are chosen together** (`VideoEncoderChoice`, pure), from the encoders that take 854 ×
+   480 at 30 fps: CBR before VBR, then hardware before software, then HEVC before H.264. `VideoTranscoder` hands
+   Media3 exactly the encoders chosen (`DefaultEncoderFactory.Builder.setVideoEncoderSelector`), each of which
+   supports the mode asked for, so Media3's mode filter cannot empty the list. The plan's codec is the choice's, which
+   supersedes point 1's "H.264 on a phone with no HEVC encoder that takes 854 × 480": a phone whose hardware HEVC
+   encoder lacks CBR now sends H.264 in CBR. The size check that `hasHevcEncoder` made is each candidate's
+   `takesOutputSize`.
+2. **A software CBR encoder is chosen over a hardware VBR one.** Asking these phones' hardware for VBR was the smaller
+   fix, and it was rejected. On Android 12 and later point 2's quality floor can lift the rate to 1.23 Mbps, about
+   9 MB for 61 s, and the 0.7× retry does not get under a floor, so a long clip would have been refused as too large
+   in place of failing. A phone with no hardware CBR encoder now encodes H.264 on AOSP's software encoder at the H.264
+   rate (AOSP's software HEVC encoder cannot take 480p). The cost is encode time on those phones. VBR is left for a
+   phone where no encoder that takes 480p offers CBR.
+3. **An encoder's refusal no longer walks the HDR modes.** All three modes encode SDR, so the encoder is asked for the
+   same format in each. `HDR_FALLBACK_ERRORS` no longer holds `ERROR_CODE_ENCODING_FORMAT_UNSUPPORTED`, and a refusal
+   fails in one pass in place of three.
+4. **A failed pass logs what was asked and why it was refused**: the plan's codec, rate and mode, and the
+   `ExportException`'s message and cause chain. `transcode` logs the choice once per encode.
+
+Guards: `VideoEncoderChoiceTest` (the failing phones' shape, the passing phones' shape, and every combination of two
+HEVC and two H.264 encoders against Media3's filters), and on hardware `VideoTranscoderInstrumentedTest`, which now
+asserts CBR: under CBR the size is the plan's whatever the picture, so the drawn-still fixture stands in for a busy
+clip. Device trial owed: `VideoTranscoderInstrumentedTest` and `VideoScreeningInstrumentedTest` on the Galaxy A51 and
+the Redmi Note 13 Pro+ on Device Farm, and the default matrix again; a busy real camera clip on a phone that lands on
+software H.264, through `aPushedClipEncodesUnderTheCeilingWithoutItsMetadata`, for its size and encode time.

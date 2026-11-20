@@ -62,8 +62,8 @@ sealed interface VideoEncodeVerdict {
  * 5 MB tier of "Ask before large Bluetooth downloads" (ADR 2026-10.js2p), and fetched over Wi-Fi Aware in seconds.
  * Someone who wants the original sends it with Direct file send.
  *
- * HEVC wherever the phone can encode it; a phone that cannot gets H.264 at [H264_BITRATE_FACTOR] times the rate, which
- * every receiver decodes. A source smaller than [SHORT_SIDE] is never upscaled, and its bitrate scales down with its
+ * HEVC where [VideoEncoderChoice] picks it, otherwise H.264 at [H264_BITRATE_FACTOR] times the rate, which every
+ * receiver decodes. A source smaller than [SHORT_SIDE] is never upscaled, and its bitrate scales down with its
  * pixel count (to no less than [MIN_VIDEO_BITRATE]). A source longer than [MAX_DURATION_MS] is cut at it.
  *
  * Hardware encoders overshoot a requested bitrate, some by a lot at these low rates, so the output is measured, not
@@ -111,7 +111,7 @@ object VideoEncodePolicy {
      */
     fun cuts(durationMs: Long): Boolean = durationMs > MAX_DURATION_MS
 
-    /** The first encode of [source], in HEVC when [hevcEncoder] says the phone has an HEVC encoder. */
+    /** The first encode of [source], in HEVC when [hevcEncoder] says [VideoEncoderChoice] chose it. */
     fun plan(
         source: VideoSource,
         hevcEncoder: Boolean,

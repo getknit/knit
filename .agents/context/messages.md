@@ -150,23 +150,26 @@ lines.
   animated WebP within 512 px / 200 frames / 1 MiB goes out stripped under the same allow-list rule, anything past
   it and every APNG (Android cannot play one) is composited at the output size into an animated WebP, and
   `identityFor` prefers an animated row so a send flattened before #133 is not reused. Tests: `AnimatedFramesTest`.
-- **When touching `data/video/` (`VideoEncodePolicy`, `VideoTranscoder`, `MemoryMp4Muxer`, `MemoryMuxerOutput`,
-  `VideoFrames`), `AttachmentStore.ingestVideo`, `VideoInfo` / `ChatContent.attachmentSize`, the `messages.video*`
-  columns, `ImageScreeningService.isVideoExplicit` / `screenVideo` / `isPosterExplicit`, or `ui/chat/VideoBubbles`:** READ
-  ADR 2026-10.hmfe. A picked video is re-encoded to 480p, 30 fps, about 400 kbps and 61 s by Media3 Transformer into
-  memory (never a file, never passed through), in **CBR** (the platform's VBR quality floor raised a 490 kbps ask to
-  1.23 Mbps), **not streamable** (a `free` pad was 16 % of the file), with the source's metadata dropped except the
-  orientation. Its description and poster ride inside the message; a room post declares its size so js2p holds it.
+- **When touching `data/video/` (`VideoEncodePolicy`, `VideoEncoderChoice`, `VideoTranscoder`, `MemoryMp4Muxer`,
+  `MemoryMuxerOutput`, `VideoFrames`), `AttachmentStore.ingestVideo`, `VideoInfo` / `ChatContent.attachmentSize`, the
+  `messages.video*` columns, `ImageScreeningService.isVideoExplicit` / `screenVideo` / `isPosterExplicit`, or
+  `ui/chat/VideoBubbles`:** READ ADR 2026-10.hmfe. A picked video is re-encoded to 480p, 30 fps, about 400 kbps and 61
+  s by Media3 Transformer into memory (never a file, never passed through), in **CBR** (the platform's VBR quality
+  floor raised a 490 kbps ask to 1.23 Mbps), chosen with the codec for the encoders Media3 will run
+  (`VideoEncoderChoice`: CBR before VBR, hardware before software, HEVC before H.264, handed to Media3 as its encoder
+  selector — asking for CBR that only a software encoder offered left Media3 nothing on two phones; the 2026-11-20
+  amendment, #353), **not streamable** (a `free` pad was 16 % of the file), with the source's metadata dropped except
+  the orientation. Its description and poster ride inside the message; a room post declares its size so js2p holds it.
   A video is its description on a video MIME, tested ahead of the name; a video picked with either button is
-  re-encoded, and only an undescribed `.mp4` that arrives (an older build's) stays a file (the amendment).
-  A pick past 61 s asks "Send the first 61 seconds?" before any encode (`AttachmentStore.videoDurationMs`,
+  re-encoded, and only an undescribed `.mp4` that arrives (an older build's) stays a file (the amendment). A pick past
+  61 s asks "Send the first 61 seconds?" before any encode (`AttachmentStore.videoDurationMs`,
   `VideoEncodePolicy.cuts`, `ChatViewModel.longVideo`; the 2026-10-31 amendment): the question and the cut read one
-  rule, and there is no notice after the encode.
-  The NSFW screen reads the exact frame at a random instant in each twelfth and screens no clip longer than Knit sends
-  (the 2026-10-19 amendment). Tests: `VideoEncodePolicyTest`, `MemoryMp4MuxerTest`, `AttachmentStoreVideoTest`; on
-  hardware `VideoTranscoderInstrumentedTest` and `VideoScreeningInstrumentedTest` (which also screens a labelled
-  folder of real clips pushed to the device; run one test class on one device with `am instrument`, never
-  `connectedDebugAndroidTest` with lab phones attached).
+  rule, and there is no notice after the encode. The NSFW screen reads the exact frame at a random instant in each
+  twelfth and screens no clip longer than Knit sends (the 2026-10-19 amendment). Tests: `VideoEncodePolicyTest`,
+  `VideoEncoderChoiceTest`, `MemoryMp4MuxerTest`, `AttachmentStoreVideoTest`; on hardware
+  `VideoTranscoderInstrumentedTest` and `VideoScreeningInstrumentedTest` (which also screens a labelled folder of real
+  clips pushed to the device; run one test class on one device with `am instrument`, never `connectedDebugAndroidTest`
+  with lab phones attached).
 - **When touching `BlobDao.observeSizes`, `BlobRepository.observeSizes`, or `ChatViewModel`'s `heldHashes` /
   `heldSizes`:** READ ADR 2026-09.fjcw. The chat's one blob-table subscription is keyed to the window's
   attachment hashes plus the staged one (`IN (:hashes)`, primary-key seeks), and an empty ask never builds a
