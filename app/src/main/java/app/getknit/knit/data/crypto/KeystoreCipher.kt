@@ -2,7 +2,6 @@ package app.getknit.knit.data.crypto
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.security.keystore.StrongBoxUnavailableException
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -10,16 +9,30 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * The four AndroidKeyStore operations a wrapped secret needs, behind one seam. The decisions around them —
- * what a failed unwrap proves, when a key may be generated — live in [KeystoreSecret], where a JVM test can
- * reach them: Robolectric has no AndroidKeyStore. [AndroidKeystoreCipher] is the real one. ADR 2026-10.47rw.
+ * The five AndroidKeyStore operations a wrapped secret needs, behind one seam. The decisions around them —
+ * what a failed unwrap proves, when a key may be generated, where it is made ([StrongBoxFirst]) — live above it,
+ * in [KeystoreSecret], where a JVM test can reach them: Robolectric has no AndroidKeyStore.
+ * [AndroidKeystoreCipher] is the real one. ADR 2026-10.47rw.
  */
 interface KeystoreCipher {
     /** The key under [alias], or null when the Keystore reports none there. A refusal throws. */
     fun key(alias: String): SecretKey?
 
-    /** Generates a fresh key under [alias], **replacing** any key already there. */
-    fun generate(alias: String): SecretKey
+    /**
+     * Generates a fresh key under [alias], **replacing** any key already there: in the StrongBox when [strongBox],
+     * which throws on a phone that has none or whose StrongBox refuses, and in the TEE otherwise. Asked through
+     * [StrongBoxFirst], which tries the one and then the other.
+     */
+    fun generate(
+        alias: String,
+        strongBox: Boolean,
+    ): SecretKey
+
+    /**
+     * Removes whatever is under [alias]; nothing there is not an error. Only [StrongBoxFirst] asks, between a
+     * StrongBox that refused a new key and the TEE attempt for the same alias.
+     */
+    fun delete(alias: String)
 
     /** `iv ‖ AES-256-GCM(plain)` under [key], the IV chosen by the provider. */
     fun seal(
@@ -44,7 +57,7 @@ interface KeystoreCipher {
 
 /**
  * The AndroidKeyStore behind [KeystoreCipher]: AES-256-GCM keys that never leave the device, StrongBox-backed
- * where the phone has one and TEE-backed where it doesn't.
+ * where the phone has one that will make them and TEE-backed where it doesn't ([StrongBoxFirst] asks for each).
  *
  * The lookup is `KeyStore.getKey`, never `getEntry`: on keystore2 (API 31+) `getEntry` runs the base class's
  * `engineContainsAlias` first, which swallows every backend error and answers null — a busy Keystore read as a
@@ -62,12 +75,27 @@ object AndroidKeystoreCipher : KeystoreCipher {
     override fun key(alias: String): SecretKey? =
         KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.getKey(alias, null) as? SecretKey
 
-    // Prefer a StrongBox (secure-element) backed key; fall back to a TEE-backed key on devices without one.
-    override fun generate(alias: String): SecretKey =
-        runCatching { generate(alias, strongBox = true) }
-            .getOrElse { e ->
-                if (e is StrongBoxUnavailableException) generate(alias, strongBox = false) else throw e
-            }
+    override fun generate(
+        alias: String,
+        strongBox: Boolean,
+    ): SecretKey {
+        val spec =
+            KeyGenParameterSpec
+                .Builder(
+                    alias,
+                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+                ).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(KEY_SIZE_BITS)
+                .setIsStrongBoxBacked(strongBox)
+                .build()
+        return KeyGenerator
+            .getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+            .apply { init(spec) }
+            .generateKey()
+    }
+
+    override fun delete(alias: String) = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.deleteEntry(alias)
 
     override fun seal(
         key: SecretKey,
@@ -89,25 +117,5 @@ object AndroidKeystoreCipher : KeystoreCipher {
                 init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(KeystoreCipher.GCM_TAG_BITS, iv))
             }
         return cipher.doFinal(ciphertext)
-    }
-
-    private fun generate(
-        alias: String,
-        strongBox: Boolean,
-    ): SecretKey {
-        val spec =
-            KeyGenParameterSpec
-                .Builder(
-                    alias,
-                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-                ).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setKeySize(KEY_SIZE_BITS)
-                .setIsStrongBoxBacked(strongBox)
-                .build()
-        return KeyGenerator
-            .getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-            .apply { init(spec) }
-            .generateKey()
     }
 }

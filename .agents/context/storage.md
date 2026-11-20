@@ -26,9 +26,10 @@ lines.
   `SqlCipherKey.upgrade` before Room opens it. Never hand SQLCipher the bare passphrase: every pooled connection
   would pay a 256,000-iteration derivation under the pool's lock (≈46 s of cold start on a 32-bit phone). The pool
   is capped at four. Regression: `SqlCipherKeyTest`, `SqlCipherRawKeyTest`.
-- **When touching `data/crypto/KeystoreSecret`, `KeystoreCipher`, `KeystoreFailure`, `DatabaseKey.getOrCreate` /
-  `current`, `IdentityKeyStore.loaded` / `generateAndStore`, the `.lost` slot, `ui/StorageGate`, the `StorageGate`
-  half of `MainActivity`, or anything else that reads a Keystore-wrapped secret:** READ ADR 2026-10.47rw. Only
+- **When touching `data/crypto/KeystoreSecret`, `KeystoreCipher`, `KeystoreFailure`, `StrongBoxFirst`,
+  `DatabaseKey.getOrCreate` / `current`, `IdentityKeyStore.loaded` / `generateAndStore`, the `.lost` slot,
+  `ui/StorageGate`, the `StorageGate` half of `MainActivity`, `ui/invite/ShareSigningKey`'s key generation, or anything
+  else that reads a Keystore-wrapped secret or makes a Keystore key:** READ ADR 2026-10.47rw. Only
   proof a secret is gone may wipe or mint: a tag that fails, a key permanently invalidated, a key missing on
   every look, a wrap too short to be one — the same verdict on all three attempts. Everything else, unrecognised
   included, is a refusal: `KeystoreUnavailableException`, every file as it was, and the service and the UI stand
@@ -43,8 +44,14 @@ lines.
   hold and prints nothing of it: past a lost span a head is a key byte. `KeystoreSecret.store` opens what it sealed and compares
   before it replaces a file, and `rotatePrekeyIfDue` answers false rather than throw into the start path. Debug builds
   hand back altered bytes on cue while `files/keystore-alter` holds a count (the 2026-11-05 amendment).
-  Regression: `KeystoreSecretTest`, `DatabaseKeyRecoveryTest`, `IdentityKeyStoreRecoveryTest`, `CborShapeTest`, `TraceTextTest`,
-  `BackupWriterKeystoreTest`, `StorageGateTest`; on a device `DatabaseKeyTest`.
+  A new key is asked for through `StrongBoxFirst`: the StrongBox first, and the TEE under the same alias on any
+  exception from that attempt, never a bare `setIsStrongBoxBacked(true)` with a catch of its own. A Xiaomi 14's
+  StrongBox is there and refuses every key, which left a fresh install on "Waiting for secure storage" for good (#351,
+  the 2026-11-19 amendment). The one warning it logs names a constant label, never a derived alias, and
+  `ShareSigningKey` decides it has no key with `getKey` like the rest. Debug builds refuse
+  the next StrongBox generations on cue while `files/keystore-strongbox` holds a count.
+  Regression: `KeystoreSecretTest`, `StrongBoxFirstTest`, `DatabaseKeyRecoveryTest`, `IdentityKeyStoreRecoveryTest`,
+  `CborShapeTest`, `TraceTextTest`, `BackupWriterKeystoreTest`, `StorageGateTest`; on a device `DatabaseKeyTest`.
 - **When touching `data/backup/`, `ui/backup/`, `RestartActivity`, `KnitApplication.onCreate`'s pre-Koin
   block, `MeshManager.finishRestore`, `SeenSet.reopen`, `SettingsKeys.TRANSIENT_PREFIXES`, or adding a table
   or a DataStore key:** READ `docs/BACKUP_FORMAT.md` and ADR 2026-09.6mj7. A backup is one file sealed by a

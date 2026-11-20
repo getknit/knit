@@ -191,3 +191,79 @@ untouched, and a clean open after the marker went to 0. Noise rather than a lost
 the walk is plain Kotlin. Not proven: Play's own handling of a frame it has never seen, which only the next report from
 this phone can show. Regression: `KeystoreSecretTest`, `IdentityKeyStoreRecoveryTest`, `DatabaseKeyRecoveryTest`,
 `CborShapeTest`, `TraceTextTest`.
+
+## Amendment (2026-11-19): a StrongBox that refuses a new key is not a Keystore that refuses
+
+**What was observed.** Firebase Test Lab, a Xiaomi 14 (`houji`, API 35, HyperOS `OS2.0.109.4.VNCEUXM`), the seeded
+debug build, run `matrix-1261cld3vxsmd`. Every key generation failed in the StrongBox HAL, 99 times across the run's
+test processes: `javacard.keymint.device.strongbox-impl: Error in sending generateKey`, keystore2's
+`Error::Km(r#UNIMPLEMENTED)`, and `android.security.KeyStoreException: Not implemented (internal Keystore code: -100)`
+under a plain `ProviderException("Keystore key generation failed")`. `DatabaseKey.mint` threw
+`KeystoreUnavailableException`, each test's screenshot shows "Waiting for secure storage", and all 24 tests that ran
+timed out. GitLab #351.
+
+**What it was mistaken for.** A refusal the next attempt may not repeat. `AndroidKeystoreCipher.generate` asked the
+StrongBox first and fell back to the TEE only on `StrongBoxUnavailableException`, Android's word for a phone with no
+StrongBox. Anything else was rethrown, and this ADR's surfaces took it from there: nothing wiped, Try again. But this
+StrongBox is there and makes nothing, on every attempt. Try again minted into the same refusal, and so did Start
+over, which clears the data and mints again. "A phone whose Keystore cannot mint a fresh key either lands back on Try
+again", above, described a fresh install that never opens. `ui/invite/ShareSigningKey` had the same narrow fallback.
+`AndroidDeviceKeystore.generate` (ADR 2026-10.wk3m) already fell back on any StrongBox failure.
+
+**What changed.**
+
+- `data/crypto/StrongBoxFirst.generate` is the one rule for where a new key is made: the StrongBox attempt first, and
+  on any `Exception` from it (never an `Error`) the alias is deleted and the TEE is asked, under the same alias. A TEE
+  attempt that throws too throws its own exception, with the StrongBox's suppressed under it, so a Keystore that makes
+  no key at all is still `KeystoreUnavailableException` and Try again. A refusal other than
+  `StrongBoxUnavailableException` logs one `Log.w` with the wait and the key's label, which is a constant: a wrap's
+  file name, or "the share signing key". A phone with no StrongBox logs nothing, as before.
+- `KeystoreCipher.generate` takes the backing it is asked for and the seam gains `delete`; the real cipher no longer
+  decides. `KeystoreSecret` asks through `StrongBoxFirst` at both places it generates (`store(freshKey = true)`, and
+  `keyForStore` once absence holds), so the rule is JVM-tested over `FakeKeystoreCipher` like the rest. Whether a key
+  may be generated at all is unchanged. `AndroidDeviceKeystore` is as it was: it logs nothing by rule, and its aliases
+  are derived.
+- `ShareSigningKey` uses the same rule, and now decides that it has no key with `getKey`, not `containsAlias`. This
+  ADR left that lookup out of scope. With the delete it could no longer stay there: a busy keystore2 answers
+  `containsAlias` false, and a StrongBox attempt that then failed used to be rethrown with the key intact, where it
+  would now be deleted and remade. A lookup that throws fails that one share, which the share screen already toasts.
+- Debug builds refuse the next N StrongBox generations while `files/keystore-strongbox` holds N, with the Xiaomi's
+  exception, so an emulator runs the fallback over the real Keystore.
+
+**Why the delete is safe.** GitLab #351 argued that no wrap exists under the alias at generation time. That is not so:
+`store(freshKey = true)` and `keyForStore` after three absent looks both generate beside a wrap. What holds is that
+`KeystoreSecret` reaches `generate` only for a key the Keystore reported invalidated, or absent on every look, or with
+no live wrap at all, and `ShareSigningKey` only after `getKey` answered null; and that generating already replaces the
+alias. What a failed generation leaves under it, from the AOSP sources (android11 to android15):
+
+| | API 29/30 (legacy keystore) | API 31+ (keystore2) |
+|---|---|---|
+| AES key (`AndroidKeyStoreKeyGeneratorSpi`) | deletes the alias before it tries, and again when it fails | binds the alias only after KeyMint succeeds, so it is unchanged |
+| EC pair (`AndroidKeyStoreKeyPairGeneratorSpi`) | deletes before and after | deletes the key when anything after generation fails |
+
+So the delete repeats the platform in three cells and removes a dead key in the fourth. It is there for a vendor stack
+that does neither, which nothing here has shown to exist.
+
+**The alternatives.** *Retry the StrongBox before falling back*: it keeps a StrongBox key through a one-off error, adds
+its wait to first launch, and does nothing for this phone. *Never ask the StrongBox*: the simplest, and it gives up the
+secure element on every phone where it works. *Remember a refusal for the process*, so the second key skips the
+attempt: a mint happens once per alias per install, and the warning's wait says whether that is worth any state.
+*Decide inside the real cipher*, the seam left at four operations: the JVM tests would then prove the fake's copy of
+the rule, and the debug injector could not refuse the StrongBox alone.
+
+**What it costs and does not cover.** One StrongBox error at a mint, on a phone whose StrongBox works, leaves that key
+in the TEE for as long as the install lives, and only the key's own `KeyInfo` records it. The TEE is where every phone
+without a StrongBox already keeps the same key. Not checked: whether every Xiaomi 14 does this or only this unit's
+secure element ("Error in sending" reads like a HAL that cannot reach it), and whether #311's Redmi, also HyperOS, has
+a StrongBox behind its misread identity. `ShareSigningKey` looks once where `KeystoreSecret` looks three times, so
+on API 29/30 a dead keystore daemon still reads as no key there, and no test reaches that object (it has no seam).
+The trap: a new key path asks through `StrongBoxFirst`, never `setIsStrongBoxBacked(true)` with a catch of its own.
+Regression: `StrongBoxFirstTest`, `KeystoreSecretTest`, `DatabaseKeyRecoveryTest`; on a device, `DatabaseKeyTest`
+(`aStrongBoxRefusalEndsOnATeeKeyUnderTheSameAlias`, through the debug injector over the real Keystore).
+
+Proven on `Knit_A11y_API34`, an emulator with no StrongBox, a debug build with `files/keystore-strongbox` at 99 over
+cleared data: `StrongBox refused db.key after 0 ms; making it in the TEE` and the same line for `identity.key`, the
+app past the storage gate, the same node id after a cold restart with the marker still at 97, and no line at all with
+no marker. `DatabaseKeyTest` passes on the managed `pixel8api34`. Not proven: the Xiaomi itself, which a Firebase Test
+Lab run on `houji@35` owes, and that a key a real StrongBox refused ends outside it, which only a phone with one can
+show (`DatabaseKeyTest`'s security-level line holds trivially everywhere else).

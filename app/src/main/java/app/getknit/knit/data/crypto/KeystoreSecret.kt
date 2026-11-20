@@ -116,7 +116,7 @@ class KeystoreSecret(
         plain: ByteArray,
         freshKey: Boolean = false,
     ) {
-        val key = if (freshKey) cipher.generate(alias) else keyForStore()
+        val key = if (freshKey) newKey() else keyForStore()
         val wrap = cipher.seal(key, plain)
         val back = runCatching { cipher.open(key, wrap) }.getOrElse { throw KeystoreUnavailableException("seal of $fileName", it) }
         val same = back.contentEquals(plain)
@@ -167,8 +167,14 @@ class KeystoreSecret(
                 cipher.key(alias)?.let { return it }
             }
         }
-        return cipher.generate(alias)
+        return newKey()
     }
+
+    /**
+     * A new key under [alias], replacing whatever is there: in the StrongBox, or in the TEE when the StrongBox will
+     * not make one ([StrongBoxFirst]). Only [store] and [keyForStore] decide that a key may be generated at all.
+     */
+    private fun newKey(): SecretKey = StrongBoxFirst.generate(fileName, { cipher.generate(alias, it) }, { cipher.delete(alias) })
 
     companion object {
         private const val TAG = "KeystoreSecret"

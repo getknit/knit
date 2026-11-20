@@ -1,5 +1,8 @@
 package app.getknit.knit.data.crypto
 
+import android.os.Build
+import android.security.keystore.KeyInfo
+import android.security.keystore.KeyProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.getknit.knit.data.KnitDatabase
@@ -8,6 +11,7 @@ import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -17,6 +21,8 @@ import org.junit.runner.RunWith
 import org.koin.core.context.GlobalContext
 import java.io.File
 import java.security.KeyStore
+import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 
 /**
  * The two Keystore wraps, on a device. [DatabaseKey] is the destructive one: a wrap proven lost means the database
@@ -25,7 +31,8 @@ import java.security.KeyStore
  * included), keeps the old wrap aside and leaves a fresh 32-byte passphrase that reads back; and a Keystore that
  * merely refuses — the debug [FaultyKeystoreCipher] over the real one, throwing what keystore2 threw on the lab
  * Pixel 3 — wipes nothing at all (ADR 2026-10.47rw). [KeystoreSecret] reads a bad file as [Unwrapped.Lost] with the
- * reason, under a test-only alias that is deleted afterwards.
+ * reason, under a test-only alias that is deleted afterwards. And a StrongBox that refuses to make a key, injected
+ * the same way, ends on a TEE key under the same alias (#351, the 2026-11-19 amendment).
  *
  * Sandboxed ([SandboxContext]): the database and key files are a temp directory's; the Keystore alias
  * [DatabaseKey] uses is the live one, which the installed app's own [DatabaseKey] mints first ([setUp]).
@@ -168,6 +175,27 @@ class DatabaseKeyTest {
         secret.store(byteArrayOf(9, 9))
         KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(TEST_ALIAS)
         assertEquals("the key is gone, so the wrap is lost", Loss.KEY_MISSING, (secret.read() as Unwrapped.Lost).reason)
+    }
+
+    @Test
+    fun aStrongBoxRefusalEndsOnATeeKeyUnderTheSameAlias() {
+        val refusals = File(root, FaultyKeystoreCipher.STRONGBOX_MARKER)
+        val secret = KeystoreSecret(context, TEST_ALIAS, "test.secret", cipher = FaultyKeystoreCipher(faults), sleep = {})
+        // A key already under the alias, as an invalidated one would be: the refusal must not leave it there.
+        secret.store(byteArrayOf(1))
+
+        refusals.writeText("1")
+        secret.store(byteArrayOf(2), freshKey = true)
+        assertEquals("the StrongBox attempt was the one refused", "0", refusals.readText())
+        assertArrayEquals(byteArrayOf(2), (secret.read() as Unwrapped.Present).bytes)
+
+        // This line can fail only on a phone with a StrongBox: nowhere else can a key be in one. Below API 31 a key
+        // does not say which backing holds it.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val key = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.getKey(TEST_ALIAS, null) as SecretKey
+            val info = SecretKeyFactory.getInstance(key.algorithm, "AndroidKeyStore").getKeySpec(key, KeyInfo::class.java) as KeyInfo
+            assertNotEquals(KeyProperties.SECURITY_LEVEL_STRONGBOX, info.securityLevel)
+        }
     }
 
     private companion object {

@@ -8,8 +8,8 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * A [KeystoreCipher] for the JVM, where Robolectric has no AndroidKeyStore: real JCE AES-GCM over in-memory keys, so a
- * swapped key fails its tag for real, plus scripted answers for the next lookups and unwraps. A scripted lookup of
- * [MISSING] reports no key whatever [keys] holds — a legacy keystore reading a dead daemon as absent.
+ * swapped key fails its tag for real, plus scripted answers for the next lookups, unwraps and key generations. A
+ * scripted lookup of [MISSING] reports no key whatever [keys] holds — a legacy keystore reading a dead daemon as absent.
  */
 class FakeKeystoreCipher : KeystoreCipher {
     val keys = mutableMapOf<String, SecretKey>()
@@ -26,10 +26,24 @@ class FakeKeystoreCipher : KeystoreCipher {
     /** What the next [seal] calls do to the bytes before sealing them: other bytes sealed, under a tag that verifies. */
     val sealScript = ArrayDeque<(ByteArray) -> ByteArray>()
 
+    /** What the next StrongBox [generate] calls throw instead of making a key: a StrongBox that refuses, or none at all. */
+    val strongBoxScript = ArrayDeque<Throwable>()
+
+    /** What the next TEE [generate] calls throw instead of making a key. */
+    val teeScript = ArrayDeque<Throwable>()
+
+    /** Every [generate] asked for, in order: the alias, and whether it asked for the StrongBox. */
+    val attempts = mutableListOf<Pair<String, Boolean>>()
+
+    /** Every alias [delete] was asked to clear, in order. */
+    val deleted = mutableListOf<String>()
+
     var lookups = 0
         private set
     var opens = 0
         private set
+
+    /** The keys made: a [generate] that threw is in [attempts] and not here. */
     var generated = 0
         private set
 
@@ -39,9 +53,19 @@ class FakeKeystoreCipher : KeystoreCipher {
         return keys[alias]
     }
 
-    override fun generate(alias: String): SecretKey {
+    override fun generate(
+        alias: String,
+        strongBox: Boolean,
+    ): SecretKey {
+        attempts += alias to strongBox
+        (if (strongBox) strongBoxScript else teeScript).removeFirstOrNull()?.let { throw it }
         generated++
         return newKey().also { keys[alias] = it }
+    }
+
+    override fun delete(alias: String) {
+        deleted += alias
+        keys.remove(alias)
     }
 
     override fun seal(

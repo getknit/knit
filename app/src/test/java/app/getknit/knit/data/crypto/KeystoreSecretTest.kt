@@ -7,6 +7,7 @@ import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -21,7 +22,8 @@ import javax.crypto.AEADBadTagException
 /**
  * [KeystoreSecret]'s verdicts over a scripted [FakeKeystoreCipher] (ADR 2026-10.47rw): a loss counts only when every
  * attempt proves one, any refusal makes the read [Unwrapped.Unavailable] with the file untouched, and a store never
- * generates a key over one a lookup merely failed to see.
+ * generates a key over one a lookup merely failed to see. A key it does generate is made in the TEE when the StrongBox
+ * will not make it (the 2026-11-19 amendment; the rule itself is `StrongBoxFirstTest`'s).
  */
 @RunWith(AndroidJUnit4::class)
 class KeystoreSecretTest {
@@ -36,6 +38,9 @@ class KeystoreSecretTest {
 
     /** The lab Pixel 3's refusal, 2026-10-01. */
     private fun refusal() = InvalidKeyException("Keystore operation failed", ProviderException("KM_ERROR_UNKNOWN_ERROR"))
+
+    /** The Xiaomi 14's StrongBox, 2026-11-19 (#351): there, and UNIMPLEMENTED for every key it is asked to make. */
+    private fun strongBoxRefusal() = ProviderException("Keystore key generation failed", IllegalStateException("Not implemented"))
 
     @After
     fun tearDown() {
@@ -232,6 +237,47 @@ class KeystoreSecretTest {
         secret.store(byteArrayOf(8), freshKey = true)
         assertEquals(2, cipher.generated)
         assertArrayEquals(byteArrayOf(8), (secret.read() as Unwrapped.Present).bytes)
+    }
+
+    @Test
+    fun aStrongBoxThatRefusesANewKeyEndsOnATeeKeyUnderTheSameAlias() {
+        cipher.strongBoxScript += strongBoxRefusal()
+        val secret = stored()
+        assertEquals(listOf(ALIAS to true, ALIAS to false), cipher.attempts)
+        assertEquals("the alias is cleared between the two", listOf(ALIAS), cipher.deleted)
+        assertEquals(1, cipher.generated)
+        assertArrayEquals(PLAIN, (secret.read() as Unwrapped.Present).bytes)
+        assertTrue("a refusal to make a key is not waited out", sleeps.isEmpty())
+
+        // The key is there now, so the next store asks neither backing for another.
+        secret.store(byteArrayOf(4))
+        assertEquals(2, cipher.attempts.size)
+    }
+
+    @Test
+    fun anInvalidatedKeyIsRemadeInTheTeeWhenStrongBoxRefuses() {
+        val secret = stored()
+        val old = cipher.keys.getValue(ALIAS)
+        cipher.strongBoxScript += strongBoxRefusal()
+        secret.store(byteArrayOf(8), freshKey = true)
+        assertNotSame(old, cipher.keys.getValue(ALIAS))
+        assertEquals(listOf(ALIAS to true, ALIAS to true, ALIAS to false), cipher.attempts)
+        assertArrayEquals(byteArrayOf(8), (secret.read() as Unwrapped.Present).bytes)
+    }
+
+    @Test
+    fun bothBackingsRefusingThrowsTheTeesRefusalAndLeavesTheFileAsItWas() {
+        val secret = stored()
+        val wrap = file.readBytes()
+        val strongBox = strongBoxRefusal()
+        val tee = ProviderException("Keystore key generation failed")
+        cipher.strongBoxScript += strongBox
+        cipher.teeScript += tee
+        val thrown = assertThrows(ProviderException::class.java) { secret.store(byteArrayOf(8), freshKey = true) }
+        assertSame(tee, thrown)
+        assertSame(strongBox, thrown.suppressed.single())
+        assertArrayEquals(wrap, file.readBytes())
+        assertEquals("only the first store's key was ever made", 1, cipher.generated)
     }
 
     @Test
