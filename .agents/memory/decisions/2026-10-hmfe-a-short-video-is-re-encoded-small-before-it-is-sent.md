@@ -180,38 +180,73 @@ the original goes by Direct file send. Guards: `VideoEncodePolicyTest.theCompose
 pick from each button asks before the encode tile shows, Cancel leaves the composer empty, and Send stages the first
 61 s.
 
-## Amendment 2026-11-20 — the bitrate mode is chosen for the encoder that runs (#353)
+## Amendment 2026-11-20 — the bitrate mode is chosen for the encoder that runs; an overshoot is retried smaller (#353)
 
 AWS Device Farm run `820aaa87` (2026-11-20) found that no video could be sent from the Galaxy A51 (Android 10) or the
 Redmi Note 13 Pro+ 5G (Android 15). Every export failed with `ERROR_CODE_ENCODING_FORMAT_UNSUPPORTED` before an encoder
 opened, and the person saw "Couldn't read that video". `bitrateModeFor` asked for CBR when any encoder for the MIME
 type offered it, software ones included. Media3's `EncoderSelector.DEFAULT` keeps only the hardware encoders when there
-are any, and `DefaultEncoderFactory` then drops each one that lacks the requested mode. No hardware encoder on those
-two phones offered CBR, so the factory was left with nothing. The failure was in every release since 2.10.0, on any
-phone of that shape, whatever the clip.
+are any, and `DefaultEncoderFactory` then drops each one that lacks the requested mode. The later runs' encoder logs
+showed both shapes:
+
+- **The A51** planned HEVC. Its CBR came from AOSP's software HEVC encoder, which cannot take 480p, and neither
+  hardware encoder (`OMX.Exynos.HEVC.Encoder`, `OMX.Exynos.AVC.Encoder`) nor AOSP's H.264 encoder offers CBR.
+- **The Redmi** planned H.264, because `hasHevcEncoder` asked for exactly 854 × 480. MediaTek aligns widths to 16,
+  so `c2.mtk.hevc.encoder` read as taking no 480p, though Media3 encodes 848 × 480 on it and it offers CBR. Its
+  hardware H.264 encoder does not offer CBR.
+
+The failure was in every release since 2.10.0, on any phone of either shape, whatever the clip.
 
 1. **Codec, encoders and mode are chosen together** (`VideoEncoderChoice`, pure), from the encoders that take 854 ×
-   480 at 30 fps: CBR before VBR, then hardware before software, then HEVC before H.264. `VideoTranscoder` hands
+   480 at 30 fps once each side is rounded down to the encoder's own alignment, as Media3 rounds it
+   (`takesOutputSize`): CBR before VBR, then hardware before software, then HEVC before H.264. `VideoTranscoder` hands
    Media3 exactly the encoders chosen (`DefaultEncoderFactory.Builder.setVideoEncoderSelector`), each of which
-   supports the mode asked for, so Media3's mode filter cannot empty the list. The plan's codec is the choice's, which
-   supersedes point 1's "H.264 on a phone with no HEVC encoder that takes 854 × 480": a phone whose hardware HEVC
-   encoder lacks CBR now sends H.264 in CBR. The size check that `hasHevcEncoder` made is each candidate's
-   `takesOutputSize`.
-2. **A software CBR encoder is chosen over a hardware VBR one.** Asking these phones' hardware for VBR was the smaller
-   fix, and it was rejected. On Android 12 and later point 2's quality floor can lift the rate to 1.23 Mbps, about
-   9 MB for 61 s, and the 0.7× retry does not get under a floor, so a long clip would have been refused as too large
-   in place of failing. A phone with no hardware CBR encoder now encodes H.264 on AOSP's software encoder at the H.264
-   rate (AOSP's software HEVC encoder cannot take 480p). The cost is encode time on those phones. VBR is left for a
-   phone where no encoder that takes 480p offers CBR.
+   supports the mode asked for, so Media3's mode filter cannot empty the list. The plan's codec and mode are the
+   choice's (`VideoEncodePlan.bitrateMode`), which supersedes point 1's "H.264 on a phone with no HEVC encoder that
+   takes 854 × 480": a phone whose hardware HEVC encoder lacks CBR sends H.264 in CBR where an encoder offers it.
+   `hasHevcEncoder` is gone. `VideoTranscoder.encoderChoice` logs every candidate.
+2. **A software CBR encoder is chosen over a hardware VBR one**, at the cost of encode time on a phone that has one
+   and no hardware CBR encoder. None of the phones tried is such a phone: AOSP's H.264 encoder offers VBR only on the
+   A51, on the API 33 and 34 emulators, and AOSP's HEVC encoder cannot take 480p. So the A51 encodes HEVC in VBR on
+   hardware, with no quality floor on Android 10. The API 33 emulator encodes H.264 in VBR, and its log showed
+   `VQApply` lift 490 kbps to a 1,229,760 b/s floor (854 × 480 at 3.0 bits per pixel) and cap QP at 38.
 3. **An encoder's refusal no longer walks the HDR modes.** All three modes encode SDR, so the encoder is asked for the
    same format in each. `HDR_FALLBACK_ERRORS` no longer holds `ERROR_CODE_ENCODING_FORMAT_UNSUPPORTED`, and a refusal
    fails in one pass in place of three.
 4. **A failed pass logs what was asked and why it was refused**: the plan's codec, rate and mode, and the
-   `ExportException`'s message and cause chain. `transcode` logs the choice once per encode.
+   `ExportException`'s message and cause chain.
+5. **The one retry is a smaller picture at the same rate, in either mode** (`VideoEncodePolicy.next`), superseding
+   point 1's 0.7× rate. A lower rate changed nothing where the overshoot came from. Under VBR the floor is the pixel
+   count times a bits-per-pixel tuning. In CBR the Redmi's `c2.mtk.hevc.encoder` put a busy clip at 663 kbps for 350
+   asked, and at 656 for 245. An encoder that does hold the rate never comes near the ceiling (350 kbps for 61 s is
+   about 3 MB). The retry scales the short side by the square root of the share to shed, aiming at 85 % of the
+   ceiling, and never goes under 144. Past the ceiling twice it is refused as before. Sending a busy clip smaller was
+   chosen over refusing it.
+6. **An encode that runs past the in-memory cap is an overshoot, not a failure.** On the emulator a busy clip passed
+   the 8 MiB cap of `MemoryMuxerOutput` 51.5 s into its 61 s, and the export failed with `ERROR_CODE_MUXING_FAILED`,
+   which the person would have read as "Couldn't read that video". The output now marks the overflow
+   (`MemoryMuxerOutput.overflowed`), the muxer keeps how far into the clip it got (`MemoryMp4Muxer.writtenUs`), and
+   `VideoEncodePolicy.overflowEstimate` scales the cap to the whole clip for `next`.
+
+Measured on 2026-11-20. Device Farm run `bda31f09`, both phones passing:
+
+- **The Redmi:** HEVC in hardware CBR. The busy clip went from 5,076,452 B to 3,969,657 B at 416p.
+- **The A51:** HEVC in hardware VBR. The busy clip came out at 2,967,936 B in one pass.
+- **The other seven phones** (run `ff783162`: Pixel 10, Galaxy S25 Ultra, S26, A36, A54, A16, Redmi Note 13 5G) chose
+  hardware HEVC in CBR, the encoders they ran before, and sent the busy clip in one pass at 2.49 to 2.81 MB.
+
+On the emulators:
+
+- **A real 64 s camera clip** (a Pixel recording looped, 1080 × 1920 at 8.2 Mbps) on the VBR-only API 34 emulator
+  overflowed at 47.5 s and was sent at 284p in 4,189,580 B, encoded in 44 s. Before this amendment it would have
+  failed as "Couldn't read that video".
+- **The drawn busy scene** on the API 33 emulator still came to 5.6 MB at 296p and is refused as too large. It is a
+  harsher picture than the camera clip.
 
 Guards: `VideoEncoderChoiceTest` (the failing phones' shape, the passing phones' shape, and every combination of two
-HEVC and two H.264 encoders against Media3's filters), and on hardware `VideoTranscoderInstrumentedTest`, which now
-asserts CBR: under CBR the size is the plan's whatever the picture, so the drawn-still fixture stands in for a busy
-clip. Device trial owed: `VideoTranscoderInstrumentedTest` and `VideoScreeningInstrumentedTest` on the Galaxy A51 and
-the Redmi Note 13 Pro+ on Device Farm, and the default matrix again; a busy real camera clip on a phone that lands on
-software H.264, through `aPushedClipEncodesUnderTheCeilingWithoutItsMetadata`, for its size and encode time.
+HEVC and two H.264 encoders against Media3's filters), `VideoEncodePolicyTest`'s retry and overflow cases,
+`MemoryMuxerOutputTest`'s overflow case, and on hardware
+`VideoTranscoderInstrumentedTest.aBusyLongClipIsSentOrRefusedAsTooLargeButNeverFails`. That test uses a drawn scene
+that turns and zooms on every frame for 70 s, since the geotagged clip is a still that any encoder undershoots. It
+must never fail, and it must be sent wherever the choice is CBR. Device trial owed: a busy real camera clip on a CBR
+phone and on a VBR-only one through `aPushedClipEncodesUnderTheCeilingWithoutItsMetadata`, for size and encode time.

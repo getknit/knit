@@ -65,7 +65,7 @@ class AttachmentStoreVideoTest {
             bytes = ByteArray(2_000_000) { (it % 251).toByte() },
             meta = VideoMeta(durationMs = 40_000, width = 480, height = 854),
             poster = poster,
-            plan = VideoEncodePolicy.plan(source, hevcEncoder = true),
+            plan = VideoEncodePolicy.plan(source, hevcEncoder = true, bitrateMode = BitrateMode.CBR),
             encoders = EncoderChoice(VideoEncodePolicy.MIME_HEVC, listOf("c2.vendor.hevc.encoder"), BitrateMode.CBR),
             source = source,
             elapsedMs = 9_000,

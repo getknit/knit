@@ -4,6 +4,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 import java.nio.ByteBuffer
@@ -59,5 +60,23 @@ class MemoryMuxerOutputTest {
         out.close()
         assertFalse(out.isOpen)
         assertThrows(ClosedChannelException::class.java) { out.write(ByteBuffer.wrap(ByteArray(1))) }
+    }
+
+    @Test
+    fun runningPastTheBoundSaysItOverflowedAndABadSeekBelowZeroDoesNot() {
+        // An encode that ran over the cap is too big, not broken: the transcoder retries it smaller (#353).
+        val fits = MemoryMuxerOutput(maxBytes = 4)
+        fits.write(ByteBuffer.wrap(ByteArray(4)))
+        assertFalse(fits.overflowed)
+        assertThrows(IOException::class.java) { fits.position = -1 }
+        assertFalse("a seek below zero is a bug, not an overflow", fits.overflowed)
+
+        val written = MemoryMuxerOutput(maxBytes = 4)
+        assertThrows(IOException::class.java) { written.write(ByteBuffer.wrap(ByteArray(5))) }
+        assertTrue(written.overflowed)
+
+        val sought = MemoryMuxerOutput(maxBytes = 4)
+        assertThrows(IOException::class.java) { sought.position = 5 }
+        assertTrue(sought.overflowed)
     }
 }
