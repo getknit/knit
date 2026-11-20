@@ -17,6 +17,7 @@ import androidx.test.uiautomator.Until
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.MainActivity
 import app.getknit.knit.demo.DemoSeeder
+import app.getknit.knit.ui.BackgroundStarts
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -98,6 +99,7 @@ abstract class SeededUiAutomatorTest {
      */
     protected fun launch(route: String? = null) {
         runBlocking { withTimeout(SEED_TIMEOUT_MS) { DemoSeeder.seeded.await() } }
+        BackgroundStarts.allow()
         val intent =
             Intent(context, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)

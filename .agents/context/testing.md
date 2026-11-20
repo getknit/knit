@@ -1180,6 +1180,11 @@ the JVM tests (`CompositeMeshTransportTest`, `RadioWarningTest`, `OnboardingScre
 - **Isolation is Android Test Orchestrator + `clearPackageData=true`** (`testOptions.execution` +
   `androidTestUtil` orchestrator/test-services in `app/build.gradle.kts`): each test runs in a fresh,
   data-wiped process, so the identity + DB regenerate and the seed re-runs every time.
+- **HyperOS refuses the launch unless the test grants it.** Both bases start `MainActivity` from the app's own
+  process while another app holds the screen. AOSP allows that for an instrumented app; HyperOS and MIUI refuse it as a
+  background start (`MIUILOG- Permission Denied Activity`), and `ActivityScenario.launch` then waits with no timeout.
+  `BackgroundStarts.allow()` sets MIUI's undocumented app op 10021 to `allow` before every launch on a Xiaomi device and
+  logs what `appops get` reads back under the `BackgroundStarts` tag. A new launch path calls it too.
 - **The seed also arms the two flag-gated planes.** `DemoPlanes` (debug-only) consents to and fills the
   Internet-relay list and binds a Knit-provisioned LoRa board, so `relays`, `lora`, the chat header's
   globe/board glyphs and the plane marks on a bubble all render against something. Neither opens a socket

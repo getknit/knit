@@ -83,6 +83,7 @@ abstract class SeededUiTest {
      */
     protected fun launch(route: String? = null): ActivityScenario<MainActivity> {
         runBlocking { withTimeout(SEED_TIMEOUT_MS) { DemoSeeder.seeded.await() } }
+        BackgroundStarts.allow()
         val context = ApplicationProvider.getApplicationContext<Context>()
         val intent =
             Intent(context, MainActivity::class.java).apply {
