@@ -826,8 +826,10 @@ android {
                 // `knit.meshSimLatp` and `knit.meshSimExcursions` shape `motion=park`'s visitors; `knit.meshSimDmSeconds`,
                 // `knit.meshSimRoomSeconds` and `knit.meshSimGroupSeconds` the mean gaps between one walker's DMs, room
                 // posts and group-chat posts (20, 60 and none unless set), `knit.meshSimBacklog` the messages each walker
-                // sent before the outing (none unless set); `knit.meshSimRangeM` and `knit.meshSimDropM` the metres a link
-                // is dialled and held to (25 and 35 unless set; the drop is 1.4 times the range when only the range is);
+                // sent before the outing (none unless set), `knit.meshSimLoad` and `knit.meshSimLoadAuthors` the frames each
+                // carries for others into it and the pool of authors they come from (none, and 20); `knit.meshSimRangeM`
+                // and `knit.meshSimDropM` the metres a link is dialled and held to (25 and 35 unless set; the drop is 1.4
+                // times the range when only the range is);
                 // `knit.meshSimPairs`, `knit.meshSimSpeed`, `knit.meshSimLateralM`, `knit.meshSimPassDms`,
                 // `knit.meshSimPassPictures`, `knit.meshSimPictureKb`, `knit.meshSimPassLoad` and `knit.meshSimPassAuthors`
                 // shape PassBySimTest's sidewalk;
@@ -861,6 +863,8 @@ android {
                             "knit.meshSimRoomSeconds",
                             "knit.meshSimGroupSeconds",
                             "knit.meshSimBacklog",
+                            "knit.meshSimLoad",
+                            "knit.meshSimLoadAuthors",
                             "knit.meshSimRangeM",
                             "knit.meshSimDropM",
                             "knit.meshSimPairs",

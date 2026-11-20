@@ -1284,6 +1284,28 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
       - Faster discovery (a screen on) moves the share from 63% to 92%.
     - **The field said always**, with Aware on, at 1.3 m/s, about 20 messages and 5 photos each. That fits the 1 s run
       better than the 4 s one, so the 4 s screen-off median is the draw to doubt first.
+- **Full stores and custody's exchanges** (`CarriedLoad`, `ExchangeTally`, `LabNode.carry`, `LabTransport.airTaps`,
+  2026-11-20).
+  - **A carried load fills a store with others' mail.** `CarriedLoad` signs sealed DMs from free identities
+    (`LabSybil`) to recipients who never appear, so nobody in the run opens or delivers one. It writes them straight
+    into custody (`LabNode.carry`, through custody's own caps and digest but past the router), each author's profile
+    first. The DMs are the size of a real DM between two of the run's nodes, measured on two sizer nodes that never
+    walk.
+    - Pass-by: `knit.meshSimPassLoad` frames from `knit.meshSimPassAuthors` (5) authors of each walker's own,
+      interleaved with its own DMs by arrival.
+    - Outings: `knit.meshSimLoad` frames from a pool of `knit.meshSimLoadAuthors` (20) shared by the whole field, at
+      the boot's end. No two walkers carry the same frame.
+    - Each author's share must stay under the 200-a-sender quota.
+  - **Exchanges are read off the air.** Every air link tells its node's `airTaps` of each record it delivers.
+    `ExchangeLedger` (pure, `ExchangeLedgerTest`) reads them in delivery order. An exchange opens when a digest lands
+    at a peer, and the peer's frames to the asker until the asker's next digest are its answer.
+    - Per run, and per pair in the pass-by: digests and their share of the air, exchanges answered and those that
+      moved nothing new, frames re-sent to a node that already had them off the air, and each new frame's fate
+      (reached its addressee, held at the end, not kept).
+    - Also the gap from an exchange that moved nothing to the asker's next digest to that peer (`reask_after_empty_*`).
+      Only an outing shows it, since a pass is too short for a second digest.
+    - Summary keys end in `_pass` or `_outing`. An outing reads its tally once its links are down, since a frame still
+      queued at its receiver would read as not kept. Only air links are seen, so `disc` reports none.
 - **What it leaves out.** One link a pair, no path loss and none of the transports' own dial policies: `LabTransport`
   stands in for the whole radio, so the topology is the geometry's (and, under `ble1m`, a nearest-first budget's), not
   what Bluetooth or Wi-Fi Aware would have formed. `ble1m+nan` carries both planes on one pipe at the faster rate, so a

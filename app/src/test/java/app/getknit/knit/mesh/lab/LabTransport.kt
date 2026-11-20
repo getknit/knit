@@ -1056,6 +1056,20 @@ class LabTransport(
     /** What this node's air links aired, cut and refused on the way out ([LinkAir]). */
     val aired = AirStats()
 
+    /**
+     * Told of every record this node's air links deliver, under the sending pipe's air lock, just before the far end has it
+     * ([AiredRecord]): whatever the receiver does with the record happens after its listeners ran. A listener only notes
+     * it, a queue append: it never suspends, blocks, throws or calls back into the lab. A record a cut took, or one the
+     * door refused, is never told.
+     */
+    val airTaps = CopyOnWriteArrayList<(AiredRecord) -> Unit>()
+
+    private fun tap(record: () -> AiredRecord) {
+        if (airTaps.isEmpty()) return
+        val r = record()
+        airTaps.forEach { it(r) }
+    }
+
     // Records on air links toward this node, queued or airing and not yet delivered or cut: [awaitInboundDrained] waits
     // them out. Moved only under the sending pipe's air lock.
     private val airInbound = AtomicLong()
@@ -1892,11 +1906,15 @@ class LabTransport(
                 if (pipe.airClosed || pipe.inHand !== record || pipes[target.nodeId] !== pipe) return false
                 pipe.inHand = null
                 pipe.airedSeq = record.seq
+                // One instant for the record, taken before the far end has it: whatever the receiver does with it, an
+                // answer included, is told after it with a later time.
+                val at = System.nanoTime()
                 val file = record.file
                 if (file != null) {
                     aired.bytes.addAndGet(record.bytes)
                     aired.records.incrementAndGet()
-                    aired.recordWait((System.nanoTime() - record.queuedAtNanos) / NANOS_PER_MS)
+                    aired.recordWait((at - record.queuedAtNanos) / NANOS_PER_MS)
+                    tap { AiredRecord(target.nodeId, at, record.bytes, AiredRecord.Kind.FILE) }
                     target.markLanding(nodeId, file.key, ArrivingFile(file.key, File(file.path).length(), total = null))
                     check(target._incomingFiles.tryEmit(file)) { "the file buffer refused ${file.key}" }
                     target.airInbound.decrementAndGet()
@@ -1913,7 +1931,14 @@ class LabTransport(
                 }
                 aired.bytes.addAndGet(record.bytes)
                 aired.records.incrementAndGet()
-                aired.recordWait((System.nanoTime() - record.queuedAtNanos) / NANOS_PER_MS)
+                aired.recordWait((at - record.queuedAtNanos) / NANOS_PER_MS)
+                tap {
+                    if (wire != null) {
+                        AiredRecord(target.nodeId, at, record.bytes, AiredRecord.Kind.FRAME, wire = wire)
+                    } else {
+                        AiredRecord(target.nodeId, at, record.bytes, AiredRecord.Kind.DIGEST, digestIds = record.ids)
+                    }
+                }
                 if (crossed != null) {
                     target.deliverNow(pipe, this, crossed, record.via)
                 } else {
@@ -2073,3 +2098,18 @@ internal fun WireEnvelope.isRoomPostFrom(nodeId: String): Boolean =
 /** The cleartext `profile` frame [nodeId] signed — what a rename floods, and what a first contact pushes. */
 internal fun WireEnvelope.isProfileFrom(nodeId: String): Boolean =
     WireCodec.decodeEnvelope(signed)?.let { it.type == FrameType.PROFILE && it.senderId == nodeId } == true
+
+/**
+ * One record an air link delivered ([LabTransport.airTaps]): to whom, when (`System.nanoTime`), how many bytes it aired,
+ * and what it was: a frame as it was sent ([wire]), a custody digest and the ids it advertised ([digestIds]), or a file.
+ */
+class AiredRecord(
+    val to: String,
+    val atNanos: Long,
+    val bytes: Long,
+    val kind: Kind,
+    val wire: WireEnvelope? = null,
+    val digestIds: List<String> = emptyList(),
+) {
+    enum class Kind { FRAME, DIGEST, FILE }
+}

@@ -32,6 +32,8 @@ object SimSeeds {
         PASS_SPEED(17),
         PASS_PICTURE(18),
         NAN_APPROACH(19),
+        LOAD_AUTHOR(20),
+        LOAD_RECIPIENT(21),
     }
 
     /** A hash of [parts], in order: every input bit moves every output bit, so neighbouring keys draw unrelated streams. */

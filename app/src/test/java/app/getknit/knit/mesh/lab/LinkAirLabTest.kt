@@ -385,6 +385,63 @@ class LinkAirLabTest {
             assertEquals(listOf(ids), alice.transport.airDigestsIn.drop(digestsBefore))
         }
 
+    /**
+     * Alice carries a stranger's DMs she took in before the scenario ([LabNode.carry]): her custody holds them and nobody
+     * has heard of them. Once she links to Bob over the air, the digest exchange brings them to his custody, and each
+     * node's air tap ([LabTransport.airTaps]) is told of every record it aired: the digests both ways and each frame to Bob.
+     */
+    @Test
+    fun aCarriedLoadCrossesTheNextAirLinkAndTheTapsSeeEveryRecord() =
+        runBlocking {
+            val alice = lab.node("alice")
+            val bob = lab.node("bob")
+            val author = LabSybil(seed = CARRIED_SEED, name = "Carried")
+            val at = lab.clock.now()
+            assertTrue("alice refused the author's profile", alice.carry(author.profile(at)))
+            val dms = List(CARRIED) { author.dm(to = LabSybil(seed = it, name = "To $it").nodeId, sentAt = at + it) }
+            dms.forEach { assertTrue("alice refused a carried DM", alice.carry(it)) }
+            val ids = dms.map { checkNotNull(WireCodec.decodeEnvelope(it.signed)).id }.toSet()
+            assertTrue("alice's custody lacks the load", alice.custodyIds().containsAll(ids))
+            assertTrue("bob heard of the load before any link", bob.custodyIds().none { it in ids })
+
+            val seen = java.util.concurrent.ConcurrentHashMap<String, MutableList<AiredRecord>>()
+            for (node in listOf(alice, bob)) {
+                node.transport.airTaps +=
+                    { r: AiredRecord -> seen.getOrPut(node.nodeId) { java.util.Collections.synchronizedList(mutableListOf()) } += r }
+            }
+            lab.link(alice, bob, air = AIR)
+            lab.await(CARRIED, timeoutMs = BURST_AWAIT_MS) { bob.custodyIds().count { it in ids } }
+            // The asserts read the taps, not custody: wait for both digests and every carried DM to be told. A tap runs
+            // before the far end has its record, so a DM in Bob's custody was told, but Alice's own digest may still be
+            // queued behind her answer to Bob's.
+            lab.await(1, timeoutMs = BURST_AWAIT_MS) {
+                val digests = listOf(alice, bob).all { n -> told(seen, n).any { it.kind == AiredRecord.Kind.DIGEST } }
+                if (digests && frameIds(told(seen, alice)).containsAll(ids)) 1 else 0
+            }
+
+            val fromAlice = told(seen, alice)
+            val fromBob = told(seen, bob)
+            assertTrue("a tapped record went elsewhere", fromAlice.all { it.to == bob.nodeId } && fromBob.all { it.to == alice.nodeId })
+            assertTrue(
+                // The link-up digest only: a 60 s re-offer may advertise the load Bob has taken by then.
+                "bob's first digest named the load",
+                fromBob.first { it.kind == AiredRecord.Kind.DIGEST }.digestIds.none { it in ids },
+            )
+            assertTrue("a tapped record aired no bytes", (fromAlice + fromBob).all { it.bytes > 0 })
+            // Strangers share no thread: the oracle's custody, profile and per-store legs are what this one asks.
+            lab.assertConverged(listOf(alice, bob), atLeast = 0, timeoutMs = BURST_AWAIT_MS) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    // What [node]'s air links have told its tap in [seen] so far.
+    private fun told(
+        seen: Map<String, List<AiredRecord>>,
+        node: LabNode,
+    ): List<AiredRecord> = seen[node.nodeId].orEmpty().toList()
+
+    // The frame ids among [records].
+    private fun frameIds(records: List<AiredRecord>): List<String> =
+        records.filter { it.kind == AiredRecord.Kind.FRAME }.mapNotNull { r -> r.wire?.let { WireCodec.decodeEnvelope(it.signed)?.id } }
+
     // Linked over [air], contacts, and one DM each way delivered: what follows is ordinary ratchet traffic.
     private suspend fun friendsWithASession(
         air: LinkAir?,
@@ -458,6 +515,10 @@ class LinkAirLabTest {
         /** Over `CompositeMeshTransport.BULK_MIN_BYTES`: a holder arms the fast plane for it. Twenty seconds at [AIR]. */
         const val LARGE_PICTURE_BYTES = 200_000
         const val DM_BURST = 20
+
+        /** A stranger's DMs a node carries in: a few seconds of air at [AIR]. */
+        const val CARRIED = 12
+        const val CARRIED_SEED = 41
         const val AIRED_BEFORE_CUT = 3
         const val CUTS = 5
         const val CUT_BURST = 40

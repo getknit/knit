@@ -90,7 +90,7 @@ fun SimScenario.summaryValues(): List<Pair<String, Any?>> =
         "room_s" to roomMeanMs / MS_PER_SECOND,
         "group_s" to groupMeanMs / MS_PER_SECOND,
         "backlog" to backlog,
-    )
+    ) + if (load > 0) listOf("load" to load, "load_authors" to loadAuthors) else emptyList()
 
 /**
  * [deliveryLines]' numbers per [Reach] and for all DMs: how many were sent, the share that arrived inside the run and by

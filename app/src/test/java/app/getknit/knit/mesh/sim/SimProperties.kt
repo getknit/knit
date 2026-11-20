@@ -51,6 +51,10 @@ internal object SimProperties {
     /** Messages each walker sends before the outing, as the boot links its party ([SimScenario.backlog]); none when unset. */
     const val BACKLOG = "knit.meshSimBacklog"
 
+    /** Frames each walker carries for others into an outing, and the shared pool of authors they come from ([SimScenario.load]). */
+    const val LOAD = "knit.meshSimLoad"
+    const val LOAD_AUTHORS = "knit.meshSimLoadAuthors"
+
     /** The metres a link is dialled within ([SimScenario.connectM]); 25 when unset. */
     const val RANGE = "knit.meshSimRangeM"
 
@@ -210,6 +214,8 @@ internal object SimProperties {
             roomMeanMs = System.getProperty(ROOM_SECONDS)?.let { it.toLong() * MS_PER_SECOND } ?: scenario.roomMeanMs,
             groupMeanMs = System.getProperty(GROUP_SECONDS)?.let { it.toLong() * MS_PER_SECOND } ?: scenario.groupMeanMs,
             backlog = System.getProperty(BACKLOG)?.toInt() ?: scenario.backlog,
+            load = System.getProperty(LOAD)?.toInt() ?: scenario.load,
+            loadAuthors = System.getProperty(LOAD_AUTHORS)?.toInt() ?: scenario.loadAuthors,
         )
 
     private fun defaultFieldM(

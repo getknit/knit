@@ -85,6 +85,7 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.CARRIER_BLOB_BUDGET_BYTES
+import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.ContributionLedger
 import app.getknit.knit.mesh.DmAckCoalescer
@@ -3859,6 +3860,20 @@ class LabNode internal constructor(
             .liveFrames(now())
             .filter { type == null || it.envelope.type == type }
             .associate { it.envelope.id to it.signed.size }
+
+    /**
+     * Takes [frame] into custody as a carrier that met its author before the scenario would hold it: through custody's own
+     * admission, caps and digest, but past the router and the transport, so nothing relays it and no peer hears of it
+     * before a digest exchange. Returns whether custody holds it ([ForwardStore.store]).
+     *
+     * The router's seen set is not marked, so this is a frame received longer ago than its window
+     * ([app.getknit.knit.mesh.SeenSet.DEFAULT_TTL_MS]): a later copy that reaches the node is handled as new, as a real
+     * carrier's would be by then. A profile carried this way is held but not pinned; hear it for that.
+     */
+    suspend fun carry(frame: WireEnvelope): Boolean {
+        val env = checkNotNull(WireCodec.decodeEnvelope(frame.signed)) { "$name was handed a frame it cannot decode" }
+        return forwardStore.store(CarriedFrame(env, frame.sig, frame.signed), ForwardStore.ORIGIN_RELAY, now())
+    }
 
     /**
      * Writes [frame] straight into custody's table, past `store`'s refusals and the digest: a row a build before the

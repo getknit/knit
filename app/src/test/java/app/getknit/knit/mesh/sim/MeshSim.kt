@@ -61,6 +61,13 @@ data class SimScenario(
     val groupMeanMs: Long = 0,
     /** Messages each walker sends while the boot links its party, before the walk ([Workload.backlog]): custody's history. */
     val backlog: Int = 0,
+    /**
+     * Frames each walker carries for others into the outing ([CarriedLoad]): sealed DMs from a pool of [loadAuthors]
+     * identities shared by the whole field, to recipients who never appear, taken into its custody at the boot's end. No
+     * two walkers carry the same frame; many carry the same authors. None when 0.
+     */
+    val load: Int = 0,
+    val loadAuthors: Int = DEFAULT_LOAD_AUTHORS,
     /** Frames a node's router may have queued before its plane drops the next ([LabLimits.inboundSlots]); null holds all. */
     val inboundSlots: Int? = null,
     /** How long after the gather to keep reading custody across the field for parity ([MeshSim.settleLine]); 0 skips it. */
@@ -86,6 +93,15 @@ data class SimScenario(
 ) {
     init {
         require(gatherBy in GatherBy.NAMES) { "no gather named $gatherBy; there are ${GatherBy.NAMES}" }
+        require(load == 0 || loadAuthors >= 1) { "a load needs an author: $loadAuthors" }
+        // A carrier holds one author's frames and its profile under one sender quota: past it, the oldest go at the boot.
+        require(load == 0 || (load + loadAuthors - 1) / loadAuthors < ForwardRepository.DEFAULT_MAX_PER_SENDER) {
+            "$load frames from $loadAuthors authors is past the ${ForwardRepository.DEFAULT_MAX_PER_SENDER}-a-sender quota"
+        }
+    }
+
+    companion object {
+        const val DEFAULT_LOAD_AUTHORS = 20
     }
 }
 
@@ -181,6 +197,9 @@ class MeshSim(
     // What the air links did from the boot's end: taken once the nodes exist ([boot]).
     private lateinit var airOuting: AirTally
 
+    // What custody's digests asked and answered over the air links from the boot's end ([ExchangeTally]).
+    private lateinit var exchangesOuting: ExchangeTally
+
     /** Boots, walks, gathers and reports. */
     suspend fun play(): SimReport {
         val lines = mutableListOf("mesh sim: park walk, $scenario")
@@ -189,6 +208,7 @@ class MeshSim(
         summary.putAll(radio.summaryValues())
         lines += boot().also(progress)
         airOuting = AirTally(nodes)
+        exchangesOuting = ExchangeTally.start(nodes)
         outingStart = lab.clock.now()
         // Launched once the nodes exist, so they never read them before boot, and sample nothing of the boot.
         return coroutineScope {
@@ -197,6 +217,7 @@ class MeshSim(
                 walkAndReport(lines)
             } finally {
                 samplers.forEach { it.cancel() }
+                exchangesOuting.close()
             }
         }
     }
@@ -249,7 +270,7 @@ class MeshSim(
         lines += roomLine(nodes, rooms, endedAt, summary)
         chats.line(nodes, endedAt, summary)?.let { lines += it }
         lines += "frames refused since boot: ${drops(nodes).ifEmpty { "none" }}"
-        airLines(lines, airOuting, "over the whole outing", key = "outing")
+        airLines(lines, airOuting, exchangesOuting, "over the whole outing", key = "outing")
         val totals = counterTotals(nodes)
         lines += movedCounters(totals, since = countersAtWalk)
         summary.putAll(headlineCounters(totals, since = countersAtWalk))
@@ -311,7 +332,7 @@ class MeshSim(
         summary.putAll(walked.summaryValues(suffix = "walk"))
         summary["room_refused"] = refused.get()
         lines += inboundLine("in the run", since = inboundBefore, peak = heldPeakWalk.get(), key = "walk")
-        airLines(lines, airWalk, "in the run", key = "walk")
+        airLines(lines, airWalk, exchanges = null, "in the run", key = "walk")
         val custody = nodes.map { it.custodyIds().size }
         lines += "custody at the end of the run: mean ${custody.average().toInt()} rows, max ${custody.max()}"
         summary["custody_rows_walk_end_mean"] = custody.average().toInt()
@@ -362,7 +383,7 @@ class MeshSim(
         lines += movedCounters(totals, since = countersAtWalk)
         summary.putAll(headlineCounters(totals, since = countersAtWalk))
         lines += inboundLine("over the whole outing", peak = heldPeak.get(), where = heldPeakWhere, key = "outing")
-        airLines(lines, airOuting, "over the whole outing", key = "outing")
+        airLines(lines, airOuting, exchangesOuting, "over the whole outing", key = "outing")
         lines += custodyLines()
         // With a DM missing the oracle's verdict is known, and each of its waits would run to its end to say so; so it
         // is with custody the settle watched not converge for at least as long as the oracle would wait. A shorter settle
@@ -439,11 +460,13 @@ class MeshSim(
             }
             pairs(members).filterNot { it in radio.links }.map(::ends).forEach { (a, b) -> a.transport.disconnect(b.transport) }
         }
+        val loadLine = if (scenario.load > 0) CarriedLoad.fillField(lab, limits, nodes, scenario, summary) else null
         val perNode = (usedHeapMb() - heapBefore).toDouble() / scenario.walkers
         val heapEach = "%.1f".format(Locale.ROOT, perNode)
         summary["boot_ms_each"] = bootMs
         summary["heap_mb_each"] = perNode
-        return "boot: ${scenario.walkers} nodes, $bootMs ms each, $heapEach MB of heap each, $heapBefore MB before any"
+        return "boot: ${scenario.walkers} nodes, $bootMs ms each, $heapEach MB of heap each, $heapBefore MB before any" +
+            loadLine?.let { "; $it" }.orEmpty()
     }
 
     // The walk and the workload side by side, on the wall clock from one origin. Each walker sends on its own, as each
@@ -714,17 +737,22 @@ class MeshSim(
             stranded.joinToString { "${it.event.body} (${it.reach.name.lowercase()})" }
     }
 
-    // The air links' line and summary keys for [phase], on a radio whose links have airtime ([Radio.air]).
-    private fun airLines(
+    // The air links' lines and summary keys for [phase], on a radio whose links have airtime ([Radio.air]): what they
+    // aired, and custody's exchanges over them. Those are read at the outing's end: after a walk-only outing has cut every
+    // link, but in a gathered one with the gather's links still up, so there a frame still queued at its receiver reads
+    // as not kept. The walk's are not read at all, its links being up.
+    private suspend fun airLines(
         lines: MutableList<String>,
         tally: AirTally,
+        exchanges: ExchangeTally?,
         phase: String,
         key: String,
     ) {
         if (radio.air == null) return
-        val (line, values) = tally.report(phase, key)
-        lines += line
-        summary.putAll(values)
+        for ((line, values) in listOfNotNull(tally.report(phase, key), exchanges?.report(phase, key))) {
+            lines += line
+            summary.putAll(values)
+        }
     }
 
     // What the nodes' full inbound queues held back, [phase], which only a bounded run has: a link's reader waits for a
