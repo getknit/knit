@@ -245,14 +245,37 @@ internal class FeedMeter(
         val delivered = if (lastHeld >= 0) lastHeld - offset else whole - left
         val remaining = (whole - delivered).coerceAtLeast(0L)
         val eta = etaNow(t, remaining, pace, settled)
-        val asleep = if (pauseAt < 0) 0L else (t - pauseAt - pauseMs).coerceAtLeast(0L)
-        val quiet = if (lastHeld >= 0) t - advancedAt - sleptSinceAdvance else t - wroteAt
-        val stallIn = STALL_MS - (quiet - asleep)
+        val asleep = asleepNow(t)
+        val stallIn = stallIn(t, wroteAt, asleep)
         setDeadline(t, eta, remaining, pace, due = measured || (settled && lastHeld < 0 && t - startedAt >= STALL_MS))
         val deadlineIn = if (deadlineAt == 0L) null else deadlineAt + asleep - t
         val live = stallIn >= 0 && (deadlineIn == null || deadlineIn >= 0)
         val recheck = listOfNotNull(stallIn.takeIf { it > 0 }, deadlineIn?.takeIf { it > 0 }).minOrNull()
         return FileFeed(etaMs = eta, live = live, measured = measured, recheckMs = recheck)
+    }
+
+    /**
+     * Whether the stream going now has gone [STALL_MS] with nothing moved, as [feed] judges its stall (its writes, or its
+     * receiver's reports once one has come, less what the writer slept through), with no deadline and nothing set: custody's
+     * "a file that is moving comes first" (the custody-carry-policy contract's §2, revision 16) reads it without moving
+     * the blob plane's deadline. [wroteAt] is the stream's last write through, as [feed] takes it.
+     */
+    fun stalled(wroteAt: Long): Boolean {
+        val t = now()
+        return stallIn(t, wroteAt, asleepNow(t)) < 0
+    }
+
+    // How far the writer's pace wait under way has run past what it asked for: its sleep, not the feed's.
+    private fun asleepNow(t: Long): Long = if (pauseAt < 0) 0L else (t - pauseAt - pauseMs).coerceAtLeast(0L)
+
+    // What is left of [STALL_MS] at [t]: below zero, stalled.
+    private fun stallIn(
+        t: Long,
+        wroteAt: Long,
+        asleep: Long,
+    ): Long {
+        val quiet = if (lastHeld >= 0) t - advancedAt - sleptSinceAdvance else t - wroteAt
+        return STALL_MS - (quiet - asleep)
     }
 
     /**

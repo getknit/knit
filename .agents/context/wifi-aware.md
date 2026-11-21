@@ -208,8 +208,13 @@ is in `docs/NAN_CONCURRENCY_REAUDIT.md` and `docs/DIGEST_PULL_REATTACH.md`.
   responder whose initiator truly wedged after a non-convergent exchange, or right after a restart, notices it up to
   20 min later, and meanwhile doesn't relight ICM for that peer.
   A link is held while a custody answer to its peer rides Wi-Fi Aware (`CustodyProgress.answerCarrier`,
-  `answerHeld`, at most `SYNC_MAX_WINDOW_MS`), and a path cut with such an answer live calls `answerCut`, outside every
-  transport lock. Frames and
+  `answerHeld`) and the path drained (`NanLink.lastDrainAt`, from `FramedLink`'s `onDrained` under `DRAIN_LINE_BYTES`,
+  the Aware round) within the side's own quiescence (a path not yet drained: while under one quiescence old), at most
+  `SYNC_MAX_WINDOW_MS`: rounds are cut as the path drains
+  (release on drain), so the hold only spares a draining answer the initiator's contended linger, and a path that stopped
+  draining is not held. The same drain emits `outboundDrained`; `carrier`'s `outbound` is the path's
+  `FramedLink.queuedBytes`, no rate (`NanLinkStamp.outbound`). A path cut with an answer live calls `answerCut`, outside
+  every transport lock. Frames and
   digests are stamped with the link's proof and `FramedLink` (a digest off a path `peers` no longer holds reads
   unproven), and `linkToken` returns that same link, lock-free; hop-less coordination-plane frames stay unstamped.
   Tests: `DigestTrackerTest`, `NanSyncPolicyTest`, `NanLinkHoldTest`, `NanLinkStampTest`.

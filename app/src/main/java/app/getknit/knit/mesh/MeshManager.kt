@@ -347,7 +347,7 @@ class MeshManager(
     // A fresh one by default, for the rigs that build a manager by hand.
     carryLedger: CarryLedger = CarryLedger(metrics = metrics),
     // The round each carrying plane's custody answers are cut to (the custody-carry-policy contract's §2): the contract's
-    // table. Injectable for `mesh/lab`, whose scenarios about what crosses run unpaced and whose pace scenarios run this.
+    // table. Injectable for `mesh/lab` (`LabLimits.custodyPace`).
     custodyPace: CustodyPace = CustodyPace.CONTRACT,
     // Whether the 60 s tick's custody offer backs off while offers draw nothing (§7): always in production. Injectable for
     // `mesh/lab`, whose scenarios about the loop itself tick it on a short real interval.
@@ -5100,17 +5100,22 @@ class MeshManager(
     }
 
     /**
-     * Cuts the custody rounds and credits due (the custody-carry-policy contract's §2, §3), sleeping until the next is due
-     * or a digest arrives. Its own loop, off the digest collector, which cuts only an answer's first round. A failed pass
-     * (a SQLite error) costs that pass: the next runs when the next round is due (#206).
+     * Looks at custody's answers as their links drain (the custody-carry-policy contract's §2, §3): cuts each next round
+     * once its link holds under one, credits each round's hand-off, and ends answers by age or a lost link, sleeping until
+     * a digest arrives, a link custody answers over drains ([MeshTransport.outboundDrained]), or the next look an estimate
+     * or a fallback asks for ([ForwardSync.nextDueAt]). No clock paces it. Its own loop, off the digest collector, which
+     * cuts only an answer's first round. A failed look (a SQLite error) costs that look: the next runs
+     * [ForwardSync.CUSTODY_RETRY_MS] on at the soonest (#206).
      */
     private fun serveCustodyRoundsPeriodically(session: CoroutineScope) {
+        // A drain only wakes the loop, and only for a peer custody answers or owes a credit: it never throws.
+        session.launch { transport.outboundDrained.collect { forwardSync.onDrained(it) } }
         session.launch {
             var failed = false
             while (true) {
                 val due = forwardSync.nextDueAt()?.let { it - clock() } ?: Long.MAX_VALUE
-                // After a failed pass the round it owed is still due: it waits a beat rather than spin on the error.
-                forwardSync.awaitWake(if (failed) maxOf(due, CUSTODY_RETRY_MS) else due)
+                // After a failed look what it owed is still due: it waits a beat rather than spin on the error.
+                forwardSync.awaitWake(if (failed) maxOf(due, ForwardSync.CUSTODY_RETRY_MS) else due)
                 failed = false
                 runRound({
                     failed = true
@@ -5121,8 +5126,8 @@ class MeshManager(
     }
 
     /**
-     * Cuts the custody rounds due now. `internal` for `mesh/lab`: a lab clock jump never wakes the serve loop's sleep, so a
-     * paced scenario moves the clock and runs this.
+     * One look at custody's answers now ([ForwardSync.serveDue]). `internal` for `mesh/lab`: a lab clock jump never wakes the
+     * serve loop's sleep, so a scenario that moves the clock past an answer's age or a credit's runs this.
      */
     internal suspend fun serveCustodyRounds() = forwardSync.serveDue(clock())
 
@@ -5632,8 +5637,9 @@ class MeshManager(
         session.launch {
             // A neighbor advertised the custody ids it holds → push it just the frames it lacks (the id-diff).
             // By the plane it crossed: one off a contact's direct link is answered inside that link's rule (ADR 2026-10.a5yj).
-            // Its first round is cut here and goes at once; later rounds are the serve loop's, so this collector never
-            // waits on a pace ([serveCustodyRoundsPeriodically]). One failed answer costs that digest, never the collector.
+            // Its first round is cut here and goes at once; later rounds are the serve loop's as the link drains, so this
+            // collector never waits on a link ([serveCustodyRoundsPeriodically]). One failed answer costs that digest, never
+            // the collector.
             transport.incomingDigests.collect {
                 runRound({ e -> roundFailed(MeshRound.CUSTODY, e) }) {
                     forwardSync.onDigest(it.fromNodeId, it.ids, it.via, it.proven, it.link)
@@ -8040,9 +8046,6 @@ class MeshManager(
         // ephemeral links get for free. Short enough to converge a missed message within ~a minute, long enough
         // to stay cheap on battery/bandwidth.
         const val NEIGHBOR_REOFFER_INTERVAL_MS = 60_000L
-
-        // How long the custody serve loop waits after a failed pass before it tries the round it owed again.
-        private const val CUSTODY_RETRY_MS = 1_000L
 
         // Min spacing between first-contact profile floods (watchReachable): a burst of newcomers costs one
         // origination; custody + the per-link pushProfileTo cover anyone the coalesced flood skipped. Behind

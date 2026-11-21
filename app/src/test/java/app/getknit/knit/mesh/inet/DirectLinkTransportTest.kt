@@ -38,6 +38,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -443,6 +444,39 @@ class DirectLinkTransportTest {
             val again = async(start = CoroutineStart.UNDISPATCHED) { b.transport.inbound.first() }
             a.transport.send(frame("m21-QQ"), Peer(bob))
             assertSame(relinked, withTimeout(WAIT_MS) { again.await() }.link)
+        }
+
+    /**
+     * Release on drain (custody-carry-policy §2): the carrier names the live link with an outbound read of it, with no
+     * estimated rate (the stream below holds about a second of the path), settled to nothing once the link's drain has
+     * reached custody as the peer's node id. How the count rises and falls is `FramedLinkOutboundTest`'s.
+     */
+    @Test
+    fun theCarrierNamesTheLiveLinkWithAnOutboundReadAndItsDrainIsSignalled() =
+        runBlocking<Unit> {
+            val a = End(alice)
+            val b = End(bob)
+            linked(a, b)
+            val drained = async(start = CoroutineStart.UNDISPATCHED) { a.transport.outboundDrained.first() }
+            val frameIn = async(start = CoroutineStart.UNDISPATCHED) { b.transport.inbound.first() }
+            a.transport.send(frame("m22-QQ"), Peer(bob))
+            withTimeout(WAIT_MS) { frameIn.await() }
+            assertEquals(bob, withTimeout(WAIT_MS) { drained.await() })
+            // The count settles once the writer's flush returned, which the frame's arrival doesn't order: wait for it.
+            val carrier =
+                withTimeout(WAIT_MS) {
+                    var c = a.transport.carrier(bob)
+                    while (c?.outbound?.unwritten != 0L) {
+                        delay(POLL_MS)
+                        c = a.transport.carrier(bob)
+                    }
+                    c
+                }
+            assertSame(a.transport.linkToken(bob), carrier.link)
+            assertTrue(carrier.proven)
+            val out = checkNotNull(carrier.outbound)
+            assertNull(out.drainBytesPerSec)
+            assertFalse(out.fileMoving)
         }
 
     @Test

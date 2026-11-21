@@ -61,14 +61,28 @@ internal object NanLinkLife {
 
     /**
      * Whether custody's live answer to the peer, carried by this plane ([answerLive]: `CustodyProgress.answerCarrier` names
-     * Wi-Fi Aware), holds a link [ageMs] old not
-     * idle: its paced rounds come a second apart (custody-carry-policy §2), and an answer cut by a quiescence close would
-     * leave its releases unjudged. Only within [windowMs] (`SYNC_MAX_WINDOW_MS`, on either role): an answer is no reason
-     * to hold the one data path longer than a sync may last, and a responder's longer backstop is for a dead initiator.
+     * Wi-Fi Aware), holds a link [ageMs] old not idle: only while the link drained within the last [spanMs] (the side's own
+     * uncontended quiescence), [sinceDrainMs] ago, or null if it never has. Custody cuts its next round as the link drains
+     * (custody-carry-policy §2, revision 13), so an answer on a link that drains is between rounds, and a quiescence close
+     * there would leave its releases unjudged. A link that stopped draining (a peer that reads slowly or not at all) gets no
+     * hold: its answer would send nothing more on it, and the path is the single NDI. Only within [windowMs]
+     * (`SYNC_MAX_WINDOW_MS`, on either role): an answer is no reason to hold the one data path longer than a sync may last,
+     * and a responder's longer backstop is for a dead initiator.
+     *
+     * A path that has not drained yet ([sinceDrainMs] null) is held while it is under one [spanMs] old: `answerCarrier`
+     * names Wi-Fi Aware from the digest's landing, before the first round is cut, so a contended initiator would otherwise
+     * close a fresh path before its answer starts.
+     *
+     * The writer touches the link's activity after the same flush that drains it, so against the side's own quiescence the
+     * hold adds nothing; what it changes is the initiator's contended linger, which a draining answer does not pay. A
+     * quiescence close never waits for what the kernel's TCP send buffer below the count still holds (custody-carry-policy
+     * §9's owed item): a drain is the flush returning, not the bytes leaving the radio.
      */
     fun answerHeld(
         answerLive: Boolean,
+        sinceDrainMs: Long?,
+        spanMs: Long,
         ageMs: Long,
         windowMs: Long,
-    ): Boolean = answerLive && ageMs < windowMs
+    ): Boolean = answerLive && (sinceDrainMs ?: ageMs) < spanMs && ageMs < windowMs
 }

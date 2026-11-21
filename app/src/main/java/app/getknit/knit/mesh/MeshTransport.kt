@@ -288,7 +288,32 @@ class LinkCarrier(
     // Whether [link] proved the peer's node id ([MeshTransport.linkProven]): only a round over such a link leaves a pending
     // release or a credited hand-off behind (§3, §6), whatever the digest it answers proved.
     val proven: Boolean = false,
+    // What [link] holds for the peer now, read in the same read as [link] so the counts are that link's; null when the
+    // plane can't say, which custody answers with the first round of each digest and no other (§2).
+    val outbound: LinkOutbound? = null,
 )
+
+/**
+ * What a link holds for one peer and has not sent ([LinkCarrier.outbound]): what custody cuts its next round on (the
+ * custody-carry-policy contract's §2, release on drain). Sender-local; nothing here moves a byte on the wire.
+ */
+class LinkOutbound(
+    // Frames, keys and digests accepted for the peer and not yet sent, whoever queued them: the link's own queue plus the
+    // buffer below it, estimated where the plane can't see it. A file's own bytes are never counted. [NOT_DRAINING] once
+    // the link's writer has ended, so a link that is going away is never read as drained.
+    val unwritten: Long,
+    // The rate the plane's estimate of the buffer below drains at, bytes a second, so custody can tell when [unwritten]
+    // will be under a round; null when the plane counts everything it holds, and signals [MeshTransport.outboundDrained].
+    val drainBytesPerSec: Long? = null,
+    // A file to or from the peer is queued or streaming on this link and the blob plane doesn't count it stalled: a round
+    // then carries only frames addressed to the peer, with their keys (§2, "a file comes first").
+    val fileMoving: Boolean = false,
+) {
+    companion object {
+        /** What [unwritten] reads once the link's writer ended: past any round, and safe to add an estimate to. */
+        const val NOT_DRAINING = Long.MAX_VALUE / 2
+    }
+}
 
 /**
  * What a contact's direct link may carry to and from one peer, as one snapshot of its rule (`mesh/inet/LinkPairFilter`,
@@ -471,6 +496,13 @@ interface MeshTransport {
      */
     val incomingDigests: Flow<ReceivedDigest> get() = emptyFlow()
 
+    /**
+     * The node id of a peer whose link's own queue fell under the plane's line or emptied ([LinkCarrier.outbound]): custody
+     * looks for its next round then. Conflated, emitted without suspending off the writer's thread, never from a link's
+     * close. Default empty: custody then looks every `ROUND_CHECK_MS` while it has an answer open to that peer.
+     */
+    val outboundDrained: Flow<String> get() = emptyFlow()
+
     fun start()
 
     fun stop()
@@ -647,7 +679,7 @@ interface MeshTransport {
     /**
      * The plane and link a send to [nodeId] would go over now, or null when nothing holds the peer: what custody stamps a
      * release with. Default: this plane, when it holds the peer. [CompositeMeshTransport] answers with the child [send]
-     * uses, Bluetooth first. Lock-free, and never calls into custody, as [linkToken].
+     * uses, Bluetooth first. Short, taking only the link's own locks (its [LinkCarrier.outbound]), and never calls into custody.
      */
     fun carrier(nodeId: String): LinkCarrier? =
         if (neighbors.value.any { it.nodeId == nodeId }) LinkCarrier(kind, linkToken(nodeId), linkProven(nodeId)) else null

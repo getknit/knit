@@ -44,6 +44,7 @@ import app.getknit.knit.fieldlog.FieldEvent
 import app.getknit.knit.fieldlog.FieldRecorder
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.ArrivingFile
+import app.getknit.knit.mesh.CustodyPace
 import app.getknit.knit.mesh.CustodyProgress
 import app.getknit.knit.mesh.DigestTracker
 import app.getknit.knit.mesh.FastPathDrop
@@ -83,6 +84,7 @@ import app.getknit.knit.mesh.wifiAwareSupport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -240,6 +242,12 @@ class WifiAwareTransport(
 
     private val _incomingDigests = MutableSharedFlow<ReceivedDigest>(extraBufferCapacity = 32)
     override val incomingDigests = _incomingDigests.asSharedFlow()
+
+    // A path's own queue fell under custody's Aware round or emptied ([FramedLink]'s `onDrained`, on its writer): custody
+    // cuts its next round then (custody-carry-policy §2, revision 13). Never suspends the writer: a burst past the buffer
+    // keeps the newest, and each is only a cue to look, so none carries what the link holds.
+    private val _outboundDrained = MutableSharedFlow<String>(extraBufferCapacity = 16, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    override val outboundDrained = _outboundDrained.asSharedFlow()
 
     // Wi-Fi Aware has a coordination-plane message channel (cues/fastFanout), so the composite routes the
     // fast-path (fastFanout/fastSend) here; a Bluetooth sibling with only persistent links leaves this false.
@@ -427,6 +435,15 @@ class WifiAwareTransport(
         override fun onFile(file: ReceivedFile) {
             // Dropped — a full buffer, or no collector yet (a value with no subscriber is discarded): nothing will take it.
             if (_incomingFiles.subscriptionCount.value == 0 || !_incomingFiles.tryEmit(file)) landing.take(file.fromNodeId, file.key)
+        }
+
+        // On the path's writer, outside its locks, never from its close: the drain [superviseLink]'s answer hold reads,
+        // and custody's cue to cut the next round.
+        fun onDrained() {
+            conn?.let { c ->
+                c.lastDrainAt = SystemClock.elapsedRealtime()
+                _outboundDrained.tryEmit(c.nodeId)
+            }
         }
 
         override fun onLinkDown(nodeId: String) {
@@ -4262,21 +4279,7 @@ class WifiAwareTransport(
             metrics.onLinkSealed()
         }
         val callbacks = ConnCallbacks()
-        val framed =
-            FramedLink(
-                nodeId = peerNodeId,
-                peer = Peer(peerNodeId, advert.protoVersion, advert.capabilities),
-                socket = link,
-                scope = scope,
-                cacheDir = appContext.cacheDir,
-                partials = partials,
-                metrics = metrics,
-                callbacks = callbacks,
-                now = SystemClock::elapsedRealtime, // share the supervisor's clock for quiescence
-                log = { msg -> Log.d(TAG, msg) },
-                landing = landing,
-                proven = proven,
-            )
+        val framed = framedLink(Peer(peerNodeId, advert.protoVersion, advert.capabilities), link, callbacks, proven)
         // Read before the path is in [peers]: whether a digest sync was wanted as it came up (false for a bulk-only path).
         val exchange = digestTracker.open(peerNodeId, digestWanted = digestSyncWanted(peerNodeId, storeDigest.current()))
         // A larger peer's path came up: the link to it is alive, so the responder's trust renews ([DigestTracker.onPathUp]).
@@ -4328,6 +4331,34 @@ class WifiAwareTransport(
     }
 
     /**
+     * The [FramedLink] a data path to [peer] runs over [link], its records forwarded through [callbacks]: one per path, so
+     * its object is the path's custody token ([NanLinkStamp]), and its drain under [DRAIN_LINE_BYTES] is custody's cue
+     * ([ConnCallbacks.onDrained]).
+     */
+    private fun framedLink(
+        peer: Peer,
+        link: LinkSocket,
+        callbacks: ConnCallbacks,
+        proven: Boolean,
+    ): FramedLink =
+        FramedLink(
+            nodeId = peer.nodeId,
+            peer = peer,
+            socket = link,
+            scope = scope,
+            cacheDir = appContext.cacheDir,
+            partials = partials,
+            metrics = metrics,
+            callbacks = callbacks,
+            now = SystemClock::elapsedRealtime, // share the supervisor's clock for quiescence
+            log = { msg -> Log.d(TAG, msg) },
+            landing = landing,
+            proven = proven,
+            drainLine = DRAIN_LINE_BYTES,
+            onDrained = callbacks::onDrained,
+        )
+
+    /**
      * Per-link supervisor that ends an ephemeral sync. **Both sides** disconnect on bidirectional quiescence
      * (no data — sent *or* received — for their idle threshold, never mid-file). The initiator's threshold
      * ([QUIESCENCE_MS]) is shorter so it normally drives teardown and records the sync (it alone consults that
@@ -4349,10 +4380,18 @@ class WifiAwareTransport(
             val held = now - conn.link.linkStartedAt
             // A live call's link is not idle between its bursts ([holdLink]); its window still ends it.
             val callHeld = linkHolds.isHeld(conn.nodeId)
-            // Nor is one custody is still answering over this plane in paced rounds a second apart (custody-carry-policy §2),
-            // up to SYNC_MAX_WINDOW_MS on either role: an idle close mid-answer would cut it ([NanLinkLife.answerHeld]). An
-            // answer Bluetooth carries holds no Aware path.
-            val answerHeld = NanLinkLife.answerHeld(custody.answerCarrier(conn.nodeId) == TransportKind.WifiAware, held, SYNC_MAX_WINDOW_MS)
+            // Nor is one custody still answers over this plane while the path drains (rounds are cut as it drains,
+            // custody-carry-policy §2): held while its last drain is within the side's own quiescence, so the initiator's
+            // contended linger never cuts an answer between rounds, and up to SYNC_MAX_WINDOW_MS on either role
+            // ([NanLinkLife.answerHeld]). A path that stopped draining is not held; an answer Bluetooth carries holds none.
+            val answerHeld =
+                NanLinkLife.answerHeld(
+                    answerLive = custody.answerCarrier(conn.nodeId) == TransportKind.WifiAware,
+                    sinceDrainMs = conn.lastDrainAt?.let { now - it },
+                    spanMs = if (isInitiator) QUIESCENCE_MS else RESPONDER_QUIESCENCE_MS,
+                    ageMs = held,
+                    windowMs = SYNC_MAX_WINDOW_MS,
+                )
             val done =
                 if (isInitiator) {
                     // Cut the post-backfill linger short when another pair is waiting on our single NDI, so a
@@ -5013,6 +5052,10 @@ class WifiAwareTransport(
         // Set once its exchange is judged ([judgeExchange]): the supervisor's close and the EOF that follows it are one end.
         val judged = AtomicBoolean(false)
 
+        // When [link]'s queue last fell under [DRAIN_LINE_BYTES] or emptied ([ConnCallbacks.onDrained], elapsedRealtime);
+        // null until it first does. Written on the link's writer, read by [superviseLink]'s answer hold.
+        @Volatile var lastDrainAt: Long? = null
+
         fun close() {
             reaperJob?.cancel()
             link.close()
@@ -5215,6 +5258,10 @@ class WifiAwareTransport(
         const val RESPONDER_QUIESCENCE_MS = 8_000L
         const val SYNC_MAX_WINDOW_MS = 30_000L
         const val RESPONDER_MAX_HOLD_MS = 45_000L
+
+        // The line a path's [FramedLink] signals its drain under: custody's Wi-Fi Aware round (custody-carry-policy §2,
+        // 524,288 B), so a drain is when the path can take the next round.
+        const val DRAIN_LINE_BYTES = CustodyPace.WIFI_AWARE_ROUND_BYTES.toLong()
 
         // How long a peer lingers in the smoothed [reachable] set after its last coordination-plane sighting.
         // Comfortably exceeds the idle cue heartbeat + rediscover cadence so the UI doesn't blink to

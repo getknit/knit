@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.bluetooth
 
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.LinkCarrier
+import app.getknit.knit.mesh.LinkOutbound
 import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.link.FramedLink
@@ -50,13 +51,14 @@ internal object LinkStamp {
     ): Boolean = links[nodeId]?.proven == true
 
     /**
-     * The carrier a send to [nodeId] would go over now: the token and the proof from **one** read of [links], so a #142
-     * replacement or an R3 displacement between two reads can never pair the old link with the new link's proof. Null
-     * with no link held.
+     * The carrier a send to [nodeId] would go over now: the token, the proof and [outbound]'s counts from **one** read of
+     * [links], so a #142 replacement or an R3 displacement between two reads can never pair the old link with the new
+     * link's proof or its queue (release on drain, contract §2). Null with no link held.
      */
     fun carrier(
         links: Map<String, FramedLink>,
         nodeId: String,
         kind: TransportKind,
-    ): LinkCarrier? = links[nodeId]?.let { LinkCarrier(kind, it, it.proven) }
+        outbound: (FramedLink) -> LinkOutbound? = { null },
+    ): LinkCarrier? = links[nodeId]?.let { LinkCarrier(kind, it, it.proven, outbound(it)) }
 }

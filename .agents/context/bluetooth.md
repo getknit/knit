@@ -69,6 +69,17 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   LE connections) only while that link *reported* ≤ 15 ms (`earned`; per link since ADR 2026-10.g24x), else 8jwn's
   4 KiB/s. On in release since 2026-10-08, its trial still owed. The trial is `scripts/ble-drain-trial.py --boost on|off`, and the oracle is both phones' HCI snoops read
   by `scripts/btsnoop-drain.py` — the sender's, since only it shows the queue.
+- **When touching `FramedLink.queuedBytes` / `handedDownBytes` / `drainLine` / `onDrained` / `fileMoving` /
+  `feedReadings`, `FeedMeter.stalled`, `StackEstimate`, `StackDrainPolicy`, `BluetoothMeshTransport.outboundOf` /
+  `custodyDrainRate` / `stackEstimates`, or `LinkStamp.carrier`'s `outbound`:** READ ADR 2026-11.bmks (release on drain)
+  and ADR 2026-09.tjfb. Custody cuts its next round when the link holds less than one round for the peer, and on
+  Bluetooth that count must include what the stack below holds (≥ 120 KB, unreadable): what the link handed down, less
+  what the link's rate has drained since. The rate is the feed's own (8jwn's pace, 2da4's boost while earned, 5buf's
+  measured drain clamped to the paced share whenever the link may have boosted and doesn't hold the boost now; a
+  Coded-dialed link with no PHY read prices as Coded; the link's own outgoing file takes its share), never a contract
+  constant. `fileMoving` is the blob plane's own 15 s stall rule both ways (`FeedMeter.STALL_MS`, the writer's oversleep
+  discounted), not `feed()`'s deadline. Counted only after the flush returned, never a file's bytes, a keepalive or a
+  tag; an ended writer reads `NOT_DRAINING`; the signal fires on crossing the line, never from `close()`.
 - **When touching `BluetoothMeshTransport.superviseAccepted`, `BleAdmissionPolicy`, `teardownLink`, `LinkEvents`,
   `neverSighted`, `LonelyDialPolicy` / `noLinkSince`, or what a held link scores for eviction:** READ ADR
   2026-09.shzv and ADR 2026-09.hj4a. A dialer presence holds is judged by the old tie-break, unchanged — the

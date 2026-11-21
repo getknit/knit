@@ -33,11 +33,13 @@ import app.getknit.knit.mesh.BleBlindDrop
 import app.getknit.knit.mesh.BleRotation
 import app.getknit.knit.mesh.BleSideDrop
 import app.getknit.knit.mesh.ConnectFailReason
+import app.getknit.knit.mesh.CustodyPace
 import app.getknit.knit.mesh.FileFeed
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.FileProgress
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.LinkCarrier
+import app.getknit.knit.mesh.LinkOutbound
 import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
@@ -1207,7 +1209,66 @@ class BluetoothMeshTransport internal constructor(
     // The default reads [links] twice (token, then proof); one read here, so a replacement between them cannot pair the
     // old link with the new one's proof. Gated on [neighbors] as the default is.
     override fun carrier(nodeId: String): LinkCarrier? =
-        if (neighbors.value.any { it.nodeId == nodeId }) LinkStamp.carrier(links, nodeId, kind) else null
+        if (neighbors.value.any { it.nodeId == nodeId }) LinkStamp.carrier(links, nodeId, kind, ::outboundOf) else null
+
+    // Each link's estimate of what its stack buffer holds of the counted bytes ([StackEstimate]): made at registration,
+    // dropped with the link, so a replaced link starts its own.
+    private val stackEstimates = ConcurrentHashMap<FramedLink, StackEstimate>()
+
+    // A link's own queue fell under one Bluetooth round or emptied (FramedLink's `onDrained`, on its writer): custody looks
+    // then. Lossy past its buffer: a lost poke costs custody a look on its fallback, never a round.
+    private val drained = MutableSharedFlow<String>(extraBufferCapacity = DRAINED_BUFFER, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    override val outboundDrained: Flow<String> = drained.asSharedFlow()
+
+    /**
+     * What [link] holds for its peer and has not sent (the custody-carry-policy contract's §2, release on drain): its own
+     * queue, plus what its [StackEstimate] says the stack below still holds at the rate [custodyDrainRate] gives, which
+     * custody also reads to time its next look. Read in that order, so a flush between the two reads counts its bytes
+     * twice rather than never. A link whose writer ended reads [LinkOutbound.NOT_DRAINING]; one with no rate can't be
+     * estimated, and says nothing (null: one round a digest).
+     */
+    private fun outboundOf(link: FramedLink): LinkOutbound? {
+        val queued = link.queuedBytes // before handedDownBytes: see [stackOutbound]
+        if (queued >= FramedLink.NOT_DRAINING) return LinkOutbound(LinkOutbound.NOT_DRAINING)
+        val feed = link.feedReadings() // one hold of the link's lock for all it says of its feed
+        val rate = custodyDrainRate(link, feed)
+        return stackOutbound(queued, link.handedDownBytes, rate, stackEstimates[link], elapsed(), feed.fileMoving)
+    }
+
+    /**
+     * The rate [link]'s stack drains at for custody's estimate ([StackDrainPolicy.rate]): what its file feed keeps for it
+     * now — Coded's pace; a windowed link's last measured drain, no faster than its paced share while it is off the boost
+     * it may have measured that under; the boosted share while it holds the boost; else its share of the base budget beside
+     * the paced feeds going now, times its last stream's shortfall. A file the link streams itself takes its share too.
+     *
+     * A link whose PHY was never read (no handle, or a controller that answered nothing: yvn6) is priced as Coded when our
+     * dial went out on Coded ([codedDialed]), else as 1M, as its feed is. The boosted share reads the LE count last counted
+     * ([leLinks]), never a fresh `getConnectedDevices`: this runs on custody's look.
+     */
+    private fun custodyDrainRate(
+        link: FramedLink,
+        feed: FramedLink.FeedReadings,
+    ): Long? {
+        val phy = linkPhy[link] ?: if (link in codedDialed) LinkPhy.CODED else LinkPhy.UNKNOWN
+        val tuning = CodedPhyDiag.tuning
+        val own = if (feed.feedingOut) 1 else 0
+        val feeding = { pacedFeedingLinks().count { it !== link } + 1 + own }
+        return StackDrainPolicy.rate(
+            codedPace = if (phy == LinkPhy.CODED) CodedPhyPolicy.pace(phy, tuning).bytesPerSec else null,
+            drained = feed.lastDrain,
+            windowed = windowed(link),
+            otherWindowedFeeds = { feedingLinks().count { it !== link && it.txWindowed } },
+            ownFeed = feed.feedingOut,
+            drainRatio = feed.drainRatio,
+            mayHaveBoosted = boosts[link] != null,
+            earned = earned(link),
+            boosted = { CodedPhyPolicy.pace(phy, tuning, feeding(), earned = true, leLinks = maxOf(leLinks, links.size)).bytesPerSec },
+            pacedShare = { CodedPhyPolicy.pace(phy, tuning, feeding(), earned = false, leLinks = links.size).bytesPerSec },
+        )
+    }
+
+    // The links our own dial reached on the Coded PHY: what [custodyDrainRate] prices a link whose PHY was never read as.
+    private val codedDialed = ConcurrentHashMap.newKeySet<FramedLink>()
 
     override fun fileArrivingFrom(nodeId: String): Boolean = links[nodeId]?.rxInProgress ?: false
 
@@ -4022,6 +4083,7 @@ class BluetoothMeshTransport internal constructor(
                     dialStartedAt = startedAt,
                     dialKey = dialKey,
                     form = form,
+                    dialedCoded = viaCoded,
                 )
             if (form.blinded) scope.launch(worker) { onTagDialed(framed, form, dialed.reply.told, provenId, key, device.address) }
         }
@@ -4678,6 +4740,8 @@ class BluetoothMeshTransport internal constructor(
         dialKey: String? = null,
         // The form the peer advertises, when known here: the one we dialed, or an accepted dialer's honoured `t`.
         form: AdvertOrder.Form? = null,
+        // Whether our dial went out on the Coded PHY; false for a link the peer dialed.
+        dialedCoded: Boolean = false,
     ): FramedLink {
         val events = LinkEvents(ProvenDialStreak(pending = proven && dialStartedAt != null), dialStartedAt ?: 0L, dialKey)
         val framed =
@@ -4705,8 +4769,12 @@ class BluetoothMeshTransport internal constructor(
                 onFirstRecord = events::onFirstRecord,
                 onReadEnd = events::onReadEnd,
                 onTagNext = { bytes -> onTagNext(events.link, proven, advert, bytes) },
+                drainLine = CustodyPace.BLUETOOTH_ROUND_BYTES.toLong(),
+                onDrained = { drained.tryEmit(nodeId) },
             )
         events.link = framed
+        stackEstimates[framed] = StackEstimate(elapsed())
+        if (dialedCoded) codedDialed.add(framed)
         // Before framed.start(): from here a fault on the live link (a frame that won't open, an inner KEY_SHARE / SEALED)
         // counts once, on the socket; before it, the handshake's outcome was the only count (#286).
         val sealed = carrier is SealedLinkSocket
@@ -4740,6 +4808,8 @@ class BluetoothMeshTransport internal constructor(
             if (prevAddress != null && prevDevice != null) orphans.onLinkEnded(prevAddress, nodeId, prevDevice, elapsed())
             linkPhy.remove(prev)
             lastPace.remove(prev)
+            stackEstimates.remove(prev)
+            codedDialed.remove(prev)
             linkForms.remove(prev)
             dialedByMe.remove(prev)
             synchronized(lock) {
@@ -4926,6 +4996,8 @@ class BluetoothMeshTransport internal constructor(
         // A link that counted as Aware evidence (on 1M/2M) leaves its peer heard from its end, not from an old sighting.
         awareCandidates.onLinkEnded(nodeId, counted = linkPhyNear(linkPhy.remove(fl)), elapsed())
         lastPace.remove(fl)
+        stackEstimates.remove(fl)
+        codedDialed.remove(fl)
         val dropStatus =
             phyControls.remove(fl)?.let { control ->
                 control.status().also { notePhyDrop(it, reason, form) }.also { control.close() }
@@ -5810,6 +5882,9 @@ class BluetoothMeshTransport internal constructor(
 
         // How often a feed recounts this phone's LE connections for the boosted budget ([leLinkCount]).
         private const val LE_COUNT_MS = 10_000L
+
+        // How many drained pokes wait for custody's collector: one per peer of a full radio, and a lost one costs a look.
+        private const val DRAINED_BUFFER = 16
 
         // How long a channel that never became a link waits before its ACL is armed and watched ([armUnlinked]): the
         // ACL's connect edge comes from the Bluetooth app's process and can trail the channel.

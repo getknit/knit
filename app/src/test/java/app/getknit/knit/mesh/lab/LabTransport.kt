@@ -7,6 +7,7 @@ import app.getknit.knit.mesh.FileFeed
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.LinkCarrier
+import app.getknit.knit.mesh.LinkOutbound
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.OwnPresenceKey
 import app.getknit.knit.mesh.PartialBlobs
@@ -18,6 +19,7 @@ import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.bluetooth.BleFastRoutePolicy
 import app.getknit.knit.mesh.bluetooth.BleInbound
 import app.getknit.knit.mesh.furthestByKey
+import app.getknit.knit.mesh.link.FeedMeter
 import app.getknit.knit.mesh.link.FileHeaderWire
 import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.link.FrameKey
@@ -37,6 +39,7 @@ import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -397,6 +400,32 @@ class LabTransport(
         var airedSeq = 0L
         var queuedBytes = 0L
 
+        // Custody's read of this direction ([LabTransport.carrier]'s outbound, the custody-carry-policy contract's §2), under
+        // [airLock]: frame and digest bytes the writer delivered, so the stack model below knows what has gone down and
+        // through. [stackBytes] above zero has the head of the queue that many bytes deep count as handed down to a buffer
+        // below the link's count, as Bluetooth's stack holds what `FramedLink` flushed ([LabTransport.stackBelow]); with
+        // [stackEstimated] the pipe adds its estimate of that buffer back, drained at the air's rate, as the plane does.
+        var deliveredFrameBytes = 0L
+
+        @Volatile
+        var stackBytes = 0L
+
+        @Volatile
+        var stackEstimated = true
+        var estimateBytes = 0L
+        var estimateAtNanos = 0L
+        var handedDownSeen = 0L
+
+        // Bytes this direction reads as unwritten whatever it delivers ([LabTransport.countStuck]): a link whose count is
+        // wedged, as a writer that stopped would leave it.
+        @Volatile
+        var stuckBytes = 0L
+
+        // When a file last parked on this pipe ([parkFile], a stream's park), on the node's clock: a parked file is stalled
+        // once nothing has moved for FeedMeter.STALL_MS.
+        @Volatile
+        var filesParkedAt = Long.MIN_VALUE
+
         // Wakes the writer when a record is queued; closed by a cut.
         val airWake = Channel<Unit>(Channel.CONFLATED)
         var writer: Job? = null
@@ -664,6 +693,7 @@ class LabTransport(
         proven: Boolean = true,
     ) {
         if (other.nodeId == nodeId) return
+        requirePlaneReadable(other, air)
         val token = LabLinkToken(proven)
         val mine =
             Pipe(other, token).also {
@@ -722,9 +752,125 @@ class LabTransport(
      * this transport's own kind, as before.
      */
     override fun carrier(nodeId: String): LinkCarrier? {
-        val base = super.carrier(nodeId) ?: return null
-        val plane = pipes[nodeId]?.air?.plane ?: return base
-        return LinkCarrier(plane, base.link, base.proven)
+        val pipe = pipes[nodeId] ?: return null
+        if (neighbors.value.none { it.nodeId == nodeId }) return null
+        return LinkCarrier(pipe.air?.plane ?: kind, pipe.link, pipe.link.proven, outboundOf(pipe, nodeId))
+    }
+
+    /**
+     * What [pipe] has accepted for [nodeId] and not delivered, as a plane reports it to custody ([LinkOutbound], the
+     * custody-carry-policy contract's §2): on an air pipe the frames and the pending digest still queued or airing (a
+     * file's bytes never); on a plain pipe, which delivers as it sends, what a [hold] parked. With [stackBelow], the
+     * bytes the count handed down to the buffer below come off it, and with an estimate the pipe adds back its own
+     * guess of that buffer, drained at the air's rate, which it then reports as the rate. [LinkOutbound.NOT_DRAINING]
+     * once a cut closed the pipe. [LinkOutbound.fileMoving] while a file to or from the peer is queued or airing on the
+     * link, or parked on it less than [FeedMeter.STALL_MS] ago by the node's clock (the blob plane's stall rule).
+     */
+    private fun outboundOf(
+        pipe: Pipe,
+        nodeId: String,
+    ): LinkOutbound {
+        val read = countedOutbound(pipe, nodeId)
+        val stuck = pipe.stuckBytes
+        if (stuck <= 0 || read.unwritten >= LinkOutbound.NOT_DRAINING) return read
+        return LinkOutbound(read.unwritten + stuck, read.drainBytesPerSec, read.fileMoving)
+    }
+
+    private fun countedOutbound(
+        pipe: Pipe,
+        nodeId: String,
+    ): LinkOutbound {
+        val back = pipe.target.pipes[this.nodeId]
+        val moving = filesMoving(pipe) || (back != null && pipe.target.filesMoving(back))
+        // A held frame was accepted and not delivered, on either kind of pipe: it waits above any buffer below.
+        val held = synchronized(pipe.held) { pipe.held.sumOf { wireBytes(it) } }
+        val air = pipe.air ?: return LinkOutbound(held, fileMoving = moving)
+        synchronized(pipe.airLock) {
+            if (pipe.airClosed) return LinkOutbound(LinkOutbound.NOT_DRAINING)
+            val queued =
+                (pipe.airQueue + listOfNotNull(pipe.inHand)).sumOf { r ->
+                    when {
+                        r.file != null -> 0L
+                        r.wire == null && r === pipe.inHand -> r.bytes
+                        r.wire == null -> (pipe.pendingDigest?.sumOf { it.length + 1L } ?: 0L) + air.recordOverheadBytes
+                        else -> r.bytes
+                    }
+                }
+            val stack = pipe.stackBytes
+            if (stack <= 0) return LinkOutbound(held + queued, fileMoving = moving)
+            // Handed down so far: everything delivered, and the queue's head as deep as the buffer below.
+            val below = minOf(stack, queued)
+            val handedDown = pipe.deliveredFrameBytes + below
+            val now = System.nanoTime()
+            val sinceMs = if (pipe.estimateAtNanos == 0L) 0L else (now - pipe.estimateAtNanos).coerceAtLeast(0) / NANOS_PER_MS
+            val drained = sinceMs * air.bytesPerSecond / MS_PER_S
+            pipe.estimateBytes = (pipe.estimateBytes - drained).coerceAtLeast(0) + (handedDown - pipe.handedDownSeen).coerceAtLeast(0)
+            pipe.estimateAtNanos = now
+            pipe.handedDownSeen = maxOf(pipe.handedDownSeen, handedDown)
+            val counted = held + queued - below
+            if (!pipe.stackEstimated) return LinkOutbound(counted, fileMoving = moving)
+            return LinkOutbound(counted + pipe.estimateBytes, drainBytesPerSec = air.bytesPerSecond, fileMoving = moving)
+        }
+    }
+
+    // Whether a file on [pipe] (this transport's, toward its target) is queued or airing, or parked and not yet stalled.
+    private fun filesMoving(pipe: Pipe): Boolean {
+        if (pipe.air != null && synchronized(pipe.airLock) { (pipe.airQueue + listOfNotNull(pipe.inHand)).any { it.file != null } }) {
+            return true
+        }
+        val parked = synchronized(pipe.heldFiles) { pipe.heldFiles.isNotEmpty() }
+        return parked && clock() - pipe.filesParkedAt < FeedMeter.STALL_MS
+    }
+
+    private fun wireBytes(wire: WireEnvelope): Long = WireCodec.encodeWire(wire).size.toLong() + LinkAir.RECORD_HEADER_BYTES
+
+    private val _outboundDrained =
+        MutableSharedFlow<String>(extraBufferCapacity = DRAINED_BUFFER, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
+    /**
+     * The peer's node id each time one of this node's pipes delivered a frame or a digest to it, or a [release] let held
+     * frames through ([LinkOutbound]): what custody looks for its next round on. Never for a file, never from a cut.
+     */
+    override val outboundDrained: Flow<String> = _outboundDrained.asSharedFlow()
+
+    // A link whose air names a plane ([LinkAir.plane]) reports that plane from [carrier] while this transport's own kind
+    // stays `Other`. A composite asks `carries` of the child whose kind is the plane, which no lab child is, so custody
+    // would read every such link as ended: refused behind a composite (a node with a board or a link plane).
+    private fun requirePlaneReadable(
+        other: LabTransport,
+        air: LinkAir?,
+    ) {
+        require(air?.plane == null || !(handledDownstream || other.handledDownstream)) {
+            "a ${air?.plane} air link to a node behind a composite: its carries() would never reach the radio ($nodeId–${other.nodeId})"
+        }
+    }
+
+    /**
+     * Has this node's link to [to] read [bytes] more unwritten than it holds from now on (0 lifts it), while it still
+     * delivers what it is given: a link whose count is wedged, which custody must neither cut rounds into nor credit.
+     */
+    fun countStuck(
+        to: LabTransport,
+        bytes: Long,
+    ) {
+        pipe(to).stuckBytes = bytes
+    }
+
+    /**
+     * Gives this node's link to [to] a buffer below its count, [bytes] deep: the head of the air queue that deep reads as
+     * handed down, as `FramedLink` flushes into Bluetooth's stack, while the air still has to carry it. With [estimated]
+     * the pipe reports its own estimate of that buffer, drained at the air's rate, as Bluetooth's plane does; without, it
+     * reports only the count above, a plane that cannot see below. An air link only.
+     */
+    fun stackBelow(
+        to: LabTransport,
+        bytes: Long,
+        estimated: Boolean = true,
+    ) {
+        val pipe = pipe(to)
+        checkNotNull(pipe.air) { "$nodeId's link to ${to.nodeId} has no air: nothing waits below its count" }
+        pipe.stackEstimated = estimated
+        pipe.stackBytes = bytes
     }
 
     /** Whether [link] is still this node's link to [nodeId] on [kind]: the plane [carrier] reports for it now. */
@@ -851,8 +997,10 @@ class LabTransport(
     fun linkedTo(other: LabTransport): Boolean = pipes.containsKey(other.nodeId)
 
     /**
-     * Suspends until this node has answered every custody digest a peer advertised to it: each reply's frames are
-     * sent, and a send returns once the far end holds the frame, so the far end's [awaitInboundDrained] after this
+     * Suspends until this node has answered every custody digest a peer advertised to it and every answer it opened has
+     * ended (rounds go on the link's drain, the custody-carry-policy contract's §2, so the collector's return is only the
+     * first): each reply's frames are sent, and a send returns once the far end holds the frame, so the far end's
+     * [awaitInboundDrained] after this
      * means the exchange has landed. On an air link a digest still on the air is not counted yet, nor is a reply's frame
      * delivered when it is sent: [MeshLab.awaitAcquainted]'s loop through [awaitInboundDrained] closes both. A digest
      * handed to a node whose manager is not collecting is never answered, and this fails on it rather than waits forever:
@@ -863,7 +1011,24 @@ class LabTransport(
         val answered =
             withTimeoutOrNull(MeshLab.AWAIT_MS) { while (digestsAnswered.get() < digestsIn.get()) delay(1) } != null
         check(answered) { "$nodeId: the manager never answered its custody digests (${digestsAnswered.get()} of ${digestsIn.get()})" }
+        // The collector cuts an answer's first round; the rest go on the link's drain, so the answer is sent once it ended.
+        val ended = withTimeoutOrNull(MeshLab.AWAIT_MS) { while (answersLive()) delay(1) } != null
+        check(ended) {
+            "$nodeId: a custody answer it opened never ended within ${MeshLab.AWAIT_MS} ms: ${answersOpen()} " +
+                "(a held pipe or a stalled link holding its rounds?)"
+        }
     }
+
+    /**
+     * Whether this node's custody still has an answer open to any lab node: set by [MeshLab.node] over the node's carry
+     * ledger, read by [awaitDigestsAnswered]. None until set, as for a transport a test builds bare.
+     */
+    @Volatile
+    internal var answersLive: () -> Boolean = { false }
+
+    /** The answers still open, each `peer: plane` with what its link reads now: [awaitDigestsAnswered]'s failure says them. */
+    @Volatile
+    internal var answersOpen: () -> String = { "" }
 
     /** From now on, frames this node sends [to] are parked instead of delivered — until [release]. */
     fun hold(to: LabTransport) {
@@ -1276,6 +1441,8 @@ class LabTransport(
                 }
             }
         }
+        // A plain pipe's release is its delivery: what was held for the peer has gone, so custody may look again.
+        if (pipe.air == null && frames.isNotEmpty()) _outboundDrained.tryEmit(pipe.target.nodeId)
     }
 
     /**
@@ -1379,18 +1546,26 @@ class LabTransport(
         key: String?,
     ) {
         when {
-            pipe.lossy(out) -> lost += out
+            pipe.lossy(out) -> {
+                lost += out
+            }
 
             // A held frame is judged by the memo at [release], not here.
-            pipe.park(out) -> Unit
+            pipe.park(out) -> {}
 
-            pipe.air != null -> enqueueAir(pipe, out, key, VIA_LINK)
+            pipe.air != null -> {
+                enqueueAir(pipe, out, key, VIA_LINK)
+            }
 
-            doorGone(pipe) -> Unit
+            doorGone(pipe) -> {}
 
-            !crosses(pipe, key, VIA_LINK) -> Unit
+            !crosses(pipe, key, VIA_LINK) -> {}
 
-            else -> throughDoor(pipe, out)?.let { pipe.target.deliver(pipe, this, it, VIA_LINK) }
+            else -> {
+                throughDoor(pipe, out)?.let { pipe.target.deliver(pipe, this, it, VIA_LINK) }
+                // Delivered as it was sent: nothing waits on this link for the peer, so custody may look again.
+                _outboundDrained.tryEmit(pipe.target.nodeId)
+            }
         }
     }
 
@@ -1542,7 +1717,10 @@ class LabTransport(
         pipe: Pipe,
         received: ReceivedFile,
     ): Boolean {
-        if (pipe.parkFile(received)) return true
+        if (pipe.parkFile(received)) {
+            pipe.filesParkedAt = clock()
+            return true
+        }
         if (pipe.air != null) return enqueueFile(pipe, received)
         deliverFile(pipe.target, received)
         chaos?.jitter()
@@ -1601,6 +1779,7 @@ class LabTransport(
         other: LabTransport,
         air: LinkAir,
     ) {
+        requirePlaneReadable(other, air)
         for (pipe in listOfNotNull(pipes[other.nodeId], other.pipes[nodeId])) {
             synchronized(pipe.airLock) { if (pipe.air != null && !pipe.airClosed) pipe.air = air }
             pipe.airWake.trySend(Unit)
@@ -1684,6 +1863,7 @@ class LabTransport(
                         stream.begin()
                         stream.feedTo(until)
                         pipe.heldFiles += HeldFile.Streaming(stream)
+                        pipe.filesParkedAt = clock()
                         true
                     }
                 }
@@ -1692,7 +1872,10 @@ class LabTransport(
         files += line
         stream.begin()
         val received = stream.land() ?: return true // refused at the receiver: the link carried it for nothing
-        if (pipe.parkFile(received)) return true
+        if (pipe.parkFile(received)) {
+            pipe.filesParkedAt = clock()
+            return true
+        }
         deliverFile(pipe.target, received)
         chaos?.jitter()
         return true
@@ -1969,48 +2152,70 @@ class LabTransport(
                 // answer included, is told after it with a later time.
                 val at = System.nanoTime()
                 val file = record.file
-                if (file != null) {
-                    aired.bytes.addAndGet(record.bytes)
-                    aired.records.incrementAndGet()
-                    aired.recordWait((at - record.queuedAtNanos) / NANOS_PER_MS)
-                    tap { AiredRecord(target.nodeId, at, record.bytes, AiredRecord.Kind.FILE) }
-                    target.markLanding(nodeId, file.key, ArrivingFile(file.key, File(file.path).length(), total = null))
-                    check(target._incomingFiles.tryEmit(file)) { "the file buffer refused ${file.key}" }
-                    target.airInbound.decrementAndGet()
-                    return@synchronized false
-                }
-                val wire = record.wire
-                val door = pipe.door
-                val crossed = if (wire == null || door == null) wire else door.cross(wire)
-                if (wire != null && crossed == null) {
-                    aired.cut.incrementAndGet()
-                    FrameKey.ofSigned(wire)?.let { aired.cutKeys += it }
-                    target.airInbound.decrementAndGet()
-                    return@synchronized true
-                }
-                aired.bytes.addAndGet(record.bytes)
-                aired.records.incrementAndGet()
-                aired.recordWait((at - record.queuedAtNanos) / NANOS_PER_MS)
-                tap {
-                    if (wire != null) {
-                        AiredRecord(target.nodeId, at, record.bytes, AiredRecord.Kind.FRAME, wire = wire)
-                    } else {
-                        AiredRecord(target.nodeId, at, record.bytes, AiredRecord.Kind.DIGEST, digestIds = record.ids)
-                    }
-                }
-                if (crossed != null) {
-                    target.deliverNow(pipe, this, crossed, record.via)
-                } else {
-                    target.airDigestsIn += record.ids
-                    target.digestsIn.incrementAndGet()
-                    val digest = ReceivedDigest(nodeId, record.ids, proven = pipe.link.proven, link = pipe.link)
-                    check(target._incomingDigests.tryEmit(digest)) { "an unbounded flow refused a digest" }
-                }
-                target.airInbound.decrementAndGet()
-                false
+                if (file != null) landAiredFile(target, record, file, at) else landAiredRecord(pipe, record, at)
             }
+        if (record.file == null) _outboundDrained.tryEmit(target.nodeId)
         if (!doorFailed) return true
         if (pipes[target.nodeId] === pipe) disconnect(target)
+        return false
+    }
+
+    // [deliverAir]'s frame or digest: through the door, if the link has one, to the target. True when the door failed under
+    // it, which takes the link down once the lock is let go. Under the sending pipe's air lock.
+    private fun landAiredRecord(
+        pipe: Pipe,
+        record: AirRecord,
+        at: Long,
+    ): Boolean {
+        val target = pipe.target
+        val wire = record.wire
+        val door = pipe.door
+        val crossed = if (wire == null || door == null) wire else door.cross(wire)
+        // Off the link's count either way: delivered, or lost with a door that failed.
+        pipe.deliveredFrameBytes += record.bytes
+        if (wire != null && crossed == null) {
+            aired.cut.incrementAndGet()
+            FrameKey.ofSigned(wire)?.let { aired.cutKeys += it }
+            target.airInbound.decrementAndGet()
+            return true
+        }
+        aired.bytes.addAndGet(record.bytes)
+        aired.records.incrementAndGet()
+        aired.recordWait((at - record.queuedAtNanos) / NANOS_PER_MS)
+        tap {
+            if (wire != null) {
+                AiredRecord(target.nodeId, at, record.bytes, AiredRecord.Kind.FRAME, wire = wire)
+            } else {
+                AiredRecord(target.nodeId, at, record.bytes, AiredRecord.Kind.DIGEST, digestIds = record.ids)
+            }
+        }
+        if (crossed != null) {
+            target.deliverNow(pipe, this, crossed, record.via)
+        } else {
+            target.airDigestsIn += record.ids
+            target.digestsIn.incrementAndGet()
+            val digest = ReceivedDigest(nodeId, record.ids, proven = pipe.link.proven, link = pipe.link)
+            check(target._incomingDigests.tryEmit(digest)) { "an unbounded flow refused a digest" }
+        }
+        // Counted in at the target ([received]) before it stops counting as on the air.
+        target.airInbound.decrementAndGet()
+        return false
+    }
+
+    // [deliverAir]'s file: its bytes have aired, so the receiver's stack has it whole. Under the sending pipe's air lock.
+    private fun landAiredFile(
+        target: LabTransport,
+        record: AirRecord,
+        file: ReceivedFile,
+        at: Long,
+    ): Boolean {
+        aired.bytes.addAndGet(record.bytes)
+        aired.records.incrementAndGet()
+        aired.recordWait((at - record.queuedAtNanos) / NANOS_PER_MS)
+        tap { AiredRecord(target.nodeId, at, record.bytes, AiredRecord.Kind.FILE) }
+        target.markLanding(nodeId, file.key, ArrivingFile(file.key, File(file.path).length(), total = null))
+        check(target._incomingFiles.tryEmit(file)) { "the file buffer refused ${file.key}" }
+        target.airInbound.decrementAndGet()
         return false
     }
 
@@ -2137,6 +2342,9 @@ class LabTransport(
         const val VIA_FILE = "file"
         const val ARM_POLL_MS = 50L
         const val NANOS_PER_MS = 1_000_000L
+
+        // A drain signal is a hint to look again: a burst of them keeps the newest, never suspends the writer.
+        const val DRAINED_BUFFER = 64
         const val MS_PER_S = 1_000L
 
         /** One counter across every transport in the JVM, so two nodes' send logs interleave by time. */

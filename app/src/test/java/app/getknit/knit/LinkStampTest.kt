@@ -8,6 +8,8 @@ import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.bluetooth.LinkStamp
+import app.getknit.knit.mesh.bluetooth.StackEstimate
+import app.getknit.knit.mesh.bluetooth.stackOutbound
 import app.getknit.knit.mesh.link.FramedLink
 import app.getknit.knit.mesh.link.LinkCallbacks
 import app.getknit.knit.mesh.link.LinkSocket
@@ -133,6 +135,33 @@ class LinkStampTest {
     }
 
     @Test
+    fun aReplacedLinkReadsItsOwnCounts() {
+        // The plane's estimates, one per link as `registerLink` makes them: the replacement starts its own.
+        val estimates = HashMap<FramedLink, StackEstimate>()
+        val outbound = { link: FramedLink ->
+            stackOutbound(link.queuedBytes, link.handedDownBytes, RATE, estimates[link], now = 0L, fileMoving = link.fileMoving)
+        }
+        val old = register(proven = true).also { estimates[it] = StackEstimate(0L) }
+        old.send(ByteArray(300)) // never started: it stays queued on the old link
+        val before = LinkStamp.carrier(links, PEER, TransportKind.Bluetooth, outbound)!!
+        assertSame(old, before.link)
+        assertEquals(300L, before.outbound!!.unwritten)
+
+        val next = register(proven = true).also { estimates[it] = StackEstimate(0L) } // #142's replacement under the id
+        val after = LinkStamp.carrier(links, PEER, TransportKind.Bluetooth, outbound)!!
+        assertSame(next, after.link)
+        assertEquals("the new link's queue, not the old one's", 0L, after.outbound!!.unwritten)
+        assertEquals(RATE, after.outbound.drainBytesPerSec)
+        old.close()
+    }
+
+    @Test
+    fun aCarrierWithNoReadSaysNothingOfItsQueue() {
+        register(proven = true)
+        assertNull(LinkStamp.carrier(links, PEER, TransportKind.Bluetooth)!!.outbound)
+    }
+
+    @Test
     fun noLinkIsNoToken() {
         assertNull(LinkStamp.linkToken(links, PEER))
         val link = register(proven = true)
@@ -190,5 +219,6 @@ class LinkStampTest {
 
     private companion object {
         const val PEER = "peer-b"
+        const val RATE = 4_096L
     }
 }

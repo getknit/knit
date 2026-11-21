@@ -310,22 +310,35 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   is additive. Only the global cap's choice of row reads `spread`; the event side runs under the repository's mutex and
   never suspends, and the ledger asks the transport's links (`MeshTransport.carries`) with its own lock released. Unit: `CarryLedgerTest`,
   `ForwardSyncTest`'s direct-link and proven-digest cases; lab: `DirectLinkPushLabTest`.
-- **When touching how a digest is answered — `ForwardSync.onDigest` / `serveDue` / `nextDueAt` / `readRosters`,
-  `CustodyPace` / `RoundPlan`, `IndexedFrame` / `ForwardStore.liveIndex` / `ForwardDao.liveIndex`, `CarryLedger.noteRoster`,
-  `MeshManager.serveCustodyRounds`, `LabLimits.custodyPace` — or the 60 s re-offer's back-off (`ForwardSync.reoffer` /
+- **When touching how a digest is answered — `ForwardSync.onDigest` / `serveDue` / `onDrained` / `nextDueAt` /
+  `readRosters`, `CustodyPace` / `RoundPlan` / `ROUND_CHECK_MS` / `SIGNAL_FALLBACK_MS`, `ForwardSync.CUSTODY_RETRY_MS`,
+  `LinkCarrier.outbound` / `LinkOutbound` / `MeshTransport.outboundDrained` as custody reads them, `IndexedFrame` /
+  `ForwardStore.liveIndex` / `ForwardDao.liveIndex`, `CarryLedger.noteRoster`, `MeshManager.serveCustodyRounds` /
+  `serveCustodyRoundsPeriodically`, `LabLimits.custodyPace` — or the 60 s re-offer's back-off (`ForwardSync.reoffer` /
   `REOFFER_MS` / `REOFFER_MAX_MS`, `MeshManager.reofferToNeighbors`' `force`, `LabNode.reoffer` / `tick`):** READ the
-  custody-carry-policy contract §1, §2 and §7 (its ADR is still owed, a draft until then). One answer per peer, cut in
-  rounds from custody's index (never a decode of every row), tiers profiles → addressed to the peer → its groups by the
-  frame's own roster (read once at store time, ≤ 8 members) → the rest; the carrying plane's budget (Bluetooth's whenever
-  Bluetooth holds the peer), first pick always, stop never skip; a newer digest never brings a round forward; ends on
-  nothing left, no radio (or no view), or 120 s after its digest. Every set an answer keeps is trimmed to custody's live
-  ids each round; a release is forgotten at the first digest `JUDGE_AFTER_MS` after it (revision 7), and then the digest
-  and the memo decide. An unproven digest never overwrites a proven answer, and a round leaves pending and a credit only
-  over a link that proved the peer (`LinkCarrier.proven`, `MeshTransport.linkProven`); a round with no carrier records
-  nothing. A key goes ahead once per answer, charged to its round. The tick's custody digest backs off 60 → 600 s
-  while offers draw nothing, a frame kept off the peer's link resets it, the link-up offer is never held, and only the
-  digest is held. The lab runs unpaced by default; a pace scenario sets `custodyPace` and drives `serveCustodyRounds`.
-  Unit: `ForwardSyncTest`'s round, tier and re-offer cases, `CustodyConstantsTest`.
+  custody-carry-policy contract §1, §2 (revisions 13 to 16, release on drain) and §7 (ADR 2026-11.bmks and its
+  release-on-drain amendment, a draft until accepted). One answer per peer, cut in rounds from custody's index (never a
+  decode of every row), tiers profiles → addressed to the peer → its groups by the frame's own roster (read once at store
+  time, ≤ 8 members) → the rest; the carrying plane's budget (Bluetooth's whenever Bluetooth holds the peer), first pick
+  always, stop never skip. No clock paces an answer: the first round goes at the digest, each next one as soon as the
+  carrying link holds under one round unwritten (`LinkOutbound.unwritten`, the plane's count with its estimate of the
+  buffer below), looked for on the link's drain signal, at its estimate's time (capped at `SIGNAL_FALLBACK_MS`), or every
+  `ROUND_CHECK_MS` while a file holds the answer or nothing holds the peer; a look reads every link before the store and
+  the index once. A link that can't say (`outbound` null) gets the first round of each digest only; a newer digest cuts
+  no round of its own. While a file moves on the link (`LinkOutbound.fileMoving`, stalls excluded), a round carries tier 2
+  and its keys only. Endings (no radio or no view, 120 s after the latest digest) are judged at every look before the
+  link's count. A round's credit (and, for a proven answer, its pending in the memo, and its release's written stamp) comes
+  at the first look that finds its own link (token and plane) under a round, if that link still carries the peer; dropped
+  when the link ends or 120 s after its cut, and it outlives its answer. A failed round retries after `CUSTODY_RETRY_MS`.
+  Every set an answer keeps is trimmed to custody's live ids each round; a release is forgotten at the first digest
+  `JUDGE_AFTER_MS` after it was written (revision 7), and then the digest and the memo decide. An unproven digest never
+  overwrites a proven answer, and a round leaves pending and a credit only over a link that proved the peer
+  (`LinkCarrier.proven`, `MeshTransport.linkProven`); a round with no carrier records nothing. A key goes ahead once per
+  answer, charged to its round. The tick's custody digest backs off 60 → 600 s while offers draw nothing, a frame kept
+  off the peer's link resets it, the link-up offer is never held, and only the digest is held. The lab's pipes report
+  what they hold (`LabTransport.carrier`), so the lab runs this rule; a scenario that moves the clock drives
+  `serveCustodyRounds`. Unit: `ForwardSyncTest`'s round, drain, estimate, file, tier and re-offer cases,
+  `CustodyConstantsTest`, `MeshManagerTest`'s serve-loop and collector cases.
 - **When touching what a contact's direct Internet link does to blobs or custody — `MeshTransport.radioLinked` /
   `pairView` / `fileRidesInternet` / `PairView`, `ReceivedDigest.via` / `ReceivedFile.via`, `ForwardSync.onDigest`'s
   `via` / `ForwardSync.linked` / `CarryLedger` / `MeshManager.onDirectLinkUp` (`DirectLinkTransport`'s `onLinkUp`), `BlobExchange.reachingFor` / `Rank.Internet` / `Tier.Internet` /

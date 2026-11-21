@@ -49,26 +49,37 @@ data class IndexedFrame(
 }
 
 /**
- * One plane's round of a paced custody answer (the custody-carry-policy contract's §2): at most [bytes] per round, the
- * first pick going whatever its size, and the next round due `max(intervalMs, released × intervalMs / bytes)` after the
- * last. [intervalMs] is also how long after a release its hand-off is credited (§3).
+ * One plane's round of a custody answer (the custody-carry-policy contract's §2, release on drain): at most [bytes] a
+ * round, the first pick going whatever its size, and the next cut as soon as the link that carries the answer holds less
+ * than [bytes] unwritten for the peer ([LinkOutbound.unwritten]). No clock paces it (the maintainer's ruling of
+ * 2026-11-20: custody must not cap how much or how fast linked phones sync); [bytes] is also the line a hand-off is
+ * credited under (§3).
  */
 class RoundPlan(
     val bytes: Int,
-    val intervalMs: Long,
 ) {
-    /** When the round after one that released [released] bytes at [cutAt] is due: a round past its budget waits longer. */
-    fun nextDue(
-        cutAt: Long,
-        released: Long,
-    ): Long = cutAt + maxOf(intervalMs, released * intervalMs / bytes)
+    /**
+     * How long until a link holding [out] may hold under this round, at most [CustodyPace.SIGNAL_FALLBACK_MS]: the plane's
+     * estimate, (unwritten − round) at [LinkOutbound.drainBytesPerSec], where it gives a rate; else the fallback beside the
+     * link's own drain signal ([MeshTransport.outboundDrained]: a plane that gives no rate signals, as [LinkOutbound]
+     * says). Never under a millisecond, so a look on an estimate never spins.
+     */
+    fun lookIn(out: LinkOutbound): Long {
+        val rate = out.drainBytesPerSec?.takeIf { it > 0 } ?: return CustodyPace.SIGNAL_FALLBACK_MS
+        val over = out.unwritten - bytes + 1
+        if (over > Long.MAX_VALUE / MS_PER_SECOND) return CustodyPace.SIGNAL_FALLBACK_MS
+        return ((over * MS_PER_SECOND + rate - 1) / rate).coerceIn(1L, CustodyPace.SIGNAL_FALLBACK_MS)
+    }
+
+    private companion object {
+        const val MS_PER_SECOND = 1_000L
+    }
 }
 
 /**
  * The round each plane's answers are cut to (§2), chosen by the plane that carries the round, never the one the digest
  * crossed: Bluetooth whenever a Bluetooth link holds the peer ([MeshTransport.carrier]). A plane of any other kind (the
- * lab's, a fake's) is paced as Bluetooth is. [CONTRACT] is production's table; [UNPACED] is the lab's default, where a
- * scenario about what crosses, not about the pace, sees every answer whole in its first round.
+ * lab's, a fake's) is cut as Bluetooth is. [CONTRACT] is production's table.
  */
 class CustodyPace(
     val bluetooth: RoundPlan,
@@ -84,27 +95,35 @@ class CustodyPace(
         }
 
     companion object {
-        /** Bluetooth: 16,384 B every 2,000 ms, 8 KiB/s. */
+        /** Bluetooth's round, and the line its link signals a drain under (`FramedLink`'s `drainLine`). */
         const val BLUETOOTH_ROUND_BYTES = 16_384
-        const val BLUETOOTH_INTERVAL_MS = 2_000L
 
-        /** Wi-Fi Aware (Android only): 524,288 B every 1,000 ms, 512 KiB/s. */
+        /** Wi-Fi Aware's round (Android only). */
         const val WIFI_AWARE_ROUND_BYTES = 524_288
-        const val WIFI_AWARE_INTERVAL_MS = 1_000L
 
-        /** A contact's direct link (Android only): 262,144 B every 1,000 ms, 256 KiB/s. */
+        /** A contact's direct link's round (Android only). */
         const val DIRECT_LINK_ROUND_BYTES = 262_144
-        const val DIRECT_LINK_INTERVAL_MS = 1_000L
+
+        /**
+         * How often custody looks at a link that neither signals a drain ([MeshTransport.outboundDrained]) nor gives a
+         * drain rate to estimate from (§2's `ROUND_CHECK_MS`), and at a link a moving file holds: 100 ms, under what any
+         * radio writes of a round, so the look is never what limits the link.
+         */
+        const val ROUND_CHECK_MS = 100L
+
+        /**
+         * The look beside a drain signal or an estimate: a signal missed, or an estimate whose rate moved, costs at most
+         * this. A look reads the link's count before it touches the store, so it costs no index read while the link is full.
+         * Android's own choice, not the contract's (knit-ios looks every [ROUND_CHECK_MS] and has no signal).
+         */
+        const val SIGNAL_FALLBACK_MS = 1_000L
 
         /** The contract's table (§2), identical on every Android build; knit-ios mirrors the Bluetooth row. */
         val CONTRACT =
             CustodyPace(
-                bluetooth = RoundPlan(BLUETOOTH_ROUND_BYTES, BLUETOOTH_INTERVAL_MS),
-                wifiAware = RoundPlan(WIFI_AWARE_ROUND_BYTES, WIFI_AWARE_INTERVAL_MS),
-                directLink = RoundPlan(DIRECT_LINK_ROUND_BYTES, DIRECT_LINK_INTERVAL_MS),
+                bluetooth = RoundPlan(BLUETOOTH_ROUND_BYTES),
+                wifiAware = RoundPlan(WIFI_AWARE_ROUND_BYTES),
+                directLink = RoundPlan(DIRECT_LINK_ROUND_BYTES),
             )
-
-        /** Every answer whole in one round, the next a millisecond later: the lab's default, never production's. */
-        val UNPACED = RoundPlan(Int.MAX_VALUE, 1L).let { CustodyPace(it, it, it) }
     }
 }

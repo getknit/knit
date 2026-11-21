@@ -3,27 +3,28 @@ package app.getknit.knit.mesh.lab
 import app.getknit.knit.mesh.CarryLedger
 import app.getknit.knit.mesh.CustodyPace
 import app.getknit.knit.mesh.ForwardSync
-import app.getknit.knit.mesh.RoundPlan
 import app.getknit.knit.mesh.link.FrameKey
 import app.getknit.knit.mesh.protocol.WireCodec
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import kotlin.random.Random
 
 /**
- * Custody's paced answers and its re-offer back-off through the real stacks (the custody-carry-policy contract's §2, §3,
- * §6 and §7; ADR 2026-11.bmks). Every node runs production's table ([CustodyPace.CONTRACT]: 16 KiB a Bluetooth round,
- * one every 2 s) and the back-off, where the rest of the lab answers whole. A lab clock jump never wakes the serve loop's
- * sleep or the 60 s tick, so a scenario moves the clock an interval and cuts the rounds due itself
- * ([LabNode.serveCustodyRounds], [serveRoundsUntilQuiet]), and ticks with [LabNode.tick]. The serve loop still runs on
- * the wall clock beside it: a round it cuts first is one the scenario's cut then finds not due, so the two never cut a
- * round twice, and every assertion below reads what crossed, never which of them cut it.
+ * Custody's answers released as the link drains, and its re-offer back-off, through the real stacks (the custody-carry-
+ * policy contract's §2, §3, §6 and §7; ADR 2026-11.bmks). Every lab node cuts production's rounds (16 KiB over a lab link,
+ * which custody reads as Bluetooth's) the moment its pipe holds less than a round for the peer: a plain pipe delivers as it
+ * sends, so an answer goes in back-to-back rounds; a held pipe, an air link, a buffer below the count ([LabTransport.stackBelow])
+ * or a wedged count ([LabTransport.countStuck]) holds the next round back. [LabTransport.awaitDigestsAnswered] waits for every
+ * answer to end, so [settle] is the whole exchange. A lab clock jump never wakes the serve loop's sleep, so a scenario that
+ * moves the clock with an answer open runs [LabNode.serveCustodyRounds] after its deliveries, and ticks with [LabNode.tick].
  *
  * A full store is filled with others' mail as a carrier's is ([carryLoad]): sealed DMs from free identities
  * ([LabSybil]) to recipients who never appear, written into custody past the router, each author's profile heard first
@@ -47,12 +48,12 @@ class CustodyPaceLabTest {
     }
 
     /**
-     * Below the cap, paced. Alice carries four rounds' worth of others' mail and Bob has never met her: the answer to his
-     * link-up digest goes out in rounds of at most 16 KiB, one an interval, and ends with his store holding all of it, so
-     * the two stores agree as ADR 006 promises below the cap.
+     * Below the cap, in rounds. Alice carries four rounds' worth of others' mail and Bob has never met her: the answer to his
+     * link-up digest goes out in rounds of at most 16 KiB, each cut as the last drained, and ends with his store holding all
+     * of it, so the two stores agree as ADR 006 promises below the cap.
      */
     @Test
-    fun aNewcomerShortOfSeveralRoundsConvergesInPacedRounds() =
+    fun aNewcomerShortOfSeveralRoundsConvergesInRoundsOfARound() =
         runBlocking {
             val alice = lab.node("alice", PACED).apply { setDisplayName("Alice") }
             val bob = lab.node("bob", PACED).apply { setDisplayName("Bob") }
@@ -68,7 +69,6 @@ class CustodyPaceLabTest {
             val before = alice.roundsCut()
             lab.link(alice, bob)
             awaitLinkUp(alice, bob)
-            serveRoundsUntilQuiet(alice, bob)
             val rounds = alice.roundsCut() - before
             assertTrue("alice answered $bytes B in $rounds rounds of at most $ROUND_BYTES B", rounds > 1 && rounds >= bytes / ROUND_BYTES)
             val missing = load.toSet() - bob.custodyIds()
@@ -81,108 +81,257 @@ class CustodyPaceLabTest {
 
     /**
      * At the cap, a pass. Alice and Bob each wrote the other while apart and each carries a full store of others' mail.
-     * When they meet on an air link, every DM for the other crosses ahead of all of that mail, in the
-     * first round (tier 2 before tier 4, §1). Then the link takes one round and never delivers it (the pipe holds it, as a
-     * Bluetooth buffer holds what was written), and goes down: that round is all a cut loses, and the carry ledger credits
-     * nothing for it (§3), while the rounds before it, which landed, are credited. The next link re-serves the lost round.
-     * The cap binds, so the oracle leaves custody parity out and reads every store at or under its cap.
-     *
-     * Rounds of the contract's 16 KiB, at [SLOW_INTERVAL_MS] rather than 2 s: the serve loop beside the scenario wakes on
-     * the wall clock, which a lab jump never moves, and at 2 s it cut rounds while the scenario waited under chaos (seeds
-     * 363285215, 363285224), so the cut found the answer over or a second round in the hold.
+     * Alice's link to Bob takes what it is given and delivers none of it (the pipe holds it, as a radio that wrote and never
+     * got it across): every DM for Bob is in the first round, ahead of all the carried mail (tier 2 before tier 4, §1), and
+     * custody cuts rounds into the link only while it holds under one, so it stops with at most two on it. The link goes
+     * down: those are all a cut loses, and the answer ends cut short. A link that counts no buffer below credits a round
+     * at the first look that reads it under one (§3), so a first round shorter than a round on the wire is credited when the
+     * second is cut, and Bob never got it (§9: such a credit runs a round ahead of the write). So custody credited at most
+     * the first round, only when it cut a second, and never the last. The next link serves every one of them again: the
+     * relink ends what was pending on its plane unjudged. The cap binds, so the oracle leaves custody parity out and
+     * reads every store at or under its cap.
      */
     @Suppress("LongMethod") // one pass: the meeting, the tier order, the cut and its ledger, the relink and the oracle
     @Test
-    fun atTheCapEveryDmForThePeerCrossesFirstAndACutLosesOneUncreditedRound() =
+    fun atTheCapEveryDmForThePeerGoesFirstAndACutLosesOnlyWhatTheLinkHeld() =
         runBlocking {
-            val limits = PACED.copy(custodyMaxRows = CAP, custodyPace = SLOW)
+            val limits = PACED.copy(custodyMaxRows = CAP)
             val alice = lab.node("alice", limits).apply { setDisplayName("Alice") }
             val bob = lab.node("bob", limits).apply { setDisplayName("Bob") }
-            meetAndPart(alice, bob, SLOW_INTERVAL_MS)
+            meetAndPart(alice, bob)
 
             val dms =
-                listOf(alice to bob, bob to alice).associate { (from, to) ->
-                    from to
-                        (1..DMS_EACH).map { i ->
-                            assertTrue(from.sendDm(to, "${from.name} while apart $i"))
-                            from.ownMessageId(from.dmWith(to), "${from.name} while apart $i")
-                        }
+                (1..DMS_EACH).map { i ->
+                    assertTrue(alice.sendDm(bob, "alice while apart $i"))
+                    alice.ownMessageId(alice.dmWith(bob), "alice while apart $i")
                 }
             val loads =
                 listOf(alice to 4_200, bob to 4_300).associate { (node, seed) ->
                     node to
                         (1..FULL_AUTHORS).flatMap { a -> carryLoad(node, LabSybil(seed = seed + a, name = "${node.name}'s $a"), FULL_EACH) }
                 }
-            for (n in listOf(alice, bob)) {
-                assertEquals("${n.name}'s store is full", CAP, n.custodyIds().size)
-                assertTrue("${n.name} still holds its own DMs at the cap", n.custodyIds().containsAll(dms.getValue(n)))
-            }
+            for (n in listOf(alice, bob)) assertEquals("${n.name}'s store is full", CAP, n.custodyIds().size)
+            assertTrue("alice still holds her own DMs at the cap", alice.custodyIds().containsAll(dms))
 
-            lab.link(alice, bob, air = LinkAir(bytesPerSecond = AIR_BYTES_PER_SECOND))
-            awaitLinkUp(alice, bob)
-            for ((from, to) in listOf(alice to bob, bob to alice)) {
-                lab.await(DMS_EACH) { to.decrypted(to.dmWith(from)).count { it.second.startsWith("${from.name} while apart") } }
-                val order = from.transport.sent.servedTo(to)
-                val lastDm = order.indexOfLast { it in dms.getValue(from) }
-                val firstLoad = order.indexOfFirst { it in loads.getValue(from) }
-                assertTrue("${from.name}'s DMs to ${to.name} crossed after its carried mail: $order", lastDm in 0 until firstLoad)
-            }
-
-            // A round that landed, then one the link takes and never delivers.
-            alice.transport.awaitAirDrained(bob.transport)
-            lab.clock.advance(SLOW_INTERVAL_MS)
-            alice.serveCustodyRounds()
-            alice.transport.awaitAirDrained(bob.transport)
-            val landed =
-                alice.transport.sent
-                    .servedTo(bob)
-                    .filter { it in loads.getValue(alice) }
-            alice.transport.hold(bob.transport)
-            val heldFrom = alice.roundsCut()
-            lab.clock.advance(SLOW_INTERVAL_MS)
-            alice.serveCustodyRounds()
+            val before = alice.roundsCut()
             val cutShort = alice.metrics.frames().custodyAnswersCutShort
-            val parked = alice.transport.held(bob.transport)
-            // lab-lint: allow direct-disconnect — an air link, which `unlink` refuses; what the cut loses is the held round,
-            // and both ends' departure is awaited next
-            alice.transport.disconnect(bob.transport)
-            val lost = parked.mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }.filter { it in loads.getValue(alice) }
+            lab.link(alice, bob, arm = { alice.transport.hold(bob.transport) })
+            // Custody stops cutting once the link holds a round; a look under the serve lock waits out a round being sent.
+            lab.await(1) {
+                if ((
+                        alice.transport
+                            .carrier(bob.nodeId)
+                            ?.outbound
+                            ?.unwritten ?: 0L
+                    ) >= ROUND_BYTES
+                ) {
+                    1
+                } else {
+                    0
+                }
+            }
+            alice.serveCustodyRounds()
+            val parked = alice.transport.held(bob.transport).mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }
+            val lastDm = parked.indexOfLast { it in dms }
+            val firstLoad = parked.indexOfFirst { it in loads.getValue(alice) }
+            assertTrue("alice's DMs to bob went after her carried mail: $parked", dms.all { it in parked } && lastDm < firstLoad)
+            val rounds = alice.roundsCut() - before
+            assertTrue("custody cut $rounds rounds into a link that held a round", rounds in 1L..2L)
+            val lost = parked.filter { it in loads.getValue(alice) }
             val lostBytes =
                 alice
                     .custodySignedBytes()
                     .filterKeys { it in lost }
                     .values
                     .sum()
-            // One round: nothing else is due without a lab clock move (the serve loop's wall-clock wake is [SLOW_INTERVAL_MS]
-            // out, the tick's 24 h), and no digest arrived to wake it.
-            assertEquals("rounds released into the held link", 1L, alice.roundsCut() - heldFrom)
-            assertTrue("the held round carried no carried frame", lost.isNotEmpty())
-            assertTrue("the cut lost more than one round: ${lost.size} frames, $lostBytes B", lostBytes <= ROUND_BYTES)
+            assertTrue("the link took more than two rounds: ${lost.size} frames, $lostBytes B", lostBytes <= 2 * ROUND_BYTES)
+
+            // lab-lint: allow direct-disconnect — the held link's cut is the subject, and both ends' departure is awaited next
+            alice.transport.disconnect(bob.transport)
             alice.transport.awaitNeighborsObserved()
             bob.transport.awaitNeighborsObserved()
-            // The lost round's credit falls due with the link gone: nothing is credited, and the answer ends cut short.
-            lab.clock.advance(SLOW_INTERVAL_MS)
             alice.serveCustodyRounds()
             assertTrue("the answer was never cut short", alice.metrics.frames().custodyAnswersCutShort > cutShort)
             val held = alice.custodyIds()
-            val credited = lost.filter { it in held && alice.carrySpread(it) > 0 }
-            assertTrue("alice credited bob with frames he never got: $credited", credited.isEmpty())
-            val uncredited = landed.filter { it in held && alice.carrySpread(it) == 0 }
-            assertTrue("alice never credited bob with frames that landed: $uncredited", uncredited.isEmpty())
+            val kept = lost.filter { it in held }
+            val credited = kept.filter { alice.carrySpread(it) > 0 }
+            // The pipe parks frames in the order written, so a credited first round is a head of the carried mail it lost.
+            val head = if (rounds < 2) emptyList() else kept.take(credited.size)
+            val creditedBytes =
+                alice
+                    .custodySignedBytes()
+                    .filterKeys { it in credited }
+                    .values
+                    .sum()
+            assertTrue(
+                "alice credited bob with more than her first round, or with no second cut ($rounds rounds): $credited of $lost",
+                credited == head && kept.lastOrNull() !in credited,
+            )
+            assertTrue("alice credited more than a round bob never got: $creditedBytes B", creditedBytes <= ROUND_BYTES)
 
             val relinked = alice.transport.sent.size
             lab.link(alice, bob)
             awaitLinkUp(alice, bob)
-            serveRoundsUntilQuiet(alice, bob, intervalMs = SLOW_INTERVAL_MS)
             val again =
                 alice.transport.sent
                     .drop(relinked)
                     .servedTo(bob)
                     .toSet()
             val stillHeld = alice.custodyIds()
-            val notResent = lost.filter { it in stillHeld && it !in again }
-            assertTrue("the lost round was not served again on the next link: $notResent", notResent.isEmpty())
-            lab.assertConverged(listOf(alice, bob), atLeast = 2 * DMS_EACH, custody = false) { it.dmWith(if (it === alice) bob else alice) }
+            val notResent = (lost + dms).filter { it in stillHeld && it !in again }
+            assertTrue("what the cut lost was not served again on the next link: $notResent", notResent.isEmpty())
+            lab.assertConverged(listOf(alice, bob), atLeast = DMS_EACH, custody = false) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
+     * A buffer below the link's count (section 5's stack model): Alice's link to Bob airs at Bluetooth 1M's file pace and
+     * the head of its queue, 64 KiB deep, reads as handed down to a stack below, which the pipe estimates and drains at the
+     * air's rate, as Bluetooth's plane does (`StackEstimate`). Custody cuts the next round when the link and its estimate
+     * hold under a round, and credits a round at the first look that reads its own link under one. The link is cut with
+     * rounds in the air: what custody credited and Bob never got is at most what the link held under its line, one round
+     * (§9's "a credit can run ahead of the write by a frame or a round"), never the buffer the estimate stands for.
+     */
+    @Test
+    fun aCutUnderABufferBelowTheCountCreditsNoMoreThanARoundUndelivered() =
+        runBlocking {
+            val alice = lab.node("alice", PACED).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", PACED).apply { setDisplayName("Bob") }
+            meetAndPart(alice, bob)
+            val load = (1..AUTHORS).flatMap { a -> carryLoad(alice, LabSybil(seed = 4_700 + a, name = "carried $a"), LOAD_EACH) }
+
+            val before = alice.roundsCut()
+            lab.link(alice, bob, air = LinkAir(bytesPerSecond = BLE_FILE_PACE)) {
+                alice.transport.stackBelow(bob.transport, bytes = STACK_BYTES, estimated = true)
+            }
+            lab.await(STACK_ROUNDS) { (alice.roundsCut() - before).toInt() }
+            // lab-lint: allow direct-disconnect — an air link, which `unlink` refuses; the cut with rounds in the air is the subject
+            alice.transport.disconnect(bob.transport)
+            alice.transport.awaitNeighborsObserved()
+            bob.transport.awaitNeighborsObserved()
+            alice.serveCustodyRounds()
+
+            val delivered =
+                alice.transport.sent
+                    .servedTo(bob)
+                    .toSet()
+            val sizes = alice.custodySignedBytes()
+            val creditedUndelivered = load.filter { it in sizes && it !in delivered && alice.carrySpread(it) > 0 }
+            val bytes = creditedUndelivered.sumOf { sizes.getValue(it) }
+            assertTrue(
+                "alice credited ${creditedUndelivered.size} frames, $bytes B, bob never got: more than the round under the line",
+                bytes <= ROUND_BYTES + 2 * LOAD_BYTES,
+            )
+            assertTrue("rounds were in the air at the cut", load.any { it !in delivered })
+
+            lab.link(alice, bob)
+            awaitLinkUp(alice, bob)
+            assertTrue(alice.sendDm(bob, "after the cut"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
+     * A link whose count stays at 32 KB (a writer wedged, [LabTransport.countStuck]): custody cuts the digest's first round,
+     * which it always does, and no other, since the link never reads under one; it credits nothing, since its own link never
+     * reads under a round; and 120 s on ([ForwardSync.ANSWER_MAX_AGE_MS]) the answer ends cut short, after which a look reads
+     * no answer to Bob. Once the count is lifted, Bob's next offer gets the rest.
+     */
+    @Test
+    fun aLinkStuckAtTwoRoundsGetsOneRoundAndTheAnswerAgesOutUncredited() =
+        runBlocking {
+            val alice = lab.node("alice", PACED).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", PACED).apply { setDisplayName("Bob") }
+            meetAndPart(alice, bob)
+            val load = (1..AUTHORS).flatMap { a -> carryLoad(alice, LabSybil(seed = 4_800 + a, name = "carried $a"), LOAD_EACH) }
+
+            val before = alice.roundsCut()
+            val cutShort = alice.metrics.frames().custodyAnswersCutShort
+            lab.link(alice, bob) { alice.transport.countStuck(bob.transport, STUCK_BYTES) }
+            lab.await(1) { (alice.roundsCut() - before).toInt() }
+            bob.transport.awaitInboundDrained()
+            alice.serveCustodyRounds()
+            assertEquals("one round into a link stuck at two", 1L, alice.roundsCut() - before)
+            val first =
+                alice.transport.sent
+                    .servedTo(bob)
+                    .filter { it in load }
+            assertTrue("the first round carried the carried mail", first.isNotEmpty())
+
+            lab.clock.advance(ForwardSync.ANSWER_MAX_AGE_MS)
+            alice.serveCustodyRounds()
+            assertTrue("the answer never aged out cut short", alice.metrics.frames().custodyAnswersCutShort > cutShort)
+            assertFalse("an answer is still open to bob", alice.answering(bob.nodeId))
+            assertTrue(
+                "alice credited a round her link never drained: ${first.filter { alice.carrySpread(it) > 0 }}",
+                first.none {
+                    alice.carrySpread(it) >
+                        0
+                },
+            )
+            alice.serveCustodyRounds()
+            assertEquals("a look cut a round after the answer ended", 1L, alice.roundsCut() - before)
+
+            alice.transport.countStuck(bob.transport, 0)
+            bob.reoffer()
+            settle(alice, bob)
+            assertTrue("bob lacks the rest once the link drains", bob.custodyIds().containsAll(load))
+            assertTrue(alice.sendDm(bob, "unstuck"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
+     * A file comes first (§2, contract revision 16). Alice and Bob are linked, and Alice is streaming Bob a photo (its file
+     * held on the link, moving by the blob plane's rule until it would stall) when Bob's digest arrives, while Alice carries
+     * others' mail Bob lacks and one DM for him. While the file moves, the answer's rounds carry only frames addressed to
+     * Bob: the DM crosses and none of the carried mail does. The file lands, the rest follows, one copy of the photo crossed
+     * the link, and the two converge.
+     */
+    @Test
+    fun whileAPhotoStreamsARoundCarriesOnlyThePeersOwnMail() =
+        runBlocking {
+            val limits = PACED.copy(feedStallMs = ForwardSync.ANSWER_MAX_AGE_MS)
+            val alice = lab.node("alice", limits).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", limits).apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            lab.befriend(alice, bob)
+            settle(alice, bob)
+            val load = (1..AUTHORS).flatMap { a -> carryLoad(alice, LabSybil(seed = 4_900 + a, name = "carried $a"), LOAD_EACH) }
+            val forBob = carryLoad(alice, LabSybil(seed = 4_950, name = "writer"), 1, to = bob.nodeId)
+
+            alice.transport.holdFiles(bob.transport)
+            assertTrue(alice.sendImage(Random(PHOTO_SEED).nextBytes(PHOTO_BYTES), "the view", to = bob))
+            val photo = alice.ownMessageId(alice.dmWith(bob), "the view")
+            val hash = checkNotNull(alice.attachmentHash(alice.dmWith(bob), photo))
+            lab.await(1) { alice.transport.heldFiles(bob.transport).size }
+            assertTrue(
+                "the file is moving on the link",
+                alice.transport
+                    .carrier(bob.nodeId)
+                    ?.outbound
+                    ?.fileMoving == true,
+            )
+
+            bob.reoffer()
+            lab.await(1) {
+                alice.transport.sent
+                    .servedTo(bob)
+                    .count { it in forBob }
+            }
+            repeat(2) { alice.serveCustodyRounds() }
+            assertEquals(
+                "carried mail crossed while the file was on the link",
+                0,
+                alice.transport.sent
+                    .servedTo(bob)
+                    .count { it in load },
+            )
+
+            alice.transport.releaseFiles(bob.transport)
+            lab.await(1) { if (bob.blobs.exists(hash)) 1 else 0 }
+            settle(alice, bob)
+            assertTrue("bob lacks carried mail once the file landed", bob.custodyIds().containsAll(load))
+            assertEquals("copies of the photo on the link", 1, alice.transport.files.count { it == "${bob.nodeId} ATTACHMENT $hash" })
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
         }
 
     /**
@@ -257,7 +406,6 @@ class CustodyPaceLabTest {
             two.forEach { offers.getValue(it) += linkedAt }
             lab.link(alice, bob)
             awaitLinkUp(alice, bob)
-            serveRoundsUntilQuiet(alice, bob)
             val start = lab.clock.now()
             record(linkedAt, linkedAt, start)
 
@@ -275,7 +423,7 @@ class CustodyPaceLabTest {
                     n.tick()
                     if (n.transport.digestsSent.size > digests) offers.getValue(n) += tickAt
                 }
-                serveRoundsUntilQuiet(alice, bob)
+                settle(alice, bob)
                 record(tickAt, from, lab.clock.now())
                 notKept += lab.clock.now() to two.sumOf { it.metrics.frames().custodyNotKept }
             }
@@ -361,8 +509,7 @@ class CustodyPaceLabTest {
             lab.link(alice, bob)
             awaitLinkUp(alice, bob)
             alice.transport.hearClaimedDigest(bob.nodeId, alice.custodyIds().toList())
-            alice.transport.awaitDigestsAnswered()
-            serveRoundsUntilQuiet(alice, bob)
+            settle(alice, bob)
             val read = bob.decrypted(bob.dmWith(alice)).map { it.first }.toSet()
             val missing = dms.filterNot { it in read }
             assertTrue("bob never got ${missing.size} of alice's ${dms.size} DMs in her answer's rounds", missing.isEmpty())
@@ -370,14 +517,14 @@ class CustodyPaceLabTest {
         }
 
     /**
-     * Relink inside one interval (the B2 blobs review). Alice holds DMs for Bob from three free identities whose profiles
+     * A relink with the answer open (the B2 blobs review). Alice holds DMs for Bob from three free identities whose profiles
      * her sender quota evicted, so each goes with its sender's key ahead (ADR 2026-09.g64k), and two of her own. The link
-     * takes the first round and never delivers it, and is replaced within the interval, before the next round is due. A
-     * release over the old link may have died with it: the answer forgets what it sent there, keys included, and the memo
-     * ends what was pending on it (§6), so Bob gets every DM for him and every key on the new link.
+     * takes the first rounds and never delivers them, and is replaced with no clock move. A release over the old link may
+     * have died with it: the answer forgets what it sent there, keys included, and the memo ends what was pending on it
+     * (§6), so Bob gets every DM for him and every key on the new link.
      */
     @Test
-    fun aRelinkInsideOneIntervalStillDeliversThePeersDmsAndKeys() =
+    fun aRelinkWithTheAnswerOpenStillDeliversThePeersDmsAndKeys() =
         runBlocking {
             val limits = PACED.copy(custodyMaxPerSender = RELINK_QUOTA)
             val alice = lab.node("alice", limits).apply { setDisplayName("Alice") }
@@ -399,7 +546,6 @@ class CustodyPaceLabTest {
             lab.unlink(alice, bob)
             lab.link(alice, bob)
             awaitLinkUp(alice, bob)
-            serveRoundsUntilQuiet(alice, bob)
             val lacking = forBob.toSet() - bob.custodyIds()
             assertTrue("bob lacks ${lacking.size} of the ${forBob.size} DMs for him", lacking.isEmpty())
             val unpinned = sybils.filter { bob.pinned(it.nodeId) == null }.map { it.nodeId.take(6) }
@@ -435,25 +581,22 @@ class CustodyPaceLabTest {
 
     /**
      * [a] and [b] meet, become contacts, finish answering each other and part: what a pass's two walkers did before. The
-     * meeting's answers are served to their end while linked ([serveRoundsUntilQuiet]), so none is still live when the
-     * scenario links them again: an answer a relink finds live takes the new digest and keeps its own next round's time
-     * (§2), so its first round on the new link would wait for the serve loop rather than go at the digest.
+     * meeting's answers end while linked ([settle]), so none is still open when the scenario links them again.
      */
     private suspend fun meetAndPart(
         a: LabNode,
         b: LabNode,
-        intervalMs: Long = INTERVAL_MS,
     ) {
         lab.link(a, b)
         lab.awaitAcquainted(a, b)
         lab.befriend(a, b)
-        serveRoundsUntilQuiet(a, b, intervalMs = intervalMs)
+        settle(a, b)
         lab.unlink(a, b)
     }
 
     /**
-     * Waits out a link-up's own exchange: both newcomer passes ran (their digests are out), both digests are answered
-     * (each answer's first round is released), and what crossed is handled, the air's included.
+     * Waits out a link-up's own exchange: both newcomer passes ran (their digests are out), both digests are answered and
+     * their answers ended, and what crossed is handled, the air's included.
      */
     private suspend fun awaitLinkUp(vararg nodes: LabNode) {
         nodes.forEach { it.transport.awaitNeighborsHandled() }
@@ -461,9 +604,9 @@ class CustodyPaceLabTest {
     }
 
     /**
-     * Waits until every digest the nodes were handed is answered and every frame is handled, again until a pass hands
-     * none of them a new frame or digest: on an air link a digest still airing is not counted in yet, so one pass can
-     * return before its answer is cut, and the answer's round is on the air after the far end drained.
+     * Waits until every digest the nodes were handed is answered, every answer they opened has ended, and every frame is
+     * handled, again until a pass hands none of them a new frame or digest: on an air link a digest still airing is not
+     * counted in yet, so one pass can return before its answer is opened.
      */
     private suspend fun settle(vararg nodes: LabNode) {
         val handed = { nodes.sumOf { it.transport.framesReceived + it.transport.digestsReceived } }
@@ -472,27 +615,6 @@ class CustodyPaceLabTest {
             nodes.forEach { it.transport.awaitDigestsAnswered() }
             nodes.forEach { it.transport.awaitInboundDrained() }
         } while (handed() != before)
-    }
-
-    /**
-     * Moves the lab clock one Bluetooth interval of the nodes' pace ([intervalMs]) at a time and cuts the rounds due on
-     * every node, until a pass cuts none:
-     * every live answer has then released all it had or ended. Each pass waits for what its rounds carried to be handled
-     * at the far end. Returns the passes it took, and fails past [MAX_PASSES] (an answer lives [ForwardSync.ANSWER_MAX_AGE_MS]).
-     */
-    private suspend fun serveRoundsUntilQuiet(
-        vararg nodes: LabNode,
-        intervalMs: Long = INTERVAL_MS,
-    ): Int {
-        var passes = 0
-        while (true) {
-            val before = nodes.sumOf { it.roundsCut() }
-            lab.clock.advance(intervalMs)
-            nodes.forEach { it.serveCustodyRounds() }
-            settle(*nodes)
-            if (nodes.sumOf { it.roundsCut() } == before) return passes
-            check(++passes < MAX_PASSES) { "rounds were still being cut after $passes intervals" }
-        }
     }
 
     private fun LabNode.roundsCut(): Long = metrics.frames().custodyRoundsCut
@@ -518,29 +640,25 @@ class CustodyPaceLabTest {
     private companion object {
         // The wall-clock re-offer loop pushed a day out, so [LabNode.tick] and [LabNode.reoffer] are a scenario's only ticks:
         // at 60 s it fired beside the lab clock's, stamping an offer between a jump and a tick, or sending a digest mid-cut.
-        val PACED =
-            LabLimits(custodyPace = CustodyPace.CONTRACT, custodyReofferBackoff = true, reofferIntervalMs = 24 * 60 * 60_000L)
-
-        // An air link fast enough that a round airs in a few milliseconds: what the pass reads is the order and the cut,
-        // never the airtime, and at twice the pace (16 KiB/s) its rounds alone took the scenario past 10 s a run.
-        const val AIR_BYTES_PER_SECOND = 1_048_576L
+        val PACED = LabLimits(custodyReofferBackoff = true, reofferIntervalMs = 24 * 60 * 60_000L)
 
         // How far an offer gap may sit from the back-off's: the scenario's ticks are a minute apart in lab time, and a step's
         // own rounds and real time move the clock by seconds at most.
         const val SLACK_MS = 5_000L
         const val ROUND_BYTES = CustodyPace.BLUETOOTH_ROUND_BYTES
-        const val INTERVAL_MS = CustodyPace.BLUETOOTH_INTERVAL_MS
 
-        // The contract's round, at an interval the serve loop's wall-clock wake never reaches inside the scenario: a lab jump
-        // never moves that wake, and a scenario that cuts a round between two of its own steps needs no round but its own.
-        // A quarter of an answer's life (ForwardSync.ANSWER_MAX_AGE_MS), so four rounds fit in one.
-        const val SLOW_INTERVAL_MS = 30_000L
-        val SLOW =
-            CustodyPace(
-                bluetooth = RoundPlan(ROUND_BYTES, SLOW_INTERVAL_MS),
-                wifiAware = CustodyPace.CONTRACT.wifiAware,
-                directLink = CustodyPace.CONTRACT.directLink,
-            )
+        // The stack model: Bluetooth 1M's configured file pace, a stack two rounds deep and more, and the rounds the cut
+        // waits for so some are in the air.
+        const val BLE_FILE_PACE = 8_192L
+        const val STACK_BYTES = 65_536L
+        const val STACK_ROUNDS = 3
+
+        // A count wedged at two rounds.
+        const val STUCK_BYTES = 2L * CustodyPace.BLUETOOTH_ROUND_BYTES
+
+        // A photo of a few rounds, so its file is a stream of its own on the link.
+        const val PHOTO_BYTES = 40_000
+        const val PHOTO_SEED = 11
 
         // A carried DM's `signed` length: about a long message, so a round holds about sixteen.
         const val LOAD_BYTES = 1_000
@@ -567,6 +685,5 @@ class CustodyPaceLabTest {
 
         // Each writer's DMs fill its sender quota, so its profile, older than all of them, is evicted.
         const val RELINK_QUOTA = 6
-        const val MAX_PASSES = 50
     }
 }

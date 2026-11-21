@@ -34,6 +34,7 @@ import kotlinx.coroutines.yield
  * Pure (no Android/Room): the transport and store are injected and authentication is a lambda, so the
  * whole flow is unit-testable with [FakeLoopTransport] and a fake [ForwardStore].
  */
+@Suppress("LargeClass") // custody's whole sync: carry, digest answers on drain, credits, the memo's feeds, the re-offer
 class ForwardSync(
     private val transport: MeshTransport,
     private val store: ForwardStore,
@@ -60,14 +61,15 @@ class ForwardSync(
     // Who holds what, and what each proven peer was released and did not keep (the custody-carry-policy contract's §3 and
     // §6): one per process, the same instance the repository reads `spread` from. A fresh one by default, for the rigs.
     private val carry: CarryLedger = CarryLedger(),
-    // The round each carrying plane's answers are cut to (§2): the contract's table in production, unpaced in the lab's
-    // scenarios that are not about the pace.
+    // The round each carrying plane's answers are cut to, and the line its link must hold under for the next (§2): the
+    // contract's table, in production and in the lab alike; a rig may pass its own.
     private val pace: CustodyPace = CustodyPace.CONTRACT,
     // Counts the rounds, the answers cut short and the re-offers held (§8); null in the rigs that do not read them.
     private val metrics: MeshMetrics? = null,
     // A digest dropped because custody's index could not be read: the caller logs it. The answer under way stays as it was.
     private val onDigestDropped: (Exception) -> Unit = {},
-    // One peer's round that threw in [serveDue]: the caller logs and counts it. That peer's next round is an interval on.
+    // One peer's round that threw in [serveDue]: the caller logs and counts it. That peer's round is tried again
+    // [CUSTODY_RETRY_MS] on; a new answer's first round that throws in [onDigest] is thrown to the caller instead.
     private val onRoundFailed: (Exception) -> Unit = {},
     // Whether the tick's custody offer backs off while offers draw nothing (§7). Always in production; off in the lab's
     // scenarios that are not about the back-off, whose short real-time ticks would otherwise sit out its 30 s tolerance.
@@ -86,22 +88,22 @@ class ForwardSync(
     private val links = CarryLedger.Links { plane, peer, link -> transport.carries(plane, peer, link) }
 
     /**
-     * One peer's paced answer (§2): cut fresh from custody's index each round, from the ids its latest digest lists that
-     * we hold. Every set is trimmed to custody's live ids at every cut, so an answer a peer keeps alive with a digest a
-     * minute remembers no more than custody holds, however long it lives. Fields under [lock]; cut under [serving].
+     * One peer's answer (§2), released as the link that carries it drains: cut fresh from custody's index each round, from
+     * the ids its latest digest lists that we hold. Every set is trimmed to custody's live ids at every cut, so an answer a
+     * peer keeps alive with a digest a minute remembers no more than custody holds, however long it lives. Fields under
+     * [lock]; cut under [serving].
      */
     private class Answer(
         var link: Boolean,
         var proven: Boolean,
         var digestAt: Long,
-        var dueAt: Long,
     ) {
         // The peer's latest digest ∩ the ids held then.
         val digest = HashSet<String>()
 
-        // What this answer released and when, over which plane: remembered only until a digest can speak to it (contract
-        // revision 7, §2: [forgetJudged]). The senders whose key it sent, what arrived from the peer since its digest, and
-        // the candidates a direct link's view refused or that never loaded, read once.
+        // What this answer released and when it was written, over which plane: remembered only until a digest can speak to
+        // it (contract revision 7, §2: [forgetJudged]). The senders whose key it sent, what arrived from the peer since its
+        // digest, and the candidates a direct link's view refused or that never loaded, read once.
         val released = HashMap<String, Released>()
         val keysHanded = HashSet<String>()
         val arrived = HashSet<String>()
@@ -116,11 +118,29 @@ class ForwardSync(
         // the answer live, and the releases it carried are owed again.
         var awareCutSeen = 0L
 
-        // A digest arrived at [now]: every release at least the judging delay of its plane old is forgotten, so the digest
-        // and the memo decide again: listed, it is not owed; addressed to the peer or unproven, it goes again; any other
-        // waits out its mark (§2, §6, revision 7).
+        // Whether the latest digest has had its round: all a link that can't say what it holds ([LinkCarrier.outbound]
+        // null) is given of each digest (§2). A newer digest clears it.
+        var served = false
+
+        // When the serve loop must look at this answer though no link signals: a link that can't say, a file holding the
+        // other tiers, nothing holding the peer, a failed round's retry. A look reads the link before the store, so an early
+        // one costs no index read.
+        var lookAt = digestAt
+
+        // A failed round's retry-after ([CUSTODY_RETRY_MS]): not a pace, only no spin on an error. Endings still run.
+        var retryAt = 0L
+
+        // The last look found nothing addressed to the peer to release while a file moved on its link (§2, "a file comes
+        // first"): looks read only the link until the file stops, a newer digest comes, the link changes, or custody keeps a
+        // frame addressed to the peer ([onSeen]), so a photo's minutes cost no index read every look.
+        var heldForFile = false
+
+        // A digest arrived at [now]: every release written at least the judging delay of its plane before it is forgotten,
+        // so the digest and the memo decide again: listed, it is not owed; addressed to the peer or unproven, it goes again;
+        // any other waits out its mark (§2, §6, revision 7). One still below the link is not on the wire yet: no digest
+        // can speak to it.
         fun forgetJudged(now: Long) {
-            released.values.removeAll { now - it.at >= CarryLedger.judgeAfterMs(it.plane) }
+            released.values.removeAll { it.written && now - it.at >= CarryLedger.judgeAfterMs(it.plane) }
         }
 
         fun trim(
@@ -135,20 +155,42 @@ class ForwardSync(
         }
     }
 
-    /** When an answer released a frame, and over which plane: what a later digest's judging delay is read against. */
+    /**
+     * When an answer's release was written, and over which plane: what a later digest's judging delay is read against.
+     * Stamped at its cut, and again at the look that credits its round (the link then holds under a round, so the round is
+     * on its way out): a round cut behind a full Bluetooth buffer can take two rounds' time to leave, 32 s at Coded's
+     * 1 KiB/s, past the 20 s judging delay, and a digest crossing it would judge a frame still below the link. [written]
+     * is false until then over a link that counts what it holds.
+     */
     private class Released(
-        val at: Long,
+        var at: Long,
         val plane: TransportKind,
+        var written: Boolean,
     )
 
-    /** A round's releases to [peer], credited as handed one interval of its plane later if [link] still carries it (§3). */
-    private class Credit(
+    /**
+     * A round's releases to [peer] over [carrier]'s link, awaiting its credit (§3): at the first look after the round that
+     * finds that link under one round unwritten, if it still carries the peer, its [stamps] are written, and, when [memo],
+     * the peer is told pending and credited as a holder. Dropped uncredited when the link ends, or [ANSWER_MAX_AGE_MS]
+     * after [cutAt]. Outlives its answer: the last round's credit settles after the answer ended.
+     */
+    private class Handoff(
         val peer: String,
-        val ids: List<String>,
-        val kind: TransportKind,
-        val link: Any?,
-        val at: Long,
-    )
+        // The answer the round was cut for: a drop owes its releases again there ([settleHandoffs]).
+        val answer: Answer,
+        val frames: List<RelayEnvelope>,
+        val stamps: List<Released>,
+        val carrier: LinkCarrier,
+        val viewFiltered: Boolean,
+        val memo: Boolean,
+        var cutAt: Long,
+        // The ledger's Aware cut mark when the round was cut ([CarryLedger.awareCutMark]): moved by its path's close, that
+        // path was cut with the answer live, and what it carried is owed again, never pending.
+        val cutMark: Long,
+    ) {
+        // When the loop must look at it though no link signals: its own link's estimate, or the fallback look.
+        var lookAt = cutAt
+    }
 
     /** One neighbour's re-offer back-off (§7): when we last offered, the wait before the next, and whether it drew since. */
     private class Offer(
@@ -156,6 +198,39 @@ class ForwardSync(
         var intervalMs: Long,
         var drew: Boolean = false,
     )
+
+    /** What a look does with one answer once its link has been read: what needs the store. */
+    private enum class Act {
+        // No longer linked: ended, cut short when something was left (§8).
+        Lost,
+
+        // [ANSWER_MAX_AGE_MS] after its latest digest: ended, cut short when something was left.
+        Aged,
+
+        // The link can take a round, or a link that can't say has not had this digest's round: one is cut.
+        Cut,
+    }
+
+    /** What a look makes of one hand-off ([settle]). */
+    private enum class Verdict {
+        // Its own link holds under a round and still carries the peer: written, and credited when proven.
+        Credit,
+
+        // Its Bluetooth or direct link no longer carries the peer: what it carried may have died in that link's queue, and
+        // is owed again.
+        LinkGone,
+
+        // Its Wi-Fi Aware path closed: every exchange is a new path, and one closed at quiescence wrote what it held, so its
+        // releases are written now and, when proven, pending for the next path's digest to judge (§6); a path cut with the
+        // answer live owes them again through the plane's cut mark ([forgetLostLinks]).
+        PathClosed,
+
+        // [ANSWER_MAX_AGE_MS] after its cut, its link still full: written now, so a digest past the judging delay judges it.
+        Aged,
+
+        // Neither yet: looked at again by its link's estimate or the fallback.
+        Wait,
+    }
 
     private val lock = Any()
 
@@ -165,12 +240,15 @@ class ForwardSync(
     // Its keys mirrored, under [lock], into the ledger's [CarryLedger.answering]: what a plane reads lock-free to hold a link
     // not idle while an answer it carries is live ([CustodyProgress.answerCarrier]).
     private val answers = HashMap<String, Answer>()
-    private val credits = ArrayList<Credit>()
+
+    // At most a round or two a peer: a round is cut only when its link holds under one, and a look that finds that settles
+    // every round before it on the same link.
+    private val handoffs = ArrayList<Handoff>()
 
     // Bounded by the neighbours: created at a link-up, forgotten when the tick no longer sees the peer ([reoffer]).
     private val offers = HashMap<String, Offer>()
 
-    // A digest arrived: the serve loop re-reads when the next round is due.
+    // A digest arrived, or a link custody is answering over drained: the serve loop looks.
     private val wakes = Channel<Unit>(Channel.CONFLATED)
 
     /**
@@ -219,11 +297,22 @@ class ForwardSync(
             acked.add(envelope.id)
             return
         }
-        // Tier 3 of the serve order reads the frame's own roster, read here once and never again per answer (§1).
-        envelope.group?.let { carry.noteRoster(envelope.id, it.members) }
-        if (from != null && fromLink) arrivedFrom(from, envelope.id, fromProven)
+        kept(envelope, from?.takeIf { fromLink }, fromProven)
         // Now custody any blob the frame references (e.g. an image), so a late joiner can still pull it from us.
         onCarried(envelope, from)
+    }
+
+    // What custody keeping [envelope] tells the answers, [onLink] the neighbour whose link it came in on: tier 3 reads the
+    // frame's own roster, read here once and never again per answer (§1); a frame addressed to a peer is tier 2, which goes
+    // beside a moving file (§2), so that peer's answer a file holds reads the store again; and [arrivedFrom].
+    private fun kept(
+        envelope: RelayEnvelope,
+        onLink: String?,
+        proven: Boolean,
+    ) {
+        envelope.group?.let { carry.noteRoster(envelope.id, it.members) }
+        envelope.recipientId?.let { peer -> synchronized(lock) { answers[peer]?.heldForFile = false } }
+        if (onLink != null) arrivedFrom(onLink, envelope.id, proven)
     }
 
     // Custody kept [id], which came in on [from]'s link: an answer to [from] under way does not serve it back (§2), and
@@ -345,18 +434,22 @@ class ForwardSync(
      * Each frame is re-wrapped in a fresh [WireEnvelope] (full ttl, hops 0) around its verbatim signed blob; a duplicate
      * that races in is still dropped by the receiver's SeenSet.
      *
-     * **The answer goes out in paced rounds** (the custody-carry-policy contract's §2, #276, #352): a sidewalk pass holds
-     * a link for seconds, and a whole difference queued at once died with it, the peer's own mail behind everyone
-     * else's. One answer per peer; its first round is cut when the digest arrives, and each next one when it is due, by
-     * the serve loop ([serveDue]), never by a newer digest, which replaces the digest the rounds are cut from and
-     * restarts the answer's age but never brings a round forward. Each round is cut fresh from custody's index
-     * ([ForwardStore.liveIndex]; it loads only what it sends), so a DM that arrives mid-answer goes next: the tiers of §1
-     * over what the digest lacks, less what this answer released, less what arrived from the peer since its digest, less
-     * the memo's pending and not-kept ids. The budget is the carrying plane's ([CustodyPace]; Bluetooth's whenever a
-     * Bluetooth link holds the peer, [MeshTransport.carrier]); the first pick always goes, and the round stops at the first
-     * later pick that would pass the budget, never skipping one. The answer ends when nothing is left, when the peer is no
-     * longer linked (a radio answer when no radio holds it, a direct link's when its view is gone), or [ANSWER_MAX_AGE_MS]
-     * after its latest digest; what is left waits for the next digest.
+     * **The answer goes out in rounds, released as the link drains** (the custody-carry-policy contract's §2, revisions
+     * 13 to 16; #276, #352): a sidewalk pass holds a link for seconds, and a whole difference queued at once died with it,
+     * the peer's own mail behind everyone else's. One answer per peer; its first round is cut when the digest arrives, and
+     * each next one by the serve loop ([serveDue]) as soon as the link that carries it holds less than one round unwritten
+     * for the peer ([LinkCarrier.outbound]), never on a clock: custody must not cap how fast linked phones sync. A newer
+     * digest replaces the digest the rounds are cut from and restarts the answer's age, and cuts no round of its own; a
+     * link that can't say what it holds gets the first round of each digest and no other. Each round is cut fresh from
+     * custody's index ([ForwardStore.liveIndex]; it loads only what it sends), so a DM that arrives mid-answer goes next:
+     * the tiers of §1 over what the digest lacks, less what this answer released, less what arrived from the peer since its
+     * digest, less the memo's pending and not-kept ids. While a file to or from the peer moves on that link, a round carries
+     * only frames addressed to it, with their keys. The budget is the carrying plane's ([CustodyPace]; Bluetooth's whenever
+     * a Bluetooth link holds the peer, [MeshTransport.carrier]); the first pick always goes, and the round stops at the
+     * first later pick that would pass the budget, never skipping one. The answer ends when nothing is left, when the peer
+     * is no longer linked (a radio answer when no radio holds it, a direct link's when its view is gone), or
+     * [ANSWER_MAX_AGE_MS] after its latest digest, judged at every look before the link's count; what is left waits for
+     * the next digest.
      *
      * **The tiers** (§1): profiles, newest received first (ADR 2026-09.9xuu: a peer meeting a sender first refused the
      * whole backlog for want of a key it was about to be handed); then frames addressed to the peer, then group frames
@@ -380,12 +473,12 @@ class ForwardSync(
      * **A digest whose link proved its node id ([proven], and every direct link) feeds custody's carry ledger and has a
      * memo** ([CarryLedger], §3 and §6; #235 for the direct link it generalises): a frame released to that peer is not
      * released again while it is pending or after a later digest showed it was not kept, until the mark lapses or the peer
-     * links anew, and a round's releases are credited to the peer's holders one interval later if the same link still
-     * carries it. A frame addressed to the peer is released whenever its digest lacks it and this answer has not. A digest
-     * whose link proved nothing is answered at the same pace and leaves nothing behind: its node id is only a claim. A
-     * round with nothing to release sends nothing, a key included. A digest that comes while custody's index cannot be read
-     * is dropped ([onDigestDropped]), and the answer under way stays as it was: answering it from nothing would re-serve
-     * the peer everything.
+     * links anew, and a round's releases are credited to the peer's holders at the first look after it that finds the same
+     * link, still carrying the peer, under one round unwritten. A frame addressed to the peer is released whenever its
+     * digest lacks it and this answer has not. A digest whose link proved nothing is answered in the same rounds and
+     * leaves nothing behind: its node id is only a claim. A round with nothing to release sends nothing, a key included.
+     * A digest that comes while custody's index cannot be read is dropped ([onDigestDropped]), and the answer under way
+     * stays as it was: answering it from nothing would re-serve the peer everything.
      */
     suspend fun onDigest(
         fromNodeId: String,
@@ -401,19 +494,45 @@ class ForwardSync(
         // A contact's direct link proves its peer by its lane, whichever child stamped the digest.
         val memo = proven || isLink
         if (memo) carry.onDigest(fromNodeId, theirIds, via, link, additive = isLink, now, links)
-        serving.withLock {
-            val byId = index.associateBy { it.id }
-            val listed = theirIds.filterTo(HashSet()) { it in byId }
-            val existing = synchronized(lock) { answers[fromNodeId] }
-            // A link that proved nothing never overwrites a proven peer's answer: its node id is only a claim, and a claim
-            // must not move what the real peer is owed. Within one answer, proof only rises.
-            if (!memo && existing?.proven == true) return
-            // A direct link's digest with the link gone since is answered with nothing; one beside a radio answer merges.
-            if (isLink && existing?.link != false && transport.pairView(fromNodeId) == null) return
-            val (answer, fresh) = synchronized(lock) { adopt(fromNodeId, existing, listed, isLink, memo, now) }
-            if (answer.dueAt <= now) cut(fromNodeId, answer, now, index, byId, first = fresh)
+        try {
+            serving.withLock {
+                val byId = index.associateBy { it.id }
+                val listed = theirIds.filterTo(HashSet()) { it in byId }
+                val existing = synchronized(lock) { answers[fromNodeId] }
+                // A link that proved nothing never overwrites a proven peer's answer: its node id is only a claim, and a
+                // claim must not move what the real peer is owed. Within one answer, proof only rises.
+                if (!memo && existing?.proven == true) return
+                // A direct link's digest with the link gone since is answered with nothing; one beside a radio answer merges.
+                if (isLink && existing?.link != false && transport.pairView(fromNodeId) == null) return
+                val (answer, fresh) = synchronized(lock) { adopt(fromNodeId, existing, listed, isLink, memo, now) }
+                // Only a new answer's round is the digest's own; a newer one leaves the next round to the link's drain.
+                if (fresh) firstRound(fromNodeId, answer, now, index, byId)
+            }
+        } finally {
+            wakes.trySend(Unit)
         }
-        wakes.trySend(Unit)
+    }
+
+    // A new answer's first round, cut at its digest whatever the link holds, as an answer always has. One that throws keeps
+    // the answer, to be retried [CUSTODY_RETRY_MS] on by the serve loop, and is the caller's to count.
+    private suspend fun firstRound(
+        peer: String,
+        answer: Answer,
+        now: Long,
+        index: List<IndexedFrame>,
+        byId: Map<String, IndexedFrame>,
+    ) {
+        val view = if (answer.link) transport.pairView(peer) else null
+        try {
+            cut(peer, answer, now, index, byId, transport.carrier(peer), view, Act.Cut, first = true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (
+            @Suppress("TooGenericExceptionCaught") e: Exception, // any failure: the answer stays, and the loop retries it
+        ) {
+            retryLater(answer, now)
+            throw e
+        }
     }
 
     /**
@@ -435,7 +554,7 @@ class ForwardSync(
         // live is no answer to update, and this digest starts a new one.
         val live = existing?.takeIf { answers[peer] === it }
         if (live == null) {
-            val created = Answer(link = isLink, proven = memo, digestAt = now, dueAt = now)
+            val created = Answer(link = isLink, proven = memo, digestAt = now)
             created.awareCutSeen = carry.awareCutMark(peer)
             created.digest += listed
             answers[peer] = created
@@ -455,57 +574,245 @@ class ForwardSync(
         live.link = isLink
         live.proven = memo
         live.digestAt = now
+        // This digest's round, for a link that can't say; a draining link's next look cuts it when the link can take it.
+        live.served = false
+        live.heldForFile = false
+        live.lookAt = now
         return live to false
     }
 
     /**
-     * Cuts every round due by [now], and credits every hand-off due by then (§2, §3): what the serve loop runs when
-     * [nextDueAt] comes, or a digest wakes it ([awaitWake]).
+     * One look (§2, §3): reads every live answer's and every waiting credit's link ([MeshTransport.carrier]) before anything
+     * touches the store; settles each credit whose own link now holds under one round, or drops it; judges each answer's
+     * endings (its age, its link) and then its link's count; and reads custody's index once, only when some answer ends or
+     * has a round to cut. What the serve loop runs when [nextDueAt] comes, a digest arrives or a link drains ([awaitWake]).
      */
     suspend fun serveDue(now: Long = clock()) {
         serving.withLock {
-            val credited = synchronized(lock) { credits.filter { due(it.at, now) }.also { credits.removeAll(it.toSet()) } }
-            // Asked of the transport with every lock released: the ledger's rule for the transport's reads.
-            credited.forEach { c -> if (transport.carries(c.kind, c.peer, c.link)) carry.handed(c.peer, c.ids) }
-            val due = synchronized(lock) { answers.filter { (_, a) -> due(a.dueAt, now) }.toList() }
-            if (due.isEmpty()) return
+            val (open, waiting) = synchronized(lock) { answers.toList() to handoffs.mapTo(HashSet()) { it.peer } }
+            // Each link's count once a look, before the store (§2): the counts are that link's, read with its token.
+            val reads = HashMap<String, LinkCarrier?>()
+            (open.map { it.first } + waiting).forEach { peer -> if (peer !in reads) reads[peer] = transport.carrier(peer) }
+            settleHandoffs(reads, now)
+            val looks = ArrayList<Look>()
+            open.forEach { (peer, answer) ->
+                val view = if (synchronized(lock) { answer.link }) transport.pairView(peer) else null
+                val linked = if (synchronized(lock) { answer.link }) view != null else transport.radioLinked(peer)
+                val act = judge(peer, answer, reads[peer], linked, now) ?: return@forEach
+                looks += Look(peer, answer, reads[peer], view, act)
+            }
+            if (looks.isEmpty()) return
             val index = store.liveIndex(now)
             val byId = index.associateBy { it.id }
-            due.forEach { (peer, answer) ->
-                // One peer's failed round (a key read, a load) costs that peer one interval, never the others' rounds.
+            looks.forEach { look ->
+                // One peer's failed round (a key read, a load, a send) costs that peer a retry-after, never the others' rounds.
                 try {
-                    cut(peer, answer, now, index, byId, first = false)
+                    cut(look.peer, look.answer, now, index, byId, look.carrier, look.view, look.act, first = false)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (
                     @Suppress("TooGenericExceptionCaught") e: Exception, // any failure costs this peer's round alone
                 ) {
-                    synchronized(lock) { answer.dueAt = now + pace.bluetooth.intervalMs }
+                    retryLater(look.answer, now)
                     onRoundFailed(e)
                 }
             }
         }
     }
 
+    /** One answer a look found work for, with the link it read. */
+    private class Look(
+        val peer: String,
+        val answer: Answer,
+        val carrier: LinkCarrier?,
+        val view: PairView?,
+        val act: Act,
+    )
+
+    // A failed round: the answer is looked at again [CUSTODY_RETRY_MS] on, and no round is cut for it before then.
+    private fun retryLater(
+        answer: Answer,
+        now: Long,
+    ) = synchronized(lock) {
+        answer.retryAt = now + CUSTODY_RETRY_MS
+        answer.lookAt = answer.retryAt
+    }
+
     /**
-     * When the next round or credit is due, or null when no answer is live and nothing waits to be credited. Never further
-     * out than [MAX_ROUND_GAP_MS]: a wall clock set back leaves no answer asleep for the size of the jump.
+     * What this look does with [peer]'s [answer], from its link alone ([carrier], read this look, and whether a radio or its
+     * view still [linked] it) and no store: its endings first (§2: a link that never drains still ends its answer by age),
+     * then whether the link can take a round. Null when there is nothing to do until the link signals or [Answer.lookAt]
+     * comes, which this sets.
+     */
+    private fun judge(
+        peer: String,
+        answer: Answer,
+        carrier: LinkCarrier?,
+        linked: Boolean,
+        now: Long,
+    ): Act? =
+        synchronized(lock) {
+            if (answers[peer] !== answer) return@synchronized null
+            // A wall clock set back would otherwise leave the answer's age negative, and the answer alive for the jump.
+            if (answer.digestAt > now) answer.digestAt = now
+            val endsAt = answer.digestAt + ANSWER_MAX_AGE_MS
+            // A different link since the last round may owe again what a file was holding off: read the store once.
+            if (carrier != null && carrier.link !== answer.carrierLink) answer.heldForFile = false
+            val act =
+                when {
+                    !linked -> Act.Lost
+
+                    now >= endsAt -> Act.Aged
+
+                    answer.retryAt > now && answer.retryAt - now <= MAX_ROUND_GAP_MS -> null.also { answer.lookAt = answer.retryAt }
+
+                    // Nothing holds the peer now: a round would go nowhere. Looked at again soon, or ended by its link.
+                    carrier == null -> null.also { answer.lookAt = now + CustodyPace.ROUND_CHECK_MS }
+
+                    else -> linkAct(answer, carrier, now)
+                }
+            if (act == null) answer.lookAt = minOf(answer.lookAt, endsAt)
+            act
+        }
+
+    // [judge]'s read of [carrier]'s count, under [lock]: a link that can't say gets its digest's one round and then only
+    // looks for endings; one holding a round waits for its drain or estimate; one a moving file holds waits for the file.
+    private fun linkAct(
+        answer: Answer,
+        carrier: LinkCarrier,
+        now: Long,
+    ): Act? {
+        val out = carrier.outbound
+        val plan = pace.plan(carrier.kind)
+        return when {
+            out == null && !answer.served -> Act.Cut
+
+            // Its digest's one round went: only its endings, never the store, until a newer digest.
+            out == null -> null.also { answer.lookAt = now + CustodyPace.SIGNAL_FALLBACK_MS }
+
+            out.unwritten >= plan.bytes -> null.also { answer.lookAt = now + plan.lookIn(out) }
+
+            out.fileMoving && answer.heldForFile -> null.also { answer.lookAt = now + CustodyPace.ROUND_CHECK_MS }
+
+            else -> Act.Cut
+        }
+    }
+
+    /**
+     * Credits every hand-off whose own link (its token and plane) holds under one round unwritten at this look, if that
+     * link still carries the peer (§3), and drops the ones whose link ended or that are [ANSWER_MAX_AGE_MS] old. [reads] is
+     * this look's read of each peer's carrying link: a hand-off over a link that no longer carries the peer's sends can't
+     * be read, and waits for its drop. A drop never leaves a release unwritten in its answer, where no digest could ever
+     * forget it: one whose link ended is owed again at once (§6: pending ends unjudged with the Bluetooth or direct link
+     * that carried it, whatever plane still holds the peer), and one aged on a live link, or over a Wi-Fi Aware path that
+     * closed, is written now, so the first digest past the judging delay judges it rather than queueing it again behind
+     * itself.
+     */
+    private fun settleHandoffs(
+        reads: Map<String, LinkCarrier?>,
+        now: Long,
+    ) {
+        val waiting = synchronized(lock) { handoffs.toList() }
+        if (waiting.isEmpty()) return
+        val verdicts = waiting.associateWith { settle(it, reads[it.peer], now) }
+        val credited = verdicts.filterValues { it == Verdict.Credit }.keys
+        synchronized(lock) {
+            handoffs.removeAll(verdicts.filterValues { it != Verdict.Wait }.keys)
+            verdicts.forEach { (h, v) ->
+                when (v) {
+                    Verdict.Credit, Verdict.Aged, Verdict.PathClosed -> {
+                        h.stamps.forEach {
+                            it.at = now
+                            it.written = true
+                        }
+                    }
+
+                    Verdict.LinkGone -> {
+                        h.frames.zip(h.stamps).forEach { (e, stamp) ->
+                            if (h.answer.released[e.id] === stamp) h.answer.released.remove(e.id)
+                        }
+                    }
+
+                    Verdict.Wait -> {}
+                }
+            }
+        }
+        credited.filter { it.memo }.forEach { h ->
+            carry.released(h.peer, h.frames, h.carrier, h.viewFiltered, now)
+            carry.handed(h.peer, h.frames.map { it.id })
+        }
+        // Only a path that closed at quiescence: one cut with the answer live moved the mark, ended the peer's Aware pending
+        // ([CarryLedger.answerCut]), and [forgetLostLinks] owes its frames again; pending them now would mark them not kept.
+        verdicts.filter { (h, v) -> v == Verdict.PathClosed && h.memo && carry.awareCutMark(h.peer) == h.cutMark }.keys.forEach { h ->
+            carry.released(h.peer, h.frames, h.carrier, h.viewFiltered, now)
+        }
+    }
+
+    // One hand-off at this look, its peer's link read as [c]; a wait sets its next look. Asks the transport with every lock
+    // released: the ledger's rule for the transport's reads.
+    private fun settle(
+        h: Handoff,
+        c: LinkCarrier?,
+        now: Long,
+    ): Verdict {
+        val own = c != null && c.kind == h.carrier.kind && c.link === h.carrier.link
+        val out = c?.outbound?.takeIf { own }
+        val plan = pace.plan(h.carrier.kind)
+        // A stamp from before the wall clock went back restarts its age at the jump.
+        if (h.cutAt > now) h.cutAt = now
+        val verdict =
+            when {
+                !own && !transport.carries(h.carrier.kind, h.peer, h.carrier.link) -> {
+                    if (h.carrier.kind == TransportKind.WifiAware) Verdict.PathClosed else Verdict.LinkGone
+                }
+
+                now - h.cutAt >= ANSWER_MAX_AGE_MS -> {
+                    Verdict.Aged
+                }
+
+                out != null && out.unwritten < plan.bytes -> {
+                    Verdict.Credit
+                }
+
+                else -> {
+                    Verdict.Wait
+                }
+            }
+        if (verdict == Verdict.Wait) {
+            h.lookAt = minOf(now + (out?.let { plan.lookIn(it) } ?: CustodyPace.SIGNAL_FALLBACK_MS), h.cutAt + ANSWER_MAX_AGE_MS)
+        }
+        return verdict
+    }
+
+    /**
+     * [peer]'s link drained ([MeshTransport.outboundDrained]): the serve loop looks now if custody answers that peer or owes
+     * one of its rounds a credit. A drain for any other peer costs nothing.
+     */
+    fun onDrained(peer: String) {
+        val ours = synchronized(lock) { peer in answers || handoffs.any { it.peer == peer } }
+        if (ours) wakes.trySend(Unit)
+    }
+
+    /**
+     * When the serve loop must look though no link signals, or null when no answer is live and no credit waits: then it
+     * sleeps until a digest or a drain wakes it. Never further out than [MAX_ROUND_GAP_MS]: a wall clock set back leaves
+     * no answer asleep for the size of the jump.
      */
     fun nextDueAt(): Long? =
         synchronized(lock) {
-            val round = answers.values.minOfOrNull { it.dueAt }
-            val credit = credits.minOfOrNull { it.at }
+            val round = answers.values.minOfOrNull { it.lookAt }
+            val credit = handoffs.minOfOrNull { it.lookAt }
             listOfNotNull(round, credit).minOrNull()?.let { minOf(it, clock() + MAX_ROUND_GAP_MS) }
         }
 
-    // Whether a round or credit stamped [at] is due by [now]. One further out than any round or credit can be was stamped
-    // before the wall clock went back: it is due now, never after the jump.
+    // Whether a look stamped [at] is due by [now]. One further out than any look can be was stamped before the wall clock
+    // went back: it is due now, never after the jump.
     private fun due(
         at: Long,
         now: Long,
     ): Boolean = at <= now || at - now > MAX_ROUND_GAP_MS
 
-    /** Waits until a digest arrives or [timeoutMs] passes, whichever is first: the serve loop's sleep. */
+    /** Waits until a digest arrives, a link custody answers over drains, or [timeoutMs] passes: the serve loop's sleep. */
     suspend fun awaitWake(timeoutMs: Long) {
         withTimeoutOrNull(timeoutMs.coerceAtLeast(0)) { wakes.receive() }
     }
@@ -518,7 +825,7 @@ class ForwardSync(
         synchronized(lock) {
             answers.clear()
             carry.answeringCleared()
-            credits.clear()
+            handoffs.clear()
             offers.clear()
         }
         carry.clearMemos()
@@ -543,6 +850,9 @@ class ForwardSync(
             answers[peer]?.let { listOf(it.digest.size, it.released.size, it.keysHanded.size, it.arrived.size, it.refused.size) }
         }
 
+    /** How many rounds' credits wait on their links (tests). */
+    internal fun creditsWaiting(): Int = synchronized(lock) { handoffs.size }
+
     // Custody's index, or null when it cannot be read: the digest is dropped and nothing it would have changed moves.
     private suspend fun readIndex(now: Long): List<IndexedFrame>? =
         try {
@@ -557,9 +867,9 @@ class ForwardSync(
         }
 
     /**
-     * One round of [peer]'s [answer] at [now], over custody's [index]: ends the answer when it is aged, unlinked or has
-     * nothing left, else releases the round and schedules the next. [first] is a new answer's round at its digest, which
-     * goes whatever the links say, as an answer always has.
+     * What [act] asks of [peer]'s [answer] at [now], over custody's [index]: ends it when it lost its link or aged (cut short
+     * when something was left), or when nothing is left; else, for [Act.Cut], releases a round over [carrier]. [first] is a
+     * new answer's round at its digest, which goes whatever the links say, as an answer always has.
      */
     @Suppress("LongParameterList") // one round's inputs, read once by the caller for every answer it cuts
     private suspend fun cut(
@@ -568,35 +878,50 @@ class ForwardSync(
         now: Long,
         index: List<IndexedFrame>,
         byId: Map<String, IndexedFrame>,
+        carrier: LinkCarrier?,
+        view: PairView?,
+        act: Act,
         first: Boolean,
     ) {
-        val view = if (answer.link) transport.pairView(peer) else null
-        val carrier = transport.carrier(peer)
         // The plane this round goes over is the one a plane's link hold reads ([CustodyProgress.answerCarrier]).
-        carrier?.let { c -> synchronized(lock) { if (answers[peer] === answer) carry.answering(peer, c.kind) } }
-        // A wall clock set back would otherwise leave the answer's age negative, and the answer alive for the jump.
-        synchronized(lock) { if (answer.digestAt > now) answer.digestAt = now }
+        val live =
+            synchronized(lock) {
+                (answers[peer] === answer).also { if (it && carrier != null) carry.answering(peer, carrier.kind) }
+            }
+        if (!live) return
         val owed = synchronized(lock) { candidatesOf(peer, answer, index, byId.keys, carrier) }
         val candidates = owed.filterNot { blocked(peer, answer, it, now) }
-        // A new answer's first round goes whatever the links say, as an answer always has; later ones end with the link.
-        val linked = first || if (answer.link) view != null else transport.radioLinked(peer)
-        val aged = !first && now - answer.digestAt >= ANSWER_MAX_AGE_MS
-        val plan = pace.plan(carrier?.kind ?: TransportKind.Bluetooth)
         when {
-            !linked || aged -> end(peer, answer, cutShort = candidates.isNotEmpty(), byLink = !linked)
+            !first && (act == Act.Lost || act == Act.Aged) -> {
+                end(
+                    peer,
+                    answer,
+                    cutShort = candidates.isNotEmpty(),
+                    byLink = act == Act.Lost,
+                )
+            }
 
-            candidates.isEmpty() -> end(peer, answer, cutShort = false, byLink = false)
+            candidates.isEmpty() -> {
+                end(peer, answer, cutShort = false, byLink = false)
+            }
 
-            // Nothing holds the peer now: a round would go nowhere, so none is cut and nothing is recorded as released.
-            // The next is due an interval on, unless the link check ends the answer first.
-            carrier == null -> synchronized(lock) { answer.dueAt = now + plan.intervalMs }
+            // Nothing holds the peer now (a first round): no round, and nothing recorded; looked at again soon.
+            carrier == null -> {
+                synchronized(lock) { answer.lookAt = now + CustodyPace.ROUND_CHECK_MS }
+            }
 
-            else -> releaseRound(peer, answer, candidates, index, byId, view, carrier, plan, now)
+            else -> {
+                releaseRound(peer, answer, candidates, index, byId, view, carrier, now)
+            }
         }
     }
 
-    // Picks and releases [peer]'s round over [carrier]; one that loaded nothing it could send ends the answer when the view
-    // refused all that was left, else waits an interval (every pick left custody between the index and its load).
+    /**
+     * Picks and releases [peer]'s round over [carrier]. While a file moves on that link (§2, revision 16), only frames
+     * addressed to the peer go, with their keys; with none of those left the answer waits for the file, reading only the
+     * link. A round that loaded nothing it could send ends the answer when the view refused all that was left, else looks
+     * again soon (every pick left custody between the index and its load, and is refused now).
+     */
     @Suppress("LongParameterList") // one round's inputs
     private suspend fun releaseRound(
         peer: String,
@@ -606,14 +931,34 @@ class ForwardSync(
         byId: Map<String, IndexedFrame>,
         view: PairView?,
         carrier: LinkCarrier,
-        plan: RoundPlan,
         now: Long,
     ) {
-        val round = pick(peer, answer, candidates, index, byId, view, plan, now)
+        val file = carrier.outbound?.fileMoving == true
+        val from = if (file) candidates.filter { tierOf(it, peer) == TIER_ADDRESSED } else candidates
+        if (from.isEmpty()) {
+            synchronized(lock) {
+                answer.heldForFile = true
+                answer.lookAt = now + CustodyPace.ROUND_CHECK_MS
+            }
+            return
+        }
+        val plan = pace.plan(carrier.kind)
+        val round = pick(peer, answer, from, index, byId, view, plan, now)
         when {
-            round.frames.isNotEmpty() -> release(peer, answer, round, carrier, view != null, plan, now)
-            round.exhausted -> end(peer, answer, cutShort = false, byLink = false)
-            else -> synchronized(lock) { answer.dueAt = now + plan.intervalMs }
+            round.frames.isNotEmpty() -> {
+                release(peer, answer, round, carrier, view != null, plan, now)
+            }
+
+            round.exhausted && !file -> {
+                end(peer, answer, cutShort = false, byLink = false)
+            }
+
+            else -> {
+                synchronized(lock) {
+                    answer.heldForFile = file && round.exhausted
+                    answer.lookAt = now + CustodyPace.ROUND_CHECK_MS
+                }
+            }
         }
     }
 
@@ -673,19 +1018,22 @@ class ForwardSync(
         now: Long,
     ): Boolean = synchronized(lock) { answer.proven } && carry.blocked(peer, entry.id, entry.recipientId, now, links)
 
+    // [e]'s tier of §1 in an answer to [peer]: a profile, addressed to it, a group frame whose own roster lists it, the rest.
+    private fun tierOf(
+        e: IndexedFrame,
+        peer: String,
+    ): Int =
+        when {
+            e.type == FrameType.PROFILE -> TIER_PROFILES
+            e.recipientId == peer -> TIER_ADDRESSED
+            e.groupId != null && carry.rosterLists(e.id, peer) -> TIER_GROUPS
+            else -> TIER_REST
+        }
+
     /** The tiers of §1 for an answer to [peer]: profiles, addressed to it, its groups, the rest. */
     private fun serveOrder(peer: String): Comparator<IndexedFrame> {
         val tiers = HashMap<String, Int>()
-        val tierOf = { e: IndexedFrame ->
-            tiers.getOrPut(e.id) {
-                when {
-                    e.type == FrameType.PROFILE -> TIER_PROFILES
-                    e.recipientId == peer -> TIER_ADDRESSED
-                    e.groupId != null && carry.rosterLists(e.id, peer) -> TIER_GROUPS
-                    else -> TIER_REST
-                }
-            }
-        }
+        val tierOf = { e: IndexedFrame -> tiers.getOrPut(e.id) { tierOf(e, peer) } }
         return Comparator { a, b ->
             val ta = tierOf(a)
             val tb = tierOf(b)
@@ -715,11 +1063,10 @@ class ForwardSync(
         }
     }
 
-    /** One round's picks, loaded: the frames in serve order, the keys ahead of them, its bytes, and who lacked a key. */
+    /** One round's picks, loaded: the frames in serve order, the keys ahead of them, and who lacked a key. */
     private class Round(
         val frames: List<CarriedFrame>,
         val keys: Map<String, WireEnvelope>,
-        val bytes: Long,
         val keyless: Int,
         // Every candidate was read and none goes: a direct link's view refused what was left.
         val exhausted: Boolean,
@@ -778,7 +1125,7 @@ class ForwardSync(
             val loaded = store.liveFramesByIds(picks.map { it.id }, now).associateBy { it.envelope.id }
             refuseUnloaded(answer, picks, loaded)
             val frames = picks.mapNotNull { loaded[it.id] }
-            return Round(frames, keys.filterKeys { s -> frames.any { it.envelope.senderId == s } }, bytes, keyless, exhausted = false)
+            return Round(frames, keys.filterKeys { s -> frames.any { it.envelope.senderId == s } }, keyless, exhausted = false)
         }
         val frames = ArrayList<CarriedFrame>()
         var read = 0
@@ -806,7 +1153,7 @@ class ForwardSync(
             }
         }
         val exhausted = frames.isEmpty() && read >= candidates.size
-        return Round(frames, keys.filterKeys { s -> frames.any { it.envelope.senderId == s } }, bytes, keyless, exhausted)
+        return Round(frames, keys.filterKeys { s -> frames.any { it.envelope.senderId == s } }, keyless, exhausted)
     }
 
     // A row the index names that did not load (it left custody since, or its bytes no longer decode) is refused for the
@@ -828,8 +1175,10 @@ class ForwardSync(
         view: PairView?,
     ): Boolean = sender !in noKey && (view == null || view.admits(profileOf(sender)))
 
-    // Sends [round] to [peer]: its keys first, then its frames in serve order; records what went, schedules the next round,
-    // and, for a proven answer, tells the memo what is pending and owes the hand-off its credit one interval on (§3, §6).
+    // Sends [round] to [peer]: its keys first, then its frames in serve order; records what went, and, over a link that
+    // counts what it holds, owes the round its credit at the first look that finds the link under a round (§3), which is
+    // also when a proven answer's releases become pending in the memo (§6) and when each is stamped written. Over a link
+    // that can't say, each is pending and written from its cut, and never credited.
     @Suppress("LongParameterList") // one released round and where it went
     private suspend fun release(
         peer: String,
@@ -846,19 +1195,37 @@ class ForwardSync(
             transport.send(WireEnvelope(sig = carried.sig, signed = carried.signed), to)
             onServed(carried.envelope, peer)
         }
-        val ids = round.frames.map { it.envelope.id }
+        val envelopes = round.frames.map { it.envelope }
+        val counts = carrier.outbound != null
+        // Read outside [lock], as every ledger read here is.
+        val cutMark = carry.awareCutMark(peer)
         // The memo and the credit follow proof twice over: the answer's digest proved the peer, and so does the link the
         // round goes over. Either one unproven, and the round leaves nothing behind (§3, §6).
         val memo =
             synchronized(lock) {
-                ids.forEach { answer.released[it] = Released(now, carrier.kind) }
+                val stamps = envelopes.map { e -> Released(now, carrier.kind, written = !counts).also { answer.released[e.id] = it } }
                 answer.keysHanded += round.keys.keys
-                answer.dueAt = plan.nextDue(now, round.bytes)
+                answer.served = true
+                answer.heldForFile = false
                 val memo = answer.proven && carrier.proven
-                if (memo) credits += Credit(peer, ids, carrier.kind, carrier.link, now + plan.intervalMs)
+                if (counts) {
+                    handoffs +=
+                        Handoff(peer, answer, envelopes, stamps, carrier, viewFiltered, memo, cutAt = now, cutMark = cutMark)
+                }
                 memo
             }
-        if (memo) carry.released(peer, round.frames.map { it.envelope }, carrier, viewFiltered, now)
+        if (memo && !counts) carry.released(peer, envelopes, carrier, viewFiltered, now)
+        // The next look: at once while the link still holds under a round with this one queued, else at its drain signal or
+        // its estimate; a link that can't say is looked at only for its endings.
+        val after = transport.carrier(peer)?.outbound
+        synchronized(lock) {
+            answer.lookAt =
+                when {
+                    !counts -> now + CustodyPace.SIGNAL_FALLBACK_MS
+                    after == null || after.unwritten < plan.bytes -> now
+                    else -> now + plan.lookIn(after)
+                }
+        }
         metrics?.onCustodyRoundCut(keyless = round.keyless)
     }
 
@@ -935,9 +1302,15 @@ class ForwardSync(
         /** The longest the re-offer interval doubles to while offers draw nothing (§7). */
         const val REOFFER_MAX_MS = 600_000L
 
-        // No round or credit is ever due further out than an answer lives: one that is was stamped before the wall clock
-        // went back, and is due now.
+        // No look is ever due further out than an answer lives: one that is was stamped before the wall clock went back, and
+        // is due now.
         private const val MAX_ROUND_GAP_MS = ANSWER_MAX_AGE_MS
+
+        /**
+         * How long a peer's round that threw waits before it is tried again: a retry-after, not a pace (#206). The serve
+         * loop waits as long after a look that failed whole.
+         */
+        const val CUSTODY_RETRY_MS = 1_000L
 
         /** How early a tick may land and still find a neighbour due (§7): half of one. */
         const val REOFFER_TOLERANCE_MS = REOFFER_MS / 2

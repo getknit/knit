@@ -1,6 +1,9 @@
 package app.getknit.knit
 
+import app.getknit.knit.mesh.FileKind
+import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.LinkOutbound
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.Peer
@@ -145,6 +148,28 @@ class NanLinkStampTest {
         assertSame(path.link, next.link)
         assertTrue(next.proven)
         unproven.link.close()
+    }
+
+    @Test
+    fun theCarrierCountsWhatItsOwnPathHoldsUnwritten() {
+        val first = register(proven = true)
+        assertEquals("nothing queued", 0L, carrier()!!.outbound!!.unwritten)
+        first.link.send(ByteArray(1_000)) // never started: the frame waits in the queue, counted
+        val held = carrier()!!.outbound!!
+        assertEquals(1_000L, held.unwritten)
+        assertNull("the plane counts all it holds and signals its drain: no rate", held.drainBytesPerSec)
+        assertFalse(held.fileMoving)
+
+        val next = register(proven = true) // R3: the newcomer's counts, never the displaced path's
+        assertSame(next.link, carrier()!!.link)
+        assertEquals(0L, carrier()!!.outbound!!.unwritten)
+        first.link.close()
+
+        assertTrue(next.link.sendFile(tmp.newFile(), FileMeta(FileKind.ATTACHMENT, "k", "image/jpeg")))
+        assertTrue("a file queued on the path", carrier()!!.outbound!!.fileMoving)
+
+        next.link.close() // torn down at quiescence or cut: what it holds never drains
+        assertTrue(carrier()!!.outbound!!.unwritten >= LinkOutbound.NOT_DRAINING)
     }
 
     // A hop-less coordination frame is unstamped: `emitFastWire` builds `InboundFrame(wire, env, hop ?: env.senderId)`,

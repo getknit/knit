@@ -13,6 +13,7 @@ import app.getknit.knit.mesh.ForwardSync
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.IndexedFrame
 import app.getknit.knit.mesh.LinkCarrier
+import app.getknit.knit.mesh.LinkOutbound
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshRouter
 import app.getknit.knit.mesh.MeshTransport
@@ -95,9 +96,12 @@ class ForwardSyncTest {
             return true
         }
 
+        // How many times custody's index was read: what a look that only reads its links must leave alone.
+        var indexReads = 0
+
         // The index as the repository builds it, `receivedAt` the arrival order ([Row.arrived]).
         override suspend fun liveIndex(now: Long): List<IndexedFrame> =
-            rows.values.filter { it.expiresAt >= now }.map { row ->
+            rows.values.filter { it.expiresAt >= now }.also { indexReads++ }.map { row ->
                 val env = row.frame.envelope
                 IndexedFrame(
                     id = env.id,
@@ -165,8 +169,20 @@ class ForwardSyncTest {
 
         override suspend fun pairView(nodeId: String): PairView? = views[nodeId].also { onPairView() }
 
-        override fun carrier(nodeId: String): LinkCarrier? =
-            if (nodeId in unheld) null else carriers[nodeId] ?: LinkCarrier(TransportKind.Other, null)
+        // What each peer's link holds unwritten, as a plane counts it ([LinkCarrier.outbound]); a peer not here has a link
+        // that can't say. A frame sent to a peer here adds its bytes, as a link's queue counts it, until a case drains it.
+        val outbound = mutableMapOf<String, Outbound>()
+
+        // How many times a case's sync read a link ([carrier]): what "the link is read before the store" counts.
+        var carrierReads = 0
+
+        override fun carrier(nodeId: String): LinkCarrier? {
+            carrierReads++
+            if (nodeId in unheld) return null
+            val c = carriers[nodeId] ?: LinkCarrier(TransportKind.Other, null)
+            val o = outbound[nodeId] ?: return c
+            return LinkCarrier(c.kind, c.link, c.proven, LinkOutbound(o.unwritten, o.rate, o.fileMoving))
+        }
 
         override fun carries(
             kind: TransportKind,
@@ -192,6 +208,7 @@ class ForwardSyncTest {
             to: Peer?,
         ) {
             sent += wire to to
+            to?.let { outbound[it.nodeId] }?.let { it.unwritten += WireCodec.encodeWire(wire).size }
         }
 
         override suspend fun sendFile(
@@ -207,6 +224,13 @@ class ForwardSyncTest {
             digestsSent += to to ids
         }
     }
+
+    /** One peer's link as a plane counts it: its unwritten bytes, the rate its estimate drains at, a file moving on it. */
+    private class Outbound(
+        var unwritten: Long = 0L,
+        var rate: Long? = null,
+        var fileMoving: Boolean = false,
+    )
 
     private fun dm(
         id: String,
@@ -283,11 +307,11 @@ class ForwardSyncTest {
     ) = dm(id, sender, "q")
 
     /**
-     * Lets every live answer run out: a round cut one interval of every plane on finds nothing left and ends it, so the
-     * next digest starts a new answer (the custody-carry-policy contract's §2). What a case about the memo, not the pace,
-     * does between two digests.
+     * Lets every live answer run out: a look at its age ends it (a link that can't say never reads the store to learn it has
+     * nothing left), so the next digest starts a new answer (the custody-carry-policy contract's §2). What a case about the
+     * memo, not the rounds, does between two digests.
      */
-    private suspend fun ForwardSync.settle(now: Long) = serveDue(now + SETTLE_MS)
+    private suspend fun ForwardSync.settle(now: Long) = serveDue(now + ForwardSync.ANSWER_MAX_AGE_MS)
 
     // --- pure predicate ---
 
@@ -1506,7 +1530,8 @@ class ForwardSyncTest {
 
     /**
      * A sync over a store that tells its ledger what it holds, a peer "z" a Bluetooth link carries (and holds as a radio
-     * neighbour), and every sender's key held unless [keys] is false. [pace] defaults to the contract's table.
+     * neighbour) and counts what it holds for, and every sender's key held unless [keys] is false. [pace] defaults to the
+     * contract's table. The link never drains by itself: a case drains it ([drain]) and looks ([look]).
      */
     private inner class Rounds(
         var now: Long = 0L,
@@ -1521,7 +1546,23 @@ class ForwardSyncTest {
             RecordingTransport().apply {
                 carriers["z"] = LinkCarrier(TransportKind.Bluetooth, link, proven = true)
                 links.value = setOf(Peer("z"))
+                outbound["z"] = Outbound()
             }
+
+        // "z"'s link as it counts what it holds.
+        val out get() = transport.outbound.getValue("z")
+
+        // "z"'s link wrote everything it held.
+        fun drain() {
+            out.unwritten = 0L
+        }
+
+        // One look of the serve loop at [at].
+        suspend fun look(at: Long = now) {
+            now = at
+            sync.serveDue(at)
+        }
+
         val keysSent = mutableListOf<String>()
         val sync =
             ForwardSync(
@@ -1686,52 +1727,417 @@ class ForwardSyncTest {
 
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
             assertEquals("past the budget alone, and the next waits", listOf("big"), r.sent())
+            r.look(60_000L)
+            assertEquals("a first pick over the budget holds the next round while the link holds it", listOf("big"), r.sent())
 
-            r.now = r.sync.nextDueAt()!!
-            r.sync.serveDue(r.now)
+            r.drain()
+            r.look()
             assertEquals(listOf("big", "next", "small"), r.sent())
         }
 
+    // --- release on drain (§2, revisions 13 and 14) ---
+
     /**
-     * The pace on a test clock (§2): the next round is due `max(interval, released × interval / round)` after the last, so
-     * a round past its budget waits in proportion, and nothing goes before then.
+     * A link under one round unwritten gets its next round at once, with no wait on the clock; one that holds a round waits
+     * for its drain, and its drain signal wakes the loop at the same instant ([ForwardSync.onDrained]) while a drain for a
+     * peer custody isn't answering wakes nothing.
      */
     @Test
-    fun theNextRoundIsDueInProportionToWhatTheLastReleased() =
+    fun aLinkThatDrainedGetsItsNextRoundAtOnce() =
         runTest {
             val r = Rounds()
-            val big = chat("big", "a", sentAt = 1, recipient = "z", bytes = 32_000)
-            r.carry(big, chat("then", "a", sentAt = 2, recipient = "z"), chat("last", "a", sentAt = 3, recipient = "z"))
+            r.carry(*(1..4).map { chat("r$it", "a", sentAt = it.toLong(), bytes = 10_000) }.toTypedArray())
 
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
-            val due = r.cost(big).toLong() * CustodyPace.BLUETOOTH_INTERVAL_MS / CustodyPace.BLUETOOTH_ROUND_BYTES
-            assertEquals(due, r.sync.nextDueAt())
+            assertEquals("one 10 KB frame a 16 KiB round", 1, r.sent().size)
+            assertEquals("the link holds under a round: the next look is now", r.now, r.sync.nextDueAt())
+            r.look()
+            assertEquals(2, r.sent().size)
 
-            r.sync.serveDue(due - 1)
-            assertEquals(listOf("big"), r.sent())
-            r.sync.serveDue(due)
-            assertEquals(listOf("big", "then", "last"), r.sent())
-            assertEquals("a small round waits the interval", due + CustodyPace.BLUETOOTH_INTERVAL_MS, r.sync.nextDueAt())
-            assertEquals(2L, r.metrics.frames().custodyRoundsCut)
+            r.look()
+            assertEquals("holding a round: no third", 2, r.sent().size)
+            r.sync.awaitWake(1L) // the digest's wake
+            val asleep = testScheduler.currentTime
+            r.sync.onDrained("y")
+            r.sync.awaitWake(10_000L)
+            assertEquals("another peer's drain wakes nothing", asleep + 10_000L, testScheduler.currentTime)
+            r.drain()
+            r.sync.onDrained("z")
+            r.sync.awaitWake(10_000L)
+            assertEquals("z's drain wakes the loop at once", asleep + 10_000L, testScheduler.currentTime)
+            r.look()
+            assertEquals("the round followed the drain on the same instant", 3, r.sent().size)
         }
 
-    /** A newer digest replaces the one the rounds are cut from, and never brings the next round forward. */
+    /**
+     * A link that never drains gets no second round however long it stays up (§2), and its looks read only the link, at
+     * the fallback beside its drain signal, never custody's index. Its answer still ends by age, cut short, its first
+     * round's credit is dropped uncredited at the same age, and no look outlives them.
+     */
     @Test
-    fun aNewerDigestReplacesTheDigestWithoutBringingTheRoundForward() =
+    fun aLinkThatNeverDrainsGetsOneRoundAndItsAnswerStillEndsByAge() =
+        runTest {
+            val r = Rounds()
+            r.carry(chat("r1", "a", sentAt = 1, bytes = 10_000), chat("r2", "a", sentAt = 2, bytes = 10_000))
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
+            r.out.unwritten = 1_000_000L
+            val reads = r.store.indexReads
+
+            while (r.now < ForwardSync.ANSWER_MAX_AGE_MS - CustodyPace.SIGNAL_FALLBACK_MS) {
+                r.look(r.sync.nextDueAt()!!)
+            }
+            assertEquals("no second round", 1, r.sent().size)
+            assertEquals("no look read the index", reads, r.store.indexReads)
+            assertEquals(1, r.sync.creditsWaiting())
+
+            r.look(ForwardSync.ANSWER_MAX_AGE_MS)
+            assertEquals(null, r.sync.answerSizes("z"))
+            assertEquals(1L, r.metrics.frames().custodyAnswersCutShort)
+            assertEquals("dropped uncredited", 0, r.sync.creditsWaiting())
+            assertEquals(0, r.ledger.spread("r1") + r.ledger.spread("r2"))
+            assertEquals("no look outlives the answer", null, r.sync.nextDueAt())
+        }
+
+    /**
+     * A link is never handed a round beyond what it can take: across looks as often as the loop likes, with the link
+     * draining a little between them, what it holds unwritten never reaches two rounds.
+     */
+    @Test
+    fun aLinkIsNeverHandedTwoRoundsBeyondWhatItHeld() =
+        runTest {
+            val r = Rounds()
+            r.carry(*(1..60).map { chat("r$it", "a", sentAt = it.toLong(), bytes = 3_000) }.toTypedArray())
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
+            var most = r.out.unwritten
+            repeat(200) {
+                r.look()
+                r.look()
+                most = maxOf(most, r.out.unwritten)
+                r.out.unwritten = maxOf(0L, r.out.unwritten - 2_500L)
+            }
+            assertEquals("every frame went, once", 60, r.sent().toSet().size)
+            assertEquals(60, r.sent().size)
+            assertTrue("held $most", most < 2L * CustodyPace.BLUETOOTH_ROUND_BYTES)
+        }
+
+    /** A newer digest replaces the one the rounds are cut from, and cuts no round of its own: the link's drain cuts it. */
+    @Test
+    fun aNewerDigestReplacesTheDigestAndCutsNoRoundOfItsOwn() =
         runTest {
             val r = Rounds()
             r.carry(chat("big", "a", sentAt = 1, recipient = "z", bytes = 20_000), chat("held", "a", sentAt = 2, recipient = "z"))
             r.carry(chat("other", "a", sentAt = 3, recipient = "z"))
 
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
-            val due = r.sync.nextDueAt()!!
-            r.now = due - 1
+            r.now = 1_000L
             r.sync.onDigest("z", listOf("held"), TransportKind.Bluetooth)
-            assertEquals("nothing before the round is due", listOf("big"), r.sent())
-            assertEquals(due, r.sync.nextDueAt())
+            assertEquals("nothing while the link holds the first round", listOf("big"), r.sent())
+            r.look()
+            assertEquals(listOf("big"), r.sent())
 
-            r.sync.serveDue(due)
+            r.drain()
+            r.look()
             assertEquals("cut from the newer digest", listOf("big", "other"), r.sent())
+        }
+
+    /**
+     * A link that can't say what it holds ([LinkCarrier.outbound] null) gets the first round of each digest and no other
+     * (§2), however long it stays up, and its hand-offs are never credited: nothing says the round left.
+     */
+    @Test
+    fun aLinkThatCantSayGetsOneRoundADigest() =
+        runTest {
+            val r = Rounds()
+            r.transport.outbound.remove("z")
+            r.carry(*(1..4).map { chat("r$it", "a", sentAt = it.toLong(), bytes = 10_000) }.toTypedArray())
+
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
+            repeat(30) { r.look(r.sync.nextDueAt()!!) }
+            assertEquals(1, r.sent().size)
+
+            r.sync.onDigest("z", r.sent(), TransportKind.Bluetooth, proven = true, link = r.link)
+            assertEquals("a newer digest cuts no round of its own", 1, r.sent().size)
+            r.look()
+            r.look()
+            assertEquals("its one round, at the look after it", 2, r.sent().size)
+            assertEquals("never credited", 0, r.ledger.spread(r.sent().last()))
+        }
+
+    /**
+     * A link that can't say is looked at only for its endings after its digest's round: its looks read no index while it
+     * lives, however much is left, and the look at its age reads it once, to end it cut short.
+     */
+    @Test
+    fun aLinkThatCantSayReadsNoIndexAfterItsRound() =
+        runTest {
+            val r = Rounds()
+            r.transport.outbound.remove("z")
+            r.carry(*(1..4).map { chat("r$it", "a", sentAt = it.toLong(), bytes = 10_000) }.toTypedArray())
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
+            val reads = r.store.indexReads
+
+            while (r.sync.nextDueAt()!! < ForwardSync.ANSWER_MAX_AGE_MS) r.look(r.sync.nextDueAt()!!)
+            assertEquals("no look read the index", reads, r.store.indexReads)
+            assertEquals(CustodyPace.SIGNAL_FALLBACK_MS, r.sync.nextDueAt()!! - r.now)
+
+            r.look(ForwardSync.ANSWER_MAX_AGE_MS)
+            assertEquals(null, r.sync.answerSizes("z"))
+            assertEquals(1L, r.metrics.frames().custodyAnswersCutShort)
+            assertEquals(1, r.store.indexReads - reads)
+        }
+
+    /**
+     * A round whose Bluetooth link ended while Wi-Fi Aware still holds the peer is owed again at once over Aware (§6: what
+     * the link carried may have died in its queue), though the answer lives on and no new link replaced the old on its
+     * own plane.
+     */
+    @Test
+    fun aRoundWhoseBluetoothLinkEndedUnderAwareIsReleasedAgainOverAware() =
+        runTest {
+            val r = Rounds()
+            r.carry(chat("x", "a", sentAt = 1, bytes = 20_000))
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
+            assertEquals(listOf("x"), r.sent())
+
+            r.transport.carriers["z"] = LinkCarrier(TransportKind.WifiAware, Any(), proven = true)
+            r.drain()
+            r.look(1_000L)
+            assertEquals("released again over Aware", listOf("x", "x"), r.sent())
+            assertEquals(0, r.ledger.spread("x"))
+        }
+
+    /**
+     * A Wi-Fi Aware path cut with the answer live (the plane's `answerCut`) while its round still waited below it: the round
+     * is owed again over the next path before any digest, and is never pending, so a digest past the judging delay that
+     * lacks it marks nothing not kept. A path that closed at quiescence would leave it pending for that digest instead.
+     */
+    @Test
+    fun anAwarePathCutWithARoundBelowItOwesTheRoundAgainAndMarksNothing() =
+        runTest {
+            val r = Rounds()
+            r.transport.carriers["z"] = LinkCarrier(TransportKind.WifiAware, Any(), proven = true)
+            // Arrival order: x, received last, is the round's first pick, and the big frame waits past the budget.
+            r.carry(chat("big", "a", sentAt = 0, bytes = 600_000), chat("x", "a", sentAt = 1))
+            r.sync.onDigest("z", emptyList(), TransportKind.WifiAware, proven = true)
+            assertEquals(listOf("x"), r.sent().take(1))
+            r.out.unwritten = 2_000_000L
+            r.look(500L)
+            assertEquals("the round waits below the path", 1, r.sync.creditsWaiting())
+
+            r.ledger.answerCut("z", TransportKind.WifiAware)
+            r.transport.carriers["z"] = LinkCarrier(TransportKind.WifiAware, Any(), proven = true)
+            r.drain()
+            r.look(1_000L)
+            assertEquals("sent again over the new path, before any digest", 2, r.sent().count { it == "x" })
+
+            r.out.unwritten = 2_000_000L
+            r.now = 1_000L + CarryLedger.JUDGE_AFTER_FAST_MS
+            r.sync.onDigest("z", emptyList(), TransportKind.WifiAware, proven = true)
+            assertEquals("nothing marked not kept", 0L, r.metrics.frames().custodyNotKept)
+        }
+
+    /**
+     * A round still below a link that stays full [ForwardSync.ANSWER_MAX_AGE_MS] after its cut is dropped uncredited and
+     * written then: the answer, kept alive by digests, does not queue it again behind itself, and the first digest past the
+     * judging delay from then that still lacks it owes it again.
+     */
+    @Test
+    fun aRoundAgedOnAFullLinkIsWrittenAtItsDropAndJudgedFromThere() =
+        runTest {
+            val r = Rounds()
+            r.carry(chat("x", "a", sentAt = 1, bytes = 20_000), chat("y", "a", sentAt = 0, bytes = 20_000))
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
+            r.out.unwritten = 1_000_000L
+            r.now = 100_000L
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
+            r.look(ForwardSync.ANSWER_MAX_AGE_MS)
+            assertEquals("dropped uncredited", 0, r.sync.creditsWaiting())
+
+            r.drain()
+            r.look(ForwardSync.ANSWER_MAX_AGE_MS + 1L)
+            assertEquals("not queued again behind itself", listOf("y", "x"), r.sent())
+            r.out.unwritten = 1_000_000L
+            r.now = ForwardSync.ANSWER_MAX_AGE_MS + CarryLedger.JUDGE_AFTER_BLUETOOTH_MS
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
+            r.drain()
+            r.look()
+            assertEquals("judged from its drop: owed again", listOf("y", "x", "y"), r.sent())
+        }
+
+    /**
+     * A hand-off is credited at the first look after its round that finds its own link under one round unwritten (§3): not
+     * while the link holds the round, and never once the link dropped first; a link that proved nothing adds no holder.
+     */
+    @Test
+    fun aHandOffIsCreditedAtTheDrainedLookAndNeverWhenItsLinkDroppedFirst() =
+        runTest {
+            val r = Rounds()
+            r.carry(chat("r1", "a", sentAt = 1))
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
+            r.out.unwritten = 20_000L
+            r.look(5_000L)
+            assertEquals("the link still holds it", 0, r.ledger.spread("r1"))
+            r.drain()
+            r.look()
+            assertEquals("credited: one holder", 1, r.ledger.spread("r1"))
+
+            val cut = Rounds()
+            cut.carry(chat("r1", "a", sentAt = 1))
+            cut.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = cut.link)
+            cut.transport.carriers["z"] = LinkCarrier(TransportKind.Bluetooth, Any(), proven = true)
+            cut.drain()
+            cut.look()
+            assertEquals("the link dropped first: nothing credited", 0, cut.ledger.spread("r1"))
+            assertEquals("what went over the old link went again over the new, and waits for its own", 1, cut.sync.creditsWaiting())
+            cut.look()
+            assertEquals("credited on the new link", 1, cut.ledger.spread("r1"))
+
+            val unproven = Rounds()
+            unproven.carry(chat("r1", "a", sentAt = 1))
+            unproven.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, link = unproven.link)
+            unproven.look()
+            assertEquals("an unproven link adds no holder", 0, unproven.ledger.spread("r1"))
+        }
+
+    /**
+     * The last round's credit settles after its answer ended (§3): an answer that aged out with a round still below its
+     * link is credited at the drain that comes after; on a link that never drains the credit is dropped
+     * [ForwardSync.ANSWER_MAX_AGE_MS] after its round, and no look outlives it.
+     */
+    @Test
+    fun theLastRoundsCreditSettlesAfterItsAnswerEnded() =
+        runTest {
+            for (drains in listOf(true, false)) {
+                val r = Rounds()
+                r.carry(chat("r1", "a", sentAt = 1))
+                r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
+                r.out.unwritten = 20_000L // the answer lives on, its link full
+                r.now = 110_000L
+                r.carry(chat("r2", "a", sentAt = 110_000L))
+                r.drain()
+                r.look()
+                assertEquals(listOf("r1", "r2"), r.sent())
+                r.out.unwritten = 20_000L
+                r.look(ForwardSync.ANSWER_MAX_AGE_MS)
+                assertEquals("aged out", null, r.sync.answerSizes("z"))
+                assertEquals("its credit waits", 1, r.sync.creditsWaiting())
+
+                if (drains) r.drain()
+                while (r.sync.nextDueAt() != null) r.look(r.sync.nextDueAt()!!)
+                assertEquals("drains: $drains", if (drains) 1 else 0, r.ledger.spread("r2"))
+                assertTrue("dropped by ${r.now}", drains || r.now <= 110_000L + ForwardSync.ANSWER_MAX_AGE_MS)
+            }
+        }
+
+    // --- the estimate (§2, revision 14) ---
+
+    /**
+     * Where the plane estimates the buffer below its link, the next look is at the time the estimate gives, (unwritten −
+     * round) at the link's measured rate: twice the rate, half the wait; no rate, the fallback beside its signal.
+     */
+    @Test
+    fun aMeasuredRateTimesTheNextLookInProportion() =
+        runTest {
+            for ((rate, wait) in listOf(16_384L to 501L, 32_768L to 251L, null to CustodyPace.SIGNAL_FALLBACK_MS)) {
+                val r = Rounds()
+                r.carry(chat("r1", "a", sentAt = 1, bytes = 20_000), chat("r2", "a", sentAt = 2))
+                r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
+                r.out.unwritten = CustodyPace.BLUETOOTH_ROUND_BYTES + 8_192L
+                r.out.rate = rate
+                r.look(1_000L)
+                assertEquals("at $rate B/s", 1_000L + wait, r.sync.nextDueAt())
+            }
+        }
+
+    /**
+     * With a measured rate the buffer below is never handed more than two rounds: a plane that counts what it handed down
+     * less what its rate has sent since, looked at only when the estimate says, holds under two rounds at every look while
+     * the answer runs, and the answer goes as fast as the rate.
+     */
+    @Test
+    fun withAMeasuredRateTheBufferNeverHoldsTwoRounds() =
+        runTest {
+            val r = Rounds()
+            val rate = 4_096L
+            r.out.rate = rate
+            r.carry(*(1..40).map { chat("r$it", "a", sentAt = it.toLong(), bytes = 3_000) }.toTypedArray())
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
+            var most = r.out.unwritten
+            while (r.sync.nextDueAt() != null) {
+                val next = r.sync.nextDueAt()!!
+                r.out.unwritten = maxOf(0L, r.out.unwritten - (next - r.now) * rate / 1_000L)
+                r.look(next)
+                most = maxOf(most, r.out.unwritten)
+            }
+            assertEquals(40, r.sent().size)
+            assertTrue("held $most", most < 2L * CustodyPace.BLUETOOTH_ROUND_BYTES)
+            val bytes = 40L * r.cost(chat("r1", "a", sentAt = 1, bytes = 3_000))
+            assertTrue("done in ${r.now} ms", r.now <= (bytes - CustodyPace.BLUETOOTH_ROUND_BYTES) * 1_000L / rate + 2_000L)
+        }
+
+    // --- a file comes first (§2, revisions 14 and 16) ---
+
+    /**
+     * While a file moves on the peer's link (either way; the plane says, and a stalled one does not count), a round carries
+     * only frames addressed to the peer, with their keys; with none left the answer waits for the file reading only the
+     * link, and the other tiers go once it stops. A file moving again holds them again.
+     */
+    @Test
+    fun whileAFileMovesARoundCarriesOnlyThePeersOwnMailAndItsKeys() =
+        runTest {
+            val r = Rounds(keys = true)
+            r.carry(
+                profile("p", "o", sentAt = 1),
+                chat("grp", "g", sentAt = 2, members = listOf("g", "z")),
+                chat("rest", "q", sentAt = 3),
+                chat("dm", "s", sentAt = 4, recipient = "z"),
+                chat("rest2", "q2", sentAt = 5),
+            )
+            r.out.fileMoving = true
+
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
+            assertEquals(listOf("dm"), r.sent())
+            assertEquals("its key went ahead", listOf("s"), r.keysSent)
+            r.drain()
+            r.look()
+            val reads = r.store.indexReads
+            repeat(5) { r.look(r.sync.nextDueAt()!!) }
+            assertEquals("the rest wait for the file", listOf("dm"), r.sent())
+            assertEquals("and the looks read only the link", reads, r.store.indexReads)
+            assertEquals(CustodyPace.ROUND_CHECK_MS, r.sync.nextDueAt()!! - r.now)
+
+            r.out.fileMoving = false
+            r.look(r.sync.nextDueAt()!!)
+            assertEquals(listOf("dm", "p", "grp", "rest2", "rest"), r.sent())
+
+            r.carry(chat("later", "q3", sentAt = 6))
+            r.out.fileMoving = true
+            r.drain()
+            r.look()
+            assertEquals("a file moving again holds the rest again", 5, r.sent().size)
+            r.out.fileMoving = false
+            r.look(r.sync.nextDueAt()!!)
+            assertEquals("later", r.sent().last())
+        }
+
+    /** A frame addressed to the peer that custody keeps while a file holds the answer goes beside the file. */
+    @Test
+    fun aFrameAddressedToThePeerIsNotHeldByTheFile() =
+        runTest {
+            val r = Rounds()
+            r.carry(chat("rest", "q", sentAt = 1))
+            r.out.fileMoving = true
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
+            r.look(r.sync.nextDueAt()!!)
+            assertEquals(emptyList<String>(), r.sent())
+
+            r.carry(chat("dm", "s", sentAt = 2, recipient = "z"))
+            r.look(r.sync.nextDueAt()!!)
+            assertEquals(listOf("dm"), r.sent())
+            r.out.fileMoving = false
+            r.drain()
+            r.look()
+            assertEquals(listOf("dm", "rest"), r.sent())
         }
 
     /** An answer ends when nothing is left: no round is due after its last. */
@@ -1742,14 +2148,17 @@ class ForwardSyncTest {
             r.carry(chat("r1", "a", sentAt = 1))
 
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
-            r.sync.serveDue(r.sync.nextDueAt()!!)
+            r.look()
 
             assertEquals(null, r.sync.answerSizes("z"))
-            assertEquals(null, r.sync.nextDueAt())
+            assertEquals("and its credit settled in the same look", null, r.sync.nextDueAt())
             assertEquals("nothing was left", 0L, r.metrics.frames().custodyAnswersCutShort)
         }
 
-    /** A radio answer ends once no radio holds the peer, and counts as cut short with something left to release. */
+    /**
+     * A radio answer ends once no radio holds the peer, and counts as cut short with something left to release: judged
+     * before the link's count, so a link holding a round still ends it.
+     */
     @Test
     fun aRadioAnswerEndsWhenNoRadioHoldsThePeer() =
         runTest {
@@ -1758,7 +2167,7 @@ class ForwardSyncTest {
 
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
             r.transport.links.value = emptySet()
-            r.sync.serveDue(r.sync.nextDueAt()!!)
+            r.look()
 
             assertEquals(listOf("big"), r.sent())
             assertEquals(null, r.sync.answerSizes("z"))
@@ -1775,8 +2184,7 @@ class ForwardSyncTest {
 
             r.sync.onDigest("z", emptyList(), TransportKind.DirectLink)
             r.transport.views.remove("z")
-            // Past the big round's proportional wait (its credit comes due first, one interval on).
-            r.sync.serveDue(60_000L)
+            r.look(60_000L)
 
             assertEquals(1, r.sent().size)
             assertEquals(null, r.sync.answerSizes("z"))
@@ -1787,16 +2195,19 @@ class ForwardSyncTest {
     @Test
     fun anAnswerEndsAtItsAgeAfterItsLatestDigest() =
         runTest {
-            // One frame a round, a round every 50 s.
-            val slow = RoundPlan(bytes = 100, intervalMs = 50_000L)
+            // One frame a round, the link draining every 50 s.
+            val slow = RoundPlan(bytes = 100)
             val r = Rounds(pace = CustodyPace(slow, slow, slow))
             r.carry(chat("r1", "a", sentAt = 1), chat("r2", "a", sentAt = 2), chat("r3", "a", sentAt = 3), chat("r4", "a", sentAt = 4))
 
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
-            r.sync.serveDue(50_000L)
-            r.sync.serveDue(100_000L)
+            listOf(50_000L, 100_000L).forEach {
+                r.drain()
+                r.look(it)
+            }
             assertEquals(3, r.sent().size)
-            r.sync.serveDue(150_000L)
+            r.drain()
+            r.look(150_000L)
 
             assertEquals("aged out with one left", 3, r.sent().size)
             assertEquals(null, r.sync.answerSizes("z"))
@@ -1818,13 +2229,15 @@ class ForwardSyncTest {
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
             assertEquals("one round out over Bluetooth, one left", TransportKind.Bluetooth, r.ledger.answerCarrier("z"))
             r.transport.carriers["z"] = LinkCarrier(TransportKind.WifiAware, r.link) // Bluetooth dropped; an Aware path holds it
-            r.sync.serveDue(r.sync.nextDueAt()!!)
+            r.drain()
+            r.out.unwritten = CustodyPace.BLUETOOTH_ROUND_BYTES.toLong() // over Bluetooth's line, under Aware's
+            r.look()
             assertEquals(
                 "the last round went over Aware; the answer ends at the next cut",
                 TransportKind.WifiAware,
                 r.ledger.answerCarrier("z"),
             )
-            r.sync.serveDue(r.sync.nextDueAt()!!)
+            r.look()
             assertNull("nothing left", r.ledger.answerCarrier("z"))
 
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
@@ -1859,7 +2272,8 @@ class ForwardSyncTest {
             r.carry(chat("big", "s", sentAt = 1, recipient = "z", bytes = 20_000), chat("then", "s", sentAt = 2, recipient = "z"))
 
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
-            r.sync.serveDue(r.sync.nextDueAt()!!)
+            r.drain()
+            r.look()
 
             assertEquals(listOf("big", "then"), r.sent())
             assertEquals(listOf("s"), r.keysSent)
@@ -1900,7 +2314,8 @@ class ForwardSyncTest {
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
             val theirs = chat("theirs", "y", sentAt = 5)
             r.sync.onSeen(wireOf(theirs), theirs, ForwardStore.ORIGIN_RELAY, from = "z", fromProven = true, fromLink = true)
-            r.sync.serveDue(r.sync.nextDueAt()!!)
+            r.drain()
+            r.look()
 
             assertEquals(listOf("big", "left"), r.sent())
         }
@@ -1915,8 +2330,8 @@ class ForwardSyncTest {
             val ttl = 10 * 60_000L
             val r = Rounds()
             val store = FakeForwardStore(ttlMs = ttl, carry = r.ledger)
-            // One frame a round, three rounds a minute against five new frames: the answer never runs out.
-            val slow = RoundPlan(bytes = 4_000, intervalMs = 20_000L)
+            // One frame a round, two drains a minute against five new frames: the answer never runs out.
+            val slow = RoundPlan(bytes = 4_000)
             val sync =
                 ForwardSync(
                     r.transport,
@@ -1936,7 +2351,10 @@ class ForwardSyncTest {
                 sync.sweepExpired()
                 val live = store.liveIds(r.now)
                 sync.onDigest("z", live.take(2) + (1..50).map { "junk-$minute-$it" }, TransportKind.Bluetooth)
-                (1..2).forEach { step -> sync.serveDue(r.now + step * slow.intervalMs) }
+                (1..2).forEach { step ->
+                    r.drain()
+                    sync.serveDue(r.now + step * 20_000L)
+                }
                 sync.answerSizes("z")?.let { sizes ->
                     val held = store.liveIds(r.now).size
                     sizes.forEach { assertTrue("an answer's set of $it outgrew custody's $held live ids", it <= held) }
@@ -1957,7 +2375,11 @@ class ForwardSyncTest {
                     override suspend fun liveIndex(now: Long): List<IndexedFrame> =
                         if (failing) error("disk I/O error") else inner.liveIndex(now)
                 }
-            val transport = RecordingTransport().apply { links.value = setOf(Peer("z")) }
+            val transport =
+                RecordingTransport().apply {
+                    links.value = setOf(Peer("z"))
+                    outbound["z"] = Outbound()
+                }
             val dropped = mutableListOf<Exception>()
             val sync = ForwardSync(transport, store, clock = { 0L }, onDigestDropped = { dropped += it })
             listOf(chat("left", "a", sentAt = 0), chat("big", "a", sentAt = 1, bytes = 20_000)).forEach {
@@ -1972,32 +2394,9 @@ class ForwardSyncTest {
             assertEquals(1, dropped.size)
             assertEquals("the answer under way kept its digest", before, sync.answerSizes("z"))
             failing = false
-            sync.serveDue(sync.nextDueAt()!!)
+            transport.outbound.getValue("z").unwritten = 0L
+            sync.serveDue(0L)
             assertEquals(listOf("big", "left"), transport.sent.map { it.first.frameId() })
-        }
-
-    /** A proven round's hand-off is credited one interval on while the same link carries the peer; a cut round's is not. */
-    @Test
-    fun aRoundsHandOffIsCreditedOnlyWhileItsLinkStillCarriesThePeer() =
-        runTest {
-            val r = Rounds()
-            r.carry(chat("r1", "a", sentAt = 1))
-            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
-            r.sync.serveDue(CustodyPace.BLUETOOTH_INTERVAL_MS)
-            assertEquals("credited: one holder", 1, r.ledger.spread("r1"))
-
-            val cut = Rounds()
-            cut.carry(chat("r1", "a", sentAt = 1))
-            cut.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = cut.link)
-            cut.transport.carriers["z"] = LinkCarrier(TransportKind.Bluetooth, Any(), proven = true)
-            cut.sync.serveDue(CustodyPace.BLUETOOTH_INTERVAL_MS)
-            assertEquals("the link dropped first: nothing credited", 0, cut.ledger.spread("r1"))
-
-            val unproven = Rounds()
-            unproven.carry(chat("r1", "a", sentAt = 1))
-            unproven.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, link = unproven.link)
-            unproven.sync.serveDue(CustodyPace.BLUETOOTH_INTERVAL_MS)
-            assertEquals("an unproven link adds no holder", 0, unproven.ledger.spread("r1"))
         }
 
     /** A Bluetooth link replaced under a peer still linked: what went over the old one is owed again. */
@@ -2009,7 +2408,8 @@ class ForwardSyncTest {
 
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
             r.transport.carriers["z"] = LinkCarrier(TransportKind.Bluetooth, Any(), proven = true)
-            r.sync.serveDue(r.sync.nextDueAt()!!)
+            r.drain()
+            r.look()
 
             assertEquals(listOf("dm", "dm"), r.sent())
         }
@@ -2171,8 +2571,10 @@ class ForwardSyncTest {
     @Test
     fun aDigestForgetsAReleaseOnlyOnceItCanSpeakToItAndTheMemoDecides() =
         runTest {
-            val pace = RoundPlan(bytes = 1_000_000, intervalMs = 15_000L).let { CustodyPace(it, it, it) }
+            val pace = RoundPlan(bytes = 1_000_000).let { CustodyPace(it, it, it) }
             val r = Rounds(pace = pace)
+            // A link that can't say: a round a digest, each release written at its cut.
+            r.transport.outbound.remove("z")
             r.carry(chat("dm", "a", sentAt = 1, recipient = "z"), chat("post", "a", sentAt = 2))
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
             assertEquals(listOf("post", "dm").sorted(), r.sent().sorted())
@@ -2180,29 +2582,64 @@ class ForwardSyncTest {
             r.now = 16_000L
             r.carry(chat("n1", "a", sentAt = 16_000L))
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
+            r.look()
             assertEquals("inside the judging delay: nothing forgotten", listOf("n1"), r.sent().drop(2))
 
             r.now = 32_000L
             r.carry(chat("n2", "a", sentAt = 32_000L))
             r.sync.onDigest("z", listOf("n1"), TransportKind.Bluetooth, proven = true, link = r.link)
+            r.look()
             assertEquals("the peer's own mail goes again; the post waits out its mark", listOf("dm", "n2"), r.sent().drop(3).sorted())
             assertEquals(1L, r.metrics.frames().custodyNotKept)
+        }
+
+    /**
+     * A release behind a full link is judged from its write, not its cut: a round cut at 0 that the link holds until 25 s
+     * becomes pending at the look that credits it, so a digest at 30 s (past the judging delay from the cut, inside it
+     * from the write) marks nothing, and holds the frame back as pending; one at 46 s judges it and marks it not kept.
+     */
+    @Test
+    fun aReleaseBehindAFullLinkIsJudgedFromItsWriteNotItsCut() =
+        runTest {
+            val r = Rounds()
+            r.carry(chat("post", "a", sentAt = 2))
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
+            r.out.unwritten = 40_000L
+            r.look(10_000L)
+            r.drain()
+            r.look(25_000L)
+            assertEquals(1, r.ledger.spread("post"))
+
+            r.now = 30_000L
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
+            r.look()
+            assertEquals("not judged, and not released again while pending", listOf("post"), r.sent())
+            assertEquals(0L, r.metrics.frames().custodyNotKept)
+
+            r.now = 46_000L
+            r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
+            r.look()
+            assertEquals("judged from its write: not kept", 1L, r.metrics.frames().custodyNotKept)
+            assertEquals(listOf("post"), r.sent())
         }
 
     /** The same answer from a link that proved nothing: once a digest can speak to a release, every frame it lacks goes again. */
     @Test
     fun anUnprovenAnswerReleasesAgainWhatALaterDigestStillLacks() =
         runTest {
-            val pace = RoundPlan(bytes = 1_000_000, intervalMs = 15_000L).let { CustodyPace(it, it, it) }
+            val pace = RoundPlan(bytes = 1_000_000).let { CustodyPace(it, it, it) }
             val r = Rounds(pace = pace)
+            r.transport.outbound.remove("z")
             r.carry(chat("post", "a", sentAt = 2))
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
             r.now = 16_000L
             r.carry(chat("n1", "a", sentAt = 16_000L))
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
+            r.look()
             r.now = 32_000L
             r.carry(chat("n2", "a", sentAt = 32_000L))
             r.sync.onDigest("z", listOf("n1"), TransportKind.Bluetooth)
+            r.look()
 
             assertEquals(listOf("post", "n1", "n2", "post"), r.sent().let { it.take(2) + it.drop(2).sorted() })
         }
@@ -2221,25 +2658,37 @@ class ForwardSyncTest {
 
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
             assertEquals(before, r.sync.answerSizes("z"))
-            r.sync.serveDue(r.sync.nextDueAt()!!)
-            r.sync.serveDue(60_000L)
+            r.drain()
+            r.look()
+            r.drain()
+            r.look(60_000L)
             assertFalse("still cut from the proven digest", "held" in r.sent())
         }
 
-    /** One peer's round that throws costs that peer one interval; the other peer's round in the same pass still goes. */
+    /**
+     * One peer's round that throws costs that peer a retry-after of [ForwardSync.CUSTODY_RETRY_MS], not a pace: the other
+     * peer's round in the same look still goes, and the failed one is tried again no sooner than that.
+     */
     @Test
     fun aRoundThatThrowsForOnePeerLeavesTheOthersRound() =
         runTest {
             var failing = false
+            var now = 0L
             val failures = mutableListOf<Exception>()
-            val transport = RecordingTransport().apply { links.value = setOf(Peer("z"), Peer("y")) }
+            val transport =
+                RecordingTransport().apply {
+                    links.value = setOf(Peer("z"), Peer("y"))
+                    outbound["z"] = Outbound()
+                    outbound["y"] = Outbound()
+                }
+            val drain = { transport.outbound.values.forEach { it.unwritten = 0L } }
             // A frame and its sender's key fit one round; a second frame does not.
-            val slow = RoundPlan(bytes = 150, intervalMs = 2_000L).let { CustodyPace(it, it, it) }
+            val slow = RoundPlan(bytes = 150).let { CustodyPace(it, it, it) }
             val sync =
                 ForwardSync(
                     transport,
                     FakeForwardStore(ttlMs = DAY_MS),
-                    clock = { 0L },
+                    clock = { now },
                     keyFor = { sender ->
                         if (failing &&
                             sender == "bad"
@@ -2257,7 +2706,8 @@ class ForwardSyncTest {
             sync.onDigest("z", listOf("b1"))
             sync.onDigest("y", listOf("a1"))
             failing = true
-            sync.serveDue(2_000L)
+            drain()
+            sync.serveDue(0L)
 
             assertEquals(1, failures.size)
             // The frames each peer was sent, its keys left out.
@@ -2269,7 +2719,16 @@ class ForwardSyncTest {
             }
             assertEquals("z's second round went", listOf("a2", "a1"), frames("z").take(2))
             assertEquals(listOf("a2"), frames("y"))
-            assertEquals("y's next round an interval on", 4_000L, sync.nextDueAt())
+
+            failing = false
+            now = ForwardSync.CUSTODY_RETRY_MS - 1
+            drain()
+            sync.serveDue(now)
+            assertEquals("not before its retry-after", listOf("a2"), frames("y"))
+            now = ForwardSync.CUSTODY_RETRY_MS
+            drain()
+            sync.serveDue(now)
+            assertEquals(listOf("a2", "b2"), frames("y"))
         }
 
     /** With nothing holding the peer a round sends nothing and records nothing; the answer's head is not spent on no link. */
@@ -2282,10 +2741,10 @@ class ForwardSyncTest {
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
             assertEquals(emptyList<String>(), r.sent())
             assertEquals(listOf(0, 0, 0, 0, 0), r.sync.answerSizes("z"))
-            assertEquals(CustodyPace.BLUETOOTH_INTERVAL_MS, r.sync.nextDueAt())
+            assertEquals("looked at again soon", CustodyPace.ROUND_CHECK_MS, r.sync.nextDueAt())
 
             r.transport.unheld -= "z"
-            r.sync.serveDue(CustodyPace.BLUETOOTH_INTERVAL_MS)
+            r.look(CustodyPace.ROUND_CHECK_MS)
             assertEquals(listOf("r1"), r.sent())
         }
 
@@ -2297,7 +2756,7 @@ class ForwardSyncTest {
             r.transport.carriers["z"] = LinkCarrier(TransportKind.Bluetooth, r.link, proven = false)
             r.carry(chat("r1", "a", sentAt = 1))
             r.sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = r.link)
-            r.sync.serveDue(CustodyPace.BLUETOOTH_INTERVAL_MS)
+            r.look()
 
             assertEquals("no credit", 0, r.ledger.spread("r1"))
             assertFalse("nothing pending", r.ledger.blocked("z", chat("r1", "a", sentAt = 1), 0L, CarryLedger.Links.ALWAYS))
@@ -2328,9 +2787,9 @@ class ForwardSyncTest {
         }
 
     /**
-     * A round, a credit or an offer stamped before the wall clock went back is due now, not after the jump: the next round
-     * goes and the first round's hand-off is credited at once. The answer's age restarts at the jump, so it still ends
-     * [ForwardSync.ANSWER_MAX_AGE_MS] later, with what is left unsent.
+     * A look, a credit or an offer stamped before the wall clock went back is due now, not after the jump: the drained link's
+     * next round goes and the first round's hand-off is credited at once. The answer's age restarts at the jump, so it still
+     * ends [ForwardSync.ANSWER_MAX_AGE_MS] later, with what is left unsent.
      */
     @Test
     fun stampsFromBeforeTheWallClockWentBackAreDueNow() =
@@ -2347,11 +2806,12 @@ class ForwardSyncTest {
             assertEquals(listOf("big"), r.sent())
             r.now = 500_000L
             assertTrue("the loop does not sleep the jump", r.sync.nextDueAt()!! <= r.now + ForwardSync.ANSWER_MAX_AGE_MS)
-            r.sync.serveDue(r.now)
+            r.drain()
+            r.look()
             assertEquals(listOf("big", "big2"), r.sent())
             assertEquals("the first round's credit, stamped before the jump, is credited now", 1, r.ledger.spread("big"))
 
-            r.sync.serveDue(r.now + ForwardSync.ANSWER_MAX_AGE_MS)
+            r.look(r.now + ForwardSync.ANSWER_MAX_AGE_MS)
             assertEquals("the answer aged out with one frame left", listOf("big", "big2"), r.sent())
             assertEquals(null, r.sync.answerSizes("z"))
             assertEquals(1L, r.metrics.frames().custodyAnswersCutShort)
@@ -2395,7 +2855,8 @@ class ForwardSyncTest {
                 r.sync.onDigest("z", emptyList(), TransportKind.WifiAware)
                 if (cutPath) r.ledger.answerCut("z", TransportKind.WifiAware)
                 r.transport.carriers["z"] = LinkCarrier(TransportKind.WifiAware, Any(), proven = true)
-                r.sync.serveDue(60_000L)
+                r.drain()
+                r.look(60_000L)
 
                 assertEquals("path cut: $cutPath", if (cutPath) listOf("big", "big") else listOf("big", "left"), r.sent())
             }
@@ -2428,9 +2889,6 @@ class ForwardSyncTest {
         }
 
     private companion object {
-        // Past every plane's round interval (2,000 ms on Bluetooth, the longest): what [settle] lets an answer run to.
-        const val SETTLE_MS = 2_000L
-
         // A custody TTL no case here outlives.
         const val DAY_MS = 24 * 60 * 60_000L
     }

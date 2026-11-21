@@ -1,9 +1,12 @@
 package app.getknit.knit.mesh.inet
 
 import app.getknit.knit.mesh.ArrivingFile
+import app.getknit.knit.mesh.CustodyPace
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.LinkCarrier
+import app.getknit.knit.mesh.LinkOutbound
 import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
@@ -30,6 +33,7 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -166,6 +170,12 @@ class DirectLinkTransport(
     private val _incomingDigests = MutableSharedFlow<ReceivedDigest>(extraBufferCapacity = FILE_BUFFER)
     override val incomingDigests = _incomingDigests.asSharedFlow()
 
+    // A link whose own queue fell under a custody round or emptied (release on drain, the custody-carry-policy contract's
+    // §2): poked from the link's writer without suspending, so a slow collector loses only a repeat of a look.
+    private val _outboundDrained =
+        MutableSharedFlow<String>(extraBufferCapacity = DRAINED_BUFFER, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    override val outboundDrained = _outboundDrained.asSharedFlow()
+
     // A file landed in one session and never taken would read as arriving in every session after, and its blob would
     // never be asked for again (#138): each session starts and ends with nothing landing, as the Bluetooth plane's does.
     override fun start() {
@@ -294,6 +304,8 @@ class DirectLinkTransport(
                 log = log,
                 landing = landing,
                 proven = true,
+                drainLine = CustodyPace.DIRECT_LINK_ROUND_BYTES.toLong(),
+                onDrained = { _outboundDrained.tryEmit(peer.nodeId) },
             )
         held[0] = link
         links.put(peer.nodeId, link)?.close()
@@ -424,6 +436,17 @@ class DirectLinkTransport(
 
     /** A contact's link proves its peer by its lane, whenever one is up. */
     override fun linkProven(nodeId: String): Boolean = links[nodeId] != null
+
+    /**
+     * The live link and what it holds for [nodeId], from one read of [links], so the token and its counts are one link's.
+     * What sits below the link, `LinkArq`'s send queue, is held to about a second of the path's measured rate
+     * (`LinkArq.QUEUE_TARGET_MS`) before a write blocks, so the link's own queue is the count and no rate is estimated.
+     */
+    override fun carrier(nodeId: String): LinkCarrier? {
+        if (neighbors.value.none { it.nodeId == nodeId }) return null
+        val link = links[nodeId] ?: return LinkCarrier(kind, null)
+        return LinkCarrier(kind, link, proven = true, outbound = LinkOutbound(link.queuedBytes, fileMoving = link.fileMoving))
+    }
 
     // A walkie's hold (docs/VOICE_CALLS.md C-3.11-8): the link held through the call's pauses, or raised, while the plane
     // runs; the radios' own holds are their children's, asked beside this one.
@@ -577,6 +600,7 @@ class DirectLinkTransport(
 
         private const val INBOUND_BUFFER = 256
         private const val FILE_BUFFER = 32
+        private const val DRAINED_BUFFER = 64
         private const val SHORT = 6
     }
 }

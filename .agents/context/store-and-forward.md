@@ -126,7 +126,7 @@ row at a time from the largest sender bucket** (ADR 2026-10.7mqm), choosing with
 2026-11.bmks): spread is the carry ledger's count of peers believed to hold the row (`CarryLedger`, fed by proven links
 only), and with no holders recorded the order is 7mqm's. Below the cap every rule reads only the frame and the held set,
 so every node holding the same frames keeps the same ones and their content digests converge. At the cap the choice of
-row also reads the ledger, so stores there may differ for good; the not-kept memo, the paced answer and the re-offer
+row also reads the ledger, so stores there may differ for good; the not-kept memo, the answer released in rounds and the re-offer
 back-off bound what that costs (ADR 2026-11.bmks). A frame its own write evicts is one `store` answers false for, so
 nothing pulls its blob.
 

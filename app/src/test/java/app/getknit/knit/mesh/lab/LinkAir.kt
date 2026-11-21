@@ -36,7 +36,8 @@ data class LinkAir(
     /**
      * The plane a phone's link at this rate is ([LabTransport.carrier]): what custody paces a round by, Bluetooth's or Wi-Fi
      * Aware's (the custody-carry-policy contract's §2). Null, the default, reports the lab transport's own kind (`Other`),
-     * which custody paces as Bluetooth, as every lab link did before.
+     * which custody reads as Bluetooth's, as every lab link did before. Refused on a node behind a composite
+     * ([LabTransport.connect]): the composite asks `carries` of the child of that kind, which no lab child is.
      */
     val plane: TransportKind? = null,
 ) {

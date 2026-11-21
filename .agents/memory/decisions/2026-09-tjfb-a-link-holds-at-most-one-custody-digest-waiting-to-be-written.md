@@ -36,8 +36,9 @@ queue and no byte rate, because the lab stands in at the `MeshTransport` seam an
 
 ## What changed
 
-`FramedLink` keeps one digest slot per link (`pendingDigest`, an `AtomicReference`). `sendDigest` swaps its
-ids into the slot and queues a `DigestDue` marker only when the slot was empty; when it was not, the newer
+`FramedLink` keeps one digest slot per link (`pendingDigest`, an `AtomicReference`). `sendDigest` swaps the
+digest into the slot (encoded as it is sent since ADR 2026-11.bmks, so the link's unwritten count holds the size
+the writer will write) and queues a `DigestDue` marker only when the slot was empty; when it was not, the newer
 set has replaced the older one where it stood in the queue, and `digestsReplaced` counts it. The writer
 empties the slot as it reaches the marker (`writePendingDigest`, in both `writeLoop` and the between-chunks
 `drainFramesInto`) and writes what it found, so a digest sent while one is on the socket queues behind it as

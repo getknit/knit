@@ -69,11 +69,6 @@ data class SimScenario(
      */
     val load: Int = 0,
     val loadAuthors: Int = DEFAULT_LOAD_AUTHORS,
-    /**
-     * Custody as before its pace ([SimProperties.UNPACED]): every answer whole in its first round, the 60 s re-offer never
-     * held back. False, the default, runs production's pace and back-off (the custody-carry-policy contract's §2, §7).
-     */
-    val unpaced: Boolean = false,
     /** Every store's global cap reads each frame's spread as 0 ([LabLimits.custodyZeroSpread], [SimProperties.ZERO_SPREAD]). */
     val zeroSpread: Boolean = false,
     /** Frames a node's router may have queued before its plane drops the next ([LabLimits.inboundSlots]); null holds all. */
@@ -448,9 +443,9 @@ class MeshSim(
             LabLimits(
                 inboundSlots = scenario.inboundSlots,
                 nodeAirBytesPerSecond = radio.nodeAirBytesPerSecond,
-                // Production's custody, unless the outing asks for the old one to compare: the lab's own default is unpaced.
-                custodyPace = if (scenario.unpaced) CustodyPace.UNPACED else CustodyPace.CONTRACT,
-                custodyReofferBackoff = !scenario.unpaced,
+                // Production's custody: rounds on drain at the contract's sizes, and the re-offer's back-off.
+                custodyPace = CustodyPace.CONTRACT,
+                custodyReofferBackoff = true,
                 custodyZeroSpread = scenario.zeroSpread,
             )
         nodes = (0 until scenario.walkers).map { i -> lab.node("w$i", limits).apply { setDisplayName("Walker $i") } }

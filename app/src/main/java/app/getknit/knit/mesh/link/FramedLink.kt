@@ -27,6 +27,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
 import java.io.OutputStream
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
@@ -119,6 +120,12 @@ class FramedLink(
     // Called once on the reader as its loop ends, however it ends, before [LinkCallbacks.onLinkDown]: the reader's own end,
     // which the writer never reports. The Bluetooth plane closes a spell of waits for room there (ADR 2026-11.43f7).
     private val onReadEnd: () -> Unit = {},
+    // The line [queuedBytes] is watched against for [onDrained] (contract revision 13, "Rounds, released as the link
+    // drains"): the carrying plane's custody round, 16,384 B on Bluetooth. 0, the default, signals only an empty queue.
+    private val drainLine: Long = 0L,
+    // Poked on the writer, outside every lock, when [queuedBytes] fell below [drainLine] or to zero after a flush: once
+    // per crossing, never per frame below the line, and never from [close]. The owner `tryEmit`s it to custody.
+    private val onDrained: () -> Unit = {},
 ) {
     /**
      * Whether this link's bytes ride the link seal (ADR 2026-11.8mhs): fixed for the link's life, like [proven], which a
@@ -140,7 +147,25 @@ class FramedLink(
     // The custody digest waiting in [outbound] to be written, if one is. Whoever swaps it from null queues one
     // [Outbound.DigestDue] and the writer empties it on reaching that marker, so at most one marker is ever
     // queued. [sendDigest] swaps a newer id set in here rather than queueing a second record.
-    private val pendingDigest = AtomicReference<List<String>?>(null)
+    // It carries its encoded payload, so the count below adds and takes back the size the writer will write.
+    private val pendingDigest = AtomicReference<PendingDigest?>(null)
+
+    // The counted bytes accepted for this peer and not yet through a returned flush: frames and the pending digest, at
+    // their payload size, the measure a custody round's budget counts (contract revision 13). Never a file's bytes, a
+    // keepalive or a TAG_NEXT. Raised before an item can reach the writer and lowered once, by whoever took it off: the
+    // writer after its flush returned (or on dropping an oversized record), a refused enqueue, or the digest that replaced
+    // a waiting one. So it is never below zero, and a write that throws leaves what it held counted.
+    private val queued = AtomicLong(0L)
+
+    // The counted bytes whose flush returned, for the link's life: what the owner holds a measured drain against.
+    private val handedDown = AtomicLong(0L)
+
+    // Set once [close] ran or the writer ended, however it ended: the queue no longer drains.
+    @Volatile private var outboundEnded = false
+
+    // The writer's alone: whether it has seen [queued] at or over [drainLine] since its last [onDrained]. A newer digest
+    // can shrink the count below the line off the writer, and the writer's next flush still owes that crossing its poke.
+    private var aboveLine = false
     private var readerJob: Job? = null
     private var writerJob: Job? = null
 
@@ -173,6 +198,10 @@ class FramedLink(
     // streaming is next only while the writer moves. A writer blocked on a frame's write (a full stack buffer) holds it,
     // and that is a stall like any other ([feed], ADR 2026-10.nsr7). Writer-side only: [touch] also runs on reads.
     @Volatile private var outAt = 0L
+
+    // When the file streaming in last had a record read (its header or a chunk), on the reader: [fileMoving]'s word on
+    // an incoming stream.
+    @Volatile private var rxAt = 0L
 
     // How many chunks of the stream under [txKey] have been paced: [feed]'s settle lasts until the second.
     @Volatile private var txPaced = 0
@@ -281,7 +310,11 @@ class FramedLink(
 
     /** Enqueue a mesh frame for delivery to this peer. */
     fun send(bytes: ByteArray) {
-        outbound.trySend(Outbound.Frame(bytes))
+        // Counted before the enqueue, so the writer never takes back what was not added; a closed link's refusal takes it
+        // straight back, as [sendFile]'s pending count does.
+        val size = bytes.size.toLong()
+        queued.addAndGet(size)
+        if (!outbound.trySend(Outbound.Frame(bytes)).isSuccess) queued.addAndGet(-size)
         metrics.onBytesSent(bytes.size.toLong())
         wake.trySend(Unit) // a windowed writer waiting for room drains it first
     }
@@ -318,13 +351,38 @@ class FramedLink(
      * digest as it comes, so there the cadence and the bytes are unchanged.
      */
     fun sendDigest(ids: List<String>) {
-        if (pendingDigest.getAndSet(ids) == null) {
-            outbound.trySend(Outbound.DigestDue)
+        // Encoded here rather than at the write, so the slot's size is the bytes the writer will write: counted before
+        // it is visible to the writer, and the one it replaced, if any, taken back by this side, which took it off.
+        val next = PendingDigest(LinkFraming.encodeDigest(DigestWire(ids)))
+        queued.addAndGet(next.size)
+        val old = pendingDigest.getAndSet(next)
+        if (old == null) {
+            if (!outbound.trySend(Outbound.DigestDue).isSuccess && pendingDigest.compareAndSet(next, null)) {
+                queued.addAndGet(-next.size) // a closed link: nothing will write it
+            }
             wake.trySend(Unit)
         } else {
+            queued.addAndGet(-old.size)
             metrics.onDigestReplaced()
         }
     }
+
+    /**
+     * The counted bytes accepted for this peer and not yet handed to the socket below by a flush that returned (contract
+     * revision 13): queued frames and the pending custody digest, at their payload size. Never a file's bytes or a
+     * control record. Once the link is closed or its writer ended, [NOT_DRAINING] or more: what it holds will never
+     * drain, so a round cut on it is never credited as drained on this link.
+     */
+    val queuedBytes: Long get() = queued.get().let { if (outboundEnded) maxOf(it, NOT_DRAINING) else it }
+
+    /**
+     * The counted bytes ([queuedBytes]' kind) whose flush returned, for the link's life, never decreasing: on Bluetooth
+     * the stack's buffer below still holds some of them, which the owner estimates from a measured drain.
+     */
+    val handedDownBytes: Long get() = handedDown.get()
+
+    /** The count under [queuedBytes] whether or not the link has ended: what its tests read of a closed link. */
+    internal val countedBytes: Long get() = queued.get()
 
     /**
      * Enqueue a file (avatar or attachment) for streaming to this peer. Returns whether the enqueue was
@@ -347,8 +405,42 @@ class FramedLink(
     /** True while a file is queued on, or streaming over, this link: from its enqueue to its end. */
     val feeding: Boolean get() = synchronized(pendingLock) { pendingFileKeys.isNotEmpty() }
 
-    /** True while a file is queued, streaming out or streaming in: either direction of the link carries a file. */
+    /**
+     * True while a file is queued, streaming out or streaming in: either direction of the link carries a file. Custody's
+     * "a file comes first" reads this (contract revision 14): out, from [sendFile]'s enqueue to its `FILE_END` handed to
+     * the socket or its cancel; in, from the peer's `FILE_HEADER` to its `FILE_END`. On Bluetooth the tail of a file
+     * fed out may still sit in the stack's buffer after this goes false.
+     */
     val busy: Boolean get() = feeding || rxInProgress
+
+    /**
+     * [busy], less a stream the blob plane would read as stalled (contract revision 16, "only a file that is moving comes
+     * first"): true while either direction carries a file that has moved within [FeedMeter.STALL_MS], so a stalled stream
+     * frees custody's other tiers and its progress resuming holds them again. Out, by [feed]'s own stall rule: a file
+     * queued with nothing streaming moves while the writer does ([outAt]); a stream is the meter's ([FeedMeter.stalled]:
+     * its receiver's reports once one has come, its writes before, less what the writer slept through). In, by the last
+     * record of the file read. No deadline: a slow file that still moves comes first.
+     */
+    val fileMoving: Boolean get() = synchronized(pendingLock) { movingLocked(now()) }
+
+    /** [fileMoving] at [t], under [pendingLock]. */
+    private fun movingLocked(t: Long): Boolean {
+        if (rxInProgress && t - rxAt <= FeedMeter.STALL_MS) return true
+        return when {
+            pendingFileKeys.isEmpty() -> false
+            txKey == null -> t - outAt <= FeedMeter.STALL_MS
+            else -> !meter.stalled(txWroteAt)
+        }
+    }
+
+    /**
+     * What custody's estimate reads of this link's feed in one hold of [pendingLock]: its [lastDrain], [drainRatio],
+     * [fileMoving], and whether it is streaming a file out now ([txInProgress]) and is windowed ([txWindowed]).
+     */
+    fun feedReadings(): FeedReadings =
+        synchronized(pendingLock) {
+            FeedReadings(meter.lastRate, meter.drainRatio, movingLocked(now()), feedingOut = txInProgress, windowedOut = txWindowed)
+        }
 
     /**
      * True while a file under [key] is queued on, or streaming over, this link — or was fed in full while the link
@@ -577,6 +669,7 @@ class FramedLink(
     }
 
     fun close() {
+        outboundEnded = true // first: a round cut from here on reads this link as not draining
         readerJob?.cancel()
         writerJob?.cancel()
         rxReports.close()
@@ -627,6 +720,7 @@ class FramedLink(
                     LinkFraming.Type.FILE_HEADER -> {
                         touch()
                         rxStartedAt = now()
+                        rxAt = rxStartedAt
                         rxReports.started(rxStartedAt)
                         beginRxFile(msg.payload)
                         rxBase = rxFile?.bytes ?: 0L
@@ -635,6 +729,7 @@ class FramedLink(
 
                     LinkFraming.Type.FILE_CHUNK -> {
                         touch()
+                        rxAt = now()
                         appendRxFile(msg.payload)
                         noteBusy() // a chunk past the ceiling aborts the file
                         rxReports.chunk()
@@ -744,18 +839,22 @@ class FramedLink(
                 val item = nextOutbound() ?: break
                 when (item) {
                     is Outbound.Frame -> {
-                        writeRecordSafely(out, LinkFraming.Type.FRAME, item.bytes)
+                        val taken = Taken()
+                        taken.add(item.bytes.size.toLong(), writeRecordSafely(out, LinkFraming.Type.FRAME, item.bytes))
                         out.flush()
                         outAt = now()
                         touch()
+                        settle(taken)
                     }
 
                     Outbound.DigestDue -> {
-                        if (writePendingDigest(out)) {
+                        val taken = Taken()
+                        if (writePendingDigest(out, taken)) {
                             out.flush()
                             outAt = now()
                             touch()
                         }
+                        settle(taken)
                     }
 
                     Outbound.Keepalive -> {
@@ -782,6 +881,44 @@ class FramedLink(
         } catch (e: IOException) {
             log("write loop ended for $nodeId: ${e.message}")
             callbacks.onLinkDown(nodeId)
+        } finally {
+            outboundEnded = true // what it still holds will never drain
+        }
+    }
+
+    /**
+     * What one flush took off [queued]: the [counted] bytes of the records it covered, and the [handed] share of them
+     * that went to the socket (an oversized record the codec dropped is taken off, never handed down). The writer's own.
+     */
+    private class Taken {
+        var counted = 0L
+            private set
+        var handed = 0L
+            private set
+
+        fun add(
+            bytes: Long,
+            written: Boolean,
+        ) {
+            counted += bytes
+            if (written) handed += bytes
+        }
+    }
+
+    /**
+     * After the flush that covered [taken] returned, on the writer and outside every lock: counts it handed down, takes it
+     * off [queued], and pokes [onDrained] when that crossed below [drainLine] or emptied the queue. Never called when the
+     * flush threw, so a write cut mid-record leaves its bytes counted until the link is gone.
+     */
+    private fun settle(taken: Taken) {
+        if (taken.counted == 0L) return
+        handedDown.addAndGet(taken.handed)
+        val after = queued.addAndGet(-taken.counted)
+        if (drainLine > 0 && after + taken.counted >= drainLine) aboveLine = true
+        val crossed = aboveLine && after < drainLine
+        if ((crossed || after == 0L) && !outboundEnded) {
+            aboveLine = false
+            onDrained()
         }
     }
 
@@ -795,13 +932,14 @@ class FramedLink(
         out: OutputStream,
         type: LinkFraming.Type,
         payload: ByteArray,
-    ) {
+    ): Boolean =
         try {
             LinkFraming.write(out, type, payload)
+            true
         } catch (e: IllegalArgumentException) {
             log("dropping oversized $type record for $nodeId: ${e.message}")
+            false
         }
-    }
 
     /**
      * Writes one [LinkFraming.Type.KEEPALIVE] and flushes it, ahead of anything written after it, then says so: the
@@ -836,8 +974,10 @@ class FramedLink(
         var why = "back" // what the stream's `bt file window` line last said: a stream starts windowed
         while (true) {
             // Interleave live frames between chunks — and flush them NOW so they ride the pace gap ahead
-            // of the next chunk instead of trailing behind it in the socket buffer.
-            if (drainFramesInto(out)) out.flush()
+            // of the next chunk instead of trailing behind it in the socket buffer. Their count falls once that flush returned.
+            val taken = Taken()
+            if (drainFramesInto(out, taken)) out.flush()
+            settle(taken)
             cfg = pace()
             val wasWindowed = windowed
             val wait =
@@ -985,11 +1125,15 @@ class FramedLink(
     /**
      * Writes the waiting digest with the newest id set [sendDigest] handed it, and empties the slot, so a digest
      * sent while this one is on the socket queues behind it as a fresh one. False when the slot was already
-     * empty, which a marker never meets while [pendingDigest]'s invariant holds.
+     * empty, which a marker never meets while [pendingDigest]'s invariant holds. What it took goes into [taken], for the
+     * caller to settle once its flush returned.
      */
-    private fun writePendingDigest(out: OutputStream): Boolean {
-        val ids = pendingDigest.getAndSet(null) ?: return false
-        writeRecordSafely(out, LinkFraming.Type.DIGEST, LinkFraming.encodeDigest(DigestWire(ids)))
+    private fun writePendingDigest(
+        out: OutputStream,
+        taken: Taken,
+    ): Boolean {
+        val digest = pendingDigest.getAndSet(null) ?: return false
+        taken.add(digest.size, writeRecordSafely(out, LinkFraming.Type.DIGEST, digest.payload))
         return true
     }
 
@@ -999,20 +1143,23 @@ class FramedLink(
     /**
      * Write any queued frames now (called between file chunks); stash any files for later. Returns whether any
      * record was actually written to [out] (a stashed file doesn't count), so the caller can flush it ahead of
-     * the next chunk.
+     * the next chunk. The counted records it wrote go into [taken], which the caller settles after that flush.
      */
-    private fun drainFramesInto(out: OutputStream): Boolean {
+    private fun drainFramesInto(
+        out: OutputStream,
+        taken: Taken,
+    ): Boolean {
         var wrote = false
         while (true) {
             val item = outbound.tryReceive().getOrNull() ?: break
             when (item) {
                 is Outbound.Frame -> {
-                    writeRecordSafely(out, LinkFraming.Type.FRAME, item.bytes)
+                    taken.add(item.bytes.size.toLong(), writeRecordSafely(out, LinkFraming.Type.FRAME, item.bytes))
                     wrote = true
                 }
 
                 Outbound.DigestDue -> {
-                    wrote = writePendingDigest(out) || wrote
+                    wrote = writePendingDigest(out, taken) || wrote
                 }
 
                 // Flushed with what came before it, between chunks (#203): an answer waits for no stream.
@@ -1060,6 +1207,22 @@ class FramedLink(
         scope.launch(Dispatchers.IO) { intake.finalize(finished)?.let { callbacks.onFile(it) } }
     }
 
+    /** [feedReadings]' one snapshot. */
+    class FeedReadings(
+        val lastDrain: Int,
+        val drainRatio: Double,
+        val fileMoving: Boolean,
+        val feedingOut: Boolean,
+        val windowedOut: Boolean,
+    )
+
+    /** The custody digest waiting in [pendingDigest], encoded: its [size] is what [queued] counts for it. */
+    private class PendingDigest(
+        val payload: ByteArray,
+    ) {
+        val size: Long get() = payload.size.toLong()
+    }
+
     private sealed interface Outbound {
         class Frame(
             val bytes: ByteArray,
@@ -1099,5 +1262,11 @@ class FramedLink(
 
         // A windowed feed's noted pace moves only past 1/PACE_MOVE_DEN of the last ([windowedPace]).
         private const val PACE_MOVE_DEN = 4
+
+        /**
+         * The least [queuedBytes] reads once the link is closed or its writer ended: past any round, and far enough under
+         * [Long.MAX_VALUE] that an owner adding an estimate of the buffer below to it cannot overflow.
+         */
+        const val NOT_DRAINING = Long.MAX_VALUE / 2
     }
 }

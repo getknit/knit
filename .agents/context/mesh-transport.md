@@ -81,7 +81,8 @@ and the shipped design runs **two planes** (a concurrent-serve redesign is propo
   initiator drives teardown; both ends record the exchange in `DigestTracker`'s hold-off, judged on custody's progress
   (ADR 2026-11.bmks): the initiator decides with it, and the responder's digest-pure gate reads it. The responder
   sees the socket close, with a longer `RESPONDER_MAX_HOLD_MS` safety cap for a dead initiator. A link is held open
-  while a custody answer to its peer is live (at most `SYNC_MAX_WINDOW_MS`), so paced rounds don't idle it out.
+  while a custody answer to its peer is live and the link drained within its side's quiescence span (at most
+  `SYNC_MAX_WINDOW_MS`, `NanLinkHold.answerHeld`), so a contended linger doesn't cut a draining answer.
   <!-- doc-lint: allow SyncEpoch — the counter the digest replaced, named as history -->
 
 Net: an **idle mesh does zero data-path work** (just beacons + occasional cues); a new message triggers a

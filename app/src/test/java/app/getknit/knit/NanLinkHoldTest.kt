@@ -66,31 +66,55 @@ class NanLinkHoldTest {
     }
 
     @Test
-    fun aLiveCustodyAnswerHoldsTheLinkNotIdleWithinTheSyncWindowOnly() {
-        // Custody's paced rounds come a second apart: an answer still live keeps either role from its idle close...
+    fun aLiveCustodyAnswerHoldsTheLinkOnlyWhileItDrainsAndWithinTheSyncWindow() {
         val window = 30_000L
-        assertTrue(NanLinkLife.answerHeld(answerLive = true, ageMs = 29_999, windowMs = window))
+        val span = 5_000L // the initiator's own quiescence, QUIESCENCE_MS
+        // Rounds are cut as the link drains: an answer whose link drained a moment ago is between rounds...
+        assertTrue(NanLinkLife.answerHeld(answerLive = true, sinceDrainMs = 0, spanMs = span, ageMs = 1_000, windowMs = window))
+        assertTrue(NanLinkLife.answerHeld(answerLive = true, sinceDrainMs = 4_999, spanMs = span, ageMs = 29_999, windowMs = window))
+        // ...so the initiator's contended linger (2 s) doesn't cut it there.
         assertFalse(
-            "a responder idle past its quiescence stays up for the answer",
+            "a draining answer outlasts the contended linger",
+            NanLinkLife.done(
+                idleMs = 3_000,
+                ageMs = 10_000,
+                quiescenceMs = 2_000,
+                windowMs = window,
+                held = NanLinkLife.answerHeld(answerLive = true, sinceDrainMs = 3_000, spanMs = span, ageMs = 10_000, windowMs = window),
+            ),
+        )
+        // A link that stopped draining (a peer reading slowly or not at all) gets no hold: its answer sends it nothing more.
+        assertFalse(NanLinkLife.answerHeld(answerLive = true, sinceDrainMs = span, spanMs = span, ageMs = 10_000, windowMs = window))
+        assertTrue(
+            "a link that stopped draining closes at its quiescence, answer or not",
             NanLinkLife.done(
                 idleMs = 9_000,
                 ageMs = 20_000,
                 quiescenceMs = 8_000,
                 windowMs = 45_000,
-                held = NanLinkLife.answerHeld(answerLive = true, ageMs = 20_000, windowMs = window),
+                held = NanLinkLife.answerHeld(answerLive = true, sinceDrainMs = 9_000, spanMs = 8_000, ageMs = 20_000, windowMs = window),
             ),
         )
-        // ...but no longer than a sync may last, the responder's longer backstop included, and never without one.
-        assertFalse(NanLinkLife.answerHeld(answerLive = true, ageMs = window, windowMs = window))
-        assertTrue(
+        // A fresh path whose first round isn't cut yet (answerCarrier names Aware from the digest's landing): held up to one
+        // span, so the contended linger doesn't close it before its answer starts...
+        assertTrue(NanLinkLife.answerHeld(answerLive = true, sinceDrainMs = null, spanMs = span, ageMs = 1_000, windowMs = window))
+        assertFalse(
+            "a fresh path the contended linger would close is held",
             NanLinkLife.done(
-                idleMs = 9_000,
-                ageMs = 30_000,
-                quiescenceMs = 8_000,
-                windowMs = 45_000,
-                held = NanLinkLife.answerHeld(answerLive = true, ageMs = 30_000, windowMs = window),
+                idleMs = 2_500,
+                ageMs = 2_500,
+                quiescenceMs = 2_000,
+                windowMs = window,
+                held = NanLinkLife.answerHeld(answerLive = true, sinceDrainMs = null, spanMs = span, ageMs = 2_500, windowMs = window),
             ),
         )
-        assertFalse(NanLinkLife.answerHeld(answerLive = false, ageMs = 0, windowMs = window))
+        // ...and no longer: a path that never drained in a span is not held.
+        assertFalse(
+            "never drained within a span, not held",
+            NanLinkLife.answerHeld(answerLive = true, sinceDrainMs = null, spanMs = span, ageMs = span, windowMs = window),
+        )
+        // No longer than a sync may last, the responder's longer backstop included, and never without a live answer.
+        assertFalse(NanLinkLife.answerHeld(answerLive = true, sinceDrainMs = 0, spanMs = span, ageMs = window, windowMs = window))
+        assertFalse(NanLinkLife.answerHeld(answerLive = false, sinceDrainMs = 0, spanMs = span, ageMs = 0, windowMs = window))
     }
 }

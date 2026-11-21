@@ -90,17 +90,14 @@ fun SimScenario.summaryValues(): List<Pair<String, Any?>> =
         "room_s" to roomMeanMs / MS_PER_SECOND,
         "group_s" to groupMeanMs / MS_PER_SECOND,
         "backlog" to backlog,
-    ) + (if (load > 0) listOf("load" to load, "load_authors" to loadAuthors) else emptyList()) + custodyModeValues(unpaced, zeroSpread)
+    ) + (if (load > 0) listOf("load" to load, "load_authors" to loadAuthors) else emptyList()) + custodyModeValues(zeroSpread)
 
 /**
- * A run's custody mode as summary keys, only where it differs from production's ([SimProperties.UNPACED],
- * [SimProperties.ZERO_SPREAD]), so a report from before the switches existed lines up with a default run after them.
+ * A run's custody mode as summary keys, only where it differs from production's ([SimProperties.ZERO_SPREAD]), so a report
+ * from before the switch existed lines up with a default run after it.
  */
-internal fun custodyModeValues(
-    unpaced: Boolean,
-    zeroSpread: Boolean,
-): List<Pair<String, Any?>> =
-    listOfNotNull(("custody_unpaced" to true).takeIf { unpaced }, ("custody_zero_spread" to true).takeIf { zeroSpread })
+internal fun custodyModeValues(zeroSpread: Boolean): List<Pair<String, Any?>> =
+    listOfNotNull(("custody_zero_spread" to true).takeIf { zeroSpread })
 
 /**
  * [deliveryLines]' numbers per [Reach] and for all DMs: how many were sent, the share that arrived inside the run and by

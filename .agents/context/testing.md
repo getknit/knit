@@ -1345,25 +1345,36 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
       Only an outing shows it, since a pass is too short for a second digest.
     - Summary keys end in `_pass` or `_outing`. An outing reads its tally once its links are down, since a frame still
       queued at its receiver would read as not kept. Only air links are seen, so `disc` reports none.
-- **Custody's pace and memo in the lab and the simulator** (ADR 2026-11.bmks, 2026-11-20).
-  - The lab defaults to unpaced custody answers with no re-offer back-off (`LabLimits.custodyPace` =
-    `CustodyPace.UNPACED`, `custodyReofferBackoff` = false), so scenarios written before paced rounds keep their
-    timing. `CustodyPaceLabTest` runs on the contract's pace with the back-off on, driven by clock jumps,
-    `LabNode.serveCustodyRounds()` and `LabNode.tick()` (the unforced re-offer; `reoffer()` is the forced one). A pair
-    that meets, parts and meets again finishes the first meeting's answers first (`meetAndPart`): an answer still live
-    across an unlink keeps its own next-round time.
+- **Custody's rounds and memo in the lab and the simulator** (ADR 2026-11.bmks, 2026-11-20; release on drain).
+  - Rounds go on drain in the lab as in production: `LabTransport.carrier` reports `LinkCarrier.outbound` (frame bytes
+    held, queued on the air or in hand, never a file's; `NOT_DRAINING` once the pipe closed; `fileMoving` while a file
+    either way moved within `FeedMeter.STALL_MS`) and `outboundDrained` on each delivery. A plain pipe delivers as it
+    sends, so its answers go back to back; a held pipe counts what it parked, so an answer stops cutting rounds once a
+    hold parks a round. `stackBelow(to, bytes, estimated)` models Bluetooth's stack (bytes handed down and still on the
+    air), with or without the plane's estimate, and `countStuck` a link whose count never falls. There is no unpaced
+    lab: `LabLimits.custodyPace` is the contract's.
+  - "The collector returned" is not "the answer is sent": `awaitDigestsAnswered` and `awaitAcquainted` also wait,
+    bounded, for every answer to end (`LabNode.answersOpenNow`), and their failure prints each open answer's plane and
+    count. A scenario that jumps the clock calls `serveCustodyRounds()` after its deliveries; a jump past
+    `ANSWER_MAX_AGE_MS` with a pipe still holding frames ends that answer cut short and drops its credit. Over a pipe
+    that counts no buffer below it, a short first round can be credited before it is delivered (contract §9: a credit can
+    run a round ahead); `CustodyPaceLabTest` asserts that bound.
+  - The lab keeps the re-offer back-off off by default (`custodyReofferBackoff` = false), so scenarios written before it
+    keep their ticks; `CustodyPaceLabTest` turns it on, driven by `LabNode.tick()` (the unforced re-offer; `reoffer()` is
+    the forced one).
+  - A lab node's mocks are cleared at its shutdown (`LabNode.shutdown`): MockK keeps stubs in a JVM-wide weak map whose
+    answers capture the node, so without it a whole-package sweep kept about a thousand nodes alive a shard and stalled.
   - At the cap custody parity no longer holds, so a scenario where the row cap binds ends in
     `assertConverged(custody = false)`: every other check, and every store at or under its cap (`LabNode.custodyCap`)
     in place of the custody fingerprint. Use it only where the cap binds.
   - `LabNode.carrySpread(id)` reads a row's spread; `LabTransport.hearClaimedDigest(claimed, ids)` delivers an
     unproven digest under another node's id; `LabLimits.custodyZeroSpread` makes the cap's snapshot read 0 while the
     ledger's events still flow.
-  - The simulator runs production's pace and back-off by default. `knit.meshSimUnpaced=true` brings back the old
-    unpaced answers with no back-off, and `knit.meshSimZeroSpread=true` sets `custodyZeroSpread`; their summary keys
-    (`custody_unpaced`, `custody_zero_spread`) appear only when a run turns one on.
+  - The simulator runs production's rounds and back-off. `knit.meshSimZeroSpread=true` sets `custodyZeroSpread`; its
+    summary key (`custody_zero_spread`) appears only when a run turns it on.
   - Two linked full stores trade a few frames once per not-kept lapse: a lapse's re-release can be kept, which is a
     re-offer draw, so their digest gaps need about 41 lab minutes to reach 600 s and may cycle back (in about a third of
-    chaos schedules). `CustodyPaceLabTest` asserts what holds in every schedule: no frame released to the same peer twice
+    chaos schedules on the clock-paced rounds). `CustodyPaceLabTest` asserts what holds in every schedule: no frame released to the same peer twice
     inside a lapse, no later lapse marking more than the first, and each gap judged against what custody kept from that
     neighbour, read at the write through `LabCustodyGate.keptFrom`.
   - A scenario on the contract's back-off boots with a 24 h background re-offer interval, so `LabNode.tick()` and

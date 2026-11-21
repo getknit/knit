@@ -48,11 +48,6 @@ data class PassByScenario(
     val startMarginM: Double = PassBy.START_MARGIN_M,
     /** How long a pair is watched once it is out of reach again: what was on the air lands, nothing else can. */
     val watchAfterMs: Long = DEFAULT_WATCH_AFTER_MS,
-    /**
-     * Custody as before its pace ([SimProperties.UNPACED]): every answer whole in its first round, the 60 s re-offer never
-     * held back. False, the default, runs production's pace and back-off (the custody-carry-policy contract's §2, §7).
-     */
-    val unpaced: Boolean = false,
     /** Every store's global cap reads each frame's spread as 0 ([LabLimits.custodyZeroSpread], [SimProperties.ZERO_SPREAD]). */
     val zeroSpread: Boolean = false,
 ) {
@@ -101,7 +96,7 @@ data class PassByScenario(
             "picture_kb" to pictureBytes / BYTES_PER_KB,
             "load_each" to load,
             "load_authors" to loadAuthors,
-        ) + custodyModeValues(unpaced, zeroSpread)
+        ) + custodyModeValues(zeroSpread)
 
     companion object {
         const val DEFAULT_PAIRS = 20
@@ -308,9 +303,9 @@ class PassBySim(
         val limits =
             LabLimits(
                 nodeAirBytesPerSecond = radio.nodeAirBytesPerSecond,
-                // Production's custody, unless the run asks for the old one to compare: the lab's own default is unpaced.
-                custodyPace = if (scenario.unpaced) CustodyPace.UNPACED else CustodyPace.CONTRACT,
-                custodyReofferBackoff = !scenario.unpaced,
+                // Production's custody: rounds on drain at the contract's sizes, and the re-offer's back-off.
+                custodyPace = CustodyPace.CONTRACT,
+                custodyReofferBackoff = true,
                 custodyZeroSpread = scenario.zeroSpread,
             )
         walkers =

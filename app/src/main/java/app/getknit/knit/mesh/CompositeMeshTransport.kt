@@ -299,6 +299,11 @@ class CompositeMeshTransport(
     override val incomingDigests: Flow<ReceivedDigest> =
         if (children.isEmpty()) emptyFlow() else children.map { child -> child.incomingDigests.map { it.copy(via = child.kind) } }.merge()
 
+    // Every child's: custody reads which link carries the peer through [carrier], so a drain on a plane that isn't
+    // carrying it only costs a look.
+    override val outboundDrained: Flow<String> =
+        if (children.isEmpty()) emptyFlow() else children.map { it.outboundDrained }.merge()
+
     init {
         // Suppress the on-demand data-path sync in a lower-preference child for any peer a higher-preference
         // child already holds a **live link** to — e.g. don't run a Wi-Fi Aware NDP sync to a peer that's on a

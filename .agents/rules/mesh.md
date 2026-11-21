@@ -386,7 +386,7 @@ cap evicts one row at a time keyed on **(sender's live count desc, spread desc, 
 cap's choice of row is the one place custody may read per-node state; admission, the quotas, the fold and the carry gate
 may not. A new key in that order needs a security pass first: whatever eviction reads, a peer can read back from our
 digest, which is why no contact, sighting or meeting is a key. A digest reply still owes the peer every live frame it
-lacks, a group's to a non-member too (ADR 2026-10.hr9f), now in paced rounds and less the not-kept memo; a filter on who
+lacks, a group's to a non-member too (ADR 2026-10.hr9f), now in rounds released as the link drains and less the not-kept memo; a filter on who
 is served would leave that peer holding what the others evicted.
 
 A change to any of these regenerates `vectors/custody-v1.json` and is a paired change with knit-ios. This makes the **TTL

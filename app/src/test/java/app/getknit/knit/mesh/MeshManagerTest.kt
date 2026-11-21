@@ -141,6 +141,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -339,6 +340,17 @@ class MeshManagerTest {
         /** Custody digests a test hands the manager, as a plane hands it a neighbour's. */
         val digestsIn = MutableSharedFlow<ReceivedDigest>(extraBufferCapacity = 16)
         override val incomingDigests = digestsIn
+
+        /** What each peer's link holds unwritten, as a plane counts it ([LinkCarrier.outbound]); absent, it can't say. */
+        val unwritten = ConcurrentHashMap<String, Long>()
+
+        override fun carrier(nodeId: String): LinkCarrier? =
+            super.carrier(nodeId)?.let { c -> unwritten[nodeId]?.let { LinkCarrier(c.kind, c.link, c.proven, LinkOutbound(it)) } ?: c }
+
+        /** A link's drain, as a plane signals it, and every drain the manager's collector took. */
+        val drains = MutableSharedFlow<String>(extraBufferCapacity = 16)
+        val drainsTaken = CopyOnWriteArrayList<String>()
+        override val outboundDrained = drains.onEach { drainsTaken += it }
     }
 
     /** Minimal in-memory [ForwardStore] so a test can assert what the send path captured for custody. */
@@ -370,6 +382,17 @@ class MeshManagerTest {
             liveIndexReads.incrementAndGet()
             if (liveIndexFailures.getAndUpdate { maxOf(0, it - 1) } > 0) throw IOException("the custody index read failed")
             return super.liveIndex(now)
+        }
+
+        /** How many of custody's frame loads are still to fail: a round that throws from inside its cut. */
+        val liveFramesByIdsFailures = AtomicInteger()
+
+        override suspend fun liveFramesByIds(
+            ids: Collection<String>,
+            now: Long,
+        ): List<CarriedFrame> {
+            if (liveFramesByIdsFailures.getAndUpdate { maxOf(0, it - 1) } > 0) throw IOException("the custody frame read failed")
+            return super.liveFramesByIds(ids, now)
         }
 
         /** How often the custody replay asked for the group chat — the heal basket's hourly step (work item #63). */
@@ -6909,12 +6932,15 @@ class MeshManagerTest {
         sent.count { (wire, _) -> WireCodec.decodeEnvelope(wire.signed)?.id in ids }
 
     /**
-     * The serve loop cuts an answer's later rounds (the custody-carry-policy contract's §2): a digest's first round goes at
-     * the digest, one 10 KB frame of two, and the second only once the manager's clock passes the Bluetooth interval, from
-     * the loop, with no further digest.
+     * The serve loop cuts an answer's later rounds as the link drains (the custody-carry-policy contract's §2): a digest's
+     * first round goes at the digest, one 10 KB frame of two; the second waits while the link holds a round, and goes once
+     * the link drains, from the loop, with no further digest and no move of the clock. The session runs on real threads
+     * and this link gives no rate, so the loop's 1 s fallback look would also cut the second round: what pins the drain
+     * signal's wiring is that the manager's collector took the drain ([RecordingTransport.drainsTaken]); that the signal
+     * wakes the loop at once is `ForwardSyncTest.aLinkThatDrainedGetsItsNextRoundAtOnce`'s.
      */
     @Test
-    fun theServeLoopCutsTheSecondRoundOnceTheIntervalPasses() =
+    fun theServeLoopCutsTheSecondRoundWhenTheLinkDrains() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
             rig.stubProfileState(MutableStateFlow(rig.now))
@@ -6927,14 +6953,17 @@ class MeshManagerTest {
                 rig.forwardStore.store(bigCarried(id, rig.now - 10 + i), ForwardStore.ORIGIN_RELAY, rig.now, null)
             }
             rig.transport.nearby.value = setOf(Peer("zed"))
+            rig.transport.unwritten["zed"] = 20_000L
             rig.manager.start()
             rig.await(1) { rig.transport.digestsIn.subscriptionCount.value }
+            rig.await(1) { rig.transport.drains.subscriptionCount.value }
 
             rig.transport.digestsIn.emit(ReceivedDigest("zed", emptyList()))
             rig.await(1) { rig.transport.sentOf(big) }
             assertEquals("the first round is one frame", 1, rig.transport.sentOf(big))
 
-            rig.clockNow += CustodyPace.BLUETOOTH_INTERVAL_MS
+            rig.transport.unwritten["zed"] = 0L
+            rig.transport.drains.emit("zed")
             // The round is counted after its send (ForwardSync.release), so wait on the counter and read the send it pins.
             rig.await(2) {
                 rig.metrics
@@ -6943,15 +6972,17 @@ class MeshManagerTest {
                     .toInt()
             }
             assertEquals("two rounds, the second the loop's", 2, rig.transport.sentOf(big))
+            rig.await(1) { rig.transport.drainsTaken.count { it == "zed" } }
             rig.manager.stop()
         }
 
     /**
-     * A digest that comes while custody's index cannot be read is dropped, not answered from nothing, and the collector
-     * goes on: the next digest from the same neighbour is answered.
+     * A digest that comes while custody's index cannot be read is dropped by `ForwardSync` before any answer moves (its
+     * `readIndex`), not answered from nothing: nothing is released for it, and the next digest from the same neighbour
+     * is answered.
      */
     @Test
-    fun aDigestDroppedForAnUnreadableIndexLeavesTheCollectorAnsweringTheNext() =
+    fun aDigestWhoseIndexReadFailsIsDroppedAndTheNextIsAnswered() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
             rig.stubProfileState(MutableStateFlow(rig.now))
@@ -6972,6 +7003,52 @@ class MeshManagerTest {
 
             rig.transport.digestsIn.emit(ReceivedDigest("zed", emptyList()))
             rig.await(1) { rig.transport.sentOf(one) }
+            rig.manager.stop()
+        }
+
+    /**
+     * A round that throws from inside its cut (the frame load) escapes `ForwardSync.onDigest` to the digest collector's
+     * `runRound`, which counts it a failed custody round and goes on: the next digest, another neighbour's, is answered,
+     * and the failed answer is tried again by the serve loop once its retry-after passes.
+     */
+    @Test
+    fun aRoundThatThrowsInsideItsCutCountsAFailedRoundAndTheCollectorAnswersTheNext() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(rig.now))
+            rig.stubHealState()
+            val one = setOf("only")
+            rig.forwardStore.store(bigCarried("only", rig.now - 10, bytes = 100), ForwardStore.ORIGIN_RELAY, rig.now, null)
+            rig.transport.nearby.value = setOf(Peer("zed"), Peer("yan"))
+            rig.manager.start()
+            rig.await(1) { rig.transport.digestsIn.subscriptionCount.value }
+
+            rig.forwardStore.liveFramesByIdsFailures.set(1)
+            rig.transport.digestsIn.emit(ReceivedDigest("zed", emptyList()))
+            rig.await(1) {
+                rig.metrics
+                    .frames()
+                    .roundsFailedBy[MeshRound.CUSTODY]
+                    ?.toInt() ?: 0
+            }
+            assertEquals("the failed round released nothing", 0, rig.transport.sentOf(one))
+
+            rig.transport.digestsIn.emit(ReceivedDigest("yan", emptyList()))
+            rig.await(1) {
+                rig.transport.sent.count { (wire, to) ->
+                    to?.nodeId == "yan" &&
+                        WireCodec.decodeEnvelope(wire.signed)?.id == "only"
+                }
+            }
+            assertEquals(1L, rig.metrics.frames().roundsFailedBy[MeshRound.CUSTODY])
+
+            rig.clockNow += ForwardSync.CUSTODY_RETRY_MS
+            rig.await(1) {
+                rig.transport.sent.count { (wire, to) ->
+                    to?.nodeId == "zed" &&
+                        WireCodec.decodeEnvelope(wire.signed)?.id == "only"
+                }
+            }
             rig.manager.stop()
         }
 

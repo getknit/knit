@@ -208,6 +208,7 @@ import app.getknit.knit.ui.contacts.observeContactSignals
 import app.getknit.knit.update.LocalBuild
 import app.getknit.knit.update.PeerUpdates
 import app.getknit.knit.update.UpdateTimings
+import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -287,7 +288,9 @@ class MeshLab {
 
     private val context: Context = ApplicationProvider.getApplicationContext()
     private val dir: File = Files.createTempDirectory("meshlab").toFile()
-    private val nodes = mutableListOf<LabNode>()
+
+    // Copy-on-write: a node's answers-ended read ([LabTransport.answersLive]) iterates it from the threads that await.
+    private val nodes = CopyOnWriteArrayList<LabNode>()
 
     /** The calendar every node reads; `clock.advance(ms)` moves it for all of them at once (see [LabClock]). */
     val clock = LabClock()
@@ -402,6 +405,7 @@ class MeshLab {
                 meshcoreFragIds = fragIds,
             )
         nodes += node
+        node.answerPeers = { nodes.mapNotNull { other -> other.nodeId.takeIf { it != node.nodeId } } }
         node.boot()
         // The keygen, the Room build and the start, for the sweep's per-run timing ([LabChaos.noteBoot]).
         chaos?.noteBoot(System.nanoTime() - started, fresh = true)
@@ -1376,12 +1380,12 @@ data class LabLimits(
     /** The profile cap (#234): custody's, and the door's, which reads the same value. */
     val custodyMaxProfileSignedBytes: Int = ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES,
     /**
-     * The round each carrying plane's custody answers are cut to (the custody-carry-policy contract's §2). Unpaced by
-     * default, every answer whole in its first round: a scenario about what crosses, not about the pace, sees custody as
-     * it did before rounds. A pace scenario passes [CustodyPace.CONTRACT] (or its own table) and drives the rounds with
-     * [LabNode.serveCustodyRounds] after each clock move.
+     * The round each carrying plane's custody answers are cut to (the custody-carry-policy contract's §2, release on drain):
+     * production's table. A plain lab pipe delivers as it sends, so it reads drained after every frame and an answer goes
+     * in back-to-back rounds; a held pipe or an air link holds the next round until it drains under one. A scenario whose
+     * subject is a round's size may pass a table of its own.
      */
-    val custodyPace: CustodyPace = CustodyPace.UNPACED,
+    val custodyPace: CustodyPace = CustodyPace.CONTRACT,
     /**
      * Whether the re-offer tick's custody digest backs off while this node's offers draw nothing (§7). Off by default: a
      * scenario that shortens [reofferIntervalMs] to run the real loop ticks on the wall clock, and would sit out the
@@ -2215,6 +2219,10 @@ class LabNode internal constructor(
                 feedStallMs = limits.feedStallMs
                 inboundSlots = limits.inboundSlots
                 nodeAir = limits.nodeAirBytesPerSecond?.let(::NodeAir)
+                // What "a digest is answered" waits for once rounds go on drain: every answer this node opened, to any
+                // lab node, has ended (the custody-carry-policy contract's §2), not only the first round its collector cut.
+                answersLive = { answerPeers().any { answering(it) } }
+                answersOpen = { answersOpenNow() }
             }
         metrics = MeshMetrics()
         // The Internet plane is opted into through the same two settings the relay editor writes; the
@@ -2295,6 +2303,7 @@ class LabNode internal constructor(
         attachments = AttachmentStore(context, blobs, imageScreening, AttachmentIdentities(messages, blobs))
         val notifier = mockk<Notifier>(relaxed = true)
         this.notifier = notifier
+        bootMocks.addAll(listOf(textModerator, pictures, notifier))
         // THE ratchet lock + the transaction that encloses it, shared by both session services (di/MeshModule).
         val ratchetMutex = Mutex()
         val transactor =
@@ -2996,13 +3005,31 @@ class LabNode internal constructor(
         shutdownLive()
         settingsScope.cancel()
         db.close()
+        clearMocks(secret)
+    }
+
+    // This boot's mocks, cleared when its stack goes down ([forgetMocks]).
+    private val bootMocks = mutableListOf<Any>()
+
+    /**
+     * Clears this boot's mocks' answers and recorded calls. MockK keeps every mock's stub in a JVM-wide map weakly keyed
+     * by the mock, and a stub's answers here capture this node (`textVerdict`, `picturesExplicit`, the secret's bytes), so
+     * the value kept the key, and with it every node a JVM ever booted, reachable: a whole-package chaos sweep's shard grew
+     * past its heap and its waits stopped firing in the GC (2026-11-20, three shards parked for hours).
+     */
+    private fun forgetMocks() {
+        if (bootMocks.isEmpty()) return
+        clearMocks(bootMocks.first(), *bootMocks.drop(1).toTypedArray())
+        bootMocks.clear()
     }
 
     /** A stable board number per name, so two nodes on one air are never the same board. */
     private fun loraNodeNum(): UInt = (name.hashCode().toUInt() and 0x7FFF_FFFFu) + 1u
 
     /** Tears the live stack down and returns the transports it was linked to. */
-    private fun shutdownLive(): List<LabTransport> {
+    private fun shutdownLive(): List<LabTransport> = shutdownStack().also { forgetMocks() }
+
+    private fun shutdownStack(): List<LabTransport> {
         val linked = transport.disconnectAll()
         transport.detach()
         closeMeshcoreLink()
@@ -3180,8 +3207,9 @@ class LabNode internal constructor(
     suspend fun tick() = manager.reofferToNeighbors()
 
     /**
-     * Cuts the custody rounds due now on this node's clock (§2): a [LabClock] jump never wakes the serve loop's sleep, so a
-     * scenario run on [LabLimits.custodyPace] moves the clock and runs this.
+     * Looks at every custody answer now on this node's clock (§2): a [LabClock] jump never wakes the serve loop's sleep, so
+     * a scenario that moves the clock with an answer open runs this after its deliveries, for the endings and credits the
+     * jump made due.
      */
     suspend fun serveCustodyRounds() = manager.serveCustodyRounds()
 
@@ -4036,6 +4064,26 @@ class LabNode internal constructor(
 
     /** `liveFingerprint`: the digest recomputed over the live rows — what two converged stores share. */
     suspend fun custodyFingerprint(): Long = StoreDigest.fingerprint(custodyIds())
+
+    /**
+     * Whether this node's custody has an answer open to [peer] ([CarryLedger.answerCarrier]): rounds still to cut, or a look
+     * still to end it. Empty again once the answer ends (nothing left, its link lost, or aged out).
+     */
+    fun answering(peer: String): Boolean = custodyCarry.answerCarrier(peer) != null
+
+    // Each open answer as `peer6: plane` and the carrying link's read now (unwritten, rate, file moving), for a failure.
+    private fun answersOpenNow(): String =
+        answerPeers()
+            .mapNotNull { peer ->
+                val plane = custodyCarry.answerCarrier(peer) ?: return@mapNotNull null
+                val out = transport.carrier(peer)?.outbound
+                "${peer.take(
+                    6,
+                )}: $plane, link reads ${out?.let { "${it.unwritten} B, rate ${it.drainBytesPerSec}, file ${it.fileMoving}" } ?: "nothing"}"
+            }.joinToString("; ")
+
+    /** The lab's other nodes' ids, set by [MeshLab.node]: whom [LabTransport.awaitDigestsAnswered] asks [answering] of. */
+    internal var answerPeers: () -> List<String> = { emptyList() }
 
     /** The row cap this node's custody keeps to ([LabLimits.custodyMaxRows]): what a store at the cap is read against. */
     val custodyCap: Int get() = limits.custodyMaxRows
