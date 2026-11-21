@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
@@ -90,6 +91,25 @@ class MessageDetailsScreenContentTest {
 
         compose.onNodeWithTag("reactor_row_sam").performClick()
         assertEquals("sam", opened)
+    }
+
+    /** A claimed MeshCore name is no identity (ADR 2026-11.gsqu's 2026-11-21 amendment): its row opens nothing. */
+    @Test
+    fun `a claimed MeshCore reactor's row is inert`() {
+        var opened: String? = null
+        val claimed = "“Sam Rivera” (unverified)"
+        render(
+            populated().copy(
+                reactors = listOf(ReactorRow("mc:Sam Rivera", claimed, null, "👍", 10L, isSelf = false, claimed = true)),
+                filters = listOf(ReactionFilter("👍", 1)),
+            ),
+            onOpenProfile = { opened = it },
+        )
+
+        compose.onNodeWithText(claimed).assertIsDisplayed()
+        compose.onNodeWithTag("reactor_row_mc:Sam Rivera").assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnClick))
+        compose.onNodeWithTag("reactor_row_mc:Sam Rivera").performClick()
+        assertEquals(null, opened)
     }
 
     @Test

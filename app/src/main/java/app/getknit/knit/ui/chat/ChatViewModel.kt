@@ -61,6 +61,7 @@ import app.getknit.knit.data.message.hiddenByFilter
 import app.getknit.knit.data.message.meshRoomChannel
 import app.getknit.knit.data.message.newestOriginChannel
 import app.getknit.knit.data.message.receivedPlane
+import app.getknit.knit.data.message.writtenBy
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.relay.AttachmentRelay
 import app.getknit.knit.data.relay.AttachmentWait
@@ -96,6 +97,8 @@ import app.getknit.knit.mesh.ArrivingFile
 import app.getknit.knit.mesh.BluetoothFetchGate
 import app.getknit.knit.mesh.LoraRadioReached
 import app.getknit.knit.mesh.MeshController
+import app.getknit.knit.mesh.MeshcoreMentions
+import app.getknit.knit.mesh.MeshcoreReactionOutcome
 import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.TransportHealth
@@ -268,6 +271,12 @@ internal fun quoteViewFor(
 
 data class ChatRow(
     val id: String,
+    /**
+     * In the MeshCore room, whether this post takes a MeshCore One reaction (ADR 2026-11.gsqu's 2026-11-21 amendment): it
+     * carries a reaction tag, nothing hides it, and the name its token needs can ride one — ours on our own post, the
+     * claimed name as this phone shows it on a heard one. True everywhere else; the screen's own room rules still apply.
+     */
+    val meshcoreReactable: Boolean = true,
     val body: String,
     val mine: Boolean,
     val senderName: String,
@@ -1799,6 +1808,16 @@ class ChatViewModel(
                     val heldBytes = m.attachmentHash?.let { blobSizes[it] }
                     ChatRow(
                         id = m.id,
+                        meshcoreReactable =
+                            !isMeshcoreRoom ||
+                                (
+                                    m.meshcoreTag != null &&
+                                        m.kind == MessageEntity.KIND_NORMAL &&
+                                        !m.hiddenByFilter(hideSensitive) &&
+                                        MeshcoreMentions.replyPrefix(
+                                            if (m.writtenBy(me)) publicId.boardName else m.originName?.let(directory::shown),
+                                        ) != null
+                                ),
                         body = shownNoticeBody(m, directory),
                         mine = mine,
                         senderName = name,
@@ -3263,6 +3282,11 @@ class ChatViewModel(
         messageId: String,
         emoji: String,
     ) {
+        // The MeshCore room reacts in MeshCore One's form, as a room post (ADR 2026-11.gsqu's 2026-11-21 amendment).
+        if (isMeshcoreRoom) {
+            reactMeshcore(messageId, emoji)
+            return
+        }
         // The Meshtastic room has no tapback form: a reaction there would fall through to the manager's cleartext
         // flood over the radios. A commons posts its own into the room (C-7.4-13), never by that path.
         if (isBridged) return
@@ -3284,6 +3308,67 @@ class ChatViewModel(
                 meshManager.sendReaction(messageId, emoji, recipientId, group)
             }
             if (!retracting) settings.recordReaction(emoji)
+        }
+    }
+
+    /**
+     * A reaction in the MeshCore room (ADR 2026-11.gsqu's 2026-11-21 amendment): a public post under the board's name, so it
+     * takes the composer's gates in its order — connected, a name the plane will post under, the room's consent (asked
+     * here, then the tap is made again) — and its refusals' words. Removing one's own says it stays on everyone else's.
+     */
+    private fun reactMeshcore(
+        messageId: String,
+        emoji: String,
+    ) {
+        val now = state.value
+        val retracting =
+            now.rows
+                .firstOrNull { it.id == messageId }
+                ?.reactions
+                ?.any { it.mine && it.emoji == emoji } == true
+        if (!retracting) {
+            if (now.publicPostGate != PublicPostGate.Open) {
+                _events.tryEmit(R.string.chat_mesh_post_not_connected)
+                return
+            }
+            if (now.meshcoreNameUnpostable) {
+                _events.tryEmit(R.string.chat_meshcore_post_name_unpostable)
+                return
+            }
+            if (now.needsPublicConsent) {
+                _showPublicConsent.value = true
+                return
+            }
+        }
+        viewModelScope.launch {
+            when (val outcome = meshManager.sendMeshcoreReaction(messageId, emoji, now.meshcoreHandle)) {
+                MeshcoreReactionOutcome.Queued -> {
+                    settings.recordReaction(emoji)
+                }
+
+                MeshcoreReactionOutcome.RemovedHere -> {
+                    _events.tryEmit(R.string.chat_meshcore_reaction_removed_here)
+                }
+
+                MeshcoreReactionOutcome.Unaddressable -> {
+                    _events.tryEmit(R.string.chat_meshcore_reaction_unaddressable)
+                }
+
+                MeshcoreReactionOutcome.Blocked -> {
+                    _events.tryEmit(R.string.moderation_text_blocked)
+                }
+
+                // A reaction counts as a post for the 30 s floor, and says so; every other refusal is the composer's.
+                is MeshcoreReactionOutcome.Refused -> {
+                    val words =
+                        if (outcome.reason == PublicPostRefusal.TOO_SOON) {
+                            R.string.chat_meshcore_reaction_too_soon
+                        } else {
+                            refusalMessage(outcome.reason)
+                        }
+                    _events.tryEmit(words)
+                }
+            }
         }
     }
 

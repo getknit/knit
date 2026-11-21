@@ -1888,6 +1888,10 @@
     <string name="chat_meshcore_consent_name_body">Setiap postingan keluar sebagai “%1$s: …”. Nama itu sama di setiap postingan dan mengidentifikasi board Anda, jadi orang yang menyimpan Anda sebagai kontak, atau yang mengenal board Anda, dapat mengetahui bahwa itu Anda.</string>
     <string name="chat_meshcore_consent_name_body_unknown">Setiap postingan keluar dengan nama board Anda. Nama itu sama di setiap postingan dan mengidentifikasi board Anda, jadi orang yang menyimpan Anda sebagai kontak, atau yang mengenal board Anda, dapat mengetahui bahwa itu Anda.</string>
     <string name="chat_meshcore_consent_rules">Postingan tidak dapat ditarik kembali. Siapa pun dapat memposting dengan nama apa pun, termasuk nama Anda. Pengguna MeshCore yang mengirim pesan langsung ke board Anda tidak akan mendapat jawaban: Knit tidak membaca pesan tersebut.</string>
+    <string name="chat_meshcore_consent_reactions">Reaksi dikirim dengan cara yang sama: setiap reaksi adalah postingan yang memberi tahu semua orang dalam jangkauan postingan mana yang Anda tanggapi, dan tidak dapat ditarik kembali.</string>
+    <string name="chat_meshcore_reaction_removed_here">Dihapus hanya di ponsel ini. Orang di saluran ini tetap melihat reaksi Anda.</string>
+    <string name="chat_meshcore_reaction_unaddressable">Tidak dapat memberi reaksi pada postingan ini di saluran</string>
+    <string name="chat_meshcore_reaction_too_soon">Tidak terkirim — reaksi dihitung sebagai postingan, satu setiap 30 detik. Tunggu sebentar lalu coba lagi.</string>
     <string name="chat_meshcore_consent_position">Board Anda mungkin juga membagikan lokasinya, dalam advert yang disiarkannya atau kepada kontak yang memintanya. Nonaktifkan berbagi lokasi di aplikasi MeshCore jika Anda tidak ingin postingan Anda dikaitkan dengan suatu tempat.</string>
     <string name="chat_commons_subtitle">Semua orang di relai ini</string>
     <string name="commons_details_title">Info ruang</string>

@@ -1401,6 +1401,12 @@ section is the plane (6a); the room, its rows and its composer are 6b's.
   (`OutboundFrame.price` for `Destination.Public`, so admission and booking agree): the prefix is the name + 2 B, and the
   largest post is always 185 B on air, about 1.16 s at SF8 / BW 62.5, under any name. With no name known it is priced as
   under a 31-B one.
+- **Reactions** (ADR 2026-11.gsqu's 2026-11-21 amendment): MeshCore One's `@[name]{emoji}\n{tag}` text. The plane computes
+  each post's tag (`MeshcoreReactions.tag`) and hands only the 8 characters up: a heard post's over the judge's raw body
+  bytes after the name split, before cleaning, plus the sender's stamp (`MeshcorePublicPost.tag`), and our own over the exact
+  text and stamp handed to `enqueuePublic` (`PublicPostResult.Queued.tag`), never `key.raw`, which carries `"name: "`. The
+  room stores it (`messages.meshcoreTag`). An outbound reaction is an ordinary `postPublic`, so it is a `ROOM` post under
+  the same consent, name check and 30 s floor, and its end is told apart from a post's in `MeshManager.queuedReactions`.
 - **Oracles.** The MeshCore dump's `meshcorePublicHeard` / `…RoomOff` / `…Refused` / `…Delivered` / `…PostsQueued` /
   `…PostsRefused` / `…PostsSent` / `…PostsEnded`; the lines `lora public post refused: <reason>` (at the enqueue),
   `lora public post refused at the write` (Knit's gate, the encoder or the firmware refused it: not set up any more, a

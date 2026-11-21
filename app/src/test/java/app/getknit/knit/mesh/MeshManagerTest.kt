@@ -70,6 +70,7 @@ import app.getknit.knit.mesh.lora.LoraDirectBudget
 import app.getknit.knit.mesh.lora.LoraDirectRouter
 import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraSizeHint
+import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.CallPayload
@@ -1202,6 +1203,245 @@ class MeshManagerTest {
 
             coVerify(exactly = 2) { rig.messages.markPublicPostEnded("mc-row-9", rig.me.nodeId, false) }
             coVerify(exactly = 0) { rig.messages.markPublicPostEnded("mc-row-10", any(), any()) }
+        }
+
+    // --- MeshCore One reactions in the MeshCore room (ADR 2026-11.gsqu's 2026-11-21 amendment) ---
+
+    private val boardName = MeshcoreHandle("Knit 1a2b".encodeToByteArray())
+
+    /** Backs the reaction reads and writes [MeshManager.sendMeshcoreReaction] makes with a map, last writer winning. */
+    private fun Rig.backReactions(): MutableMap<Pair<String, String>, ReactionEntity> {
+        val held = ConcurrentHashMap<Pair<String, String>, ReactionEntity>()
+        coEvery { reactions.currentEmoji(any(), any()) } answers { held[firstArg<String>() to secondArg<String>()]?.emoji }
+        coEvery { reactions.apply(any()) } answers {
+            val next = firstArg<ReactionEntity>()
+            val key = next.messageId to next.reactorNodeId
+            val current = held[key]
+            if (current != null && next.updatedAt <= current.updatedAt) {
+                false
+            } else {
+                held[key] = next
+                current?.emoji != next.emoji
+            }
+        }
+        return held
+    }
+
+    /** A MeshCore room row [find] answers for: a heard post under [name] unless [mine]. */
+    private fun Rig.meshcoreRow(
+        id: String,
+        tag: String? = "b45pc4ek",
+        name: String? = "Alice",
+        mine: Boolean = false,
+        conversationId: String = Conversations.MESHCORE_PUBLIC,
+        moderation: Int = MessageEntity.MODERATION_NONE,
+    ): MessageEntity {
+        val row =
+            MessageEntity(
+                id = id,
+                senderId = me.nodeId,
+                conversationId = conversationId,
+                body = "see you at the trailhead",
+                sentAt = 1L,
+                originNode = if (mine) null else MeshPostOrigin.MESHCORE_NODE,
+                originName = if (mine) null else name,
+                moderation = moderation,
+                meshcoreTag = tag,
+            )
+        coEvery { messages.find(id) } returns row
+        coEvery { messages.conversationOf(id) } returns conversationId
+        return row
+    }
+
+    @Test
+    fun aMeshcoreReactionToAHeardPostAirsMeshcoreOnesTextAndWritesNoRow() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val held = rig.backReactions()
+            rig.meshcoreRow("mc-heard")
+
+            assertEquals(MeshcoreReactionOutcome.Queued, rig.manager.sendMeshcoreReaction("mc-heard", "👍", boardName))
+
+            assertEquals("the current order, the claimed name, the row's tag", listOf("@[Alice]👍\nb45pc4ek"), rig.meshcorePosts)
+            assertEquals("👍", held["mc-heard" to rig.me.nodeId]?.emoji)
+            assertTrue("a reaction is never a row", rig.saved.isEmpty())
+            assertTrue("never a Knit frame", rig.transport.sent.isEmpty())
+            assertTrue(rig.publicPosts.isEmpty())
+        }
+
+    @Test
+    fun aMeshcoreReactionToOurOwnPostNamesTheBoardTheConsentWasGivenUnder() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.backReactions()
+            rig.meshcoreRow("mc-own", tag = "0123abcd", mine = true)
+
+            assertEquals(MeshcoreReactionOutcome.Queued, rig.manager.sendMeshcoreReaction("mc-own", "🎉", boardName))
+
+            assertEquals(listOf("@[Knit 1a2b]🎉\n0123abcd"), rig.meshcorePosts)
+        }
+
+    @Test
+    fun tappingOurOwnMeshcoreReactionRemovesItHereAndAirsNothing() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val held = rig.backReactions()
+            rig.meshcoreRow("mc-heard")
+            rig.manager.sendMeshcoreReaction("mc-heard", "👍", boardName)
+            rig.clockNow += 1
+
+            assertEquals(MeshcoreReactionOutcome.RemovedHere, rig.manager.sendMeshcoreReaction("mc-heard", "👍", boardName))
+
+            assertNull(held["mc-heard" to rig.me.nodeId]?.emoji)
+            assertEquals("only the add aired", 1, rig.meshcorePosts.size)
+        }
+
+    @Test
+    fun aRefusedMeshcoreReactionPutsBackWhatWeShowedBefore() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val held = rig.backReactions()
+            rig.meshcoreRow("mc-heard")
+            rig.manager.sendMeshcoreReaction("mc-heard", "❤️", boardName)
+            rig.clockNow += 1 // a later tap, so its optimistic write is newer and really lands before the refusal
+            rig.meshcoreRow("mc-fresh", tag = "0123abcd")
+            rig.meshcoreAnswer = PublicChannelAnswer.Refused(PublicPostRefusal.TOO_SOON) // the shared 30 s floor
+
+            assertEquals(
+                MeshcoreReactionOutcome.Refused(PublicPostRefusal.TOO_SOON),
+                rig.manager.sendMeshcoreReaction("mc-heard", "👍", boardName),
+            )
+            assertEquals(
+                MeshcoreReactionOutcome.Refused(PublicPostRefusal.TOO_SOON),
+                rig.manager.sendMeshcoreReaction("mc-fresh", "👍", boardName),
+            )
+
+            // The optimistic 👍 landed first, then the refusal put the ❤️ back over it.
+            coVerify { rig.reactions.apply(ReactionEntity("mc-heard", rig.me.nodeId, "👍", rig.clockNow)) }
+            assertEquals("the earlier emoji is back", "❤️", held["mc-heard" to rig.me.nodeId]?.emoji)
+            assertNull("and none where there was none", held["mc-fresh" to rig.me.nodeId]?.emoji)
+        }
+
+    @Test
+    fun aPostMeshcoreOneCannotNameTakesNoReaction() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.backReactions()
+            rig.meshcoreRow("untagged", tag = null) // stored before v38
+            rig.meshcoreRow("flagged", moderation = MessageEntity.MODERATION_TEXT_FLAGGED)
+            rig.meshcoreRow("unnamed", name = null)
+            rig.meshcoreRow("bracketed", name = "a]b") // a name the token can't carry
+            rig.meshcoreRow("nearby", conversationId = Conversations.NEARBY)
+            rig.meshcoreRow("meshtastic", conversationId = Conversations.MESHTASTIC)
+
+            for (id in listOf("untagged", "flagged", "unnamed", "bracketed", "nearby", "meshtastic", "not-held")) {
+                assertEquals(id, MeshcoreReactionOutcome.Unaddressable, rig.manager.sendMeshcoreReaction(id, "👍", boardName))
+            }
+            // On a post that could take a reaction, so only the emoji refuses it.
+            rig.meshcoreRow("addressable")
+            assertEquals(
+                "two emoji are no reaction",
+                MeshcoreReactionOutcome.Unaddressable,
+                rig.manager.sendMeshcoreReaction("addressable", "👍👍", boardName),
+            )
+
+            assertTrue(rig.meshcorePosts.isEmpty())
+            coVerify(exactly = 0) { rig.reactions.apply(any()) }
+        }
+
+    @Test
+    fun aMeshcoreReactionThatNeverAiredIsPutBackAndMarksNoRow() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val held = rig.backReactions()
+            coEvery { rig.messages.markPublicPostEnded(any(), any(), any()) } returns false
+            rig.meshcoreRow("mc-a")
+            rig.meshcoreRow("mc-b", tag = "0123abcd")
+            rig.manager.sendMeshcoreReaction("mc-a", "❤️", boardName)
+            rig.clockNow += 1
+            rig.meshcoreAnswer = PublicChannelAnswer.Queued("mc-react-a")
+            rig.manager.sendMeshcoreReaction("mc-a", "👍", boardName)
+            rig.meshcoreAnswer = PublicChannelAnswer.Queued("mc-react-b")
+            rig.manager.sendMeshcoreReaction("mc-b", "👍", boardName)
+
+            assertEquals("👍", held["mc-a" to rig.me.nodeId]?.emoji)
+
+            rig.manager.markPublicPostEnded(PublicPostEnd("mc-react-a", neverSent = true))
+            // Given up at the write: it may have aired, so it stays.
+            rig.manager.markPublicPostEnded(PublicPostEnd("mc-react-b", neverSent = false))
+
+            assertEquals("never aired: the earlier emoji is back", "❤️", held["mc-a" to rig.me.nodeId]?.emoji)
+            assertEquals("👍", held["mc-b" to rig.me.nodeId]?.emoji)
+            coVerify(exactly = 0) { rig.messages.markPublicPostEnded(any(), any(), any()) }
+            // Nor is a reaction's end held for a row: a post later saved under that id is not marked by it.
+            rig.meshcoreAnswer = PublicChannelAnswer.Queued("mc-react-a")
+            rig.manager.sendPublicPost(Conversations.MESHCORE_PUBLIC, "hello mesh")
+            coVerify(exactly = 0) { rig.messages.markPublicPostEnded(any(), any(), any()) }
+        }
+
+    @Test
+    fun aMeshcoreReactionEndedBeforeItWasRecordedIsStillPutBack() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The pacer can give the reaction up at the write before `sendMeshcoreReaction` records it: the end waits as a
+            // post's would, and the record takes it.
+            val rig = Rig(backgroundScope)
+            val held = rig.backReactions()
+            coEvery { rig.messages.markPublicPostEnded(any(), any(), any()) } returns false
+            rig.meshcoreRow("mc-a")
+            rig.manager.markPublicPostEnded(PublicPostEnd("mc-react-z", neverSent = true))
+            rig.meshcoreAnswer = PublicChannelAnswer.Queued("mc-react-z")
+
+            assertEquals(MeshcoreReactionOutcome.Queued, rig.manager.sendMeshcoreReaction("mc-a", "👍", boardName))
+
+            assertNull("never aired: nothing is shown", held["mc-a" to rig.me.nodeId]?.emoji)
+            // Taken, not left for a post: one later saved under that id is not marked by it.
+            rig.manager.sendPublicPost(Conversations.MESHCORE_PUBLIC, "hello mesh")
+            coVerify(exactly = 1) { rig.messages.markPublicPostEnded("mc-react-z", any(), any()) }
+        }
+
+    @Test
+    fun aMeshcoreReactionTheOutgoingModeratorFlagsIsBlockedAndChangesNothing() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The token carries the target's chosen name under ours: screened as a room post is on the way out.
+            val rig = Rig(backgroundScope)
+            val held = rig.backReactions()
+            rig.meshcoreRow("mc-heard", name = "Slurname")
+            coEvery { rig.textModeration.classify(any(), any()) } returns
+                TextVerdict(allowed = false, category = TextVerdict.Category.TOXICITY)
+
+            assertEquals(MeshcoreReactionOutcome.Blocked, rig.manager.sendMeshcoreReaction("mc-heard", "👍", boardName))
+
+            assertTrue(rig.meshcorePosts.isEmpty())
+            assertNull(held["mc-heard" to rig.me.nodeId])
+        }
+
+    @Test
+    fun ourMeshcorePostKeepsTheTagItsBoardAnswered() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.meshcoreAnswer = PublicChannelAnswer.Queued("mc-row-7", tag = "b45pc4ek")
+
+            rig.manager.sendPublicPost(Conversations.MESHCORE_PUBLIC, "hello mesh")
+
+            assertEquals("b45pc4ek", rig.saved.single().meshcoreTag)
+        }
+
+    @Test
+    fun aKnitReactionToABridgedRoomsPostSendsNothing() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A bridged room's row id is derivable from the air: a Knit flood naming one would tell every Knit node what we
+            // reacted to.
+            val rig = Rig(backgroundScope)
+            rig.meshcoreRow("mc-heard")
+            rig.meshcoreRow("mt-heard", conversationId = Conversations.MESHTASTIC)
+
+            rig.manager.sendReaction("mc-heard", "👍")
+            rig.manager.sendReaction("mt-heard", "👍")
+            advanceUntilIdle()
+
+            assertTrue(rig.transport.sent.isEmpty())
+            assertTrue(rig.forwardStore.frames().isEmpty())
+            coVerify(exactly = 0) { rig.reactions.apply(any()) }
         }
 
     // --- the commons (docs/SPOOL_PROTOCOL.md §7.4) ---

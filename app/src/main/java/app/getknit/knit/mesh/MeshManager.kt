@@ -40,6 +40,7 @@ import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.isStatusNotice
 import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.message.withVideo
+import app.getknit.knit.data.message.writtenBy
 import app.getknit.knit.data.peer.MetPeerRepository
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.presencekey.PresenceKeyRepository
@@ -4194,6 +4195,13 @@ class MeshManager(
             Log.w(TAG, "reaction refused: $recipientId is not a peer")
             return
         }
+        // Nor a bridged room's post: its row id is derivable from the air, and a Knit flood naming it would tell every Knit
+        // node what we reacted to. The MeshCore room reacts in its own form ([sendMeshcoreReaction]); the Meshtastic room
+        // takes none (ADR 2026-10.xhfr).
+        if (messages.conversationOf(messageId)?.let(Conversations::isBridgedRoom) == true) {
+            Log.w(TAG, "reaction refused: a bridged room's post")
+            return
+        }
         val me = identity.nodeId()
         val next = if (reactions.currentEmoji(messageId, me) == emoji) null else emoji
         val now = clock()
@@ -6981,6 +6989,7 @@ class MeshManager(
         // other's board.
         if (!Conversations.isBridgedRoom(conversationId)) return PublicPostOutcome.Refused(PublicPostRefusal.NO_BOARD)
         if (isTextFlagged(text, "outgoing", isRoom = true)) return PublicPostOutcome.Blocked
+        var tag: String? = null
         val rowId =
             if (conversationId == Conversations.MESHTASTIC) {
                 publicChannel(text)?.let { return PublicPostOutcome.Refused(it) }
@@ -6993,7 +7002,10 @@ class MeshManager(
                 // is the board's name now.
                 when (val answer = meshcorePublicChannel(text, consented)) {
                     is PublicChannelAnswer.Refused -> return PublicPostOutcome.Refused(answer.reason)
-                    is PublicChannelAnswer.Queued -> answer.rowId
+
+                    // The tag a MeshCore One reaction to this post will name it by (ADR 2026-11.gsqu's 2026-11-21
+                    // amendment), computed by the plane over the text and stamp it queued.
+                    is PublicChannelAnswer.Queued -> answer.rowId.also { tag = answer.tag }
                 }
             }
         messages.save(
@@ -7005,6 +7017,7 @@ class MeshManager(
                 sentAt = clock(),
                 received = false,
                 receivedVia = DeliveryPlane.LoRa.code,
+                meshcoreTag = tag,
             ),
         )
         // An end that outran this save (the pacer can give a post up at the write before the row lands) marks it now.
@@ -7013,6 +7026,109 @@ class MeshManager(
         }
         return PublicPostOutcome.Queued
     }
+
+    /**
+     * [MeshController.sendMeshcoreReaction] (ADR 2026-11.gsqu's 2026-11-21 amendment, under the design passes' lora and
+     * security findings). The target is read off its row, never the caller's addressing: a MeshCore room post carrying a
+     * reaction tag, not hidden by the moderator, with a name its token can carry — ours (the board's name the consent was
+     * given under) on our own post, the claimed name on a heard one. Toggling the emoji already chosen is a local tombstone
+     * and airs nothing (nothing on the air retracts). Otherwise the reaction is applied, then queued through the room's own
+     * door ([meshcorePublicChannel]) as a room post, which shares the post's consent, name check and per-phone floor; a
+     * refusal puts back what the reactor showed before. Never a Knit frame: a bridged room's row id is derivable from the
+     * air, and a flood naming one would tell every Knit node what we reacted to. No message row is written; an end for it
+     * is read by [markPublicPostEnded] against [queuedReactions].
+     */
+    override suspend fun sendMeshcoreReaction(
+        messageId: String,
+        emoji: String,
+        consented: MeshcoreHandle?,
+    ): MeshcoreReactionOutcome {
+        if (!MeshcoreReactions.isReactionEmoji(emoji)) return MeshcoreReactionOutcome.Unaddressable
+        val me = identity.nodeId()
+        val row = meshcoreReactionTarget(messageId) ?: return MeshcoreReactionOutcome.Unaddressable
+        val prior = reactions.currentEmoji(messageId, me)
+        if (prior == emoji) {
+            reactions.apply(ReactionEntity(messageId, me, null, clock()))
+            return MeshcoreReactionOutcome.RemovedHere
+        }
+        val name = if (row.writtenBy(me)) consented?.text else row.originName
+        val tag = row.meshcoreTag ?: return MeshcoreReactionOutcome.Unaddressable
+        val text = MeshcoreReactions.format(name, emoji, tag) ?: return MeshcoreReactionOutcome.Unaddressable
+        // Screened as a room post is on the way out (ADR 2026-10.9rh6): the token carries a stranger's chosen name under ours.
+        if (isTextFlagged(text, "outgoing", isRoom = true)) return MeshcoreReactionOutcome.Blocked
+        val at = clock()
+        reactions.apply(ReactionEntity(messageId, me, emoji, at))
+        return when (val answer = meshcorePublicChannel(text, consented)) {
+            is PublicChannelAnswer.Refused -> {
+                restoreReaction(messageId, me, prior, emoji, at)
+                MeshcoreReactionOutcome.Refused(answer.reason)
+            }
+
+            is PublicChannelAnswer.Queued -> {
+                recordQueuedReaction(answer.rowId, QueuedReaction(messageId, prior, emoji, at))
+                MeshcoreReactionOutcome.Queued
+            }
+        }
+    }
+
+    /** The MeshCore room post [messageId] names, an ordinary one the moderator didn't flag, or null. */
+    private suspend fun meshcoreReactionTarget(messageId: String): MessageEntity? =
+        messages.find(messageId)?.takeIf {
+            it.conversationId == Conversations.MESHCORE_PUBLIC &&
+                it.kind == MessageEntity.KIND_NORMAL &&
+                it.moderation == MessageEntity.MODERATION_NONE
+        }
+
+    /**
+     * Records [reaction], queued under [rowId]: its exact echo, re-aired after the board's seen ring forgot it, is ours
+     * whatever the board is named by then (lora and security review), and an end for it puts back what it replaced. An end
+     * that outran this record waits in [endsAheadOfRow], as a post's does, and is taken here.
+     */
+    private suspend fun recordQueuedReaction(
+        rowId: String,
+        reaction: QueuedReaction,
+    ) {
+        pipeline.noteOwnMeshcoreReaction(rowId)
+        // One lock with [markPublicPostEnded]'s lookup (queuedReactions, then endsAheadOfRow, never the other order): an
+        // end is either already held here, or finds the record.
+        val endedFirst =
+            synchronized(queuedReactions) {
+                synchronized(endsAheadOfRow) { endsAheadOfRow.remove(rowId) }.also { held ->
+                    if (held == null) {
+                        queuedReactions[rowId] = reaction
+                        while (queuedReactions.size > QUEUED_REACTIONS_MAX) queuedReactions.remove(queuedReactions.keys.first())
+                    }
+                }
+            }
+        if (endedFirst == true) restoreReaction(reaction.messageId, identity.nodeId(), reaction.prior, reaction.sent, reaction.at)
+    }
+
+    /** Puts back [prior] as our reaction on [messageId] if what we show there is still [sent], the one written at [at]. */
+    private suspend fun restoreReaction(
+        messageId: String,
+        me: String,
+        prior: String?,
+        sent: String,
+        at: Long,
+    ) {
+        if (reactions.currentEmoji(messageId, me) != sent) return
+        reactions.apply(ReactionEntity(messageId, me, prior, maxOf(clock(), at + 1)))
+    }
+
+    /** A MeshCore reaction the board queued, by the key its post would be ended under: what to put back if it never airs. */
+    private class QueuedReaction(
+        val messageId: String,
+        val prior: String?,
+        val sent: String,
+        val at: Long,
+    )
+
+    /**
+     * Our queued MeshCore reactions by the row id their post's key maps to ([PublicPostEnd.rowId]), bounded
+     * ([QUEUED_REACTIONS_MAX], oldest out): an end found here is a reaction's, never a post's, and never waits in
+     * [endsAheadOfRow].
+     */
+    private val queuedReactions = LinkedHashMap<String, QueuedReaction>()
 
     /**
      * Ends [markPublicPostEnded] found no row for yet, by row id: the post was queued and given up before
@@ -7030,11 +7146,24 @@ class MeshManager(
      * reading sent, as a Meshtastic room post's always does.
      */
     internal suspend fun markPublicPostEnded(end: PublicPostEnd) {
+        // A reaction's post has no row: one that never aired puts back what we showed before; one that may have aired
+        // stays (ADR 2026-11.gsqu's 2026-11-21 amendment). Looked up and, failing that, held under the one lock
+        // [recordQueuedReaction] records under, so an end racing its reaction's record is never missed by both.
         // Held before the mark and dropped once it lands: a save between the two then finds it held, or its row is there
         // for the mark — either way one of the two marks it (a second mark changes nothing).
-        synchronized(endsAheadOfRow) {
-            endsAheadOfRow[end.rowId] = end.neverSent
-            while (endsAheadOfRow.size > ENDS_AHEAD_MAX) endsAheadOfRow.remove(endsAheadOfRow.keys.first())
+        val reaction =
+            synchronized(queuedReactions) {
+                queuedReactions.remove(end.rowId) ?: run {
+                    synchronized(endsAheadOfRow) {
+                        endsAheadOfRow[end.rowId] = end.neverSent
+                        while (endsAheadOfRow.size > ENDS_AHEAD_MAX) endsAheadOfRow.remove(endsAheadOfRow.keys.first())
+                    }
+                    null
+                }
+            }
+        if (reaction != null) {
+            if (end.neverSent) restoreReaction(reaction.messageId, identity.nodeId(), reaction.prior, reaction.sent, reaction.at)
+            return
         }
         if (messages.markPublicPostEnded(end.rowId, identity.nodeId(), end.neverSent)) {
             synchronized(endsAheadOfRow) { endsAheadOfRow.remove(end.rowId) }
@@ -7808,6 +7937,9 @@ class MeshManager(
          * them.
          */
         const val ENDS_AHEAD_MAX = 16
+
+        /** How many queued MeshCore reactions [markPublicPostEnded] can still tell from posts: the queue's own depth and more. */
+        const val QUEUED_REACTIONS_MAX = 32
 
         /** Nanoseconds in a millisecond, for the default monotonic clock. */
         const val NANOS_PER_MS = 1_000_000L

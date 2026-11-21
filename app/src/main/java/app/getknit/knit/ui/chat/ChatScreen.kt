@@ -2082,7 +2082,11 @@ internal fun ChatScreenContent(
                                             // The Meshtastic room has no tapback form, so it offers no emoji row and a tap can
                                             // never fall through to the radios' cleartext flood. A stale commons takes no
                                             // reaction or reply either: nothing posted there reaches anyone.
-                                            canReact = !state.isBridged && !state.commonsStale,
+                                            // The MeshCore room reacts in MeshCore One's form, on a post that can be named
+                                            // (ADR 2026-11.gsqu's 2026-11-21 amendment).
+                                            canReact =
+                                                (!state.isBridged || (state.isMeshcoreRoom && row.meshcoreReactable)) &&
+                                                    !state.commonsStale,
                                             canReply = !state.commonsStale,
                                             relayIsCommons = state.isCommons,
                                             quickReactions = quickReactions,
@@ -2807,6 +2811,12 @@ private fun MeshcorePostConsentBody(
         }
         Text(
             text = stringResource(R.string.chat_meshcore_consent_rules),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        // A reaction is a post too (ADR 2026-11.gsqu's 2026-11-21 amendment): it names the post it answers to everyone in range.
+        Text(
+            text = stringResource(R.string.chat_meshcore_consent_reactions),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

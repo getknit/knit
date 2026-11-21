@@ -4,6 +4,8 @@ import androidx.room3.withWriteTransaction
 import app.getknit.knit.data.changes.DataChange
 import app.getknit.knit.data.changes.DataChangeSink
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.reaction.MeshcoreReactionDao
 import app.getknit.knit.data.reaction.ReactionDao
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.reaction.ReactionHead
@@ -17,6 +19,8 @@ import kotlinx.coroutines.flow.map
 class ReactionRepository(
     private val dao: ReactionDao,
     private val db: KnitDatabase,
+    // The MeshCore room's queries (ADR 2026-11.gsqu's 2026-11-21 amendment).
+    private val meshcore: MeshcoreReactionDao = db.meshcoreReactionDao(),
     // Told each message whose reactions a write here changed (`DataChange`); a no-op outside a debug build.
     private val changes: DataChangeSink = DataChangeSink.NONE,
 ) {
@@ -29,7 +33,8 @@ class ReactionRepository(
     fun observeReactionsIn(
         conversationId: String,
         me: String,
-    ): Flow<List<ReactionEntity>> = dao.observeForConversation(conversationId, me, ROOMS, Conversations.COMMONS_PREFIX + "*")
+    ): Flow<List<ReactionEntity>> =
+        dao.observeForConversation(conversationId, me, ROOMS, Conversations.COMMONS_PREFIX + "*", Conversations.MESHCORE_PUBLIC)
 
     /**
      * Live reactions on a single message, oldest first — who reacted, with what (message details). Only reactors in its
@@ -38,7 +43,8 @@ class ReactionRepository(
     fun observeReactionsFor(
         messageId: String,
         me: String,
-    ): Flow<List<ReactionEntity>> = dao.observeForMessage(messageId, me, ROOMS, Conversations.COMMONS_PREFIX + "*")
+    ): Flow<List<ReactionEntity>> =
+        dao.observeForMessage(messageId, me, ROOMS, Conversations.COMMONS_PREFIX + "*", Conversations.MESHCORE_PUBLIC)
 
     /**
      * Per thread, the newest live reaction someone who reads it made to a message [me] wrote, keyed by
@@ -55,6 +61,7 @@ class ReactionRepository(
                 blocked,
                 rooms = ROOMS,
                 commonsGlob = Conversations.COMMONS_PREFIX + "*",
+                meshcoreRoom = Conversations.MESHCORE_PUBLIC,
             ).map { rows ->
                 rows
                     .groupBy { it.target.conversationId }
@@ -88,6 +95,50 @@ class ReactionRepository(
         return changed
     }
 
+    /**
+     * [apply] for a reaction heard on the MeshCore room's channel under a claimed name ([reaction]'s reactor is `mc:` +
+     * the name, ADR 2026-11.gsqu's 2026-11-21 amendment), within the bounds a free name needs: at most
+     * [MESHCORE_REACTORS_PER_POST] claimed names on one post and [MESHCORE_REACTIONS_MAX] on this phone, the oldest other
+     * claimed name's reaction evicted for a new one (never a Knit reactor's, ours included), in the same transaction.
+     */
+    suspend fun applyMeshcore(reaction: ReactionEntity): MeshcoreApplied {
+        require(reaction.reactorNodeId.startsWith(MESHCORE_REACTOR_PREFIX)) { "not a claimed MeshCore name" }
+        var evicted = 0
+        val changed =
+            db.withWriteTransaction {
+                val current = dao.find(reaction.messageId, reaction.reactorNodeId)
+                if (current != null && reaction.updatedAt <= current.updatedAt) return@withWriteTransaction false
+                dao.upsert(reaction)
+                if (current == null) {
+                    while (meshcore.meshcoreReactorsOn(reaction.messageId) > MESHCORE_REACTORS_PER_POST &&
+                        meshcore.evictOldestMeshcoreOn(reaction.messageId, reaction.reactorNodeId) > 0
+                    ) {
+                        evicted++
+                    }
+                    while (meshcore.meshcoreReactions() > MESHCORE_REACTIONS_MAX &&
+                        meshcore.evictOldestMeshcore(reaction.messageId, reaction.reactorNodeId) > 0
+                    ) {
+                        evicted++
+                    }
+                }
+                current?.emoji != reaction.emoji
+            }
+        if (changed) changes.emit(DataChange.Message(reaction.messageId, null))
+        return MeshcoreApplied(changed = changed, evicted = evicted)
+    }
+
+    /**
+     * The MeshCore room rows MeshCore One's reaction [tag] names, at most two ([MeshcoreReactionDao.taggedIn]): a reaction
+     * is placed only when there is exactly one (a tag is 40 bits over public inputs, so a ground collision places nothing).
+     */
+    suspend fun meshcoreTagged(tag: String): List<MessageEntity> = meshcore.taggedIn(tag, Conversations.MESHCORE_PUBLIC)
+
+    /** What [applyMeshcore] did: whether the reactor's emoji on the post changed, and how many older ones the bounds evicted. */
+    data class MeshcoreApplied(
+        val changed: Boolean,
+        val evicted: Int,
+    )
+
     /** The reactor's current emoji on a message (null if none/retracted) — used for toggle decisions. */
     suspend fun currentEmoji(
         messageId: String,
@@ -111,16 +162,30 @@ class ReactionRepository(
     ) {
         dao.deleteOrphansOlderThan(now - ORPHAN_GRACE_MILLIS)
         dao.deleteOffRosterOlderThan(now - ORPHAN_GRACE_MILLIS, me)
+        dao.deleteOffRoomOlderThan(now - ORPHAN_GRACE_MILLIS, me, BRIDGED, Conversations.MESHCORE_PUBLIC)
     }
 
-    private companion object {
+    companion object {
+        /** A reactor id naming a claimed MeshCore channel name rather than a Knit identity: `mc:` + the name as cleaned. */
+        const val MESHCORE_REACTOR_PREFIX = "mc:"
+
+        /** At most this many claimed names hold a reaction on one MeshCore room post: a free name is no bound. */
+        const val MESHCORE_REACTORS_PER_POST = 32
+
+        /** At most this many claimed-name reactions on this phone, on any post. */
+        const val MESHCORE_REACTIONS_MAX = 2048
+
         // The rooms every reaction query lets anyone react in; a commons is matched by its prefix beside them. Never a
-        // bridged board room: it takes no tapback (ADR 2026-10.xhfr) and anyone can derive its rows' ids from the air, so
-        // a reaction there is drawn and headed nowhere (ADR 2026-11.gsqu's Stage 6 amendment, `InboundPipeline.reactsIn`).
-        val ROOMS = listOf(Conversations.NEARBY)
+        // bridged board room: anyone can derive its rows' ids from the air, so no Knit identity's reaction is drawn there
+        // (ADR 2026-11.gsqu's Stage 6 amendment, `InboundPipeline.reactsIn`). The MeshCore room draws us and the channel's
+        // claimed names by its own clause (`ReactionDao`'s `meshcoreRoom`, the 2026-11-21 amendment); the Meshtastic
+        // room draws nobody but us.
+        private val ROOMS = listOf(Conversations.NEARBY)
+
+        private val BRIDGED = listOf(Conversations.MESHTASTIC, Conversations.MESHCORE_PUBLIC)
 
         // A day comfortably exceeds any realistic out-of-order gap between a message and its reactions,
         // while still reclaiming rows left behind by a deleted message or conversation.
-        const val ORPHAN_GRACE_MILLIS = 24L * 60 * 60 * 1000
+        private const val ORPHAN_GRACE_MILLIS = 24L * 60 * 60 * 1000
     }
 }

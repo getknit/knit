@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -219,7 +220,7 @@ class LoraPlaneWiringTest {
             val plane: suspend (String, MeshcoreHandle?) -> PublicPostResult = { body, consented ->
                 asked += body
                 consents += consented
-                PublicPostResult.Queued(key)
+                PublicPostResult.Queued(key, "xehwes2p")
             }
             for (bound in listOf(null, BoardKind.MESHTASTIC)) {
                 assertEquals(
@@ -236,7 +237,7 @@ class LoraPlaneWiringTest {
             )
 
             assertEquals(
-                PublicChannelAnswer.Queued(meshcoreRowId(key)),
+                PublicChannelAnswer.Queued(meshcoreRowId(key), tag = "xehwes2p"),
                 postToMeshcorePublic(BoardKind.MESHCORE, postPublic = plane, body = "hi", consented = handle),
             )
             assertEquals("asked once, with the body", listOf("hi"), asked)
@@ -250,14 +251,29 @@ class LoraPlaneWiringTest {
             val key = PublicPostKey(1_763_200_000, "Knit 1a2b: hi".encodeToByteArray())
             assertEquals(FrameId.forMeshcorePost(1_763_200_000, "Knit 1a2b: hi".encodeToByteArray()), meshcoreRowId(key))
 
-            val heard = meshcoreHeard(MeshcorePublicPost(name = "Knit 1a2b", body = "hi", key = key, live = true))
-            assertEquals(MeshcorePost("Knit 1a2b", "hi", 1_763_200_000, "Knit 1a2b: hi".encodeToByteArray()), heard)
+            val heard = meshcoreHeard(MeshcorePublicPost(name = "Knit 1a2b", body = "hi", key = key, live = true, tag = "xehwes2p"))
+            assertEquals(MeshcorePost("Knit 1a2b", "hi", 1_763_200_000, "Knit 1a2b: hi".encodeToByteArray(), tag = "xehwes2p"), heard)
+            // The plane's tag crosses as it is, and is part of the post's equality.
+            assertNotEquals(MeshcorePost("Knit 1a2b", "hi", 1_763_200_000, "Knit 1a2b: hi".encodeToByteArray()), heard)
             // A token naming the board's name as heard now is the post's mention of us, as written (the 2026-11-19
             // amendment); none without a name known.
-            val tagged = MeshcorePublicPost(name = "Bob", body = "@[walter] hi", key = key, live = true)
+            val tagged = MeshcorePublicPost(name = "Bob", body = "@[walter] hi", key = key, live = true, tag = "xehwes2p")
             assertEquals("walter", meshcoreHeard(tagged, MeshcoreHandle("Walter".encodeToByteArray())).mentionedAs)
             assertNull(meshcoreHeard(tagged, MeshcoreHandle("Sam".encodeToByteArray())).mentionedAs)
             assertNull(meshcoreHeard(tagged).mentionedAs)
+
+            // Under our own name by NameKey (case and lookalikes fold), the own-echo drop's mark (lora's design pass).
+            fun named(name: String?) = MeshcorePublicPost(name = name, body = "hi", key = key, live = true, tag = "xehwes2p")
+            val own = MeshcoreHandle("Walter".encodeToByteArray())
+            assertTrue(meshcoreHeard(named("Walter"), own).underOwnName)
+            assertTrue("case folds", meshcoreHeard(named("WALTER"), own).underOwnName)
+            assertTrue("a Cyrillic е and a capital I for l fold", meshcoreHeard(named("WaIt\u0435r"), own).underOwnName)
+            assertFalse("another name", meshcoreHeard(named("Walt"), own).underOwnName)
+            assertFalse("no own name known", meshcoreHeard(named("Walter")).underOwnName)
+            assertFalse("no name on the post", meshcoreHeard(named(null), own).underOwnName)
+            val blank = MeshcoreHandle("\u200B".encodeToByteArray())
+            assertFalse("a name that keys empty is no match", meshcoreHeard(named("\u2060"), blank).underOwnName)
+            assertNotEquals("part of the post's equality", meshcoreHeard(named("Walter"), own), meshcoreHeard(named("Walter")))
 
             val ends =
                 meshcorePostEnds(

@@ -247,7 +247,7 @@ it is symmetric. The receiver's own teaching is what lets a DM land.
   posts.
 
 Deferred: both boards at once (the router's preference and failover, a two-board radio screen, per-kind diagnostics),
-room reactions, jend's lean profile and `keyreq`, one named-repeater hop, the region-scope UX, the auto-reply, and
+room reactions (the MeshCore room's: the 2026-11-21 amendment), jend's lean profile and `keyreq`, one named-repeater hop, the region-scope UX, the auto-reply, and
 MeshCore on iOS.
 
 The bench checks owed before Stage 3 were run on 2026-11-13, without boards. The unmodified v1.18.0 companion and
@@ -1986,7 +1986,7 @@ known peer's name, Nearby strangers' included: it can mark a name the user would
   (`chat_meshcore_name_claimed`, `“%1$s” (unverified)`), never drawn bare: "You: hello" no longer reads as our own post.
   The UI's own names arrive as `di/LoraWiring.meshcoreOwnNames`; the pipeline reads `PeerRepository.names()` and the
   board's name off the claim (`InboundPipeline.ownBoardName`, `mesh/meshcoreBoardName`).
-- **A bridged board room takes no tapback, inbound too.** `InboundPipeline.reactsIn` / `readsThread` refuse anyone but us
+- **A bridged board room takes no tapback, inbound too** (Knit frames still; the MeshCore room takes MeshCore One's own form since the 2026-11-21 amendment). `InboundPipeline.reactsIn` / `readsThread` refuse anyone but us
   in either bridged room (`REACTION_OUTSIDE_THREAD`), and `ReactionRepository.ROOMS` holds Nearby alone: the rooms' row ids
   are derivable from the air (`forMeshcorePost`), so any Knit identity could have put "Reacted 👍 to …" on our own post in
   a room the UI says takes none. The Meshtastic room went into `ROOMS` with ADR 2026-10.59fu as one of "the rooms", with no
@@ -2454,3 +2454,80 @@ a hearing lifts the hold and the queued DM lands; two boards in range still DM a
 design pass: a dead neighbour over 2 h, every re-probe round airing zero hops first and at most one flood; a neighbour
 back in range after a give-up, acked at zero hops; a far first DM with no second flood before the ack; an upgrade over
 records pinned at zero hops; airtime and hearings reconciled against `tx_air`.
+
+## Amendment 2026-11-21 — the MeshCore room's reactions, in MeshCore One's form (draft)
+
+Lifts "room reactions" out of Deferred for the MeshCore room alone; the Meshtastic room still takes no tapback. Field
+logs (2026-11-20/21) showed MeshCore One's reactions in the Public room as stranger posts ending in an 8-character line,
+from two senders and in no other form. MeshCore One (`Avi0n/MeshCoreOne` `docs/Reactions.md`) writes a channel reaction as
+plain text, `@[targetName]{emoji}\n{tag}` (`{emoji}@[targetName]\n{tag}` up to 1.4.1), where the tag is Crockford Base32 of
+the first 5 bytes of `SHA-256(UTF-8 text ‖ LE uint32 sender stamp)`: the target's text **without** the board's `"name: "`
+prefix, under the stamp its sender's board aired. Checked against a real reaction to our own post (2026-11-21): the tag
+matched the queued text and enqueue stamp, and not `key.raw`. Maintainer decisions (2026-11-21): a reaction whose target
+this phone doesn't hold is dropped quietly; changing an emoji airs a new reaction, while removing one's own is local only
+(nothing on the air retracts one); reacting takes the room's post consent.
+
+- **The codec** (`mesh/MeshcoreReactions`): `tag`, `parse` (exactly that grammar: split at the last line break, 8 Crockford
+  symbols with `O`→0 and `I`/`L`→1, `@[name]` by `MeshcoreMentions`' token rule, one grapheme cluster that is no letter,
+  digit or token character and holds no invisible format character but the joiner and a flag's tag characters; anything else stays a post) and `format` (the current order; null for a name a token can't
+  carry).
+- **Tags are computed in the plane.** A heard post's comes from the judge's raw body bytes after the name split, before any
+  cleaning, plus the sender's stamp (`MeshcorePublicPost.tag`). Our own comes from the exact text and stamp handed to
+  `enqueuePublic` (`PublicPostResult.Queued.tag`, passed through `PublicChannelAnswer.Queued`). Only the 8 characters
+  cross the seam (`MeshcorePost.tag`); core never hashes heard text. Stored with the row: `messages.meshcoreTag`, indexed,
+  schema v38 (null before it, so an older post takes no reaction).
+- **In** (`InboundPipeline.deliverMeshcoreReaction`, under `heardPostLock`): a parsed reaction is never a row. It is
+  refused (`MESHCORE_REACTION_REFUSED`) when unnamed, under our own board's name (`MeshcorePost.underOwnName`, by
+  `NameKey`: our own echo after the seen ring forgot it, or a namesake, whose lost tapback is the cheaper error; lora
+  design pass, blocking) or an exact echo of a reaction we queued, by its row-id key, whatever our board is named now
+  (`noteOwnMeshcoreReaction`; code review) or flagged by the room moderator over `"name: emoji"`. It is unplaced
+  (`MESHCORE_REACTION_UNPLACED`) unless exactly one room row carries the tag, since a 40-bit tag over public inputs can be
+  ground (security N3). Otherwise it is stored as reactor `mc:` + the cleaned name, stamped on arrival, so a sender's later
+  emoji replaces their earlier one and a replay of the same emoji changes and notifies nothing.
+- **Bounds** (security design pass, blocking B1: a free name is no bound). `ReactionRepository.applyMeshcore` holds 32
+  claimed names per post and 2048 on the phone, evicting the oldest other claimed name in the same transaction
+  (`MESHCORE_REACTION_EVICTED`), never a Knit reactor's. A reaction to our own post notifies on one line per post
+  (`meshcoreReactionKey`), which the newest reactor replaces, worn as the room's posts wear a speaker (`heardSpeaker`).
+- **Drawn by its own clause** (blocking B3). `ReactionRepository.ROOMS` stays Nearby alone. Each reaction query admits, in
+  the MeshCore room, us and `reactorNodeId GLOB 'mc:*'` (a Knit node id is hex and never matches). The Meshtastic room
+  draws only us. `deleteOffRoomOlderThan` reaps a Knit reactor's row on a bridged-room post past the orphan grace.
+  `reactsIn` and `readsThread` still refuse every Knit identity's frame in both rooms.
+- **A claimed name is no node id** (blocking B2). `ui/meshcoreReactorName` and `reactorLine` name an `mc:` reactor by
+  `meshcoreAuthorLine` over the name as the name screen shows it, quoted and marked, in the chat list's reaction line and
+  the details screen. There its row is `claimed`: inert, with no picture lookup and never `isSelf`.
+- **Out** (`MeshManager.sendMeshcoreReaction`, `ChatViewModel.reactMeshcore`). The target is read off its row: a room post
+  carrying a tag that the moderator didn't flag, addressed to the name the consent was given under for our own post or to
+  its claimed name for a heard one. The picker shows only on such rows (`ChatRow.meshcoreReactable`), behind the
+  composer's gates (connected, a postable name, the room's consent). The reaction is applied, then queued through
+  `meshcorePublicChannel` as a room post, so it shares the post's consent, name check, `ROOM` class and 30-second
+  per-phone floor, after the outgoing moderator (it carries the target's chosen name under ours: `Blocked`). A refusal,
+  or an end that says it never aired (`queuedReactions`, read before `endsAheadOfRow`, and an end that outran the
+  record taken from `endsAheadOfRow` after it), puts back what we showed before. No message row is written. `sendReaction` refuses a bridged-room post outright, so no Knit
+  frame ever names one.
+- **Words.** The consent sheet says a reaction is a public post that names what it answers
+  (`chat_meshcore_consent_reactions`). A local removal says it stays on everyone else's screen, and a reaction refused for
+  the floor says it counts as a post.
+
+**What it costs** (recorded, not built):
+
+- Anyone on the key can put a reaction under any name on any post we hold, within the bounds.
+- A namesake of our board can't react to us.
+- A reaction stored before v38, or to a post heard before the phone joined, places nothing.
+- MeshCore One keeps several emoji per sender per post, while Knit keeps one per claimed name.
+- MeshCore Open's `r:<hash>:<index>` form isn't read.
+- Our own echo after a rename is caught by its key only until a restart (`InboundPipeline.noteOwnMeshcoreReaction`, 64
+  kept in memory); past one, only the board's current name catches it.
+
+Regression: `MeshcoreReactionsTest`, `MeshcorePublicJudgeTest`, `MeshcorePublicPostTest`, `LoraPlaneWiringTest`,
+`ReactionDaoTest`, `InboundPipelineTest`'s and `MeshManagerTest`'s MeshCore reaction cases, `MessageDetailsViewModelTest`,
+the v37→v38 migration and `MeshcorePublicLabTest`.
+
+Board trial owed: a Knit phone with its board beside a stock MeshCore One phone with its board, both on Public.
+
+- Each reacts to the other's post. On the Knit side the reaction lands on the post with no new row and one notification;
+  on the MeshCore One side, the Knit reaction places on its post.
+- The same with a stranger post that has trailing whitespace.
+- An emoji change inside 30 seconds is refused and restored; after 30 seconds it airs.
+- A local removal airs nothing.
+- An offline replay places once.
+- A second Knit board named like ours reacts, and nothing lands under our name.

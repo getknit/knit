@@ -232,6 +232,22 @@ class FakeMeshController : MeshController {
         sentReactions += (messageId to emoji)
     }
 
+    /** MeshCore room reactions passed to [sendMeshcoreReaction], as (message, emoji, consented handle), in order. */
+    val sentMeshcoreReactions =
+        mutableListOf<Triple<String, String, app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle?>>()
+
+    /** What [sendMeshcoreReaction] answers. */
+    var meshcoreReactionOutcome: MeshcoreReactionOutcome = MeshcoreReactionOutcome.Queued
+
+    override suspend fun sendMeshcoreReaction(
+        messageId: String,
+        emoji: String,
+        consented: app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle?,
+    ): MeshcoreReactionOutcome {
+        sentMeshcoreReactions += Triple(messageId, emoji, consented)
+        return meshcoreReactionOutcome
+    }
+
     /** Commons reactions passed to [sendCommonsReaction], as (conversation, message, emoji), in order. */
     val sentCommonsReactions = mutableListOf<Triple<String, String, String>>()
 

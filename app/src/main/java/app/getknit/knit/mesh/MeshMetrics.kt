@@ -294,6 +294,21 @@ enum class DropReason {
      * here is how a pair stuck dark by a drifted clock shows apart from a pair with no UDP path.
      */
     LINK_STALE,
+
+    /**
+     * A MeshCore One reaction heard on the MeshCore room's channel that names no post this phone holds, or names two (a
+     * 40-bit tag over public inputs, ADR 2026-11.gsqu's 2026-11-21 amendment). Nothing is drawn: never shown as text.
+     */
+    MESHCORE_REACTION_UNPLACED,
+
+    /**
+     * A MeshCore One reaction refused for who sent it or what it says: no name, our own board's name (our echo, or a
+     * namesake), or a name or emoji the room moderator flags. Nothing is drawn or notified.
+     */
+    MESHCORE_REACTION_REFUSED,
+
+    /** A claimed name's older reaction evicted for a newer one by the per-post or per-phone bound on MeshCore reactions. */
+    MESHCORE_REACTION_EVICTED,
 }
 
 /**

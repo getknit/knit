@@ -5,6 +5,7 @@ import androidx.annotation.StringRes
 import app.getknit.knit.R
 import app.getknit.knit.TextLimits
 import app.getknit.knit.data.PeerDirectory
+import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.commons.CommonsEntity
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
@@ -284,6 +285,30 @@ internal fun meshcoreAuthorLine(
 ): String =
     name?.takeIf { it.isNotBlank() }?.let { context.getString(R.string.chat_meshcore_name_claimed, it) }
         ?: context.getString(R.string.chat_meshcore_unnamed)
+
+/**
+ * The claimed MeshCore channel name a reactor id carries (`mc:` + the name, ADR 2026-11.gsqu's 2026-11-21 amendment), or
+ * null for a Knit identity. Such a reactor is never a node id: never looked up, pictured or opened.
+ */
+internal fun meshcoreReactorName(reactorNodeId: String): String? =
+    if (reactorNodeId.startsWith(ReactionRepository.MESHCORE_REACTOR_PREFIX)) {
+        reactorNodeId.removePrefix(ReactionRepository.MESHCORE_REACTOR_PREFIX)
+    } else {
+        null
+    }
+
+/**
+ * A reactor as a single-line surface names them: a claimed MeshCore name by [meshcoreAuthorLine] over the name as this
+ * phone shows names (ADR 2026-11.y4pc: "Unnamed" when the name screen hides it), always marked; anyone else by their
+ * directory label.
+ */
+internal fun reactorLine(
+    context: Context,
+    reactorNodeId: String,
+    directory: PeerDirectory,
+): String =
+    meshcoreReactorName(reactorNodeId)?.let { meshcoreAuthorLine(context, directory.shown(it)) }
+        ?: directory.label(reactorNodeId).text
 
 /**
  * The [NameKey]s a MeshCore room post's claimed name must not read as for the bubble to draw it unmarked (ADR

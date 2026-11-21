@@ -1,9 +1,11 @@
 package app.getknit.knit.mesh.lab
 
+import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.MeshPostOrigin
+import app.getknit.knit.mesh.MeshcoreReactionOutcome
 import app.getknit.knit.mesh.NotificationLabels
 import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.PublicPostRefusal
@@ -21,6 +23,7 @@ import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.notifications.NotifMessage
+import app.getknit.knit.notifications.meshcoreReactionKey
 import app.getknit.knit.ui.chat.DeliveryStatus
 import io.mockk.coVerify
 import kotlinx.coroutines.Dispatchers
@@ -580,6 +583,129 @@ class MeshcorePublicLabTest {
             converge(bob, carol, mallory)
         }
 
+    /** The claimed names' reactions [node] holds on [messageId], as (reactor, emoji). */
+    private suspend fun claimedOn(
+        node: LabNode,
+        messageId: String,
+    ): Set<Pair<String, String>> = node.reactions(messageId).filterTo(HashSet()) { it.first.startsWith("mc:") }
+
+    /** The MeshCore room's notification lines [node] posted for reactions to [messageId]: one key, however many reactors. */
+    private fun reactionLines(
+        node: LabNode,
+        messageId: String,
+    ): List<NotifMessage> = node.meshcoreLines().filter { it.key == meshcoreReactionKey(messageId) }
+
+    /**
+     * MeshCore One's reaction (ADR 2026-11.gsqu's 2026-11-21 amendment), heard. Alice posts; Alice's own row and Bob's
+     * mirror of it carry one tag, each computed by its own plane (hers over what she queued, his over what his board
+     * drained). A stock node reacts in MeshCore One's form: Alice holds it on her post under the claimed name, no row of
+     * its own, one notification line; Bob holds it on his mirror and is not notified (not his words). The stock node
+     * reacts again (a later stamp, so a new packet): nothing more is drawn or notified. Then a flood of fresh names on the
+     * one post: Alice keeps at most [ReactionRepository.MESHCORE_REACTORS_PER_POST] claimed names on it, evicting the
+     * oldest, and every line it costs her is the post's one line.
+     */
+    @Test
+    fun aMeshcoreOneReactionToOurPostLandsOnceAndAFloodOfNamesIsBounded() =
+        runBlocking {
+            val air = lab.meshcoreAir()
+            val stock = StockMeshcoreNode.on(lab, air, "stock")
+            air.meshcoreEdit {
+                link("stock", "alice")
+                link("stock", "bob")
+                link("alice", "bob")
+            }
+            val (alice, bob) = boards(air, "alice", "bob")
+            val text = "north gate at noon"
+
+            assertEquals(PublicPostOutcome.Queued, alice.postPublic(text))
+            val own = alice.mirrored(text).single()
+            val heard = awaitMirrored(bob, text)
+            val tag = checkNotNull(own.meshcoreTag) { "alice's own row carries no tag" }
+            assertEquals("one tag for both sides of the post", tag, heard.meshcoreTag)
+            val reaction = "@[${boardName(alice)}]👍\n$tag"
+            val handled = alice.meshcorePostsHandled.get()
+            val bobHandled = bob.meshcorePostsHandled.get()
+
+            stock.post(reaction, asName = "Stock")
+            lab.await(1) { claimedOn(alice, own.id).size }
+            lab.await(1) { claimedOn(bob, heard.id).size }
+            assertEquals(setOf("mc:Stock" to "👍"), claimedOn(alice, own.id))
+            assertEquals(setOf("mc:Stock" to "👍"), claimedOn(bob, heard.id))
+            assertEquals(setOf("mc:Stock" to "👍"), alice.shownReactions(Conversations.MESHCORE_PUBLIC, own.id))
+            lab.await(1) { reactionLines(alice, own.id).size }
+            assertTrue("never a row: ${alice.mirror().map { it.body }}", alice.mirror().none { it.body.contains(tag) })
+            assertTrue(bob.mirror().none { it.body.contains(tag) })
+            // Bob's notify decision is behind his handled count, not his reaction row.
+            lab.await(1) { bob.meshcorePostsHandled.get() - bobHandled }
+            assertTrue("not bob's words", reactionLines(bob, heard.id).isEmpty())
+
+            stock.post(reaction, asName = "Stock", stampSecs = air.snapshot { checkNotNull(alice.meshcoreBoard).clockSecs } + LATER_SECS)
+            lab.await(2) { alice.meshcorePostsHandled.get() - handled }
+            assertEquals("the same emoji again notifies nothing", 1, reactionLines(alice, own.id).size)
+
+            val evicted = alice.drops(DropReason.MESHCORE_REACTION_EVICTED)
+            val names = (1..FLOOD_NAMES).map { "n$it" }
+            names.forEach { stock.post(reaction, asName = it) }
+            lab.await(2 + FLOOD_NAMES) { alice.meshcorePostsHandled.get() - handled }
+            val kept = claimedOn(alice, own.id)
+            assertEquals("the bound: $kept", ReactionRepository.MESHCORE_REACTORS_PER_POST, kept.size)
+            assertTrue("the newest name is kept", "mc:${names.last()}" to "👍" in kept)
+            assertFalse("the oldest went", "mc:Stock" to "👍" in kept)
+            assertEquals(
+                (FLOOD_NAMES + 1 - ReactionRepository.MESHCORE_REACTORS_PER_POST).toLong(),
+                alice.drops(DropReason.MESHCORE_REACTION_EVICTED) - evicted,
+            )
+            assertEquals(
+                "one line for the post, never one per name",
+                setOf(meshcoreReactionKey(own.id)),
+                alice
+                    .meshcoreLines()
+                    .mapNotNull { it.key }
+                    .filter { it.startsWith("reaction:") }
+                    .toSet(),
+            )
+            converge(alice, bob)
+        }
+
+    /**
+     * MeshCore One's reaction, sent. A stock node posts; Alice reacts to her mirror of it from the picker. Her board airs
+     * exactly MeshCore One's text, so Bob — whose plane computed the post's tag on its own — holds it on his mirror under
+     * her board's claimed name, never as a row; Alice holds hers as her own, and no Knit frame crossed for it.
+     */
+    @Test
+    fun ourMeshcoreReactionAirsMeshcoreOnesTextAndLandsOnTheSamePostElsewhere() =
+        runBlocking {
+            val air = lab.meshcoreAir()
+            val stock = StockMeshcoreNode.on(lab, air, "stock")
+            air.meshcoreEdit {
+                link("stock", "alice")
+                link("stock", "bob")
+                link("alice", "bob")
+            }
+            val (alice, bob) = boards(air, "alice", "bob")
+            stock.post("the ford is passable", asName = "Stock")
+            val atAlice = awaitMirrored(alice, "the ford is passable")
+            val atBob = awaitMirrored(bob, "the ford is passable")
+            assertEquals(atAlice.meshcoreTag, atBob.meshcoreTag)
+            val aired = boardSends(alice).second
+            val sent = alice.transport.sent.size
+
+            assertEquals(MeshcoreReactionOutcome.Queued, alice.reactMeshcore(atAlice.id, "🎉"))
+
+            lab.await(1) { claimedOn(bob, atBob.id).size }
+            assertEquals(setOf("mc:${boardName(alice)}" to "🎉"), claimedOn(bob, atBob.id))
+            assertEquals(setOf(alice.nodeId to "🎉"), alice.reactions(atAlice.id))
+            assertEquals("one Public post", aired + 1, boardSends(alice).second)
+            assertTrue(bob.mirror().none { it.body.contains("🎉") })
+            assertTrue(
+                "no Knit frame: ${alice.transport.sent.drop(sent)}",
+                alice.transport.sent
+                    .drop(sent)
+                    .none { atAlice.id in it },
+            )
+            converge(alice, bob)
+        }
+
     /** A cleartext reaction to [messageId] signed by this node, as a fork sends whatever the room: returns its frame id. */
     private suspend fun LabNode.reactTo(messageId: String): String {
         val id = FrameId.new()
@@ -610,6 +736,12 @@ class MeshcorePublicLabTest {
 
         /** Bob's session redials half a second after his board comes back, not the field's 5 s. */
         const val BACKOFF_MS = 500L
+
+        /** A later stamp for the same reaction: a new packet, which the boards' seen rings do not drop as the first. */
+        const val LATER_SECS = 3_600L
+
+        /** Fresh names a stock node reacts under in the flood: past the per-post bound. */
+        const val FLOOD_NAMES = 40
 
         /** A stock Meshtastic node's number on carol's board. */
         const val STOCK_MESHTASTIC_NODE = 0x0A0B_0C0Du

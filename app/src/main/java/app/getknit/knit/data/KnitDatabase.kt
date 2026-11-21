@@ -58,6 +58,7 @@ import app.getknit.knit.data.ratchet.RatchetLocalEpochEntity
 import app.getknit.knit.data.ratchet.RatchetRecvEpochEntity
 import app.getknit.knit.data.ratchet.RatchetSessionEntity
 import app.getknit.knit.data.ratchet.RatchetSkippedKeyEntity
+import app.getknit.knit.data.reaction.MeshcoreReactionDao
 import app.getknit.knit.data.reaction.ReactionDao
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.receipt.MessageReceiptDao
@@ -76,7 +77,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 37
+internal const val KNIT_DB_SCHEMA_VERSION = 38
 
 @Database(
     entities = [
@@ -310,6 +311,10 @@ internal const val KNIT_DB_SCHEMA_VERSION = 37
     //     an unbind left it a pending cleanup. The row is the consent the session touches a board's contacts under.
     //     This phone's alone: never in a backup. Empty on arrival. Its own version because lab phones run v36; fold
     //     v33–v37 into the next release's single bump. Migrated by KnitMigrations.MIGRATION_36_37.
+    // v38: `messages.meshcoreTag` and its index (ADR 2026-11.gsqu's 2026-11-21 amendment): a MeshCore room post's MeshCore
+    //     One reaction tag, written with the row. Local only, carried in a backup with the row; null on existing rows.
+    //     Its own version because lab phones run v37; fold v33–v38 into the next release's single bump. Migrated by
+    //     KnitMigrations.MIGRATION_37_38.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
@@ -323,6 +328,8 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun peerDao(): PeerDao
 
     abstract fun reactionDao(): ReactionDao
+
+    abstract fun meshcoreReactionDao(): MeshcoreReactionDao
 
     abstract fun blobDao(): BlobDao
 

@@ -47,6 +47,7 @@ import app.getknit.knit.data.video.VideoAttachment
 import app.getknit.knit.data.video.VideoFrames
 import app.getknit.knit.data.video.isPlausible
 import app.getknit.knit.identity.IdentitySource
+import app.getknit.knit.identity.NameKey
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.isValidReactionEmoji
 import app.getknit.knit.location.GeoUri
@@ -124,6 +125,7 @@ import app.getknit.knit.notifications.ConversationFaces
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.incomingNotification
 import app.getknit.knit.notifications.mentionNotification
+import app.getknit.knit.notifications.meshcoreReactionKey
 import app.getknit.knit.notifications.reactionNotificationKey
 import app.getknit.knit.transfer.TransferNotice
 import app.getknit.knit.update.UpdateRequest
@@ -1366,6 +1368,12 @@ class InboundPipeline(
     }
 
     private suspend fun deliverMeshcorePostLocked(post: MeshcorePost) {
+        // A MeshCore One reaction (ADR 2026-11.gsqu's 2026-11-21 amendment) is never a row: it lands on the post it names,
+        // or nowhere.
+        MeshcoreReactions.parse(post.body)?.let { reaction ->
+            deliverMeshcoreReaction(post, reaction)
+            return
+        }
         val me = identity.nodeId()
         val env =
             RelayEnvelope(
@@ -1395,6 +1403,114 @@ class InboundPipeline(
                 ),
             ack = false,
             moderationText = post.name?.let { "$it: ${post.body}" } ?: post.body,
+            // The tag a MeshCore One reaction will name this post by, computed by the plane over what aired.
+            persist = { saveIfAbsentFromItsSender(it.copy(meshcoreTag = post.tag)) },
+        )
+    }
+
+    /**
+     * A MeshCore One reaction heard on the MeshCore room's channel (ADR 2026-11.gsqu's 2026-11-21 amendment, under the
+     * design passes' lora and security findings). Under [heardPostLock], so a replayed target drained ahead of it has
+     * landed. Every refusal is counted and draws nothing; nothing about it is logged.
+     *
+     * - **Who.** The claimed name, never resolved: the reactor is `mc:` + the name as cleaned
+     *   ([ReactionRepository.MESHCORE_REACTOR_PREFIX]), drawn only in this room and only beside us. No name, or our own
+     *   board's ([MeshcorePost.underOwnName]: our own echo, re-aired after the board's seen ring forgot it, or a namesake,
+     *   whose lost tapback is the cheaper error), is refused, as is a name or emoji the room moderator flags.
+     * - **What.** The one room row the tag names ([ReactionRepository.meshcoreTagged]); none, or two (a tag is 40 bits over
+     *   public inputs), places nothing. The name inside the reaction's token is the reactor's claim about the target's
+     *   author and is read for nothing.
+     * - **Bounds** (a free name is no bound): [ReactionRepository.applyMeshcore] holds the claimed names per post and on
+     *   the phone, evicting the oldest. Stamped on arrival ([heardStamp]), so a sender's later emoji replaces their earlier
+     *   one, and a replay of the same emoji changes nothing and notifies nothing.
+     * - **Notified** only on a post we wrote, one line per post ([meshcoreReactionKey]) that the newest reactor replaces.
+     */
+    private suspend fun deliverMeshcoreReaction(
+        post: MeshcorePost,
+        reaction: MeshcoreReactions.Parsed,
+    ) {
+        val name = post.name?.takeIf { NameKey.of(it).isNotEmpty() }
+        val ourOwn = synchronized(ownMeshcoreReactions) { FrameId.forMeshcorePost(post.timestampSecs, post.raw) in ownMeshcoreReactions }
+        if (name == null || post.underOwnName || ourOwn) {
+            metrics.onDropped(DropReason.MESHCORE_REACTION_REFUSED)
+            return
+        }
+        val targets = reactions.meshcoreTagged(reaction.tag)
+        val target = targets.singleOrNull()
+        if (target == null) {
+            metrics.onDropped(DropReason.MESHCORE_REACTION_UNPLACED)
+            return
+        }
+        if (classifyText("$name: ${reaction.emoji}", "incoming", true)) {
+            metrics.onDropped(DropReason.MESHCORE_REACTION_REFUSED)
+            return
+        }
+        val entity =
+            ReactionEntity(
+                messageId = target.id,
+                reactorNodeId = ReactionRepository.MESHCORE_REACTOR_PREFIX + name.clampToUtf16(MeshcoreMentions.NAME_MAX_BYTES),
+                emoji = reaction.emoji,
+                updatedAt = heardStamp(),
+            )
+        val applied = reactions.applyMeshcore(entity)
+        repeat(applied.evicted) { metrics.onDropped(DropReason.MESHCORE_REACTION_EVICTED) }
+        if (applied.changed) noticeMeshcoreReaction(target, name, reaction.emoji, entity.updatedAt)
+    }
+
+    /**
+     * The row-id keys ([FrameId.forMeshcorePost]) of the MeshCore One reactions this phone queued, newest last, bounded
+     * ([OWN_MESHCORE_REACTIONS_MAX]): an exact echo of one is ours whatever our board is named when it comes back. In memory
+     * only; past a restart, [MeshcorePost.underOwnName] is the guard.
+     */
+    private val ownMeshcoreReactions = LinkedHashSet<String>()
+
+    /** Records [rowId], the key our queued MeshCore reaction's post will be read under, so its echo is never a stranger's. */
+    internal fun noteOwnMeshcoreReaction(rowId: String) {
+        synchronized(ownMeshcoreReactions) {
+            ownMeshcoreReactions.remove(rowId)
+            ownMeshcoreReactions += rowId
+            while (ownMeshcoreReactions.size > OWN_MESHCORE_REACTIONS_MAX) ownMeshcoreReactions.remove(ownMeshcoreReactions.first())
+        }
+    }
+
+    /**
+     * [noticeReaction]'s MeshCore room twin: "Reacted 👍 to “…”" on a post we wrote, from a claimed name worn as the room's
+     * posts wear theirs ([heardSpeaker]: quoted and marked, keyed on the name's hash, no face), on one line per post
+     * ([meshcoreReactionKey]) that the newest reactor replaces — a flood of fresh names is one line, never one each.
+     */
+    private suspend fun noticeMeshcoreReaction(
+        target: MessageEntity,
+        name: String,
+        emoji: String,
+        at: Long,
+    ) {
+        val me = identity.nodeId()
+        if (!target.writtenBy(me)) return
+        if (!isAccepted(target.conversationId, me)) return
+        val labels = notificationLabels()
+        val snippet =
+            if (target.hiddenByFilter(settings.contentFilteringEnabled.first())) {
+                labels.hidden
+            } else {
+                reactionSnippet(GeoUri.describe(target.body, labels.location), attachmentLabel = null)
+            }
+        val env =
+            RelayEnvelope(type = FrameType.CHAT, id = target.id, senderId = me, sentAt = at, payload = ByteArray(0))
+        val origin =
+            MeshPostOrigin(
+                node = MeshPostOrigin.MESHCORE_NODE,
+                name = name,
+                channel = null,
+                hops = null,
+                snrDeci = null,
+                viaMqtt = false,
+            )
+        notifyWithBody(
+            env,
+            target.conversationId,
+            labels.reaction.format(Locale.getDefault(), emoji, snippet),
+            origin = origin,
+            key = meshcoreReactionKey(target.id),
         )
     }
 
@@ -6221,6 +6337,9 @@ class InboundPipeline(
     }
 
     internal companion object {
+        /** How many of our own queued MeshCore reactions' keys [noteOwnMeshcoreReaction] keeps: hours of the 30 s floor. */
+        private const val OWN_MESHCORE_REACTIONS_MAX = 64
+
         /** Types a missing sender key never spends a key request on — see the comment in `verifyInbound`. */
         private val NO_KEY_REQUEST_TYPES =
             setOf(

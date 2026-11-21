@@ -45,7 +45,7 @@ lines.
   rows as strangers' in the room sweep. Every MeshCore author is marked on a single-line surface (`chat_meshcore_name_claimed`
   in the previews, the pinned bar, the details screen and the shade), whatever it matches; the bubble draws the name with
   a "Same name as someone you know" line when it reads, by `NameKey`, as "You", ours, our board's or any name the screens
-  render for a person. The details screen reads `writtenBy`; neither bridged room takes anyone's reaction but ours. Each room is gated and titled by its own kind's facts (`perKind`), posts by room
+  render for a person. The details screen reads `writtenBy`. No Knit frame's reaction lands in either bridged room. The MeshCore room takes MeshCore One's reaction text (ADR 2026-11.gsqu's 2026-11-21 amendment: `MeshcoreReactions`, `messages.meshcoreTag`, `InboundPipeline.deliverMeshcoreReaction`, `ReactionRepository.applyMeshcore`, `MeshManager.sendMeshcoreReaction`, `ChatViewModel.reactMeshcore`): it lands on the one post its tag names, under reactor `mc:` + the claimed name, bounded per post and per phone, and is drawn by `ReactionDao`'s `meshcoreRoom` clause and named by `ui/reactorLine`, inert and marked. Each room is gated and titled by its own kind's facts (`perKind`), posts by room
   through its own kind's board and consent, and an own MeshCore post that ended without airing reads "Not sent" or "May
   not have gone out" off its row, never resent. A MeshCore reply posts MeshCore's own `@[name] ` ahead of the words,
   counted, screened and stored with them; a `@[name]` token naming the user's board, by `NameKey`, is bound to us and

@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.lora.meshcore
 
+import app.getknit.knit.mesh.MeshcoreReactions
 import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.Destination
@@ -161,7 +162,8 @@ internal class MeshcorePublicChannel(
      * board's name fixed now, which the frame carries to every write of it (its price reads the name; the write refuses it
      * when the board reads another). The answer's key is the post as receivers will read it (the name's own bytes, `": "`
      * and the text — never through a `String`, so a name cut mid-character still matches), what our own row's id is derived
-     * from, so an echo of it dedups by id: never by name. Admission reads only what
+     * from, so an echo of it dedups by id: never by name. Beside it, the post's MeshCore One reaction tag over the text bytes
+     * queued and the stamp (ADR 2026-11.gsqu's 2026-11-21 amendment). Admission reads only what
      * the window has booked, not what is queued: a post admitted behind queued room posts can still be skipped under the
      * ceiling and wait, while its row reads sent (the amendment's accepted gap).
      */
@@ -205,7 +207,9 @@ internal class MeshcorePublicChannel(
             pending[pendingKey(stamp, text)] = key
             while (pending.size > PENDING_MAX) pending.remove(pending.keys.first())
         }
-        return PublicPostResult.Queued(key)
+        // The reaction tag over exactly the bytes the board airs after its "name: " and the stamp the frame carries to every
+        // write (a Busy retry reuses both): never key.raw, which leads with the name, nor the String the row saves.
+        return PublicPostResult.Queued(key, MeshcoreReactions.tag(text, stamp))
     }
 
     private fun pendingKey(

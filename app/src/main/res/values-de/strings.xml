@@ -1926,6 +1926,10 @@
     <string name="chat_meshcore_consent_name_body">Jeder Beitrag wird als „%1$s: …“ gesendet. Dieser Name ist bei jedem Beitrag derselbe und identifiziert dein Board, sodass Personen, die dich als Kontakt haben oder dein Board kennen, erkennen können, dass du es bist.</string>
     <string name="chat_meshcore_consent_name_body_unknown">Jeder Beitrag wird unter dem Namen deines Boards gesendet. Dieser Name ist bei jedem Beitrag derselbe und identifiziert dein Board, sodass Personen, die dich als Kontakt haben oder dein Board kennen, erkennen können, dass du es bist.</string>
     <string name="chat_meshcore_consent_rules">Ein Beitrag lässt sich nicht zurücknehmen. Alle können unter jedem beliebigen Namen senden, auch unter deinem. MeshCore-Nutzende, die deinem Board direkt schreiben, bekommen keine Antwort: Knit liest diese Nachrichten nicht.</string>
+    <string name="chat_meshcore_consent_reactions">Reaktionen gehen genauso raus: Jede ist ein Beitrag, der allen in Reichweite zeigt, auf welchen Beitrag du reagiert hast, und sie lässt sich nicht zurücknehmen.</string>
+    <string name="chat_meshcore_reaction_removed_here">Nur auf diesem Smartphone entfernt. Im Kanal sehen alle deine Reaktion weiterhin.</string>
+    <string name="chat_meshcore_reaction_unaddressable">Auf diesen Beitrag kannst du im Kanal nicht reagieren</string>
+    <string name="chat_meshcore_reaction_too_soon">Nicht gesendet – eine Reaktion zählt als Beitrag, nur einer alle 30 Sekunden. Versuche es gleich noch einmal.</string>
     <string name="chat_meshcore_consent_position">Dein Board teilt möglicherweise auch seinen Standort, in seinen Adverts oder mit Kontakten, die danach fragen. Schalte die Standortfreigabe in deiner MeshCore-App aus, wenn deine Beiträge nicht mit einem Ort verknüpft werden sollen.</string>
     <string name="chat_commons_subtitle">Alle auf diesem Relay</string>
     <string name="commons_details_title">Rauminfo</string>

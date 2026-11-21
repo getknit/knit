@@ -1888,6 +1888,10 @@
     <string name="chat_meshcore_consent_name_body">每条发言都会以“%1$s: …”的形式发出。这个名称在每条发言中都相同，并能识别出你的开发板，因此把你加为联系人的人，或认识你开发板的人，都能认出这是你。</string>
     <string name="chat_meshcore_consent_name_body_unknown">每条发言都会以你开发板的名称发出。这个名称在每条发言中都相同，并能识别出你的开发板，因此把你加为联系人的人，或认识你开发板的人，都能认出这是你。</string>
     <string name="chat_meshcore_consent_rules">发言发出后无法撤回。任何人都可以用任何名称发言，包括你的名称。直接给你的开发板发消息的 MeshCore 用户不会收到回复：Knit 不会读取这些消息。</string>
+    <string name="chat_meshcore_consent_reactions">回应也以同样的方式发出：每条回应都是一条发言，会让范围内的所有人知道你回应了哪条发言，而且无法撤回。</string>
+    <string name="chat_meshcore_reaction_removed_here">仅在这台手机上移除。频道里的人仍能看到你的回应。</string>
+    <string name="chat_meshcore_reaction_unaddressable">无法在频道中回应这条发言</string>
+    <string name="chat_meshcore_reaction_too_soon">未发送：回应也算一条发言，每 30 秒只能发一条。请稍后重试。</string>
     <string name="chat_meshcore_consent_position">你的开发板还可能会分享它所在的位置：在它的广播中，或分享给请求位置的联系人。如果不想让你的发言与某个地点关联起来，请在你的 MeshCore 应用中关闭位置共享。</string>
     <string name="chat_commons_subtitle">此中继上的所有人</string>
     <string name="commons_details_title">聊天室信息</string>

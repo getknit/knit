@@ -11,6 +11,7 @@ import app.getknit.knit.data.settings.LoraPlaneStateStore
 import app.getknit.knit.data.settings.MeshcoreClaimStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.identity.NameKey
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshcoreBoardHolder
@@ -276,7 +277,8 @@ internal fun meshcoreRowId(key: PublicPostKey): String = FrameId.forMeshcorePost
 /**
  * A judged MeshCore Public post, carried across the seam as the room's own value ([MeshcorePost]), never the plane's.
  * [ownName] is the bound board's name as heard now, its owner's handle (ADR 2026-11.f4d3), or null while none is known: a
- * `@[name]` token in the body that names it is the post's mention of the user (ADR 2026-11.gsqu's 2026-11-19 amendment).
+ * `@[name]` token in the body that names it is the post's mention of the user (ADR 2026-11.gsqu's 2026-11-19 amendment), and
+ * a post whose name keys as it is under our own name ([MeshcorePost.underOwnName]).
  */
 internal fun meshcoreHeard(
     post: MeshcorePublicPost,
@@ -288,16 +290,33 @@ internal fun meshcoreHeard(
         timestampSecs = post.key.timestampSecs,
         raw = post.key.raw,
         mentionedAs = MeshcoreMentions.mentionOf(post.body, ownName?.text),
+        tag = post.tag,
+        underOwnName = underOwnName(post.name, ownName),
     )
+
+/**
+ * Whether a heard post's claimed [name] keys as [ownName], the bound board's name now ([NameKey], so case and lookalikes
+ * match): the room drops every reaction under it, our echo or a namesake's (lora's design pass on ADR 2026-11.gsqu's
+ * 2026-11-21 amendment). False with no name on either side, or a name that keys empty (only invisible characters).
+ */
+private fun underOwnName(
+    name: String?,
+    ownName: MeshcoreHandle?,
+): Boolean {
+    if (name == null || ownName == null) return false
+    val key = NameKey.of(name)
+    return key.isNotEmpty() && key == NameKey.of(ownName.text)
+}
 
 /**
  * The MeshCore room's outbound half (ADR 2026-11.gsqu's Stage 6 amendment, security N13): [body] goes to the MeshCore
  * plane's Public channel only while a MeshCore board is the [bound] one, else [PublicPostRefusal.NO_BOARD] — a room whose
  * board is not bound shows its history and refuses, and never posts through another kind's board. Queued, the own row
  * takes the id the post's receivers key it on ([meshcoreRowId]); a kind that hands back no key (none does here) gets a
- * fresh id. [postPublic] is the MeshCore plane's `LoraMeshTransport.postPublic`, or null in a build that makes no MeshCore
- * plane: a seam, so the bound-kind gate is tested against a plane that would answer. [consented] is the board name the
- * composer's consent decision saw, which the plane refuses `NAME_CHANGED` unless it is the board's now (ADR 2026-11.f4d3).
+ * fresh id. The plane's reaction tag rides beside it, never computed here. [postPublic] is the MeshCore plane's
+ * `LoraMeshTransport.postPublic`, or null in a build that makes no MeshCore plane: a seam, so the bound-kind gate is
+ * tested against a plane that would answer. [consented] is the board name the composer's consent decision saw, which the
+ * plane refuses `NAME_CHANGED` unless it is the board's now (ADR 2026-11.f4d3).
  */
 internal suspend fun postToMeshcorePublic(
     bound: BoardKind?,
@@ -307,7 +326,7 @@ internal suspend fun postToMeshcorePublic(
 ): PublicChannelAnswer {
     if (bound != BoardKind.MESHCORE || postPublic == null) return PublicChannelAnswer.Refused(PublicPostRefusal.NO_BOARD)
     return when (val result = postPublic(body, consented)) {
-        is PublicPostResult.Queued -> PublicChannelAnswer.Queued(result.key?.let(::meshcoreRowId) ?: FrameId.new())
+        is PublicPostResult.Queued -> PublicChannelAnswer.Queued(result.key?.let(::meshcoreRowId) ?: FrameId.new(), result.tag)
         is PublicPostResult.Refused -> PublicChannelAnswer.Refused(result.reason)
     }
 }

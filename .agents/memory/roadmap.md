@@ -219,7 +219,7 @@ doc). **Don't start a deferred item without explicit direction.**
     loss outdoors, and a 157 B DM through the board's BLE notify (the one bench check a simulator can't answer);
     then a registered `data_type` (MeshCore's `number_allocations.md` asks for a working app first).
   - **Deferred:** both boards at once (router preference and failover, a two-board radio screen, per-kind
-    diagnostics), room reactions, the lean profile and `keyreq`, one named-repeater hop, region-scope UX, the
+    diagnostics), the Meshtastic room's reactions and MeshCore Open's `r:` form (the MeshCore room reads and writes MeshCore One's since the 2026-11-21 amendment), the lean profile and `keyreq`, one named-repeater hop, region-scope UX, the
     auto-reply, MeshCore on iOS.
   <!-- doc-lint: allow FLOOD — Ceiling.FLOOD is proposed by ADR 2026-11.gsqu and not built yet -->
 

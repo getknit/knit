@@ -1964,6 +1964,10 @@
     <string name="chat_meshcore_consent_name_body">Toda publicação sai como “%1$s: …”. Esse nome é o mesmo em todas as publicações e identifica sua placa, então as pessoas que têm você como contato, ou que conhecem sua placa, conseguem saber que é você.</string>
     <string name="chat_meshcore_consent_name_body_unknown">Toda publicação sai com o nome da sua placa. Esse nome é o mesmo em todas as publicações e identifica sua placa, então as pessoas que têm você como contato, ou que conhecem sua placa, conseguem saber que é você.</string>
     <string name="chat_meshcore_consent_rules">Não dá para desfazer uma publicação. Qualquer pessoa pode publicar com qualquer nome, inclusive o seu. Quem usa MeshCore e manda mensagem direta para sua placa não recebe resposta: o Knit não lê essas mensagens.</string>
+    <string name="chat_meshcore_consent_reactions">Reações saem do mesmo jeito: cada uma é uma publicação que mostra a todos no alcance a qual publicação você reagiu, e não dá para desfazê-la.</string>
+    <string name="chat_meshcore_reaction_removed_here">Removida só neste celular. Quem está no canal continua vendo sua reação.</string>
+    <string name="chat_meshcore_reaction_unaddressable">Não dá para reagir a esta publicação no canal</string>
+    <string name="chat_meshcore_reaction_too_soon">Não enviada — uma reação conta como publicação, uma a cada 30 segundos. Tente de novo em instantes.</string>
     <string name="chat_meshcore_consent_position">Sua placa também pode compartilhar onde está, nos anúncios dela ou com contatos que perguntarem. Desative o compartilhamento de localização no seu app MeshCore se não quiser que suas publicações fiquem ligadas a um lugar.</string>
     <string name="chat_commons_subtitle">Todos neste retransmissor</string>
     <string name="commons_details_title">Informações da sala</string>

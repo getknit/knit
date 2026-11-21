@@ -3,6 +3,7 @@ package app.getknit.knit.mesh.lora.meshcore
 import app.getknit.knit.TextLimits
 import app.getknit.knit.clampToUtf16
 import app.getknit.knit.identity.NameKey
+import app.getknit.knit.mesh.MeshcoreReactions
 import app.getknit.knit.mesh.lora.KnitChannel
 import app.getknit.knit.mesh.lora.PublicPostKey
 
@@ -49,13 +50,17 @@ internal data class MeshcorePublicSlot(
  * nothing — never resolved to a contact, by name or otherwise. [key] is what the row's id is derived from (the sender's
  * timestamp and the raw text, before any cleaning), and nothing else may read the timestamp: the row orders and ages by its
  * arrival. [live] says whether it was drained after this connection's first `NO_MORE` (false: the board's offline queue
- * replayed what it heard while the phone was away). [toString] names nothing.
+ * replayed what it heard while the phone was away). [tag] is the post's MeshCore One reaction tag
+ * ([MeshcoreReactions.tag], ADR 2026-11.gsqu's 2026-11-21 amendment), computed here in the plane over the body's bytes as
+ * drained and the sender's stamp, so only its 8 characters cross the seam: the room never holds the raw body and never
+ * hashes heard text. [toString] names nothing.
  */
 internal class MeshcorePublicPost(
     val name: String?,
     val body: String,
     val key: PublicPostKey,
     val live: Boolean,
+    val tag: String,
 ) {
     override fun toString(): String = "MeshcorePublicPost(named=${name != null}, ${body.length} ch, live=$live)"
 }
@@ -80,6 +85,12 @@ internal class MeshcorePublicPost(
  * **Cleaning.** Decoded leniently (a malformed byte is U+FFFD). The name through [TextLimits.cleanReceived] at the display
  * name's limit, null when its [NameKey] is empty (only invisible characters); the body trimmed and clamped to
  * [TextLimits.MESSAGE], refused when nothing is left. The id's inputs are the raw bytes, before either.
+ *
+ * **The reaction tag** ([MeshcorePublicPost.tag], ADR 2026-11.gsqu's 2026-11-21 amendment) is over the body's raw bytes after
+ * the same split — the whole text when there is no name — before any cleaning, trimming or clamping, and the sender's
+ * stamp: the text a MeshCore One reactor hashes is the post without the board's `"name: "` prefix (checked against a real
+ * reaction to our own post, 2026-11-21). A name the split refuses (over 31 B) stays in the hashed text, as it stays in the
+ * body.
  *
  * Receive-only: nothing here transmits, and nothing it reads is logged.
  */
@@ -129,7 +140,8 @@ internal object MeshcorePublicJudge {
             nameBytes
                 ?.let { TextLimits.cleanReceived(it.decodeToString(), TextLimits.DISPLAY_NAME) }
                 ?.takeIf { NameKey.of(it).isNotEmpty() }
-        return Verdict.Post(MeshcorePublicPost(name, body, PublicPostKey(timestampSecs, text), live))
+        val tag = MeshcoreReactions.tag(bodyBytes, timestampSecs)
+        return Verdict.Post(MeshcorePublicPost(name, body, PublicPostKey(timestampSecs, text), live, tag))
     }
 
     /** Where the first `": "` starts, when what precedes it is a name a companion can hold (1–31 bytes); else null. */

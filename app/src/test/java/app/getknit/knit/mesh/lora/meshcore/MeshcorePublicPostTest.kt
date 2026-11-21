@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lora.meshcore
 
 import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.MeshcoreReactions
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.BoardAir
@@ -36,6 +37,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -241,6 +243,34 @@ class MeshcorePublicPostTest {
                 n.transport.status.value.airtime!!
                     .usedMs,
             )
+        }
+
+    /**
+     * The own post's MeshCore One reaction tag (ADR 2026-11.gsqu's 2026-11-21 amendment, lora's design pass): over the exact
+     * bytes the board was handed and the stamp the frame carries — never the key's raw, which leads with `"name: "`, so a
+     * reaction to our post hashed by a stock receiver lands on it. A `Busy` retry writes those same bytes under that same
+     * stamp, so what aired at last still names the tag answered at enqueue.
+     */
+    @Test
+    fun theOwnTagIsOverTheQueuedTextAndStampAndABusyRetryKeepsIt() =
+        runTest {
+            val n = node()
+            n.board.answers += SendResult.Busy
+            val result = n.transport.postPublic("north gate \u0000 ", n.consented()) as PublicPostResult.Queued
+            runCurrent()
+            repeat(10) {
+                advanceTimeBy(5_000)
+                runCurrent()
+            }
+            val key = requireNotNull(result.key)
+            val queued = "north gate  ".encodeToByteArray()
+            assertEquals("over the text queued (NUL dropped, untrimmed)", MeshcoreReactions.tag(queued, key.timestampSecs), result.tag)
+            assertNotEquals("never over the key's raw", MeshcoreReactions.tag(key.raw, key.timestampSecs), result.tag)
+            assertEquals("one owed, then taken", 2, n.board.sent.size)
+            for ((payload, purpose) in n.board.sent) {
+                val stamp = requireNotNull((purpose as SendPurpose.PublicPost).timestampSecs)
+                assertEquals("every write hashes to the answered tag", result.tag, MeshcoreReactions.tag(payload, stamp))
+            }
         }
 
     /** The 6a review: a post held past `FRESH_MS` (the board away) is never written under its old stamp; its end is reported. */

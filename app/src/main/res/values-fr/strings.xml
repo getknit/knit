@@ -1964,6 +1964,10 @@
     <string name="chat_meshcore_consent_name_body">Chaque message part sous la forme « %1$s: … ». Ce nom est le même sur chaque message et identifie votre carte : les personnes qui vous ont dans leurs contacts, ou qui connaissent votre carte, peuvent donc savoir que c’est vous.</string>
     <string name="chat_meshcore_consent_name_body_unknown">Chaque message part sous le nom de votre carte. Ce nom est le même sur chaque message et identifie votre carte : les personnes qui vous ont dans leurs contacts, ou qui connaissent votre carte, peuvent donc savoir que c’est vous.</string>
     <string name="chat_meshcore_consent_rules">Un message publié ne peut pas être retiré. N’importe qui peut publier sous n’importe quel nom, y compris le vôtre. Un message MeshCore envoyé directement à votre carte reste sans réponse : Knit ne lit pas ces messages.</string>
+    <string name="chat_meshcore_consent_reactions">Les réactions partent de la même façon : chacune est un message qui indique à toute personne à portée à quel message vous avez réagi, et elle ne peut pas être retirée.</string>
+    <string name="chat_meshcore_reaction_removed_here">Retirée sur ce téléphone uniquement. Les personnes sur le canal voient toujours votre réaction.</string>
+    <string name="chat_meshcore_reaction_unaddressable">Impossible de réagir à ce message sur le canal</string>
+    <string name="chat_meshcore_reaction_too_soon">Non envoyée — une réaction compte comme un message, un toutes les 30 secondes. Réessayez dans un instant.</string>
     <string name="chat_meshcore_consent_position">Votre carte peut aussi partager l’endroit où elle se trouve, dans ses annonces ou avec les contacts qui le demandent. Désactivez le partage de la position dans votre application MeshCore si vous ne voulez pas que vos messages soient associés à un lieu.</string>
     <string name="chat_commons_subtitle">Tout le monde sur ce relais</string>
     <string name="commons_details_title">Infos du salon</string>

@@ -96,6 +96,7 @@ import app.getknit.knit.mesh.IntroState
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
+import app.getknit.knit.mesh.MeshcoreReactionOutcome
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.PublicChannelAnswer
 import app.getknit.knit.mesh.PublicPostEnd
@@ -2551,7 +2552,9 @@ class LabNode internal constructor(
                         // The MeshCore room's inbound half (Stage 6), as `di/MeshModule` wires it; counted once the pipeline
                         // returns, so a scenario awaits the delivery itself — a duplicate writes nothing to wait on.
                         onPublicPost = { post ->
-                            manager.onMeshcorePostHeard(meshcoreHeard(post))
+                            // Read for the board's name as its face carries it now, as `di/MeshModule` reads it: a mention of
+                            // it, and a reaction under it (ours, ADR 2026-11.gsqu's 2026-11-21 amendment).
+                            manager.onMeshcorePostHeard(meshcoreHeard(post, meshcoreHandle()))
                             meshcorePostsHandled.incrementAndGet()
                         },
                     ),
@@ -3098,6 +3101,16 @@ class LabNode internal constructor(
         room: String = Conversations.MESHCORE_PUBLIC,
         consented: MeshcoreHandle? = meshcoreHandle(),
     ): PublicPostOutcome = spaced { manager.sendPublicPost(room, text, consented) }
+
+    /**
+     * Reacts to [messageId] in the MeshCore room as its picker does past the consent sheet (`ChatViewModel.reactMeshcore`,
+     * ADR 2026-11.gsqu's 2026-11-21 amendment): MeshCore One's text on the board's Public channel, under [consented].
+     */
+    suspend fun reactMeshcore(
+        messageId: String,
+        emoji: String,
+        consented: MeshcoreHandle? = meshcoreHandle(),
+    ): MeshcoreReactionOutcome = spaced { manager.sendMeshcoreReaction(messageId, emoji, consented) }
 
     /** The bound MeshCore board's name as this node's plane face shows it ([MeshcoreBoardFace.handle]), or null. */
     fun meshcoreHandle(): MeshcoreHandle? {

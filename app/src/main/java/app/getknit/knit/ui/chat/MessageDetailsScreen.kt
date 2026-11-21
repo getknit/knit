@@ -583,7 +583,8 @@ private fun ReactorListRow(
             Modifier
                 .fillMaxWidth()
                 .then(
-                    if (reactor.isSelf) {
+                    // A claimed MeshCore name is no identity to open (ADR 2026-11.gsqu's 2026-11-21 amendment).
+                    if (reactor.isSelf || reactor.claimed) {
                         Modifier
                     } else {
                         // Clickable merges the row's children, so it is announced as one node —
@@ -594,7 +595,7 @@ private fun ReactorListRow(
                 .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(avatarHash = reactor.avatarHash, name = name, nodeId = reactor.nodeId, size = 40.dp)
+        Avatar(avatarHash = reactor.avatarHash, name = name, nodeId = reactor.nodeId.takeUnless { reactor.claimed }, size = 40.dp)
         Spacer(Modifier.width(12.dp))
         PeerNameText(
             text = name,

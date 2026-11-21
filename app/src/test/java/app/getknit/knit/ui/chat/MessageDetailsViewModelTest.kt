@@ -235,6 +235,39 @@ class MessageDetailsViewModelTest {
             assertFalse(name.contains("stranger01"))
         }
 
+    /**
+     * A reaction heard on the MeshCore room's channel carries a claimed name, never a Knit identity (ADR 2026-11.gsqu's
+     * 2026-11-21 amendment, security B2): its row is quoted and marked like every MeshCore author on a single line, never
+     * "You" and never a peer's label, with no picture — even a name that reads as ours or a contact's.
+     */
+    @Test
+    fun `a claimed MeshCore reactor is quoted and marked, never ours or a contact`() =
+        runTest {
+            messageFlow.value =
+                msg(senderId = "me", id = MSG, conversationId = Conversations.MESHCORE_PUBLIC, originNode = MeshPostOrigin.MESHCORE_NODE)
+            peersFlow.value = listOf(peer("sam", name = "Sam Rivera", avatarHash = "sam-face"))
+            val you = context.getString(R.string.chat_self_name)
+            reactionsFlow.value =
+                listOf(
+                    reaction(MSG, "mc:$you", "👍", updatedAt = 1L),
+                    reaction(MSG, "mc:Sam Rivera", "🎉", updatedAt = 2L),
+                    reaction(MSG, "me", "❤️", updatedAt = 3L),
+                )
+
+            val state = collect(viewModel())
+
+            val (asYou, asSam, ours) = state.reactors
+            for ((row, name) in listOf(asYou to you, asSam to "Sam Rivera")) {
+                assertTrue(name, row.claimed)
+                assertFalse(name, row.isSelf)
+                assertNull(name, row.avatarHash)
+                assertNull(name, row.discriminator)
+                assertEquals(context.getString(R.string.chat_meshcore_name_claimed, name), row.displayName)
+            }
+            assertTrue("ours is still ours", ours.isSelf)
+            assertFalse(ours.claimed)
+        }
+
     @Test
     fun `filters count per emoji, most-reacted first`() =
         runTest {

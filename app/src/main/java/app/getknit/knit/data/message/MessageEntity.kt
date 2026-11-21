@@ -135,6 +135,7 @@ import java.util.Base64
         Index(value = ["attachmentPlainHash"]),
         Index(value = ["replyToId", "replyCheck"]),
         Index(value = ["attachmentHash"]),
+        Index(value = ["meshcoreTag"]),
     ],
 )
 data class MessageEntity(
@@ -321,6 +322,14 @@ data class MessageEntity(
      * and on every DM sent before v32. **Local only**.
      */
     val sealedConfirmed: Boolean = false,
+    /**
+     * On a post in the MeshCore room (ADR 2026-11.gsqu's 2026-11-21 amendment): the 8-character tag a MeshCore One reaction
+     * names it by ([app.getknit.knit.mesh.MeshcoreReactions.tag]) — over the text as aired and its sender's stamp, both
+     * computed in the plane: a heard post's from the raw body the board drained, our own from the text and stamp we
+     * queued. Indexed: an inbound reaction finds its target by it. Written once with the row; null on every other row and
+     * on every MeshCore post stored before v38. **Local only**.
+     */
+    val meshcoreTag: String? = null,
 ) {
     companion object {
         // [originSigned] values. Append-only like every other registry here: the value is stored on the row.

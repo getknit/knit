@@ -64,6 +64,7 @@ import app.getknit.knit.mesh.ArrivingFile
 import app.getknit.knit.mesh.FakeMeshController
 import app.getknit.knit.mesh.LoraRadioReached
 import app.getknit.knit.mesh.MeshPostOrigin
+import app.getknit.knit.mesh.MeshcoreReactionOutcome
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.PublicPostRefusal
@@ -1537,6 +1538,183 @@ class ChatViewModelTest {
             }
             assertEquals(List(expected.size) { Conversations.MESHCORE_PUBLIC }, mesh.sentPublicPostRooms)
             assertEquals("each carries the name it was consented under", List(expected.size) { boardHandle }, mesh.sentPublicPostHandles)
+        }
+
+    // --- MeshCore One reactions in the MeshCore room (ADR 2026-11.gsqu's 2026-11-21 amendment) ---
+
+    /** A heard MeshCore post carrying [tag], as the room stores one since v38. */
+    private fun taggedHeard(
+        id: String,
+        name: String? = "Bob",
+        tag: String? = "b45pc4ek",
+        moderation: Int = MessageEntity.MODERATION_NONE,
+    ) = meshcoreHeard(id, name, moderation).copy(meshcoreTag = tag)
+
+    /** A MeshCore room chat with its board live and its consent given, collecting state and [events]. */
+    private fun TestScope.meshcoreRoom(events: MutableList<Int>): ChatViewModel {
+        meshcoreConsentFlow.value = true
+        meshcoreSharesFlow.value = false
+        val vm = vm(Conversations.MESHCORE_PUBLIC, loraRooms = loraRoomsFlow)
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+        loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive)
+        return vm
+    }
+
+    @Test
+    fun aMeshcoreRoomReactionGoesOutInMeshcoreOnesFormUnderTheConsentedName() =
+        runTest {
+            val events = mutableListOf<Int>()
+            val vm = meshcoreRoom(events)
+            messagesFlow.value = listOf(taggedHeard("heard"))
+            advanceUntilIdle()
+
+            vm.react("heard", "👍")
+            advanceUntilIdle()
+
+            assertEquals(listOf(Triple("heard", "👍", boardHandle)), mesh.sentMeshcoreReactions)
+            assertTrue("never a Knit reaction", mesh.sentReactions.isEmpty())
+            coVerify(exactly = 1) { settings.recordReaction("👍") }
+            assertTrue(events.isEmpty())
+        }
+
+    @Test
+    fun aMeshcoreRoomReactionTakesTheComposersGatesInItsOrder() =
+        runTest {
+            val events = mutableListOf<Int>()
+            meshcoreNamingFlow.value = meshcoreNaming("Sam: hi", unpostable = true)
+            val vm = vm(Conversations.MESHCORE_PUBLIC, loraRooms = loraRoomsFlow)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+            messagesFlow.value = listOf(taggedHeard("heard"))
+            advanceUntilIdle()
+
+            // Not connected comes first, whatever the name or the consent.
+            vm.react("heard", "👍")
+            advanceUntilIdle()
+            assertEquals(listOf(R.string.chat_mesh_post_not_connected), events)
+
+            // Connected: a name the plane won't post under, before any sheet.
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive)
+            advanceUntilIdle()
+            vm.react("heard", "👍")
+            advanceUntilIdle()
+            assertEquals(R.string.chat_meshcore_post_name_unpostable, events.last())
+            assertFalse(vm.showPublicConsent.value)
+
+            // A postable name, no consent yet: the sheet, and the tap is made again after it.
+            meshcoreNamingFlow.value = meshcoreNaming("Knit 1a2b", default = true)
+            advanceUntilIdle()
+            vm.react("heard", "👍")
+            advanceUntilIdle()
+            assertTrue(vm.showPublicConsent.value)
+            assertEquals("no further word", 2, events.size)
+
+            assertTrue("nothing went out", mesh.sentMeshcoreReactions.isEmpty())
+            coVerify(exactly = 0) { settings.recordReaction(any()) }
+        }
+
+    @Test
+    fun takingOurOwnMeshcoreReactionOffNeedsNoRadioAndSaysItStaysOnTheChannel() =
+        runTest {
+            val events = mutableListOf<Int>()
+            val vm = vm(Conversations.MESHCORE_PUBLIC, loraRooms = loraRoomsFlow)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+            messagesFlow.value = listOf(taggedHeard("heard"))
+            reactionsFlow.value = listOf(ReactionEntity("heard", "me", "👍", 1))
+            mesh.meshcoreReactionOutcome = MeshcoreReactionOutcome.RemovedHere
+            advanceUntilIdle()
+            assertTrue(
+                "our chip is drawn",
+                vm.state.value.rows
+                    .single()
+                    .reactions
+                    .single()
+                    .mine,
+            )
+
+            // No radio and no consent: a removal is this phone's alone.
+            vm.react("heard", "👍")
+            advanceUntilIdle()
+
+            assertEquals(listOf("heard" to "👍"), mesh.sentMeshcoreReactions.map { it.first to it.second })
+            assertEquals(listOf(R.string.chat_meshcore_reaction_removed_here), events)
+            assertFalse(vm.showPublicConsent.value)
+            coVerify(exactly = 0) { settings.recordReaction(any()) }
+        }
+
+    @Test
+    fun eachMeshcoreReactionOutcomeIsWorded() =
+        runTest {
+            val events = mutableListOf<Int>()
+            val vm = meshcoreRoom(events)
+            messagesFlow.value = listOf(taggedHeard("heard"))
+            advanceUntilIdle()
+
+            val expected =
+                listOf(
+                    MeshcoreReactionOutcome.Unaddressable to R.string.chat_meshcore_reaction_unaddressable,
+                    MeshcoreReactionOutcome.Blocked to R.string.moderation_text_blocked,
+                    // A reaction counts as a post for the floor, and says so rather than "Not posted".
+                    MeshcoreReactionOutcome.Refused(PublicPostRefusal.TOO_SOON) to R.string.chat_meshcore_reaction_too_soon,
+                    // Every other refusal takes the composer's words.
+                    MeshcoreReactionOutcome.Refused(PublicPostRefusal.NAME_CHANGED) to R.string.chat_meshcore_post_name_changed,
+                    MeshcoreReactionOutcome.Refused(PublicPostRefusal.NO_AIR) to R.string.chat_mesh_post_no_air,
+                )
+            for ((outcome, string) in expected) {
+                mesh.meshcoreReactionOutcome = outcome
+                vm.react("heard", "🎉")
+                advanceUntilIdle()
+                assertEquals(outcome.toString(), string, events.last())
+            }
+            assertEquals(expected.size, events.size)
+            coVerify(exactly = 0) { settings.recordReaction(any()) }
+        }
+
+    @Test
+    fun onlyAPostMeshcoreOneCanNameOffersAReaction() =
+        runTest {
+            val vm = vm(Conversations.MESHCORE_PUBLIC, loraRooms = loraRoomsFlow)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraRoomsFlow.value = mapOf(BoardKind.MESHCORE to meshcoreLive)
+            val ownTagged =
+                msg(senderId = "me", id = "own", sentAt = 100, conversationId = Conversations.MESHCORE_PUBLIC)
+                    .copy(meshcoreTag = "0123abcd")
+            messagesFlow.value =
+                listOf(
+                    taggedHeard("heard"),
+                    ownTagged,
+                    taggedHeard("untagged", tag = null),
+                    taggedHeard("flagged", moderation = MessageEntity.MODERATION_TEXT_FLAGGED),
+                    taggedHeard("bracketed", name = "a]b"),
+                    taggedHeard("unnamed", name = null),
+                )
+            advanceUntilIdle()
+
+            val reactable =
+                vm.state.value.rows
+                    .associate { it.id to it.meshcoreReactable }
+            assertEquals(
+                mapOf(
+                    "heard" to true,
+                    "own" to true,
+                    "untagged" to false,
+                    "flagged" to false,
+                    "bracketed" to false,
+                    "unnamed" to false,
+                ),
+                reactable,
+            )
+
+            // Our own post is named by the board's name: while the board has none, it can't be reacted to.
+            meshcoreNamingFlow.value = null
+            advanceUntilIdle()
+            assertFalse(
+                vm.state.value.rows
+                    .single { it.id == "own" }
+                    .meshcoreReactable,
+            )
         }
 
     /** A quote of row [id] as the composer builds one: a bridged room's never leaves the phone. */

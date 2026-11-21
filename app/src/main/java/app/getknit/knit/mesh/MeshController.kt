@@ -305,6 +305,19 @@ interface MeshController {
         group: GroupInfo? = null,
     )
 
+    /**
+     * Toggles this device's [emoji] reaction on [messageId], a post in the MeshCore room, in MeshCore One's form (ADR
+     * 2026-11.gsqu's 2026-11-21 amendment): an add or a change airs `@[name]{emoji}\n{tag}` on the room's own board as a
+     * room post, under the same consent and [consented] name as [sendPublicPost]; tapping the emoji already chosen removes
+     * it on this phone only, since nothing on the air can retract one. A refusal leaves the reaction as it was. Never a
+     * Knit frame. The default refuses, as [sendPublicPost]'s does.
+     */
+    suspend fun sendMeshcoreReaction(
+        messageId: String,
+        emoji: String,
+        consented: MeshcoreHandle?,
+    ): MeshcoreReactionOutcome = MeshcoreReactionOutcome.Refused(PublicPostRefusal.NO_BOARD)
+
     /** Broadcasts a best-effort "now typing" cue for [conversationId] to nearby peers. */
     suspend fun sendTyping(conversationId: String)
 

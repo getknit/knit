@@ -52,7 +52,12 @@ interface MeshPostSink {
  * the text exactly as drained, before any cleaning — are what the row id is derived from and nothing else: a row orders
  * and ages by its arrival. [mentionedAs] is the `@[name]` token in [body] that names the user's own board, as written
  * ([MeshcoreMentions.mentionOf], read against the board's name when the post was heard), or null: the room notifies it as
- * a mention. It is a claim like the name: anyone can type it.
+ * a mention. It is a claim like the name: anyone can type it. [tag] is the post's MeshCore One reaction tag
+ * ([MeshcoreReactions.tag], ADR 2026-11.gsqu's 2026-11-21 amendment), computed by the plane over the body's bytes as drained
+ * and the sender's stamp — what a reaction to this post names it by — or null where none was computed; the room never
+ * hashes heard text itself. [underOwnName] says [name] keys ([app.getknit.knit.identity.NameKey]) as the bound board's own
+ * name did when the post was heard: our echo, or a namesake's — the room drops a reaction under it either way (lora's
+ * design pass, 2026-11-21: losing a namesake's tapback is the cheaper error). A claim like the name, read for nothing else.
  *
  * Equal by content. [toString] names neither the text nor the name: a stranger's words never reach a log.
  */
@@ -62,6 +67,8 @@ class MeshcorePost(
     val timestampSecs: Long,
     raw: ByteArray,
     val mentionedAs: String? = null,
+    val tag: String? = null,
+    val underOwnName: Boolean = false,
 ) {
     private val bytes = raw.copyOf()
 
@@ -74,14 +81,18 @@ class MeshcorePost(
             other.body == body &&
             other.timestampSecs == timestampSecs &&
             other.bytes.contentEquals(bytes) &&
-            other.mentionedAs == mentionedAs
+            other.mentionedAs == mentionedAs &&
+            other.tag == tag &&
+            other.underOwnName == underOwnName
 
     override fun hashCode(): Int {
         var h = name.hashCode()
         h = h * PRIME + body.hashCode()
         h = h * PRIME + timestampSecs.hashCode()
         h = h * PRIME + bytes.contentHashCode()
-        return h * PRIME + mentionedAs.hashCode()
+        h = h * PRIME + mentionedAs.hashCode()
+        h = h * PRIME + tag.hashCode()
+        return h * PRIME + underOwnName.hashCode()
     }
 
     override fun toString(): String = "MeshcorePost(named=${name != null}, ${body.length} ch, mention=${mentionedAs != null})"

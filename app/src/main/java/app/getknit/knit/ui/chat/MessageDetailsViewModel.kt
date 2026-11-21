@@ -24,6 +24,8 @@ import app.getknit.knit.data.receipt.MessageReceiptEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.LoraRadioReached
+import app.getknit.knit.ui.meshcoreReactorName
+import app.getknit.knit.ui.reactorLine
 import app.getknit.knit.ui.speakerLabel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -55,6 +57,9 @@ data class ReactorRow(
     val isSelf: Boolean,
     // The ` (Alias)` suffix already inside [displayName] when another known peer shares the name (ADR 058).
     val discriminator: String? = null,
+    // A claimed MeshCore channel name, not a Knit identity (ADR 2026-11.gsqu's 2026-11-21 amendment): [displayName] is
+    // quoted and marked, and the row is inert — nothing to open, no picture.
+    val claimed: Boolean = false,
 )
 
 /** The stored row, carrying whether this screen has ever seen it — see [MessageDetailsUiState.vanished]. */
@@ -249,6 +254,17 @@ class MessageDetailsViewModel(
                 val rows =
                     reacts.mapNotNull { reaction ->
                         val emoji = reaction.emoji ?: return@mapNotNull null
+                        if (meshcoreReactorName(reaction.reactorNodeId) != null) {
+                            return@mapNotNull ReactorRow(
+                                nodeId = reaction.reactorNodeId,
+                                displayName = reactorLine(context, reaction.reactorNodeId, directory),
+                                avatarHash = null,
+                                emoji = emoji,
+                                reactedAt = reaction.updatedAt,
+                                isSelf = false,
+                                claimed = true,
+                            )
+                        }
                         val label = directory.label(reaction.reactorNodeId)
                         ReactorRow(
                             nodeId = reaction.reactorNodeId,

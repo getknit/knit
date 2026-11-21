@@ -1359,12 +1359,42 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 37 to 38 keeps every message and tags none of them`() =
+        runTest {
+            helper.createDatabase(37).use { c ->
+                c.execSQL(
+                    INSERT_V21.replace(
+                        ") ",
+                        ", originNode, replyCheck, replyToFlagged, attachmentFetchApproved, videoPosterFlagged, " +
+                            "translationFlagged, translationGuessed, sealedConfirmed) ",
+                    ) +
+                        "VALUES ('m1','me','m-meshcore','see you at the trailhead',1,1,0,'[]',0,0,0,0,0,0,0,-1,0,0,0,0,0,0,0)",
+                )
+            }
+            helper.runMigrationsAndValidate(38, listOf(KnitMigrations.MIGRATION_37_38)).use { c ->
+                c.prepare("SELECT body, meshcoreTag FROM messages WHERE id = 'm1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("see you at the trailhead", s.getText(0))
+                    // ADR 2026-11.gsqu's 2026-11-21 amendment: the stamp an older post's tag needs was never kept.
+                    assertTrue(s.isNull(1))
+                    assertFalse(s.step())
+                }
+                // The writer's shape: a tag with the row, found again by the index.
+                c.execSQL("UPDATE messages SET meshcoreTag = 'b45pc4ek' WHERE id = 'm1'")
+                c.prepare("SELECT id FROM messages WHERE meshcoreTag = 'b45pc4ek'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("m1", s.getText(0))
+                }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 37
+        const val CURRENT_VERSION = 38
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

@@ -69,9 +69,13 @@ internal sealed interface PublicPostResult {
     /**
      * In the pacer's queue. [key] is the post as its receivers will read it, the timestamp fixed at enqueue and carried by
      * the frame (a `Busy` retry never aired, so it reuses it); null on a kind whose board stamps its own (Meshtastic).
+     * [tag] is the post's MeshCore One reaction tag ([app.getknit.knit.mesh.MeshcoreReactions.tag], ADR 2026-11.gsqu's
+     * 2026-11-21 amendment) over the exact text bytes queued — never [key]'s, which lead with `"name: "` — and that
+     * stamp; null where no key is.
      */
     class Queued(
         val key: PublicPostKey?,
+        val tag: String? = null,
     ) : PublicPostResult {
         override val refusal: PublicPostRefusal? get() = null
     }

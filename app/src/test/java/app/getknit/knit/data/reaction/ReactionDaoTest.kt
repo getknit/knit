@@ -22,6 +22,7 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class ReactionDaoTest : RoomDbTest() {
     private val dao get() = db.reactionDao()
+    private val meshcore get() = db.meshcoreReactionDao()
 
     @Test
     fun `deleteOrphansOlderThan reclaims only old reactions whose message is gone`() =
@@ -120,7 +121,14 @@ class ReactionDaoTest : RoomDbTest() {
         }
 
     private suspend fun forMessage(id: String) =
-        dao.observeForMessage(id, ME, listOf(Conversations.NEARBY, Conversations.MESHTASTIC), Conversations.COMMONS_PREFIX + "*").first()
+        dao
+            .observeForMessage(
+                id,
+                ME,
+                listOf(Conversations.NEARBY, Conversations.MESHTASTIC),
+                Conversations.COMMONS_PREFIX + "*",
+                Conversations.MESHCORE_PUBLIC,
+            ).first()
 
     @Test
     fun `upsert replaces on the composite key (messageId, reactorNodeId)`() =
@@ -134,7 +142,13 @@ class ReactionDaoTest : RoomDbTest() {
         }
 
     private fun heads(blocked: List<String> = emptyList()) =
-        dao.observeNewestOnOwnMessages(ME, blocked, rooms = listOf(Conversations.NEARBY, Conversations.MESHTASTIC), commonsGlob = "c-*")
+        dao.observeNewestOnOwnMessages(
+            ME,
+            blocked,
+            rooms = listOf(Conversations.NEARBY, Conversations.MESHTASTIC),
+            commonsGlob = "c-*",
+            meshcoreRoom = Conversations.MESHCORE_PUBLIC,
+        )
 
     @Test
     fun `observeNewestOnOwnMessages heads each thread with the newest live reaction someone made to our words`() =
@@ -211,7 +225,15 @@ class ReactionDaoTest : RoomDbTest() {
             dao.upsert(ReactionEntity("heard", "zed", emoji = "👍", updatedAt = 10L))
             dao.upsert(ReactionEntity("mine", "zed", emoji = "👋", updatedAt = 5L))
 
-            val heads = dao.observeNewestOnOwnMessages(ME, emptyList(), rooms = listOf(room), commonsGlob = "c-*").first()
+            val heads =
+                dao
+                    .observeNewestOnOwnMessages(
+                        ME,
+                        emptyList(),
+                        rooms = listOf(room),
+                        commonsGlob = "c-*",
+                        meshcoreRoom = room,
+                    ).first()
 
             assertEquals(listOf("mine"), heads.map { it.target.id })
         }
@@ -248,7 +270,146 @@ class ReactionDaoTest : RoomDbTest() {
             assertTrue(dao.emojiFor("m1", "u1") == null)
         }
 
+    /**
+     * The MeshCore room draws us and the channel's claimed names (`mc:`) and nobody else (ADR 2026-11.gsqu's 2026-11-21
+     * amendment): a Knit identity's reaction to a row id anyone can derive from the air is never drawn, even one stored
+     * before the row landed. The room is passed as the MeshCore clause alone, never in `rooms`, as the repository does.
+     */
+    @Test
+    fun `the MeshCore room draws us and claimed names, never a Knit reactor, even one stored before the row`() =
+        runTest {
+            val room = Conversations.MESHCORE_PUBLIC
+            // A Knit fork's reaction lands first, an orphan; then the post it names.
+            dao.upsert(ReactionEntity("heard", "a1b2c3d4", emoji = "👎", updatedAt = 1L))
+            db.messageDao().upsert(
+                heardRow("heard", room, MeshPostOrigin.MESHCORE_NODE),
+            )
+            dao.upsert(ReactionEntity("heard", "mc:Bob", emoji = "👍", updatedAt = 2L))
+            dao.upsert(ReactionEntity("heard", ME, emoji = "❤️", updatedAt = 3L))
+
+            assertEquals(listOf("mc:Bob", ME), meshcoreDrawn("heard"))
+            assertEquals(
+                listOf("mc:Bob", ME),
+                dao
+                    .observeForConversation(room, ME, listOf(Conversations.NEARBY), "c-*", room)
+                    .first()
+                    .map { it.reactorNodeId },
+            )
+        }
+
+    @Test
+    fun `the Meshtastic room draws only us`() =
+        runTest {
+            val room = Conversations.MESHTASTIC
+            db.messageDao().upsert(heardRow("heard", room, MESHTASTIC_NODE))
+            dao.upsert(ReactionEntity("heard", "mc:Bob", emoji = "👍", updatedAt = 1L))
+            dao.upsert(ReactionEntity("heard", "a1b2c3d4", emoji = "👎", updatedAt = 2L))
+            dao.upsert(ReactionEntity("heard", ME, emoji = "❤️", updatedAt = 3L))
+
+            assertEquals(listOf(ME), meshcoreDrawn("heard"))
+        }
+
+    @Test
+    fun `a claimed name heads the MeshCore room's line on our own post, a Knit reactor never does`() =
+        runTest {
+            val room = Conversations.MESHCORE_PUBLIC
+            db.messageDao().upsert(MessageEntity(id = "mine", senderId = ME, conversationId = room, body = "hello", sentAt = 1L))
+            dao.upsert(ReactionEntity("mine", "mc:Bob", emoji = "👍", updatedAt = 10L))
+            dao.upsert(ReactionEntity("mine", "a1b2c3d4", emoji = "👎", updatedAt = 20L)) // newer, but a Knit identity
+
+            val heads =
+                dao
+                    .observeNewestOnOwnMessages(
+                        ME,
+                        emptyList(),
+                        rooms = listOf(Conversations.NEARBY),
+                        commonsGlob = "c-*",
+                        meshcoreRoom = room,
+                    ).first()
+
+            assertEquals(listOf("mc:Bob" to "👍"), heads.map { it.reactorNodeId to it.emoji })
+        }
+
+    @Test
+    fun `the per-post eviction takes the oldest other claimed name and never a Knit reactor`() =
+        runTest {
+            dao.upsert(ReactionEntity("p", ME, emoji = "❤️", updatedAt = 1L)) // ours, oldest of all
+            dao.upsert(ReactionEntity("p", "a1b2c3d4", emoji = "👎", updatedAt = 2L))
+            dao.upsert(ReactionEntity("p", "mc:Old", emoji = "👍", updatedAt = 3L))
+            dao.upsert(ReactionEntity("p", "mc:Mid", emoji = "👍", updatedAt = 4L))
+            dao.upsert(ReactionEntity("p", "mc:New", emoji = "👍", updatedAt = 5L))
+            dao.upsert(ReactionEntity("q", "mc:Elsewhere", emoji = "👍", updatedAt = 0L)) // another post
+
+            assertEquals(3, meshcore.meshcoreReactorsOn("p"))
+            assertEquals(4, meshcore.meshcoreReactions())
+
+            assertEquals(1, meshcore.evictOldestMeshcoreOn("p", keep = "mc:Old")) // the one kept is passed over
+            assertNull(dao.updatedAtFor("p", "mc:Mid"))
+            assertEquals(1, meshcore.evictOldestMeshcoreOn("p", keep = "mc:New"))
+            assertNull(dao.updatedAtFor("p", "mc:Old"))
+            assertEquals("only the kept claimed name is left", 0, meshcore.evictOldestMeshcoreOn("p", keep = "mc:New"))
+            assertEquals(setOf(ME, "a1b2c3d4", "mc:New"), reactorsOn("p"))
+            assertEquals(setOf("mc:Elsewhere"), reactorsOn("q"))
+        }
+
+    @Test
+    fun `the phone-wide eviction takes the oldest claimed name anywhere but the one kept`() =
+        runTest {
+            dao.upsert(ReactionEntity("p", "a1b2c3d4", emoji = "👎", updatedAt = 0L))
+            dao.upsert(ReactionEntity("p", "mc:Kept", emoji = "👍", updatedAt = 1L))
+            dao.upsert(ReactionEntity("q", "mc:Oldest", emoji = "👍", updatedAt = 2L))
+            dao.upsert(ReactionEntity("p", "mc:Newer", emoji = "👍", updatedAt = 3L))
+
+            assertEquals(1, meshcore.evictOldestMeshcore(keepMessage = "p", keepReactor = "mc:Kept"))
+
+            assertNull(dao.updatedAtFor("q", "mc:Oldest"))
+            assertEquals(setOf("a1b2c3d4", "mc:Kept", "mc:Newer"), reactorsOn("p"))
+        }
+
+    @Test
+    fun `deleteOffRoomOlderThan reaps an old Knit reactor on a bridged room's post and keeps us and claimed names`() =
+        runTest {
+            val messages = db.messageDao()
+            messages.upsert(heardRow("mc", Conversations.MESHCORE_PUBLIC, MeshPostOrigin.MESHCORE_NODE))
+            messages.upsert(heardRow("mt", Conversations.MESHTASTIC, MESHTASTIC_NODE))
+            messages.upsert(MessageEntity(id = "near", senderId = "zed", conversationId = Conversations.NEARBY, body = "", sentAt = 1L))
+            listOf("mc", "mt", "near").forEach { id ->
+                listOf("a1b2c3d4", ME, "mc:Bob").forEach { dao.upsert(ReactionEntity(id, it, emoji = "👍", updatedAt = 1L)) }
+            }
+            dao.upsert(ReactionEntity("mc", "e5f6a7b8", emoji = "👍", updatedAt = 9L)) // inside the grace
+
+            dao.deleteOffRoomOlderThan(
+                olderThan = 5L,
+                me = ME,
+                bridged = listOf(Conversations.MESHTASTIC, Conversations.MESHCORE_PUBLIC),
+                meshcoreRoom = Conversations.MESHCORE_PUBLIC,
+            )
+
+            assertEquals(setOf(ME, "mc:Bob", "e5f6a7b8"), reactorsOn("mc"))
+            assertEquals("a claimed name is the MeshCore room's alone", setOf(ME), reactorsOn("mt"))
+            assertEquals("not a bridged room", setOf("a1b2c3d4", ME, "mc:Bob"), reactorsOn("near"))
+        }
+
+    /** A post a bridged room's board heard: in our sender column by convention, under [node]'s origin. */
+    private fun heardRow(
+        id: String,
+        room: String,
+        node: Long,
+    ) = MessageEntity(id = id, senderId = ME, conversationId = room, body = "hi", sentAt = 1L, originNode = node)
+
+    private suspend fun meshcoreDrawn(id: String) =
+        dao.observeForMessage(id, ME, listOf(Conversations.NEARBY), "c-*", Conversations.MESHCORE_PUBLIC).first().map { it.reactorNodeId }
+
+    private suspend fun reactorsOn(id: String) =
+        dao
+            .observeAll()
+            .first()
+            .filter { it.messageId == id }
+            .map { it.reactorNodeId }
+            .toSet()
+
     private companion object {
         const val ME = "me-node"
+        const val MESHTASTIC_NODE = 0x1234L
     }
 }

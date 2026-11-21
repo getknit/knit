@@ -20,13 +20,17 @@ interface ReactionDao {
      * Only a reactor in the thread is drawn (#301), by the rule a reaction is applied under
      * (`InboundPipeline.reactsIn`): [me], the DM's peer (whose id is the thread's), anyone on a group's founding roster
      * (members or departed), anyone in a room ([rooms], or a commons by [commonsGlob]). A reaction stored before its
-     * target landed was never checked, so this is where one from outside the thread stays out. The roster LIKE is exact
-     * for the reason [observeNewestOnOwnMessages] gives.
+     * target landed was never checked, so this is where one from outside the thread stays out. In the MeshCore room
+     * ([meshcoreRoom]) the only reactors besides [me] are the channel's claimed names, `mc:`-keyed by the one door that
+     * writes them (`InboundPipeline`'s MeshCore reaction branch, ADR 2026-11.gsqu's 2026-11-21 amendment); a Knit node id
+     * is hex and never matches, so a Knit identity's reaction there is never drawn. The roster LIKE is exact for the
+     * reason [observeNewestOnOwnMessages] gives.
      */
     @Query(
         "SELECT r.* FROM reactions r JOIN messages m ON m.id = r.messageId " +
             "WHERE m.conversationId = :conversationId AND r.emoji IS NOT NULL " +
             "AND (r.reactorNodeId = :me OR m.conversationId = r.reactorNodeId OR m.conversationId IN (:rooms) " +
+            "OR (m.conversationId = :meshcoreRoom AND r.reactorNodeId GLOB 'mc:*') " +
             "OR m.conversationId GLOB :commonsGlob OR EXISTS (SELECT 1 FROM groups AS g WHERE g.groupId = m.conversationId " +
             "AND (g.members LIKE '%\"' || r.reactorNodeId || '\"%' OR g.departed LIKE '%\"' || r.reactorNodeId || '\"%'))) " +
             "ORDER BY r.updatedAt ASC",
@@ -36,6 +40,7 @@ interface ReactionDao {
         me: String,
         rooms: Collection<String>,
         commonsGlob: String,
+        meshcoreRoom: String,
     ): Flow<List<ReactionEntity>>
 
     /**
@@ -49,6 +54,7 @@ interface ReactionDao {
         "SELECT r.* FROM reactions r JOIN messages m ON m.id = r.messageId " +
             "WHERE r.messageId = :messageId AND r.emoji IS NOT NULL " +
             "AND (r.reactorNodeId = :me OR m.conversationId = r.reactorNodeId OR m.conversationId IN (:rooms) " +
+            "OR (m.conversationId = :meshcoreRoom AND r.reactorNodeId GLOB 'mc:*') " +
             "OR m.conversationId GLOB :commonsGlob OR EXISTS (SELECT 1 FROM groups AS g WHERE g.groupId = m.conversationId " +
             "AND (g.members LIKE '%\"' || r.reactorNodeId || '\"%' OR g.departed LIKE '%\"' || r.reactorNodeId || '\"%'))) " +
             "ORDER BY r.updatedAt ASC",
@@ -58,6 +64,7 @@ interface ReactionDao {
         me: String,
         rooms: Collection<String>,
         commonsGlob: String,
+        meshcoreRoom: String,
     ): Flow<List<ReactionEntity>>
 
     /** The stored last-writer-wins clock for this reactor on this message, or null if none yet. */
@@ -102,12 +109,14 @@ interface ReactionDao {
             "WHERE r2.emoji IS NOT NULL AND r2.reactorNodeId != :me AND r2.reactorNodeId NOT IN (:blocked) " +
             "AND m2.senderId = :me AND m2.originNode IS NULL AND m2.kind = 0 " +
             "AND (m2.conversationId = r2.reactorNodeId OR m2.conversationId IN (:rooms) " +
+            "OR (m2.conversationId = :meshcoreRoom AND r2.reactorNodeId GLOB 'mc:*') " +
             "OR m2.conversationId GLOB :commonsGlob OR EXISTS (SELECT 1 FROM groups AS g2 " +
             "WHERE g2.groupId = m2.conversationId AND g2.members LIKE '%\"' || r2.reactorNodeId || '\"%')) " +
             "GROUP BY m2.conversationId) AS newest ON newest.cid = m.conversationId AND newest.at = r.updatedAt " +
             "WHERE r.emoji IS NOT NULL AND r.reactorNodeId != :me AND r.reactorNodeId NOT IN (:blocked) " +
             "AND m.senderId = :me AND m.originNode IS NULL AND m.kind = 0 " +
             "AND (m.conversationId = r.reactorNodeId OR m.conversationId IN (:rooms) " +
+            "OR (m.conversationId = :meshcoreRoom AND r.reactorNodeId GLOB 'mc:*') " +
             "OR m.conversationId GLOB :commonsGlob OR EXISTS (SELECT 1 FROM groups AS g " +
             "WHERE g.groupId = m.conversationId AND g.members LIKE '%\"' || r.reactorNodeId || '\"%'))",
     )
@@ -116,6 +125,7 @@ interface ReactionDao {
         blocked: Collection<String>,
         rooms: Collection<String>,
         commonsGlob: String,
+        meshcoreRoom: String,
     ): Flow<List<ReactionHead>>
 
     /** The reactor's current emoji on this message (null if none/retracted) — drives toggle logic. */
@@ -161,5 +171,22 @@ interface ReactionDao {
     suspend fun deleteOffRosterOlderThan(
         olderThan: Long,
         me: String,
+    )
+
+    /**
+     * Reclaims reactions older than [olderThan] on a held bridged-room post ([bridged]) from anyone but [me] and, in
+     * [meshcoreRoom], the claimed `mc:` names: a Knit identity's reaction there is refused on arrival
+     * (`InboundPipeline.reactsIn`) and never drawn, but one that landed before its post was stored unchecked.
+     */
+    @Query(
+        "DELETE FROM reactions WHERE updatedAt < :olderThan AND reactorNodeId != :me AND EXISTS (" +
+            "SELECT 1 FROM messages AS m WHERE m.id = reactions.messageId AND m.conversationId IN (:bridged) " +
+            "AND NOT (m.conversationId = :meshcoreRoom AND reactions.reactorNodeId GLOB 'mc:*'))",
+    )
+    suspend fun deleteOffRoomOlderThan(
+        olderThan: Long,
+        me: String,
+        bridged: Collection<String>,
+        meshcoreRoom: String,
     )
 }

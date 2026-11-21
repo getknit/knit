@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lora.meshcore
 
 import app.getknit.knit.TextLimits
 import app.getknit.knit.identity.NodeId
+import app.getknit.knit.mesh.MeshcoreReactions
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.lora.KnitChannel
 import app.getknit.knit.mesh.lora.PublicPostKey
@@ -68,6 +69,35 @@ class MeshcorePublicJudgeTest {
         assertEquals(": hi", empty.body)
         // A colon without the space is not the companion's form.
         assertNull(post("Ana:hi").name)
+    }
+
+    /**
+     * The heard post's MeshCore One reaction tag (ADR 2026-11.gsqu's 2026-11-21 amendment) is the plane's: over the body's
+     * bytes as drained after the first-`": "` split — trailing whitespace kept, before the trim the shown body gets — and the
+     * sender's stamp; a stranger's name prefix is never hashed; with no name the whole text is. Only the tag leaves the plane.
+     */
+    @Test
+    fun theTagIsOverTheRawBodyAfterTheNameAndTheSendersStamp() {
+        val p = post("Ana: north gate  \t")
+        assertEquals("north gate", p.body)
+        assertEquals(MeshcoreReactions.tag("north gate  \t".encodeToByteArray(), STAMP), p.tag)
+        assertNotEquals("before the trim", MeshcoreReactions.tag("north gate".encodeToByteArray(), STAMP), p.tag)
+        assertNotEquals("never the name", MeshcoreReactions.tag("Ana: north gate  \t".encodeToByteArray(), STAMP), p.tag)
+        assertNotEquals(
+            "the stamp is in it",
+            (judge("Ana: north gate  \t".encodeToByteArray(), STAMP + 1) as MeshcorePublicJudge.Verdict.Post).post.tag,
+            p.tag,
+        )
+
+        val none = post("no separator here ")
+        assertEquals("no name: the whole text", MeshcoreReactions.tag("no separator here ".encodeToByteArray(), STAMP), none.tag)
+        val tooLong = "N".repeat(32) + ": hi"
+        assertEquals("a name the split refuses stays hashed", MeshcoreReactions.tag(tooLong.encodeToByteArray(), STAMP), post(tooLong).tag)
+        // A name holding the separator splits early: the tag is over what the split leaves, as the body is.
+        assertEquals(MeshcoreReactions.tag("Who: hello".encodeToByteArray(), STAMP), post("Dr: Who: hello").tag)
+        // Malformed bytes are hashed as drained, never through the lenient decode.
+        val bad = byteArrayOf(0x42, 0x3A, 0x20, 0x68, 0xC3.toByte())
+        assertEquals(MeshcoreReactions.tag(byteArrayOf(0x68, 0xC3.toByte()), STAMP), post(bad).tag)
     }
 
     @Test

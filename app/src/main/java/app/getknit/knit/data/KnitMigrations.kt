@@ -843,6 +843,20 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v37 → v38 (ADR 2026-11.gsqu's 2026-11-21 amendment): `messages.meshcoreTag`, a MeshCore room post's MeshCore One
+     * reaction tag, and its index. Null on every existing row: the stamp a heard post's tag needs was never kept, so a
+     * reaction to an older post finds nothing and is dropped. Its own version, as v33 to v37 were: fold them all into the
+     * next release's single bump. The SQL must stay byte-equivalent to what Room generates for `app/schemas/**/38.json`.
+     */
+    val MIGRATION_37_38 =
+        object : Migration(37, 38) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `meshcoreTag` TEXT DEFAULT NULL")
+                connection.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_meshcoreTag` ON `messages` (`meshcoreTag`)")
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -882,5 +896,6 @@ object KnitMigrations {
             MIGRATION_34_35,
             MIGRATION_35_36,
             MIGRATION_36_37,
+            MIGRATION_37_38,
         )
 }

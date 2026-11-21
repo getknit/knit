@@ -103,9 +103,14 @@ enum class PublicPostRefusal {
  * ring forgot it, dedups there. Public, beside the sink, so nothing above the seam learns a MeshCore type.
  */
 sealed interface PublicChannelAnswer {
-    /** Queued on the board; the own row is written under [rowId]. */
+    /**
+     * Queued on the board; the own row is written under [rowId]. [tag] is the post's MeshCore One reaction tag over the text
+     * the board was handed and the stamp fixed at enqueue (ADR 2026-11.gsqu's 2026-11-21 amendment): what a reaction to our
+     * own post names it by. Null where the plane computed none.
+     */
     data class Queued(
         val rowId: String,
+        val tag: String? = null,
     ) : PublicChannelAnswer
 
     /** The board would not take it, for [reason]. Nothing stored. */
@@ -137,4 +142,24 @@ sealed interface PublicPostOutcome {
     data class Refused(
         val reason: PublicPostRefusal,
     ) : PublicPostOutcome
+}
+
+/** What [MeshController.sendMeshcoreReaction] did (ADR 2026-11.gsqu's 2026-11-21 amendment). */
+sealed interface MeshcoreReactionOutcome {
+    /** Queued on the board as a room post: it airs when the radio's turn comes. */
+    data object Queued : MeshcoreReactionOutcome
+
+    /** Removed on this phone only: nothing airs, and everyone who saw it keeps seeing it. */
+    data object RemovedHere : MeshcoreReactionOutcome
+
+    /** Not sent, for [reason]; the reaction is as it was. */
+    data class Refused(
+        val reason: PublicPostRefusal,
+    ) : MeshcoreReactionOutcome
+
+    /** The outgoing moderator flagged the text it would air (the target's name rides in it); nothing changed. */
+    data object Blocked : MeshcoreReactionOutcome
+
+    /** The post can't be reacted to in MeshCore One's form: no tag (stored before v38), no name to address, or hidden. */
+    data object Unaddressable : MeshcoreReactionOutcome
 }

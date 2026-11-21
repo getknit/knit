@@ -2354,6 +2354,11 @@
     <string name="chat_meshcore_consent_name_body">Every post goes out as “%1$s: …”. That name is the same on every post and identifies your board, so people who have you as a contact, or who know your board, can tell it is you.</string>
     <string name="chat_meshcore_consent_name_body_unknown">Every post goes out under your board\'s name. That name is the same on every post and identifies your board, so people who have you as a contact, or who know your board, can tell it is you.</string>
     <string name="chat_meshcore_consent_rules">A post can\'t be taken back. Anyone can post under any name, yours included. MeshCore users who message your board directly get no answer: Knit doesn\'t read those messages.</string>
+    <string name="chat_meshcore_consent_reactions">Reactions go out the same way: each one is a post that tells everyone in range which post you reacted to, and it can\'t be taken back.</string>
+    <!-- Said once as a toast in the MeshCore room. The first after the person removes their own reaction: nothing on the channel can retract one. -->
+    <string name="chat_meshcore_reaction_removed_here">Removed on this phone only. People on the channel still see your reaction.</string>
+    <string name="chat_meshcore_reaction_unaddressable">Can\'t react to this post on the channel</string>
+    <string name="chat_meshcore_reaction_too_soon">Not sent — a reaction counts as a post, one every 30 seconds. Try again shortly.</string>
     <string name="chat_meshcore_consent_position">Your board may also share where it is, in its adverts or with contacts who ask. Turn location sharing off in your MeshCore app if you don\'t want your posts tied to a place.</string>
     <string name="chat_commons_subtitle">Everyone on this relay</string>
     <!-- A commons' details screen: its name, its relay, its members and Leave. -->

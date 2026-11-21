@@ -233,6 +233,56 @@ class ReactionRepositoryTest : RoomDbTest() {
             assertEquals(setOf("fresh-orphan", "kept-msg"), live)
         }
 
+    /**
+     * A free name is no bound (ADR 2026-11.gsqu's 2026-11-21 amendment, security B1): a 33rd claimed name on one post evicts
+     * the oldest other one, never ours or a Knit reactor's, and says so. Bound read from the production constant.
+     */
+    @Test
+    fun aClaimedNamePastThePerPostBoundEvictsTheOldestOtherOne() =
+        runTest {
+            val repo = repo()
+            val cap = ReactionRepository.MESHCORE_REACTORS_PER_POST
+            repo.apply(reaction(ME, "❤️", at = 0))
+            for (i in 1..cap) assertEquals(0, repo.applyMeshcore(reaction("mc:n$i", "👍", at = i.toLong())).evicted)
+
+            val past = repo.applyMeshcore(reaction("mc:late", "👍", at = 1000))
+
+            assertTrue("the new name is drawn", past.changed)
+            assertEquals(1, past.evicted)
+            assertNull("the oldest claimed name went", repo.currentEmoji("m1", "mc:n1"))
+            assertEquals("👍", repo.currentEmoji("m1", "mc:n2"))
+            assertEquals("👍", repo.currentEmoji("m1", "mc:late"))
+            assertEquals("ours stays", "❤️", repo.currentEmoji("m1", ME))
+            assertEquals(cap, db.meshcoreReactionDao().meshcoreReactorsOn("m1"))
+        }
+
+    @Test
+    fun aClaimedNamesNewerEmojiReplacesTheirsWithoutEvicting() =
+        runTest {
+            val repo = repo()
+            val cap = ReactionRepository.MESHCORE_REACTORS_PER_POST
+            for (i in 1..cap) repo.applyMeshcore(reaction("mc:n$i", "👍", at = i.toLong()))
+
+            val changed = repo.applyMeshcore(reaction("mc:n1", "🎉", at = 1000))
+
+            assertEquals(ReactionRepository.MeshcoreApplied(changed = true, evicted = 0), changed)
+            assertEquals("🎉", repo.currentEmoji("m1", "mc:n1"))
+            assertEquals(cap, db.meshcoreReactionDao().meshcoreReactorsOn("m1"))
+        }
+
+    @Test
+    fun aReplayOfTheSameEmojiChangesNothingAPersonSees() =
+        runTest {
+            val repo = repo()
+            assertTrue(repo.applyMeshcore(reaction("mc:Bob", "👍", at = 10)).changed)
+
+            val replay = repo.applyMeshcore(reaction("mc:Bob", "👍", at = 20))
+
+            assertEquals(ReactionRepository.MeshcoreApplied(changed = false, evicted = 0), replay)
+            assertFalse("a stale one neither", repo.applyMeshcore(reaction("mc:Bob", "🎉", at = 5)).changed)
+            assertEquals("👍", repo.currentEmoji("m1", "mc:Bob"))
+        }
+
     private companion object {
         const val ME = "me-node"
     }

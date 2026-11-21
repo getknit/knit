@@ -124,6 +124,7 @@ import app.getknit.knit.moderation.ShippedWordList
 import app.getknit.knit.notifications.NotifConversation
 import app.getknit.knit.notifications.NotifMessage
 import app.getknit.knit.notifications.Notifier
+import app.getknit.knit.notifications.meshcoreReactionKey
 import app.getknit.knit.notifications.reactionNotificationKey
 import app.getknit.knit.transfer.TransferNotice
 import com.google.crypto.tink.InsecureSecretKeyAccess
@@ -6151,7 +6152,17 @@ class InboundPipelineTest {
         stamp: Long = meshcoreStamp,
         raw: ByteArray = (name?.let { "$it: " }.orEmpty() + body).encodeToByteArray(),
         mentionedAs: String? = null,
-    ) = MeshcorePost(name = name, body = body, timestampSecs = stamp, raw = raw, mentionedAs = mentionedAs)
+        tag: String? = null,
+        underOwnName: Boolean = false,
+    ) = MeshcorePost(
+        name = name,
+        body = body,
+        timestampSecs = stamp,
+        raw = raw,
+        mentionedAs = mentionedAs,
+        tag = tag,
+        underOwnName = underOwnName,
+    )
 
     @Test
     fun aMeshcorePostLandsInItsRoomAsAStrangerUnderTheSentinel() =
@@ -6497,6 +6508,180 @@ class InboundPipelineTest {
             coVerify(exactly = 0) { rig.reactions.apply(any()) }
             coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
             assertEquals(3L, rig.drops(DropReason.REACTION_OUTSIDE_THREAD))
+        }
+
+    // --- MeshCore One reactions in the MeshCore room (ADR 2026-11.gsqu's 2026-11-21 amendment) ---
+
+    /**
+     * Backs the two reads the reaction branch makes with the rig's own state: [ReactionRepository.meshcoreTagged] over
+     * [Rig.msgMap] as the real query answers it (the room's rows carrying the tag, by id, at most two), and
+     * [ReactionRepository.applyMeshcore] over the returned map with the repository's last-writer-wins answer.
+     */
+    private fun Rig.backMeshcoreReactions(): MutableMap<Pair<String, String>, ReactionEntity> {
+        val held = ConcurrentHashMap<Pair<String, String>, ReactionEntity>()
+        coEvery { reactions.meshcoreTagged(any()) } answers {
+            val tag = firstArg<String>()
+            msgMap.values
+                .filter { row -> row.meshcoreTag == tag && row.conversationId == Conversations.MESHCORE_PUBLIC }
+                .sortedBy { row -> row.id }
+                .take(2)
+        }
+        coEvery { reactions.applyMeshcore(any()) } answers {
+            val next = firstArg<ReactionEntity>()
+            val key = next.messageId to next.reactorNodeId
+            val current = held[key]
+            if (current != null && next.updatedAt <= current.updatedAt) {
+                ReactionRepository.MeshcoreApplied(changed = false, evicted = 0)
+            } else {
+                held[key] = next
+                ReactionRepository.MeshcoreApplied(changed = current?.emoji != next.emoji, evicted = 0)
+            }
+        }
+        return held
+    }
+
+    /** A post heard in the MeshCore room carrying MeshCore One's reaction [tag]. */
+    private fun Rig.heardMeshcoreRow(
+        id: String,
+        tag: String,
+    ) {
+        msgMap[id] =
+            MessageEntity(
+                id = id,
+                senderId = self.nodeId,
+                conversationId = Conversations.MESHCORE_PUBLIC,
+                body = "see you at the trailhead",
+                sentAt = 1L,
+                originNode = MeshPostOrigin.MESHCORE_NODE,
+                originName = "Alice",
+                meshcoreTag = tag,
+            )
+    }
+
+    @Test
+    fun aHeardMeshcorePostKeepsTheTagThePlaneComputed() =
+        runTest {
+            val rig = Rig(backgroundScope)
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("anyone around?", tag = "b45pc4ek"))
+            advanceUntilIdle()
+
+            assertEquals(
+                "b45pc4ek",
+                rig.msgMap.values
+                    .single()
+                    .meshcoreTag,
+            )
+        }
+
+    @Test
+    fun aMeshcoreOneReactionLandsOnTheTaggedPostUnderItsClaimedNameAndWritesNoRow() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val held = rig.backMeshcoreReactions()
+            rig.heardMeshcoreRow("mc-heard", tag = "b45pc4ek")
+            rig.heardMeshcoreRow("mc-other", tag = "0123abcd")
+
+            // The token names "Alice", but the tag, not the name, places it; both orders MeshCore One has sent.
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[Alice]👍\nb45pc4ek", name = "Bob"))
+            rig.pipeline.deliverMeshcorePost(meshcorePost("🎉@[Someone]\n0123ABCD", name = "Carol"))
+            advanceUntilIdle()
+
+            assertEquals("never a row of its own", setOf("mc-heard", "mc-other"), rig.msgMap.keys)
+            assertEquals("👍", held["mc-heard" to "mc:Bob"]?.emoji)
+            assertEquals("🎉", held["mc-other" to "mc:Carol"]?.emoji)
+            assertEquals(2, held.size)
+            // A heard post is nobody's words of ours: nothing notifies.
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aMeshcoreOneReactionNamingNoHeldPostOrTwoIsDroppedQuietly() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val held = rig.backMeshcoreReactions()
+            rig.heardMeshcoreRow("mc-a", tag = "b45pc4ek")
+            rig.heardMeshcoreRow("mc-b", tag = "b45pc4ek") // a tag is 40 bits over public inputs: two can share one
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[Alice]👍\nb45pc4ek"))
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[Alice]👍\nzzzzzzzz"))
+            advanceUntilIdle()
+
+            assertEquals(2L, rig.drops(DropReason.MESHCORE_REACTION_UNPLACED))
+            assertTrue("nothing placed", held.isEmpty())
+            assertEquals("and never drawn as text", setOf("mc-a", "mc-b"), rig.msgMap.keys)
+        }
+
+    @Test
+    fun aMeshcoreOneReactionUnnamedUnderOurBoardsNameOrFlaggedIsRefused() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val held = rig.backMeshcoreReactions()
+            rig.heardMeshcoreRow("mc-heard", tag = "b45pc4ek")
+            rig.flagWhen = { it.startsWith("Slurname") }
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[Alice]👍\nb45pc4ek", name = null))
+            // Our own reaction re-aired after the board's seen ring forgot it, or a namesake: either way never a stranger's.
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[Alice]👍\nb45pc4ek", name = "Knit 1a2b", underOwnName = true))
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[Alice]👍\nb45pc4ek", name = "Slurname"))
+            advanceUntilIdle()
+
+            assertEquals(3L, rig.drops(DropReason.MESHCORE_REACTION_REFUSED))
+            assertTrue(held.isEmpty())
+            assertEquals(setOf("mc-heard"), rig.msgMap.keys)
+            // The neighbour: the same reaction under an ordinary name is placed.
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[Alice]👍\nb45pc4ek", name = "Bob"))
+            advanceUntilIdle()
+            assertEquals("👍", held["mc-heard" to "mc:Bob"]?.emoji)
+        }
+
+    @Test
+    fun anExactEchoOfOurOwnMeshcoreReactionIsRefusedWhateverOurBoardIsNamedNow() =
+        runTest {
+            // Our board renamed since we reacted: the echo comes back under the old name, which no longer reads as ours.
+            val rig = Rig(backgroundScope)
+            val held = rig.backMeshcoreReactions()
+            rig.heardMeshcoreRow("mc-heard", tag = "b45pc4ek")
+            val echo = meshcorePost("@[Alice]👍\nb45pc4ek", name = "Old Name")
+            rig.pipeline.noteOwnMeshcoreReaction(FrameId.forMeshcorePost(echo.timestampSecs, echo.raw))
+
+            rig.pipeline.deliverMeshcorePost(echo)
+            advanceUntilIdle()
+
+            assertEquals(1L, rig.drops(DropReason.MESHCORE_REACTION_REFUSED))
+            assertTrue(held.isEmpty())
+            // The neighbour: the same words from someone else, another stamp, are a stranger's and land.
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[Alice]👍\nb45pc4ek", name = "Old Name", stamp = meshcoreStamp + 1))
+            advanceUntilIdle()
+            assertEquals("👍", held["mc-heard" to "mc:Old Name"]?.emoji)
+        }
+
+    @Test
+    fun aMeshcoreOneReactionToOurOwnPostNotifiesOnceAcrossTheBoardsReplay() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            rig.backMeshcoreReactions()
+            rig.ownMessage("mc-own", conversationId = Conversations.MESHCORE_PUBLIC)
+            rig.msgMap["mc-own"] = rig.msgMap.getValue("mc-own").copy(meshcoreTag = "b45pc4ek")
+            val notifications = mutableListOf<NotifMessage>()
+            coEvery { rig.notifier.notify(capture(notifications), any(), any(), any(), any()) } returns Unit
+
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[Knit 1a2b]👍\nb45pc4ek", name = "Bob"))
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[Knit 1a2b]👍\nb45pc4ek", name = "Bob")) // the offline-queue replay
+            advanceUntilIdle()
+
+            val line = notifications.single()
+            assertEquals("one line per post, replaced by the newest", meshcoreReactionKey("mc-own"), line.key)
+            // Worn as the room's posts wear their speakers: keyed on the name's hash, quoted and marked, no face.
+            assertEquals(meshcoreSpeakerKey("Bob"), line.senderId)
+            assertEquals(NotificationLabels.ENGLISH.claimedName.format("Bob"), line.senderName)
+            assertNull(line.avatarBytes)
+            assertTrue(line.body, line.body.contains("👍"))
+
+            // A second name replaces the line in place: the same key, never a line each.
+            rig.pipeline.deliverMeshcorePost(meshcorePost("@[Knit 1a2b]🎉\nb45pc4ek", name = "Carol"))
+            advanceUntilIdle()
+            assertEquals(listOf(meshcoreReactionKey("mc-own")), notifications.drop(1).map { it.key })
         }
 
     @Test

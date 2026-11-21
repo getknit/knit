@@ -58,6 +58,12 @@ fun reactionNotificationKey(
 ): String = "reaction:$messageId:$reactorNodeId"
 
 /**
+ * The [NotifMessage.key] of the claimed MeshCore names' reactions to one of our MeshCore room posts (ADR 2026-11.gsqu's
+ * 2026-11-21 amendment): one line per post, which the newest reactor replaces, so a flood of fresh names is one line.
+ */
+fun meshcoreReactionKey(messageId: String): String = "reaction:$messageId:mc"
+
+/**
  * One member of a photo-less group's cluster as the shade draws it (ADR 2026-09.zapp): the shade's twin of
  * `GroupFace`, carrying the member's raw avatar bytes (or null for their tinted initial) in place of a hash,
  * for the same reason [NotifMessage] does.
