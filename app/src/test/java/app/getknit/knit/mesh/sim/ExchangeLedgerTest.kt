@@ -70,6 +70,23 @@ class ExchangeLedgerTest {
     }
 
     @Test
+    fun aReSendIsSplitByHopsBetweenACustodyServeAndARouterRelay() {
+        val run =
+            listOf(
+                frame(at = 10, from = B, to = A, id = "x", addressee = "q", hops = 0),
+                frame(at = 20, from = B, to = A, id = "x", addressee = "q", hops = 0),
+                frame(at = 30, from = B, to = A, id = "x", addressee = "q", hops = 2),
+                frame(at = 40, from = B, to = A, id = "y", addressee = "q", hops = 1),
+                frame(at = 50, from = B, to = A, id = "y", addressee = "q"),
+            )
+        val c = ExchangeLedger.counts(run) { emptySet() }
+        assertEquals("x twice more, y once more", 3, c.resent)
+        assertEquals("the hop-2 copy of x was the flood's", 1, c.resentRelayed)
+        assertEquals("a hop-0 copy, and one with no hops known, were served", 2, c.resentServed)
+        assertEquals("a first arrival is new whatever its hops", 2, c.newFrames)
+    }
+
+    @Test
     fun aFrameCustodyNeverHoldsCountsForItsBytesAlone() {
         val run =
             listOf(
@@ -103,6 +120,17 @@ class ExchangeLedgerTest {
             id: String,
             addressee: String,
             sender: String = "author",
-        ) = AirEvent(at * NANOS_PER_MS, from, to, Kind.FRAME, FRAME_BYTES, frameId = id, recipientId = addressee, senderId = sender)
+            hops: Int? = null,
+        ) = AirEvent(
+            at * NANOS_PER_MS,
+            from,
+            to,
+            Kind.FRAME,
+            FRAME_BYTES,
+            frameId = id,
+            recipientId = addressee,
+            senderId = sender,
+            hops = hops,
+        )
     }
 }

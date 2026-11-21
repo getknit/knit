@@ -9,7 +9,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * One record an air link delivered, as the exchange ledger reads it: a frame by id, a digest, or a file. A frame custody
- * would never hold ([custodial] false: a typing cue, a blob request, a key ask) counts for its bytes alone.
+ * would never hold ([custodial] false: a typing cue, a blob request, a key ask) counts for its bytes alone. [hops] is the
+ * envelope's as aired: 0 for a frame served fresh (a custody answer, an author's own send), 1 or more for a router relay
+ * (`WireEnvelope.relayed`); null when not known.
  */
 internal data class AirEvent(
     val atNanos: Long,
@@ -21,6 +23,7 @@ internal data class AirEvent(
     val recipientId: String? = null,
     val senderId: String? = null,
     val custodial: Boolean = true,
+    val hops: Int? = null,
 )
 
 /** What a set of air links did with custody, from [ExchangeLedger.counts]. */
@@ -38,6 +41,12 @@ data class ExchangeCounts(
      * frame echoed back. What a re-offer, a second carrier or a flood sent for nothing.
      */
     val resent: Int = 0,
+    /**
+     * The [resent] frames that were router relays (hops 1 or more): the flood's share. The rest were served at hop 0, by
+     * a custody answer, a key served (`KeyExchange.serve`) or an author's own send (a profile pushed on link-up): not the
+     * flood's.
+     */
+    val resentRelayed: Int = 0,
     /** Digests answered: one opens when it lands and closes at the asker's next digest to the same peer or the end. */
     val exchanges: Int = 0,
     /** Exchanges in which the answering peer aired nothing new to the asker. */
@@ -50,6 +59,9 @@ data class ExchangeCounts(
     val reaskAfterEmptyMs: List<Long> = emptyList(),
 ) {
     val newFrames: Int get() = frames - resent
+
+    /** The [resent] frames served at hop 0: custody's re-sends. */
+    val resentServed: Int get() = resent - resentRelayed
     val bytes: Long get() = digestBytes + frameBytes + fileBytes + otherBytes
 
     /** The digests' share of every byte aired, in percent; null when nothing aired. */
@@ -99,6 +111,7 @@ internal object ExchangeLedger {
         private var otherBytes = 0L
         private var frames = 0
         private var resent = 0
+        private var resentRelayed = 0
         private var exchanges = 0
         private var empty = 0
 
@@ -129,6 +142,7 @@ internal object ExchangeLedger {
             val had = received.getOrPut(e.to) { HashSet(heldAtStart(e.to)) }
             if (e.senderId == e.to || !had.add(id)) {
                 resent++
+                if ((e.hops ?: 0) > 0) resentRelayed++
                 return
             }
             firsts += e
@@ -155,6 +169,7 @@ internal object ExchangeLedger {
                 otherBytes = otherBytes,
                 frames = frames,
                 resent = resent,
+                resentRelayed = resentRelayed,
                 exchanges = exchanges,
                 emptyExchanges = empty,
                 toRecipient = toRecipient,
@@ -209,6 +224,7 @@ internal class ExchangeTally private constructor(
                 recipientId = env?.recipientId,
                 senderId = env?.senderId,
                 custodial = env == null || FrameType.isCustodial(env.type),
+                hops = s.record.wire?.hops,
             )
         }
 
@@ -240,7 +256,8 @@ internal class ExchangeTally private constructor(
         ): String =
             "custody exchanges $phase: ${c.digests} digests (${c.digestBytes / BYTES_PER_KB} KB, " +
                 "${c.digestSharePct?.let { "%.1f".format(Locale.ROOT, it) } ?: "n/a"}% of the air), ${c.exchanges} answered, " +
-                "${c.emptyExchanges} moving nothing new; ${c.frames} frames aired, ${c.resent} to a node that already had them; " +
+                "${c.emptyExchanges} moving nothing new; ${c.frames} frames aired, ${c.resent} to a node that already had them " +
+                "(${c.resentServed} served at hop 0, ${c.resentRelayed} relayed); " +
                 "of the ${c.newFrames} new, ${c.toRecipient} reached their addressee, ${c.heldAtEnd} were held at the end, " +
                 "${c.notKept} were not kept" +
                 reaskPart(c)
@@ -264,6 +281,8 @@ internal class ExchangeTally private constructor(
                 "exchanges_empty_$key" to c.emptyExchanges,
                 "frames_aired_$key" to c.frames,
                 "frames_resent_$key" to c.resent,
+                "frames_resent_served_$key" to c.resentServed,
+                "frames_resent_relayed_$key" to c.resentRelayed,
                 "frames_new_$key" to c.newFrames,
                 "frames_to_recipient_$key" to c.toRecipient,
                 "frames_held_$key" to c.heldAtEnd,

@@ -1302,6 +1302,8 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
     - Per run, and per pair in the pass-by: digests and their share of the air, exchanges answered and those that
       moved nothing new, frames re-sent to a node that already had them off the air, and each new frame's fate
       (reached its addressee, held at the end, not kept).
+    - Re-sends split by the envelope's hops as aired: hop 0 is a custody answer, a key served (`KeyExchange.serve`) or an author's own send
+      (`frames_resent_served_*`), hop 1 or more a router relay (`frames_resent_relayed_*`, `WireEnvelope.relayed`).
     - Also the gap from an exchange that moved nothing to the asker's next digest to that peer (`reask_after_empty_*`).
       Only an outing shows it, since a pass is too short for a second digest.
     - Summary keys end in `_pass` or `_outing`. An outing reads its tally once its links are down, since a frame still
