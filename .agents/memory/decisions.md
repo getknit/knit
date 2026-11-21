@@ -334,6 +334,7 @@ carries; never renumber an old one.
 | [2026-11.tesy](decisions/2026-11-tesy-a-custody-annex-keeps-quota-evicted-frames-outside-the-digest.md) | a custody annex keeps quota-evicted frames outside the digest | custody, convergence, store-and-forward, relay |
 | [2026-11.tj49](decisions/2026-11-tj49-a-declared-language-overrules-sure-words-when-only-it-can-be-translated.md) | a declared language overrules sure words when only it can be translated | ml, ui |
 | [2026-11.u5je](decisions/2026-11-u5je-diagnostics-shows-link-encryption-and-presence-keys.md) | Diagnostics shows link encryption and presence keys | diagnostics, crypto |
+| [2026-11.ut8g](decisions/2026-11-ut8g-a-spool-url-s-authority-is-a-bare-host-and-port.md) | a spool URL's authority is a bare host and port, one rule for every door and the dialer | spool, security, privacy |
 | [2026-11.vdx4](decisions/2026-11-vdx4-a-uri-another-app-hands-knit-is-read-only-through-someone-else-s-provider.md) | A URI another app hands Knit is read only through someone else's provider | security, attachments, privacy |
 | [2026-11.xp6d](decisions/2026-11-xp6d-a-bluetooth-advert-names-a-rotating-tag.md) | A Bluetooth advert names a rotating tag, not the node id | ble, mesh, privacy, wire, crypto |
 | [2026-11.y4pc](decisions/2026-11-y4pc-a-name-is-screened-by-the-word-lists-when-it-is-set-and-when-it-is-drawn.md) | A name is screened by the word lists when it is set and when it is drawn | moderation, identity, privacy, contacts |

@@ -5,6 +5,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
+import okhttp3.HttpUrl
+import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -91,6 +93,56 @@ class OkHttpSpoolDialerSocketTest {
             assertNull("an https:// is not a spool", dialer.dial(server.url("/spool/v1").toString()))
             assertNull("an unparseable url is refused", dialer.dial("wss://[not-a-host/spool/v1"))
             assertEquals("and none of them reached the socket", 0, server.requestCount)
+        }
+
+    @Test
+    fun `the host a relay is titled with is the host the socket dials`() {
+        // ADR 2026-11.ut8g (#340): SpoolUrl splits an authority by hand, OkHttp splits it as a browser does. Every URL the
+        // shape rule passes must name one host to both; the spoof forms it refuses must too, so a row stored before the
+        // rule is titled with the host it would reach and a ticket never names another (SpoolConnection.present).
+        val passed =
+            listOf(
+                "wss://relay.example.org/spool/v1",
+                "wss://Relay.Example.ORG:8443/spool/v1?k=secret-token",
+                "ws://10.0.2.2:9470/spool/v1",
+                "wss://[::1]:9470/spool/v1",
+                "wss://relay_1.example.org?k=t",
+                "wss://evil.example?@public-1.spool.getknit.app/spool/v1",
+            )
+        val refused =
+            listOf(
+                "wss://public-1.spool.getknit.app@evil.example/spool/v1",
+                "wss://public-1.spool.getknit.app:443@evil.example:8443/spool/v1",
+                "wss://evil.example\\@public-1.spool.getknit.app/spool/v1",
+                "wss://evil.example:8443\\@public-1.spool.getknit.app/spool/v1",
+                "wss://evil.example#@public-1.spool.getknit.app/spool/v1",
+            )
+        for (url in passed) assertTrue(url, SpoolUrl.isAcceptable(url, allowCleartext = true))
+        for (url in refused) assertFalse(url, SpoolUrl.isAcceptable(url, allowCleartext = true))
+        for (url in passed + refused) {
+            // What OkHttpSpoolDialer.dial hands the socket.
+            val dialled =
+                Request
+                    .Builder()
+                    .url(url)
+                    .build()
+                    .url
+            val hostname = SpoolUrl.hostname(url)
+            assertEquals(url, dialled.host, hostname?.removeSurrounding("[", "]"))
+            // The port is part of what is dialled: no URL here writes out its scheme's default, so a label shows one
+            // exactly when OkHttp dials a port other than the default.
+            val expected = if (dialled.port == HttpUrl.defaultPort(dialled.scheme)) hostname else "$hostname:${dialled.port}"
+            assertEquals(url, expected, SpoolUrl.host(url).lowercase())
+        }
+    }
+
+    @Test
+    fun `a stored url of the wrong shape never reaches the socket`() =
+        runBlocking {
+            // A row an invite stored before the shape rule: its label read the house relay, its socket reached this one.
+            val spoofed = "ws://public-1.spool.getknit.app@${server.hostName}:${server.port}/spool/v1"
+            assertNull(dialer.dial(spoofed))
+            assertEquals(0, server.requestCount)
         }
 
     @Test

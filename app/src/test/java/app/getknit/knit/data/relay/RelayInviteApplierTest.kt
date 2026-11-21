@@ -113,6 +113,17 @@ class RelayInviteApplierTest {
         }
 
     @Test
+    fun theSheetIsTitledWithTheHostAndPortTheSocketDialsAndNeverTheToken() =
+        runTest {
+            // `relay_invite_host` renders this: the host and port, never the token. A pin of the applier's wiring, not a
+            // #340 regression test: that the label is the host OkHttp dials is pinned in SpoolUrlTest, RelayInviteTest
+            // and OkHttpSpoolDialerSocketTest (ADR 2026-11.ut8g).
+            val preview = applier().preview(invite(url = "wss://Relay.Example.org:9470/spool/v1?k=fixture-token"))
+            assertEquals("Relay.Example.org:9470", preview.host)
+            assertTrue(preview.private)
+        }
+
+    @Test
     fun aConsentedButSwitchedOffPlaneIsTurnedOnWithoutASecondConsent() =
         runTest {
             spoolConsented.value = true

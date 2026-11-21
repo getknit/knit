@@ -34,8 +34,17 @@ Body { v: 1, u: str, c?: bstr(32), n?: str, i?: str, k?: str }
 
 - `u` — the spool URL exactly as it should be stored, `wss://host[:port]/spool/v1[?k=<token>]`
   (`docs/SPOOL_PROTOCOL.md` §7.1). The token rides along **on purpose**: the link is how a private spool's
-  credential is handed over. At most 256 chars, no whitespace or control characters, and the scheme rule
-  is the dialer's own (`SpoolUrl.isAcceptable` — `wss://` always, `ws://` only in a debug build).
+  credential is handed over. At most 256 chars, and the rule is the dialer's own (`SpoolUrl.isAcceptable`):
+  `wss://` always, `ws://` only in a debug build, and one shape (ADR 2026-11.ut8g, #340). The authority is a bare
+  `host[:port]` — no user info, no percent-escape, no non-ASCII letter — and the whole URL is printable ASCII with
+  no `\` and no `#`, because the sheet is titled with the host and OkHttp ends an authority at `\` and `#` and dials
+  what follows the last `@`. The host is dot-separated labels of letters, digits, `-` and `_` (an IPv4 literal is
+  one) or a bracketed IPv6 literal; a port is 1..65535 with no leading zero. The exact rule, scheme matched
+  case-insensitively:
+  `^(wss|ws)://([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*|\[[0-9A-Fa-f:.]+\])(?::([1-9][0-9]{0,4}))?(?:[/?][\x21\x22\x24-\x5B\x5D-\x7E]*)?$`
+  with the port at most 65535, and a host whose every label is a number (`[0-9]+` or `0x` hex) only as four
+  decimal octets 0..255 with no leading zero: the resolver's `inet_aton` reads `010.0.0.010` as 8.0.0.8 and
+  `3232235777` as 192.168.1.1. A link whose `u` fails it is refused `BAD_URL`.
 - `c` — the commons secret (§7.4), the same 32 bytes `knit-commons:v1:…` wraps; present when the link
   carries one of the relay's rooms. `n` — the room's name as the minter knew it, single-line, ≤ 32 chars.
 - **Unsigned.** The contact card is signed because it asserts an identity; an invite asserts nothing —

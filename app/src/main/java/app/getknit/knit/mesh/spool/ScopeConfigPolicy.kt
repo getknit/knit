@@ -36,7 +36,8 @@ data class ScopeConfig(
  * contract), so a refusal is final for that frame; one judged on anything that differs between phones — held rows, the
  * local clock — strands the phone that differs, for good (the crypto review's two rounds). So [validate] reads only the
  * payload and the conversation it rode in: at most [MAX_SPOOLS] URLs of at most [MAX_URL_LENGTH] characters, `wss://`
- * only, bounds positive and clamped to §12's defaults. Nothing refuses a config for its version.
+ * only and of the one shape a spool URL takes ([SpoolUrl.isAcceptable], ADR 2026-11.ut8g), bounds positive and clamped
+ * to §12's defaults. Nothing refuses a config for its version.
  *
  * **The version is a clock, held and deferred** (C-5-4). It counts minutes since [VERSION_EPOCH_MS]; an issuer writes
  * [nextVersion], the later of one past the eligible winner it holds and the minute it issues. A receiver stores every
@@ -266,9 +267,10 @@ object ScopeConfigPolicy {
     private fun numbersPositive(payload: ScopeConfigPayload): Boolean =
         payload.version >= 1 && payload.maxFrames >= 1 && payload.ttlMs >= 1L && payload.maxBlob >= 1
 
+    // A member's config is dialled with no sheet, so the shape half of isAcceptable is what keeps a URL whose
+    // label names one host from dialling another, and a ticket from going to it (ADR 2026-11.ut8g).
     private fun dialable(url: String): Boolean =
         url.length <= MAX_URL_LENGTH &&
-            url.none { it.isWhitespace() || it.isISOControl() } &&
             SpoolUrl.isAcceptable(url, allowCleartext = false) &&
             SpoolUrl.hostname(url) != null
 

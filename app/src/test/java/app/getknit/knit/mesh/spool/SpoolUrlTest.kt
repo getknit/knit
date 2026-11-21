@@ -84,6 +84,66 @@ class SpoolUrlTest {
     }
 
     @Test
+    fun `a spool URL has one shape whatever scheme it carries`() {
+        // ADR 2026-11.ut8g: a bare host[:port], then nothing, a path or a query, in printable ASCII with no `\` or `#`.
+        val wellFormed =
+            listOf(
+                "wss://relay.example.org",
+                "wss://relay.example.org/spool/v1?k=Ab-_c=d",
+                "ws://10.0.2.2:9470/spool/v1",
+                "WSS://Relay.Example.ORG:8443/spool/v1",
+                "wss://[::1]:9470/spool/v1",
+                "wss://relay_1.example.org?k=t",
+                "wss://255.255.255.255/spool/v1",
+                "wss://0x10.example.org/spool/v1",
+                "wss://relay.example.123/spool/v1",
+                // An `@` past the authority names nothing: the row reads evil.example, which is what is dialled.
+                "wss://evil.example/spool/v1?x=a@b",
+            )
+        for (url in wellFormed) assertTrue(url, SpoolUrl.isWellFormed(url))
+        val malformed =
+            listOf(
+                "wss://",
+                "wss://u@relay.example.org/spool/v1",
+                "wss://relay.example.org\\x/spool/v1",
+                "wss://relay.example.org/spool\\v1",
+                "wss://relay.example.org/spool/v1#f",
+                "wss://rel%61y.example.org/spool/v1",
+                "wss://r\u00E9lay.example.org/spool/v1",
+                "wss://relay.example.org/spool/v1?k=\u00E9",
+                "wss://relay.example.org /spool/v1",
+                "wss://.relay.example.org/spool/v1",
+                "wss://[fe80::1%25wlan0]/spool/v1",
+                "wss://relay.example.org:99999/spool/v1",
+                // Numbers the resolver reads as another address than the text: octal, one part, hex, too few parts.
+                "wss://010.0.0.010/spool/v1",
+                "wss://3232235777/spool/v1",
+                "wss://0x7f.1/spool/v1",
+                "wss://10.1/spool/v1",
+                "wss://256.1.1.1/spool/v1",
+                "wss://1.2.3.4.5/spool/v1",
+            )
+        for (url in malformed) {
+            assertFalse(url, SpoolUrl.isWellFormed(url))
+            // The dialer's rule takes the shape with the scheme, so a debug build is no more permissive about it.
+            assertFalse(url, SpoolUrl.isAcceptable(url, allowCleartext = true))
+        }
+    }
+
+    @Test
+    fun `the host row and the ticket host are the host the socket dials`() {
+        // #340: OkHttp ends an authority at `/`, `\`, `?` or `#` and dials what follows the last `@`, and so do these. A
+        // row stored before the shape rule is titled with the host it would reach; a ticket names that host or none.
+        assertEquals("evil.example", SpoolUrl.host("wss://public-1.spool.getknit.app@evil.example/spool/v1"))
+        assertEquals("evil.example", SpoolUrl.host("wss://evil.example\\@public-1.spool.getknit.app/spool/v1"))
+        assertEquals("evil.example:443", SpoolUrl.host("wss://evil.example:443#@public-1.spool.getknit.app/spool/v1"))
+        assertEquals("evil.example", SpoolUrl.hostname("wss://evil.example\\@public-1.spool.getknit.app/spool/v1"))
+        assertEquals("evil.example", SpoolUrl.hostname("wss://evil.example#@public-1.spool.getknit.app/spool/v1"))
+        assertEquals("relay.example.org:9470", SpoolUrl.host("wss://relay.example.org:9470/spool/v1?k=secret-token"))
+        assertEquals("[::1]", SpoolUrl.hostname("wss://[::1]:9470/spool/v1"))
+    }
+
+    @Test
     fun `the host row and the redaction do not care about case`() {
         // Both split on "://" rather than on a scheme constant, so they were never case-sensitive — pinned
         // because the token must not reach a screenshot whatever the scheme looks like (spec §7.1).
