@@ -131,8 +131,9 @@ class DirectGroupProbeTest {
     fun aFrequencyThePhoneWillNotOwnCostsOneTryAndFormsAGroupOnTwoPointFour() {
         val go = radio.channels().go
         assumeTrue("below API 34 the phone does not say which frequencies it will not own", go != null)
-        // The table's 5 GHz frequencies this phone does not list as ownable: a DFS channel, on most.
-        val refused = TABLE.firstOrNull { it >= BAND_5_LOW && it !in go.orEmpty() }
+        // A 5 GHz frequency off DFS the table names and this phone does not list as ownable: what `choose` could pin on a
+        // host that cannot list its own (it never pins DFS). A DFS one only where every other is ownable.
+        val refused = TABLE.filter { it >= BAND_5_LOW && it !in go.orEmpty() }.minByOrNull { if (DirectChannels.isDfs(it)) 1 else 0 }
         assumeTrue("this phone can own a group on every 5 GHz frequency the table names", refused != null)
         val asked = checkNotNull(refused)
         val (group, ms) = host(GroupChannel.Frequency(asked))

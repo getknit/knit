@@ -34,9 +34,13 @@ a peer update, the direct leg of a call.
 - **The host's choice** is `DirectChannels.choose(hostSta, client, hostGo)`:
   - `Auto` (today's behaviour) when the peer can join on the host's own Wi-Fi channel, so a pair that shares a DFS
     channel keeps single-channel speed;
-  - otherwise the best frequency both can use: 5 GHz off DFS (UNII-1, then UNII-3), then DFS, then 2.4 GHz's three
-    clear channels;
-  - `Band24` when they share none.
+  - otherwise the best frequency both can use: 5 GHz off DFS (UNII-1, then UNII-3), then 2.4 GHz's three clear
+    channels;
+  - `Band24` when they share none off DFS.
+  - Never a DFS channel the host is not already on (amended 2026-11-21). A Redmi Note 13 on Device Farm, asked for
+    5260, answered nothing for 15 s, and its 2.4 GHz retry then never formed either. Its log does not say why; a
+    radar check before a group may beacon on DFS would explain it, and would cost any phone that does it the same
+    wait. A pair that shares the host's own DFS channel still keeps it through `Auto`.
 - **A peer that did not say** (an older build, or one below API 34, where `getUsableChannels` does not exist) gets
   `Auto`, unless the host's Wi-Fi sits on DFS. Then the host uses its first 5 GHz frequency off DFS, or 2.4 GHz when
   it cannot list its own: a slower group beats one nobody finds.

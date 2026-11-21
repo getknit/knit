@@ -35,7 +35,9 @@ data class ChannelPick(
 /**
  * Which channel a Wi-Fi Direct group goes on, negotiated (ADR 2026-11.8zm5): the receiver names the frequencies it can
  * join a group on as a client, and the host picks one both can use, staying on its own Wi-Fi's channel when the
- * receiver can join there. Pure and JVM-tested (`DirectChannelsTest`).
+ * receiver can join there. It never pins a DFS channel: one the host is already on it keeps through `Auto`, and any
+ * other gets a channel off DFS or 2.4 GHz. On Device Farm (2026-11-21) a Redmi Note 13 asked for 5260 answered nothing
+ * for 15 s, and its 2.4 GHz retry then never formed either. Pure and JVM-tested (`DirectChannelsTest`).
  *
  * Why: a group owner follows its own Wi-Fi's channel. On 2026-11-20 a Pixel 9 whose supplicant allows Wi-Fi Direct on
  * DFS channels put its group on 5500 MHz (channel 100, DFS) beside its access point, and a Pixel 7 whose supplicant
@@ -65,10 +67,10 @@ object DirectChannels {
     private const val DFS_HIGH = 5720
     private const val BAND_5_LOW = 5000
 
-    // Best first: 5 GHz outside DFS (UNII-1, then UNII-3), then DFS, then 2.4 GHz's three non-overlapping channels.
+    // Best first: 5 GHz outside DFS (UNII-1, then UNII-3), then 2.4 GHz's three non-overlapping channels. No DFS: a
+    // group is never pinned to one (choose).
     private val PREFERENCE: List<Int> =
         listOf(5180, 5200, 5220, 5240, 5745, 5765, 5785, 5805, 5825, 5845, 5865, 5885) +
-            ((5260..5320 step 20) + (5500..5720 step 20)) +
             listOf(2437, 2412, 2462)
 
     /** [freqs] packed, or null when there are none the table names (nothing to say is absent, not zero). */
@@ -100,11 +102,13 @@ object DirectChannels {
     ): ChannelPick {
         if (client != null) {
             val candidates = if (hostGo != null) client intersect hostGo else client
+            // A DFS channel the host is on already stays through Auto; it is never pinned to one it is not on.
+            val pinnable = candidates.filterNot(::isDfs).toSet()
             return when {
                 hostSta == null -> ChannelPick(GroupChannel.Auto, "no Wi-Fi of its own")
                 hostSta in candidates -> ChannelPick(GroupChannel.Auto, "the peer can join on $hostSta")
-                candidates.isEmpty() -> ChannelPick(GroupChannel.Band24, "no channel in common")
-                else -> ChannelPick(GroupChannel.Frequency(best(candidates)), "the peer cannot join on $hostSta")
+                pinnable.isEmpty() -> ChannelPick(GroupChannel.Band24, "no channel in common off DFS")
+                else -> ChannelPick(GroupChannel.Frequency(best(pinnable)), "the peer cannot join on $hostSta")
             }
         }
         if (hostSta == null || !isDfs(hostSta)) return ChannelPick(GroupChannel.Auto, "the peer did not say")

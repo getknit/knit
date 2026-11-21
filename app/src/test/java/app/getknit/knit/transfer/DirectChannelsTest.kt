@@ -99,15 +99,19 @@ class DirectChannelsTest {
     }
 
     @Test
-    fun theBestCommonChannelIsFiveGigahertzOffDfsFirst() {
+    fun theBestCommonChannelIsFiveGigahertzOffDfsAndNeverADfsOneTheHostIsNotOn() {
         assertEquals(
             GroupChannel.Frequency(5745),
             DirectChannels.choose(hostSta = 5500, client = setOf(2437, 5745, 5520), hostGo = setOf(2437, 5745, 5520)).channel,
         )
+        // A DFS channel in common is passed over for 2.4 GHz: a group pinned there formed nothing on a Redmi Note 13.
         assertEquals(
-            GroupChannel.Frequency(5520),
+            GroupChannel.Frequency(2437),
             DirectChannels.choose(hostSta = 5500, client = setOf(2437, 5520), hostGo = setOf(2437, 5520)).channel,
         )
+        assertEquals(GroupChannel.Band24, DirectChannels.choose(hostSta = 5180, client = setOf(5520), hostGo = setOf(5520)).channel)
+        // The one it is on already, it keeps: Auto.
+        assertEquals(GroupChannel.Auto, DirectChannels.choose(hostSta = 5520, client = setOf(5520), hostGo = setOf(5520)).channel)
         assertEquals(GroupChannel.Frequency(2437), DirectChannels.choose(hostSta = 5500, client = setOf(2412, 2437), hostGo = null).channel)
     }
 
@@ -191,6 +195,7 @@ class DirectChannelsTest {
         if (c.go != null) assertTrue("pinned where the host cannot own: $c", mhz in c.go)
         // Where the peer did not say, the host pins only from its own list, and only 5 GHz off DFS.
         if (c.client == null) assertTrue("pinned DFS or 2.4 GHz for a peer that did not say: $c", mhz in c.ownOffDfs)
+        assertFalse("pinned a DFS channel: $c", DirectChannels.isDfs(mhz))
         val best = (c.shared ?: c.ownOffDfs).filter(::offDfs)
         if (best.isNotEmpty()) assertTrue("passed over 5 GHz off DFS: $c", mhz in best)
         // And only where it was needed: a station's channel the peer can find keeps the group there, at its speed.
@@ -203,8 +208,9 @@ class DirectChannelsTest {
 
     private fun onTwoPointFourOnlyWithNothingInCommon(c: Choice) {
         val sta = c.sta
-        val nothingShared = c.shared?.isEmpty() ?: (sta != null && DirectChannels.isDfs(sta) && c.ownOffDfs.isEmpty())
-        assertTrue("2.4 GHz with a channel in common: $c", sta != null && nothingShared)
+        // Nothing in common the host may pin: a DFS channel in common does not count, as it is never pinned.
+        val nothingShared = c.shared?.all(DirectChannels::isDfs) ?: (sta != null && DirectChannels.isDfs(sta) && c.ownOffDfs.isEmpty())
+        assertTrue("2.4 GHz with a channel in common off DFS: $c", sta != null && nothingShared)
     }
 
     @Test

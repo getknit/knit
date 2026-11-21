@@ -73,7 +73,8 @@ reasoning.
   Wi-Fi's channel, and some phones host Wi-Fi Direct on DFS channels (5260–5720 MHz) that others cannot join: a
   Pixel 9 on an access point at 5500 put its group there and a Pixel 7 failed every join (`REASON_JOIN_FAILED`,
   `FORMATION_FAILED` in the supplicant). The receiver's ACCEPT now carries `ch`, its client frequencies, and the
-  host's `DirectChannels.choose` keeps `GROUP_OWNER_BAND_AUTO` only when the peer can join there. A pinned frequency
+  host's `DirectChannels.choose` keeps `GROUP_OWNER_BAND_AUTO` only when the peer can join there, and never pins a DFS
+  channel the host is not already on (a Redmi Note 13 formed nothing there, 2026-11-21). A pinned frequency
   that is refused or forms nothing gets one more try on 2.4 GHz (`DirectChannels.raise`, JVM-tested; the radio's half
   is `AndroidDirectWifi.hostOn`). Where each kind of group actually forms on a phone is `DirectGroupProbeTest`'s
   question (`androidTest/…/transfer/`, Device Farm only: CI's emulators have no Wi-Fi Direct). When a transfer
