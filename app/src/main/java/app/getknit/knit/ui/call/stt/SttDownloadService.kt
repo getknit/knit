@@ -40,6 +40,12 @@ class SttDownloadService :
     private var shownPercent = -1
     private var shownAt = 0L
 
+    override fun onCreate() {
+        super.onCreate()
+        // Once, not on every progress post: each [claim] would otherwise ask the platform for three channels a second.
+        CallNotifications.ensureChannels(this)
+    }
+
     override fun onStartCommand(
         intent: Intent?,
         flags: Int,
@@ -85,7 +91,6 @@ class SttDownloadService :
         if (state.total > 0) (state.done * PROGRESS_MAX / state.total).toInt() else 0
 
     private fun claim(state: SttModelState) {
-        CallNotifications.ensureChannels(this)
         val downloading = state as? SttModelState.Downloading
         val notification =
             NotificationCompat

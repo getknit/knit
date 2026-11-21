@@ -208,7 +208,7 @@ internal object CallNotifications {
                     .build(),
             )
         }
-        manager.deleteNotificationChannel(LEGACY_RING)
+        NotificationChannels.delete(manager, LEGACY_RING)
     }
 
     fun post(

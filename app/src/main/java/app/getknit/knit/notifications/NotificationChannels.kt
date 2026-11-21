@@ -5,6 +5,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.net.Uri
 import android.provider.Settings
+import android.util.Log
 import androidx.annotation.RawRes
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationChannelGroupCompat
@@ -60,6 +61,8 @@ object NotificationChannels {
     // (silent) and a channel's importance is immutable once created. Bumped to _v2 for its own sound (ADR
     // 2026-10.xukf).
     const val OPEN_TO_CHAT = "knit_open_to_chat_v2"
+
+    private const val TAG = "KnitNotify"
 
     private const val GROUP_MESSAGES = "knit_grp_messages"
     private const val GROUP_APP = "knit_grp_app"
@@ -279,19 +282,40 @@ object NotificationChannels {
             ),
         )
 
-        // Drop the pre-reorg flat channels + the pre-bump DEFAULT/LOW channels so they don't linger.
-        manager.deleteNotificationChannel(LEGACY_MESSAGES)
-        manager.deleteNotificationChannel(LEGACY_MENTIONS)
-        manager.deleteNotificationChannel(LEGACY_GROUPS)
-        manager.deleteNotificationChannel(LEGACY_REQUESTS)
+        // Drop the pre-reorg flat channels + the pre-bump DEFAULT/LOW channels so they don't linger. Only the ones still
+        // there: past the first ensure after an upgrade there is nothing to delete, and no delete is asked (see [delete]).
+        val present = existing.mapTo(HashSet()) { it.id }
+        for (legacy in listOf(LEGACY_MESSAGES, LEGACY_MENTIONS, LEGACY_GROUPS, LEGACY_REQUESTS)) {
+            delete(manager, legacy, present = legacy in present)
+        }
         // The conversations follow their parents across, then every replaced channel goes. A conversation whose new
         // parent this build doesn't register (the commons, hidden) has nowhere to go and goes with it.
         for (conversation in oldConversations) {
             val parent = REPLACED[conversation.parentChannelId]?.let(manager::getNotificationChannelCompat)
             if (parent != null) manager.createNotificationChannel(movedConversation(context, conversation, parent))
-            manager.deleteNotificationChannel(conversation.id)
+            delete(manager, conversation.id, present = true)
         }
-        REPLACED.keys.forEach(manager::deleteNotificationChannel)
+        for (replaced in REPLACED.keys) delete(manager, replaced, present = replaced in present)
+    }
+
+    /**
+     * Deletes the channel [id] when the platform still holds it ([present]), and never throws. Before a delete the
+     * platform checks that no foreground service of the app posts to that channel, reading each of its foreground
+     * services' notifications unguarded (`ActiveServices.hasForegroundServiceNotificationLocked`), and a service record
+     * that holds none turns the delete into a NullPointerException (Play Console, v2.12.0: `SttDownloadService` deleting
+     * [CallNotifications]'s legacy ring channel as it started). A clean-up is not worth a crash, and a channel left
+     * behind goes on the next call.
+     */
+    internal fun delete(
+        manager: NotificationManagerCompat,
+        id: String,
+        present: Boolean = manager.getNotificationChannelCompat(id) != null,
+    ) {
+        if (!present) return
+        // A conversation's channel id is "<parent> : <conversation>", and the conversation names a contact or a group:
+        // the log names the parent only.
+        runCatching { manager.deleteNotificationChannel(id) }
+            .onFailure { Log.w(TAG, "notification channel ${id.substringBefore(" : ")} kept: $it") }
     }
 
     /**
