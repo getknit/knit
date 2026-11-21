@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Drive a release-shaped Knit APK past onboarding on an emulator, and fail if it crashes.
+"""Drive a release-shaped Knit APK past onboarding on an emulator or a farm phone, and fail if it crashes.
 
-    python3 scripts/release-smoke.py APK [--serial emulator-5554] [--timeout 30] [--video FILE]
+    python3 scripts/release-smoke.py APK [--serial emulator-5554] [--timeout 30] [--video FILE] [--farm]
 
 Launching is not enough on its own. Three R8 defects have broken resource-XML vector drawables in minified builds: a
 renamed platform interface the framework's parser no longer implemented (ADR 012), a `throw null` from a closed-world
@@ -10,7 +10,9 @@ inference that let onboarding render and died on the chat list (ADR 050), and a 
 chat list's room avatar on a phone already set up (GitHub #59). So this goes where people go:
 
 1. a clean install (auto-restore off, so no backup skips onboarding);
-2. onboarding: Get started, Skip for now, then the radio permissions granted with `pm grant` and Allow tapped (the
+2. onboarding: Get started, the Battery starting point (relays stay off, so the smoke message never leaves the phone
+   over the Internet, and screens stay capturable for a farm's video, which Privacy-first's FLAG_SECURE blacks out),
+   Skip for now, then the radio permissions granted with `pm grant` and Allow tapped (the
    request returns at once, so no system dialog), then Start meshing;
 3. the chat list, which draws the room avatar;
 4. the Nearby room: type a message, send it, see it in the transcript;
@@ -37,6 +39,11 @@ English strings in app/src/main/res/values/strings.xml, with the app's locale pi
 An unsigned APK (`app-release-unsigned.apk`) is aligned and signed with the debug key into a temporary copy. The
 script uninstalls Knit first, which deletes its data, so it refuses any serial that is not `emulator-*`: the lab
 phones hold organic state (.agents/rules/devices.md).
+
+`--farm` is for a device farm's phone, which the farm wipes after the session: it allows a serial that is not an
+emulator, and installs the APK as given, skipping the signing step, because a farm's test host has no build-tools. Sign
+the APK first (`:app:assembleStaging` is R8-minified like release and signed with the debug key). Never pass it for a lab
+phone.
 """
 
 from __future__ import annotations
@@ -110,9 +117,16 @@ def signed(apk: pathlib.Path, tmp: pathlib.Path) -> pathlib.Path:
     return out
 
 
+def has_area(node: dict[str, str]) -> bool:
+    """A node a tap can hit. A screen still entering can dump its nodes clipped to nothing, at the same empty bounds
+    twice in a row."""
+    x1, y1, x2, y2 = map(int, re.findall(r"-?\d+", node.get("bounds", "[0,0][0,0]")))
+    return x2 > x1 and y2 > y1
+
+
 class Device:
-    def __init__(self, serial: str, timeout: float):
-        self.serial, self.timeout = serial, timeout
+    def __init__(self, serial: str, timeout: float, verbose: bool = False):
+        self.serial, self.timeout, self.verbose = serial, timeout, verbose
 
     def adb(self, *args: str, check: bool = True) -> str:
         r = subprocess.run(["adb", "-s", self.serial, *args], capture_output=True, text=True, check=False)
@@ -141,14 +155,84 @@ class Device:
             if (c := self.crash()) is not None:
                 raise SmokeFailure(f"the app crashed waiting for {what}:\n" + "\n".join(c.splitlines()[:40]))
             for n in self.nodes():
-                if match(n):
+                if match(n) and has_area(n):
                     return n
             time.sleep(1)
         raise SmokeFailure(f"timed out after {timeout:.0f} s waiting for {what}")
 
-    def tap(self, node: dict[str, str]) -> None:
+    def tap(self, node: dict[str, str], low: bool = False) -> None:
+        """Tap a node's centre, or with [low] just inside its bottom edge."""
         x1, y1, x2, y2 = map(int, re.findall(r"\d+", node["bounds"]))
-        self.adb("shell", "input", "tap", str((x1 + x2) // 2), str((y1 + y2) // 2))
+        x, y = (x1 + x2) // 2, (y2 - 6 if low else (y1 + y2) // 2)
+        if self.verbose:
+            label = node.get("resource-id") or node.get("text") or node.get("content-desc") or node.get("class")
+            print(f"    tap {label!r} at {x},{y} {node['bounds']}", flush=True)
+        self.adb("shell", "input", "tap", str(x), str(y))
+
+    def settled(self, what: str, match) -> dict[str, str]:
+        """[wait] for a node, then until two dumps in a row put it in the same place. Every tap goes through this.
+
+        A slow phone dumps a screen mid-transition, a banner that arrives late pushes a list's rows down, and a soft
+        keyboard (an emulator has none) slides up after a page with a focused field renders and lifts the buttons above
+        it. Bounds read before any of them settled tap something else: on a Galaxy A51 the chat's back arrow, not its
+        message field.
+        """
+        node = self.wait(what, match)
+        for _ in range(6):
+            time.sleep(0.5)
+            again = next((n for n in self.nodes() if match(n) and has_area(n)), None) or self.wait(what, match)
+            if again["bounds"] == node["bounds"]:
+                return again
+            node = again
+        return node
+
+    def focus(self, what: str, match) -> None:
+        """Tap a text field until it has focus, and fail rather than type into a window with none.
+
+        Keys typed with nothing focused leave touch mode, focus moves to the first focusable node, and a space presses
+        it: on a Galaxy A51 that was the chat's back arrow. A dump can also cut a field off at the window's bottom
+        edge (the A51 reports the composer as [74,2127][859,2186] while it is drawn down to about 2240), so the centre
+        of those bounds is the field's top edge, where a tap focuses nothing; the second try taps near the bottom.
+        """
+        for low in (False, True, True):
+            self.tap(self.settled(what, match), low=low)
+            try:
+                Device(self.serial, 4, self.verbose).wait(f"{what}, focused",
+                                                          lambda n: match(n) and n.get("focused") == "true", 4)
+                return
+            except SmokeFailure as e:
+                if "crashed" in str(e):
+                    raise
+        raise SmokeFailure(f"{what} never took focus, so nothing was typed")
+
+    def advance(self, what: str, match, next_what: str, next_match, tries: int = 3) -> dict[str, str]:
+        """Tap [what] and wait for [next_what], tapping again while the next page has not come."""
+        for _ in range(tries - 1):
+            self.tap(self.settled(what, match))
+            try:
+                return Device(self.serial, 8, self.verbose).wait(next_what, next_match, 8)
+            except SmokeFailure as e:
+                if "crashed" in str(e):
+                    raise
+                if not any(match(n) for n in self.nodes()):  # the tap took and the page is still on its way
+                    return self.wait(next_what, next_match)
+        self.tap(self.settled(what, match))
+        return self.wait(next_what, next_match)
+
+
+def scroll_to(dev: Device, what: str, match, swipes: int = 4) -> dict[str, str]:
+    """[Device.wait] for a node that may sit below the fold of a scrolling page, swiping up between tries."""
+    for _ in range(swipes):
+        try:
+            Device(dev.serial, 3, dev.verbose).wait(what, match, 3)
+            return dev.settled(what, match)  # a swipe can still be flinging the page
+        except SmokeFailure as e:
+            if "crashed" in str(e):
+                raise
+        size = re.search(r"(\d+)x(\d+)", dev.adb("shell", "wm", "size"))
+        w, h = (int(size.group(1)), int(size.group(2))) if size else (1080, 2400)
+        dev.adb("shell", "input", "swipe", str(w // 2), str(h * 3 // 4), str(w // 2), str(h // 4), "300")
+    return dev.wait(what, match)
 
 
 def tag(t: str):
@@ -192,12 +276,12 @@ def send_video(dev: Device, s: dict[str, str], room: str, video: pathlib.Path) -
     dev.adb("shell", "am", "start", "-W", "-n", ACTIVITY, "-a", "android.intent.action.SEND", "-d", uri, "-t",
             "video/mp4", "--grant-read-uri-permission", "--eu", "android.intent.extra.STREAM", uri)
     dev.wait("the share-target picker", tag("screen_share_target"))
-    dev.tap(dev.wait("the picker's Nearby row", desc_prefix(room)))
+    dev.tap(dev.settled("the picker's Nearby row", desc_prefix(room)))
     # The staged row's Remove button, not its `chat_staged_video` tag: the tag is newer than 2.10, and the mirror runs
     # this script on a hotfix branch's build too. While the video encodes, the composer shows a progress tile instead.
     remove = s["chat_remove_attachment"]
     dev.wait("the re-encoded video staged in the composer", lambda n: n.get("content-desc") == remove, VIDEO_TIMEOUT)
-    dev.tap(dev.wait("Send", tag("chat_send")))
+    dev.tap(dev.settled("Send", tag("chat_send")))
     dev.wait("the sent video in the transcript", tag("chat_video_bubble"))
 
 
@@ -217,24 +301,32 @@ def run(dev: Device, apk: pathlib.Path, video: pathlib.Path) -> None:
         print(f"ok  installed and launched {apk.name} on API {sdk}")
 
         dev.wait("onboarding's welcome page", tag("onboarding_page_welcome"))
-        dev.tap(dev.wait(s["onboarding_get_started"], tag("onboarding_next")))
-        dev.wait("onboarding's name page", tag("onboarding_page_name"))
-        dev.tap(dev.wait(s["onboarding_name_skip"], text(s["onboarding_name_skip"])))
-        dev.wait("onboarding's permissions page", tag("onboarding_page_permissions"))
+        dev.advance(s["onboarding_get_started"], tag("onboarding_next"),
+                    "onboarding's starting-point page", tag("onboarding_page_preset"))
+        dev.tap(scroll_to(dev, s["preset_battery_title"], tag("preset_battery")))
+        scroll_to(dev, f"{s['onboarding_continue']}, enabled",
+                  lambda n: tag("onboarding_next")(n) and n.get("enabled") == "true")
+        dev.advance(f"{s['onboarding_continue']}, enabled",
+                    lambda n: tag("onboarding_next")(n) and n.get("enabled") == "true",
+                    "onboarding's name page", tag("onboarding_page_name"))
+        # By tag, not by its "Skip for now" text: a tap the keyboard caught may have typed a letter, which makes it
+        # Continue.
+        dev.advance(s["onboarding_name_skip"], tag("onboarding_next"),
+                    "onboarding's permissions page", tag("onboarding_page_permissions"))
         for p in radio_permissions(sdk):
             dev.adb("shell", "pm", "grant", PKG, f"android.permission.{p}", check=False)
-        dev.tap(dev.wait(f"{s['onboarding_allow']} (the radio permissions)", tag("onboarding_grant")))
-        dev.tap(dev.wait(f"{s['onboarding_start']}, enabled",
+        dev.tap(dev.settled(f"{s['onboarding_allow']} (the radio permissions)", tag("onboarding_grant")))
+        dev.tap(dev.settled(f"{s['onboarding_start']}, enabled",
                          lambda n: tag("onboarding_start")(n) and n.get("enabled") == "true"))
         print("ok  onboarding")
 
-        dev.tap(dev.wait("the chat list's Nearby row (the room avatar)", desc_prefix(room)))
+        dev.tap(dev.settled("the chat list's Nearby row (the room avatar)", desc_prefix(room)))
         print("ok  chat list rendered")
 
         message = f"Smoke test {int(time.time())}"
-        dev.tap(dev.wait("the message field", tag("chat_input")))
+        dev.focus("the message field", tag("chat_input"))
         dev.adb("shell", "input", "text", message.replace(" ", "%s"))
-        dev.tap(dev.wait("Send", tag("chat_send")))
+        dev.tap(dev.settled("Send", tag("chat_send")))
         dev.wait("the sent message in the transcript", text(message))
         print("ok  sent a message in Nearby")
 
@@ -243,8 +335,8 @@ def run(dev: Device, apk: pathlib.Path, video: pathlib.Path) -> None:
                 break
             dev.adb("shell", "input", "keyevent", "BACK")
             time.sleep(1)
-        dev.tap(dev.wait(s["chat_more_options"], lambda n: n.get("content-desc") == s["chat_more_options"]))
-        dev.tap(dev.wait(s["settings_title"], text(s["settings_title"])))
+        dev.tap(dev.settled(s["chat_more_options"], lambda n: n.get("content-desc") == s["chat_more_options"]))
+        dev.tap(dev.settled(s["settings_title"], text(s["settings_title"])))
         dev.wait("the Settings screen", tag("screen_settings"))
         dev.adb("shell", "input", "keyevent", "BACK")
         print("ok  Settings")
@@ -271,6 +363,10 @@ def main() -> None:
     ap.add_argument("--timeout", type=float, default=30.0, help="seconds to wait for each screen (default 30)")
     ap.add_argument("--video", type=pathlib.Path, default=VIDEO,
                     help=f"the video to share (default {VIDEO.relative_to(REPO)})")
+    ap.add_argument("--verbose", action="store_true", help="print where each tap lands")
+    ap.add_argument("--farm", action="store_true",
+                    help="a device farm phone the farm wipes afterwards: allow a non-emulator serial and install the "
+                         "APK as given (sign it first)")
     args = ap.parse_args()
     if not args.video.is_file():
         sys.exit(f"release-smoke: no video at {args.video}")
@@ -282,12 +378,12 @@ def main() -> None:
         serial = emulators[0] if len(emulators) == 1 else None
         if serial is None:
             sys.exit(f"release-smoke: pass --serial; attached emulators: {emulators or 'none'}")
-    if not serial.startswith("emulator-"):
+    if not serial.startswith("emulator-") and not args.farm:
         sys.exit(f"release-smoke: {serial} is not an emulator; this uninstalls Knit and deletes its data")
     with tempfile.TemporaryDirectory() as tmp:
-        apk = signed(args.apk, pathlib.Path(tmp))
+        apk = args.apk if args.farm else signed(args.apk, pathlib.Path(tmp))
         try:
-            run(Device(serial, args.timeout), apk, args.video)
+            run(Device(serial, args.timeout, args.verbose), apk, args.video)
         except SmokeFailure as e:
             print(f"\nFAIL: {e}", file=sys.stderr)
             sys.exit(1)
