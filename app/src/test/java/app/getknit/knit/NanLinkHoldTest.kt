@@ -64,4 +64,33 @@ class NanLinkHoldTest {
         // ...but its window is, so a dead peer on the far side costs at most that long.
         assertTrue(NanLinkLife.done(idleMs = 0, ageMs = 30_000, quiescenceMs = 5_000, windowMs = 30_000, held = true))
     }
+
+    @Test
+    fun aLiveCustodyAnswerHoldsTheLinkNotIdleWithinTheSyncWindowOnly() {
+        // Custody's paced rounds come a second apart: an answer still live keeps either role from its idle close...
+        val window = 30_000L
+        assertTrue(NanLinkLife.answerHeld(answerLive = true, ageMs = 29_999, windowMs = window))
+        assertFalse(
+            "a responder idle past its quiescence stays up for the answer",
+            NanLinkLife.done(
+                idleMs = 9_000,
+                ageMs = 20_000,
+                quiescenceMs = 8_000,
+                windowMs = 45_000,
+                held = NanLinkLife.answerHeld(answerLive = true, ageMs = 20_000, windowMs = window),
+            ),
+        )
+        // ...but no longer than a sync may last, the responder's longer backstop included, and never without one.
+        assertFalse(NanLinkLife.answerHeld(answerLive = true, ageMs = window, windowMs = window))
+        assertTrue(
+            NanLinkLife.done(
+                idleMs = 9_000,
+                ageMs = 30_000,
+                quiescenceMs = 8_000,
+                windowMs = 45_000,
+                held = NanLinkLife.answerHeld(answerLive = true, ageMs = 30_000, windowMs = window),
+            ),
+        )
+        assertFalse(NanLinkLife.answerHeld(answerLive = false, ageMs = 0, windowMs = window))
+    }
 }

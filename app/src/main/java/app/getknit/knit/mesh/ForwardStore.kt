@@ -57,13 +57,37 @@ interface ForwardStore {
     /** Non-expired carried frames (at [now]), newest first, for re-offering to a freshly-joined neighbor. */
     suspend fun liveFrames(now: Long): List<CarriedFrame>
 
+    /**
+     * Every non-expired carried frame (at [now]) as an answer reads it, its bytes left out ([IndexedFrame]): what a paced
+     * round orders and charges, so it loads only what it sends ([liveFramesByIds]). The default derives it from
+     * [liveFrames], numbering `receivedAt` down that read's order so a fake's newest-first order is the index's; the Room
+     * implementation reads a projection.
+     */
+    suspend fun liveIndex(now: Long): List<IndexedFrame> {
+        val live = liveFrames(now)
+        return live.mapIndexed { i, carried ->
+            val env = carried.envelope
+            IndexedFrame(
+                id = env.id,
+                type = env.type,
+                senderId = env.senderId,
+                recipientId = env.recipientId,
+                groupId = env.group?.id,
+                sentAt = env.sentAt,
+                receivedAt = (live.size - i).toLong(),
+                cost = IndexedFrame.wireCost(carried.sig.size, carried.signed.size),
+            )
+        }
+    }
+
     /** Ids of the non-expired carried frames (at [now]) — advertised to a neighbor for the data-path id-diff. */
     suspend fun liveIds(now: Long): List<String>
 
     /**
      * The non-expired carried frames among [ids] (at [now]), newest first by `sentAt` — the long-range re-offer,
-     * chosen by id from our unacked DMs (ADR 2026-10.a4pm; its relayed half went with ADR 2026-10.rp3s). The default derives it from
-     * [liveFrames]; the Room implementation reads the rows by key.
+     * chosen by id from our unacked DMs (ADR 2026-10.a4pm; its relayed half went with ADR 2026-10.rp3s), and the frames a
+     * paced custody round sends. The default derives it from [liveFrames]; the Room implementation reads the rows by key,
+     * in chunks under SQLite's bind limit.
      */
     suspend fun liveFramesByIds(
         ids: Collection<String>,

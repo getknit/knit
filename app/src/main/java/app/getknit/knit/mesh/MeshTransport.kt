@@ -285,6 +285,9 @@ data class ReceivedDigest(
 class LinkCarrier(
     val kind: TransportKind,
     val link: Any?,
+    // Whether [link] proved the peer's node id ([MeshTransport.linkProven]): only a round over such a link leaves a pending
+    // release or a credited hand-off behind (§3, §6), whatever the digest it answers proved.
+    val proven: Boolean = false,
 )
 
 /**
@@ -647,7 +650,14 @@ interface MeshTransport {
      * uses, Bluetooth first. Lock-free, and never calls into custody, as [linkToken].
      */
     fun carrier(nodeId: String): LinkCarrier? =
-        if (neighbors.value.any { it.nodeId == nodeId }) LinkCarrier(kind, linkToken(nodeId)) else null
+        if (neighbors.value.any { it.nodeId == nodeId }) LinkCarrier(kind, linkToken(nodeId), linkProven(nodeId)) else null
+
+    /**
+     * Whether this plane's live link to [nodeId] proved the peer's node id (both ends carry the link proof, the link is
+     * sealed, or it is a contact's direct link): the proof [InboundFrame.proven] stamps, read for the link a send would go
+     * over now. Default false, which leaves custody's memo and credits unwritten. Lock-free, as [linkToken].
+     */
+    fun linkProven(nodeId: String): Boolean = false
 
     /**
      * Whether a plane of [kind] still holds [link] as its live link to [nodeId]: false once that link ended or was replaced.

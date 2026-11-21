@@ -121,11 +121,14 @@ A per-message **TTL** sweep (startup + a 10-min loop + the heartbeat `heal()`; b
 TTL than DMs/groups), a **per-sender quota**, a **per-group quota**, a **broadcast quota** and a **global cap**,
 each enforced by evicting rather than refusing the new frame, and applied to **our own sends too** (not just relayed
 traffic). The three buckets keep their **newest-N by the frame-global `(sentAt, id)`**. The global cap evicts **one
-row at a time from the largest sender bucket**: the oldest `(sentAt, id)` frame of the sender holding the most live
-frames, and on a tie for most, the sender whose oldest frame is oldest (`ForwardDao.largestBucketRows` and `CapEviction`,
-ADR 2026-10.7mqm).
-Both keys read only the frame and the held set, so every node holding the same frames keeps the same ones and their
-content digests converge. A frame its own write evicts is one `store` answers false for, so nothing pulls its blob.
+row at a time from the largest sender bucket** (ADR 2026-10.7mqm), choosing within the buckets tied for largest by
+**spread** descending, then the oldest `(sentAt, id)` (`ForwardDao.largestBucketRows` and `CapEviction`, ADR
+2026-11.bmks): spread is the carry ledger's count of peers believed to hold the row (`CarryLedger`, fed by proven links
+only), and with no holders recorded the order is 7mqm's. Below the cap every rule reads only the frame and the held set,
+so every node holding the same frames keeps the same ones and their content digests converge. At the cap the choice of
+row also reads the ledger, so stores there may differ for good; the not-kept memo, the paced answer and the re-offer
+back-off bound what that costs (ADR 2026-11.bmks). A frame its own write evicts is one `store` answers false for, so
+nothing pulls its blob.
 
 The global cap was newest-N too until the malicious-fork review (C2): five free identities × 200 frames stamped just
 inside the five-minute future window were the newest frames in every store, evicted every honest frame on every node
@@ -216,8 +219,9 @@ long-TTL row — counting it would evict a live row on the unswept node only), a
 frame-global expiry is **refused at store time** (dead-on-arrival guard, which is also what stops a
 skewed-clock peer's re-serve resurrecting a swept frame); the sweep is pure storage GC and digest-neutral.
 
-Rule of thumb: **anything the content digest is folded over must be bounded by a rule that's identical on
-every node** (same key, same direction, same origins, same liveness) — which makes the **TTL constants
+Rule of thumb: **below the row cap, anything the content digest is folded over must be bounded by a rule that's
+identical on every node** (same key, same direction, same origins, same liveness); the global cap's choice of row is
+the one place custody may read per-node state (ADR 2026-11.bmks) — which makes the **TTL constants
 (`DEFAULT_TTL_MS`/`DEFAULT_BROADCAST_TTL_MS`) and the broadcast-chat classification
 convergence-critical**: two app versions that disagree hold different live sets *continuously* for the
 whole TTL delta, so treat changing them like a wire change. The eviction keys and the group gate are pinned for every
@@ -301,7 +305,8 @@ for the whole ten-minute window (on Bluetooth `LinkCrossings` also keeps the car
 With the profile first the newcomer refuses nothing. When the carrier's custody no longer holds the profile
 (the per-sender quota evicts a chatty sender's oldest frame, which is its profile; the TTL takes a departed
 sender's first) the digest reply sends the pin's copy ahead instead — to a peer holding none of that sender's
-frames we hold, since custodying one means it verified it (`ForwardSync.keylessSenders`, ADR 2026-09.g64k) —
+frames we hold, since custodying one means it verified it (`ForwardSync.onDigest`'s round, ADR 2026-09.g64k; once per
+answer, charged to its round, since the custody-carry-policy change) —
 and if that copy is lost the key comes by `keyreq`, answered from the same store, while the whole backlog is
 parked to replay. `MeshManager` injects the custody quota as the park's cap
 (pinned by `PendingInboundTest`); below it, the tail of every such backlog is ten minutes late again.

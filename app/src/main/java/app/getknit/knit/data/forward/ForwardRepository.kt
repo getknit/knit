@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.CarryReader
 import app.getknit.knit.mesh.CarrySnapshot
 import app.getknit.knit.mesh.ForwardStore
+import app.getknit.knit.mesh.IndexedFrame
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.RoomAttachments
 import app.getknit.knit.mesh.StoreDigest
@@ -301,17 +302,34 @@ class ForwardRepository(
 
     override suspend fun liveIds(now: Long): List<String> = dao.liveIds(now)
 
+    override suspend fun liveIndex(now: Long): List<IndexedFrame> =
+        dao.liveIndex(now).map {
+            IndexedFrame(
+                id = it.id,
+                type = it.type,
+                senderId = it.senderId,
+                recipientId = it.recipientId,
+                groupId = it.groupId,
+                sentAt = it.sentAt,
+                receivedAt = it.receivedAt,
+                cost = IndexedFrame.wireCost(it.sigBytes, it.signedBytes),
+            )
+        }
+
+    // In chunks: every id is one bound parameter, and SQLite caps those per statement (a round may name hundreds). One
+    // chunk keeps the query's own order; several are merged into it, ids compared as SQLite's BINARY does.
     override suspend fun liveFramesByIds(
         ids: Collection<String>,
         now: Long,
-    ): List<CarriedFrame> =
-        if (ids.isEmpty()) {
-            emptyList()
-        } else {
-            dao.liveRowsByIds(ids.toList(), now).mapNotNull { row ->
-                WireCodec.decodeEnvelope(row.signed)?.let { CarriedFrame(it, row.sig, row.signed) }
-            }
-        }
+    ): List<CarriedFrame> {
+        val chunks = ids.distinct().chunked(BIND_CHUNK)
+        val rows =
+            chunks.singleOrNull()?.let { dao.liveRowsByIds(it, now) }
+                ?: chunks
+                    .flatMap { dao.liveRowsByIds(it, now) }
+                    .sortedWith { a, b -> if (a.sentAt != b.sentAt) b.sentAt.compareTo(a.sentAt) else CapEviction.compareBytes(b.id, a.id) }
+        return rows.mapNotNull { row -> WireCodec.decodeEnvelope(row.signed)?.let { CarriedFrame(it, row.sig, row.signed) } }
+    }
 
     override suspend fun liveGroupChatFrames(
         excludingSender: String,
@@ -475,6 +493,9 @@ class ForwardRepository(
         const val DEFAULT_MAX_BROADCAST = 200
 
         private const val TAG = "ForwardRepository"
+
+        // Ids bound per `IN (…)` read: well under SQLite's 999-parameter floor, with `now` beside them.
+        private const val BIND_CHUNK = 500
 
         // How much of a frame or node id a log line names: enough to find it in a dump, no more.
         private const val ID_CHARS = 8

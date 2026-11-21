@@ -5,6 +5,7 @@ import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import kotlinx.coroutines.CompletableDeferred
 import java.io.IOException
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -40,6 +41,19 @@ class LabCustodyGate {
      * the count as it leaves the gate, before it is stored: await the send that made it, not this, to know it landed.
      */
     val parked: Int get() = waiting.get()
+
+    /**
+     * Every write the stack's custody kept with a proven neighbour as its source, in the order they returned: the event
+     * custody's re-offer back-off reads as an offer that drew (the custody-carry-policy contract's §7), seen at the write,
+     * so a row kept and evicted again by a later write still counts.
+     */
+    val keptFrom = CopyOnWriteArrayList<KeptWrite>()
+
+    /** One kept write: the frame [id] custody kept, from the neighbour [source]. */
+    class KeptWrite(
+        val source: String,
+        val id: String,
+    )
 
     /** From now on, a custody write of a frame [which] answers true for waits for [release]. */
     fun hold(which: (RelayEnvelope) -> Boolean) {
@@ -82,7 +96,9 @@ class LabCustodyGate {
                         waiting.decrementAndGet()
                     }
                 }
-                return store.store(frame, origin, now, source)
+                return store.store(frame, origin, now, source).also { kept ->
+                    if (kept && source != null) keptFrom += KeptWrite(source, frame.envelope.id)
+                }
             }
 
             override suspend fun liveIds(now: Long): List<String> {

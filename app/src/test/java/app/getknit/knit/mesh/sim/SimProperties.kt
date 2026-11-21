@@ -55,6 +55,19 @@ internal object SimProperties {
     const val LOAD = "knit.meshSimLoad"
     const val LOAD_AUTHORS = "knit.meshSimLoadAuthors"
 
+    /**
+     * `true` runs custody as before its pace (the custody-carry-policy contract's §2 and §7): every answer whole in its
+     * first round and the 60 s re-offer never held back, for a comparison with a run before the change. Unset, an outing
+     * and a pass-by run production's pace and back-off ([SimScenario.unpaced], [PassByScenario.unpaced]).
+     */
+    const val UNPACED = "knit.meshSimUnpaced"
+
+    /**
+     * `true` has every store's global cap read each frame's spread as 0 ([app.getknit.knit.mesh.lab.LabLimits.custodyZeroSpread]):
+     * the eviction key of the contract's §5 off, the serve order and the pace on, to measure the key apart from them.
+     */
+    const val ZERO_SPREAD = "knit.meshSimZeroSpread"
+
     /** The metres a link is dialled within ([SimScenario.connectM]); 25 when unset. */
     const val RANGE = "knit.meshSimRangeM"
 
@@ -179,6 +192,8 @@ internal object SimProperties {
             nanRangeM = System.getProperty(NAN_RANGE)?.toDouble(),
             nanFailShare = System.getProperty(NAN_FAIL)?.toDouble(),
             nanDiscoverMs = System.getProperty(NAN_DISCOVER)?.toLong(),
+            unpaced = flag(UNPACED, defaults.unpaced),
+            zeroSpread = flag(ZERO_SPREAD, defaults.zeroSpread),
         )
     }
 
@@ -216,7 +231,15 @@ internal object SimProperties {
             backlog = System.getProperty(BACKLOG)?.toInt() ?: scenario.backlog,
             load = System.getProperty(LOAD)?.toInt() ?: scenario.load,
             loadAuthors = System.getProperty(LOAD_AUTHORS)?.toInt() ?: scenario.loadAuthors,
+            unpaced = flag(UNPACED, scenario.unpaced),
+            zeroSpread = flag(ZERO_SPREAD, scenario.zeroSpread),
         )
+
+    // A `true`/`false` property, [default] when unset.
+    private fun flag(
+        name: String,
+        default: Boolean,
+    ): Boolean = System.getProperty(name)?.toBoolean() ?: default
 
     private fun defaultFieldM(
         walkers: Int,

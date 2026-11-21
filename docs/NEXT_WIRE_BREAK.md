@@ -383,6 +383,11 @@ populations, so the lockstep comes free. The additive route would be a capabilit
 node folding a 24-hour digest for old peers). That costs scarce cue-plane bytes and only buys the transition,
 so it is not worth building unless this item has to ship without a break.
 
+ADR 2026-11.bmks lets stores **at the row cap** differ for good, with the not-kept memo, the paced answer and the
+re-offer back-off bounding what it costs. It does not change this item: the TTL and the quotas are still
+below-the-cap law, and a 7-day node and a 24-hour node differ below the cap too. The memo would hold each 1–7 day frame
+back from a 24-hour peer for 10 minutes at a time rather than end the churn, so the break is still the cheap route.
+
 **The TTL alone buys little.** Every sender, group and room bucket is trimmed to its newest N by `(sentAt, id)`, and
 the global cap evicts from the largest sender bucket first (ADR 2026-10.7mqm), so a sender who sends more than 200
 custodial frames a week loses their oldest frames to the count bound long before day 7.

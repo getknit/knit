@@ -245,6 +245,16 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   (room|closed|replaced|ended)` are new lines, one `waited` per `wait` (FramedLink's reader-only `onReadEnd` closes a
   spell at the link's end; no harness reads them yet); `bleInboundWaits` / `bleInboundWaitMs`. Tests:
   `LinkInboundTest`, `LinkCrossingsTest`, `InboundBurstLabTest`.
+- **When touching `mesh/bluetooth/LinkStamp`, `BluetoothMeshTransport.linkToken` / `linkProven` / `carrier`, or what `LinkEvents.onInbound` /
+  `onDigest` hand on:** READ the `CarryLedger` entry in `.agents/context/blobs.md` (the custody-carry-policy contract §3,
+  §6; ADR still owed). A frame or digest a link delivers carries `proven = FramedLink.proven` (a sealed link is always
+  proven) and `link` = that `FramedLink`; `linkToken` answers `links[nodeId]`, a lock-free map read that never calls into
+  custody, and `linkProven` the held link's `proven` (false with none); `carrier` takes both from one read of `links` (null with no
+  link), so a replacement between two reads never pairs the old token with the new proof, so a relink (`registerLink`'s `links.put`) is a new token and the old link's stamps stop matching. A
+  side-channel page stays unstamped (`proven = false`, `link = null`). A digest off a link `links` no longer holds (a
+  reader mid-decode across a #142 replacement or an R3 displacement) is still emitted, but with `proven = false`, so custody
+  never reads it as a relink; a frame off one never gets past `LinkInbound`'s `current`. No `FramedLink` edit, no wire change, no new log
+  line. Tests: `LinkStampTest`.
 - **When touching `mesh/bluetooth/GattPayloads`, `BleGattPayloadReader`, `BleAdvertPayload.FLAG_DIALS_GATT_PEERS`,
   `BuildConfig.BLE_GATT_PEERS`, `BleScanner`'s UUID filter, or `BluetoothMeshTransport.onScanResult` / `sight`:**
   READ ADR 2026-09.kwq2 (companion change A3; knit-ios ADR 2026-09.xzpt) and its section in

@@ -112,9 +112,11 @@ Before you edit, write down for yourself, for each behaviour the change adds or 
   `fileInFlightTo`, `fileArrivingFrom`, `BlobStore.storing`), "what is missing" is a read of the database, and a
   memo in `BlobExchange` is a swept cache of those. Name what a restart, a link replaced under the same node id and
   the Bluetooth stack's buffer (bytes written are not bytes received) do to each.
-- **Whether every node computes the same.** Anything custody keeps, evicts, folds into the digest or refuses must
-  be a function of the frame and the frame-global clock, never of receive time, arrival order, the block list or a
-  local setting.
+- **Whether every node computes the same, below the cap.** Anything custody admits, trims, folds into the digest or
+  refuses must be a function of the frame and the frame-global clock, never of receive time, arrival order, the block
+  list or a local setting. The one exception is the global row cap's choice of row, which may read the carry ledger's
+  spread (ADR 2026-11.bmks): stores at the cap differ for good, and the memo, the pace and the back-off bound what
+  that costs. A new key there needs a security pass, since a peer can read back from our digest whatever it reads.
 - **Whose input can trigger it.** A `blobreq`, a `blobhave` and a room post are unauthenticated or a stranger's: they
   must not reach a read that answers a question the asker could not otherwise answer (ADR 2026-10.mptm), and any
   bookkeeping they key must be bounded.

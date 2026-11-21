@@ -319,6 +319,7 @@ carries; never renumber an old one.
 | [2026-11.8zm5](decisions/2026-11-8zm5-the-host-puts-a-wi-fi-direct-group-on-a-channel-its-peer-can-join.md) | The host puts a Wi-Fi Direct group on a channel its peer can join | transfer, calls, wire |
 | [2026-11.acs5](decisions/2026-11-acs5-detekt-runs-only-type-resolved.md) | detekt runs only type-resolved, on every source folder | build, toolchain, static-analysis |
 | [2026-11.b37x](decisions/2026-11-b37x-hiding-a-known-node-is-presentation-only.md) | Hiding a known node is presentation only | contacts, diagnostics, ui |
+| [2026-11.bmks](decisions/2026-11-bmks-custody-carries-for-delivery.md) | custody carries for delivery, and stores agree only below the row cap | custody, mesh |
 | [2026-11.dgj2](decisions/2026-11-dgj2-a-restore-carries-each-dm-scope-so-its-reset-reaches-a-relay-only-contact.md) | a restore carries each DM scope so its reset reaches a relay-only contact | backup, spool, ratchet |
 | [2026-11.dgvf](decisions/2026-11-dgvf-media-links-and-files-lists.md) | Media, links and files lists the thread's own rows, screened as the chat screens them | ui, attachments, chat |
 | [2026-11.ejn8](decisions/2026-11-ejn8-translation-models-go-phone-to-phone-over-a-direct-transfer.md) | Translation models go phone to phone over a direct transfer | transfer, ml, wire, privacy |

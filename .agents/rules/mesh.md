@@ -367,25 +367,33 @@ plain `String` too (an unknown future type must *decode and relay*, not throw).
 coordinated wire break; adding a nullable/defaulted field or a new `type` is additive. Structure detail:
 `context/wire-format.md`.
 
-## Custody must converge — the content-digest rule
+## Custody carries for delivery, and agrees only below the row cap
 
-**Anything the content digest is folded over must be bounded by a rule that's identical on every node**
-(same key, same direction, same origins, same liveness). A sender, group or room bucket keeps its newest-N by the
-**frame-global `(sentAt, id)`**; the global cap evicts one row at a time keyed on **(sender's live count desc,
-`sentAt`, `id`)**, the oldest frame of the largest sender bucket (ADR 2026-10.7mqm), so a flood of free identities
-pays for the cap from its own buckets. Both apply on **every** origin (`ORIGIN_SELF` included); fold **live** ids
-only; refuse a frame past its frame-global expiry or past the five-minute future window at store time; and carry a
-frame naming a group only when its members and departed derive to the group's id and its sender is a member (the
-group gate, in `ForwardRepository.store`, never in `canCarry`, which is also the spool plane's delivery gate). Every
-one of these reads the frame and the held set alone. And a digest reply serves every live frame the peer lacks, a
-group's to a non-member too (ADR 2026-10.hr9f): the buckets agree only over equal held sets, so a filter on who is
-served leaves that peer holding what the others evicted and re-serving it to them at every exchange. Don't make the room or group trim fair: shipped builds and
-knit-ios keep newest-N there, and a busy room at its quota would split old nodes from new ones for good. A change to
-any of them regenerates `vectors/custody-v1.json` and is a paired change with knit-ios. This makes the **TTL constants
-(`DEFAULT_TTL_MS`/`DEFAULT_BROADCAST_TTL_MS`) and the broadcast-chat classification
-convergence-critical — treat changing them like a wire change.** Two nodes that disagree hold different
-live sets continuously and churn the NDP cue plane forever. Full failure history + how to verify
-(`…debug.STORE`, `liveFingerprint` parity): `context/store-and-forward.md`.
+**Below the row cap, anything the content digest is folded over must be bounded by a rule that's identical on every
+node** (same key, same direction, same origins, same liveness). A sender, group or room bucket keeps its newest-N by the
+**frame-global `(sentAt, id)`**. Admission, the TTLs, those trims and the fold apply on **every** origin (`ORIGIN_SELF`
+included); fold **live** ids only; refuse a frame past its frame-global expiry or past the five-minute future window at
+store time; and carry a frame naming a group only when its members and departed derive to the group's id and its sender
+is a member (the group gate, in `ForwardRepository.store`, never in `canCarry`, which is also the spool plane's delivery
+gate). Every one of these reads the frame and the held set alone, so two stores under `maxRows` that hold the same
+frames keep the same frames. Don't make the room or group trim fair: shipped builds and knit-ios keep newest-N there,
+and a busy room at its quota would split old nodes from new ones for good.
+
+**At the cap, stores may differ for good** (ADR 2026-11.bmks): delivery is the aim, not identical stores. The global
+cap evicts one row at a time keyed on **(sender's live count desc, spread desc, `sentAt`, `id`)**: key 1 is ADR
+2026-10.7mqm's largest bucket, so a flood of free identities still pays for the cap from its own buckets, and the
+**spread** is the carry ledger's count of peers believed to hold the row (`CarryLedger`, fed by proven links only). The
+cap's choice of row is the one place custody may read per-node state; admission, the quotas, the fold and the carry gate
+may not. A new key in that order needs a security pass first: whatever eviction reads, a peer can read back from our
+digest, which is why no contact, sighting or meeting is a key. A digest reply still owes the peer every live frame it
+lacks, a group's to a non-member too (ADR 2026-10.hr9f), now in paced rounds and less the not-kept memo; a filter on who
+is served would leave that peer holding what the others evicted.
+
+A change to any of these regenerates `vectors/custody-v1.json` and is a paired change with knit-ios. This makes the **TTL
+constants (`DEFAULT_TTL_MS`/`DEFAULT_BROADCAST_TTL_MS`) and the broadcast-chat classification convergence-critical —
+treat changing them like a wire change.** Two nodes below the cap that disagree hold different live sets continuously
+and churn the NDP cue plane forever. Full failure history + how to verify (`…debug.STORE`, `liveFingerprint` parity):
+`context/store-and-forward.md`.
 
 The one bound that is *not* identical on every node is the per-link `IngressBudget` on room posts in
 `MeshRouter` (ADR 2026-09.vybk), and it is safe only because of where it sits: **before** `SeenSet.add`, custody and relay. A
@@ -396,13 +404,15 @@ a duplicate (a re-serve is evidence, not a cost), and never widen it to an addre
 without the same reasoning: a DM's receipt and a group's seed converge through custody and must not be
 throttled at the link.
 
-**The block list is a presentation input and never a custody one** (ADR 010, ADR 2026-09.bts9). It is read on
+**The block list is a presentation input and never a custody one** (ADR 010, ADR 2026-09.bts9), and neither is a
+contact, a sighting or a meeting (ADR 2026-11.bmks). It is read on
 the local delivery path only — `handleChat` and its siblings, the notification count, the DAO's read filters —
 and for a blocked person's profile presentation and photo (`handleProfile`'s held presentation, the photo's pull,
 adoption and push doors, `BlockListWatch`, ADR 2026-11.nsbf), and must never enter `InboundPipeline.canCarry`,
 the forward store, the relay decision, or `KeyExchange.want`: a blocker that refuses the blocked sender's frames is re-served them every exchange and refuses
 them every time, for the life of the block (work item #45). The same holds for any other per-node input — a setting, a
-moderation verdict, a version — a local decision is a delivery gate (`docs/WIRE_COMPAT.md` rule 5).
+moderation verdict, a version — a local decision is a delivery gate (`docs/WIRE_COMPAT.md` rule 5). The one per-node
+input custody takes is the carry ledger's spread, and only in the cap's choice of row (above).
 
 ## Inbound handlers must never throw
 

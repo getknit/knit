@@ -362,6 +362,9 @@ val meshModule =
                                     wontRunHere = awarePlaneWontRun,
                                     claims = get(),
                                     prover = get(),
+                                    // Custody's word on each peer (the carry ledger): the hold-off's progress, and the
+                                    // link held while an answer to its peer is live.
+                                    custody = get(),
                                 )
                             // The switch stops the plane live in every build. Log.i: release keeps it, so a bugreport
                             // shows the plane stopped for it.

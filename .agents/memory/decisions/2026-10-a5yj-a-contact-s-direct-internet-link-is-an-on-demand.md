@@ -976,3 +976,13 @@ good from 2.11.0, ahead of the rest of Phase 3, so `directLinks` now defaults to
 `app/build.gradle.kts`, where F-Droid's -P-free rebuild reads it, and to false under `-Pslim=true`, whose phones have no
 relay to cast a rendezvous through. Nothing else moves: `SettingsStore.directLinksEnabled` still defaults off, so a link
 is offered or answered only once the person turns it on, and `-PdirectLinks=false` still wires nothing.
+
+## Amendment 2026-11-20 — the push memo covers every plane
+
+ADR 2026-11.bmks generalises the 2026-10-29 amendment's push memo to every plane and moves it into `CarryLedger`;
+`LinkPushRounds` is deleted. A release is pending until a digest at least 5 s later (20 s when Bluetooth carried it)
+judges it; one the digest lacks while we hold it is marked not kept for 10 minutes; a frame addressed to the peer is
+never memoed. Only a proven link has a memo, and a contact's direct link always counts as proven. A direct-link digest
+lists only the pair's view, so it feeds the ledger additively and never replaces a radio answer's digest. Its answer
+keeps the view filter and gains the direct link's pace (256 KiB a second). The 2026-10-29 device trial's oracle (a link
+that idles out because the memo holds the gap) still applies; `DirectLinkPushLabTest` keeps it.

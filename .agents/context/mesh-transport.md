@@ -78,8 +78,10 @@ and the shipped design runs **two planes** (a concurrent-serve redesign is propo
   custody ids it holds (a `LinkFraming.Type.DIGEST` record) and pushes back only the frames the peer lacks
   (`ForwardSync.onDigest`, replacing the old push-all backfill), then the NDP is torn down on
   **quiescence** (no data for `QUIESCENCE_MS`, never mid-file) — freeing the NDI for the next pair. The
-  initiator drives teardown and records the sync in `DigestTracker` (it alone consults it); the responder
-  just sees the socket close, with a longer `RESPONDER_MAX_HOLD_MS` safety cap for a dead initiator.
+  initiator drives teardown; both ends record the exchange in `DigestTracker`'s hold-off, judged on custody's progress
+  (ADR 2026-11.bmks): the initiator decides with it, and the responder's digest-pure gate reads it. The responder
+  sees the socket close, with a longer `RESPONDER_MAX_HOLD_MS` safety cap for a dead initiator. A link is held open
+  while a custody answer to its peer is live (at most `SYNC_MAX_WINDOW_MS`), so paced rounds don't idle it out.
   <!-- doc-lint: allow SyncEpoch — the counter the digest replaced, named as history -->
 
 Net: an **idle mesh does zero data-path work** (just beacons + occasional cues); a new message triggers a

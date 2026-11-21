@@ -422,6 +422,9 @@ class DirectLinkTransport(
     /** The live link to [nodeId]: the object its frames and digests are stamped with, a new one per link-up. */
     override fun linkToken(nodeId: String): Any? = links[nodeId]
 
+    /** A contact's link proves its peer by its lane, whenever one is up. */
+    override fun linkProven(nodeId: String): Boolean = links[nodeId] != null
+
     // A walkie's hold (docs/VOICE_CALLS.md C-3.11-8): the link held through the call's pauses, or raised, while the plane
     // runs; the radios' own holds are their children's, asked beside this one.
     override fun holdLink(nodeId: String): Boolean = running && onHold(nodeId)

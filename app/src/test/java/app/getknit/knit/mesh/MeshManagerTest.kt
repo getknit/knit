@@ -335,6 +335,10 @@ class MeshManagerTest {
         ) {
             digestsTo += to.nodeId
         }
+
+        /** Custody digests a test hands the manager, as a plane hands it a neighbour's. */
+        val digestsIn = MutableSharedFlow<ReceivedDigest>(extraBufferCapacity = 16)
+        override val incomingDigests = digestsIn
     }
 
     /** Minimal in-memory [ForwardStore] so a test can assert what the send path captured for custody. */
@@ -357,6 +361,16 @@ class MeshManagerTest {
         }
 
         override suspend fun liveFrames(now: Long): List<CarriedFrame> = frames()
+
+        /** How many of custody's index reads are still to fail, and how many were read: a digest answered from nothing. */
+        val liveIndexFailures = AtomicInteger()
+        val liveIndexReads = AtomicInteger()
+
+        override suspend fun liveIndex(now: Long): List<IndexedFrame> {
+            liveIndexReads.incrementAndGet()
+            if (liveIndexFailures.getAndUpdate { maxOf(0, it - 1) } > 0) throw IOException("the custody index read failed")
+            return super.liveIndex(now)
+        }
 
         /** How often the custody replay asked for the group chat — the heal basket's hourly step (work item #63). */
         val groupChatReads = AtomicInteger()
@@ -6873,6 +6887,94 @@ class MeshManagerTest {
             rig.manager.stop()
         }
 
+    // A carried DM for someone else, [bytes] of payload: two of them pass a Bluetooth round's 16 KiB.
+    private fun bigCarried(
+        id: String,
+        sentAt: Long,
+        bytes: Int = 10_000,
+    ): CarriedFrame {
+        val env =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = "carried",
+                sentAt = sentAt,
+                recipientId = "q",
+                payload = ByteArray(bytes),
+            )
+        return CarriedFrame(env, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
+    }
+
+    private fun RecordingTransport.sentOf(ids: Set<String>): Int =
+        sent.count { (wire, _) -> WireCodec.decodeEnvelope(wire.signed)?.id in ids }
+
+    /**
+     * The serve loop cuts an answer's later rounds (the custody-carry-policy contract's §2): a digest's first round goes at
+     * the digest, one 10 KB frame of two, and the second only once the manager's clock passes the Bluetooth interval, from
+     * the loop, with no further digest.
+     */
+    @Test
+    fun theServeLoopCutsTheSecondRoundOnceTheIntervalPasses() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(rig.now))
+            rig.stubHealState()
+            val big = setOf("big-1", "big-2")
+            big.forEachIndexed {
+                i,
+                id,
+                ->
+                rig.forwardStore.store(bigCarried(id, rig.now - 10 + i), ForwardStore.ORIGIN_RELAY, rig.now, null)
+            }
+            rig.transport.nearby.value = setOf(Peer("zed"))
+            rig.manager.start()
+            rig.await(1) { rig.transport.digestsIn.subscriptionCount.value }
+
+            rig.transport.digestsIn.emit(ReceivedDigest("zed", emptyList()))
+            rig.await(1) { rig.transport.sentOf(big) }
+            assertEquals("the first round is one frame", 1, rig.transport.sentOf(big))
+
+            rig.clockNow += CustodyPace.BLUETOOTH_INTERVAL_MS
+            // The round is counted after its send (ForwardSync.release), so wait on the counter and read the send it pins.
+            rig.await(2) {
+                rig.metrics
+                    .frames()
+                    .custodyRoundsCut
+                    .toInt()
+            }
+            assertEquals("two rounds, the second the loop's", 2, rig.transport.sentOf(big))
+            rig.manager.stop()
+        }
+
+    /**
+     * A digest that comes while custody's index cannot be read is dropped, not answered from nothing, and the collector
+     * goes on: the next digest from the same neighbour is answered.
+     */
+    @Test
+    fun aDigestDroppedForAnUnreadableIndexLeavesTheCollectorAnsweringTheNext() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(rig.now))
+            rig.stubHealState()
+            val one = setOf("only")
+            rig.forwardStore.store(bigCarried("only", rig.now - 10, bytes = 100), ForwardStore.ORIGIN_RELAY, rig.now, null)
+            rig.transport.nearby.value = setOf(Peer("zed"))
+            rig.manager.start()
+            rig.await(1) { rig.transport.digestsIn.subscriptionCount.value }
+
+            // The start's roster read is the index's one reader before a digest: past it, the failure is the digest's.
+            rig.await(1) { rig.forwardStore.liveIndexReads.get() }
+            val reads = rig.forwardStore.liveIndexReads.get()
+            rig.forwardStore.liveIndexFailures.set(1)
+            rig.transport.digestsIn.emit(ReceivedDigest("zed", emptyList()))
+            rig.await(1) { if (rig.forwardStore.liveIndexFailures.get() == 0 && rig.forwardStore.liveIndexReads.get() > reads) 1 else 0 }
+            assertEquals("a dropped digest released nothing", 0, rig.transport.sentOf(one))
+
+            rig.transport.digestsIn.emit(ReceivedDigest("zed", emptyList()))
+            rig.await(1) { rig.transport.sentOf(one) }
+            rig.manager.stop()
+        }
+
     private companion object {
         const val HYBRID_TEMPLATE = "DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW"
 
@@ -6987,7 +7089,8 @@ class MeshManagerTest {
             assertEquals("the push ran before the digest threw", 1, profilePushes())
 
             rig.forwardStore.liveIdsFail = false
-            rig.manager.reofferToNeighbors()
+            // Forced: the round's own custody digest, right behind the pass's link-up one, would be held by its back-off.
+            rig.manager.reofferToNeighbors(force = true)
             assertEquals("the owed pass ran inside the round", 2, profilePushes())
             assertEquals("its digest and the round's own", listOf(bob.nodeId, bob.nodeId), rig.transport.digestsTo.toList())
 

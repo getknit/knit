@@ -669,6 +669,10 @@ class MaliciousForkLabTest : StrandedLabBase() {
      * honest frame was older than the flood and went, on every node alike, Alice's DM to an absent Dave among them. Now
      * the cap takes from the largest sender bucket, which is always a Sybil's: the DM stays on Bob, and Dave reads it when
      * he comes back. The numbers are the field's shape scaled down (a cap five buckets deep, ten Sybils).
+     *
+     * Which row of a Sybil's bucket a store takes reads its own carry ledger (ADR 2026-11.bmks), so the full stores need
+     * not agree on the flood's rows: the oracle reads delivery and every store at or under its cap, and every honest
+     * frame Alice and Bob held before the flood is still held after it.
      */
     @Test
     fun aSybilFloodLeavesAliceDmToAnAbsentDaveInCustody() =
@@ -684,6 +688,7 @@ class MaliciousForkLabTest : StrandedLabBase() {
             assertTrue(alice.sendDm(dave, "while you were out"))
             val dm = alice.ownMessageId(alice.dmWith(dave), "while you were out")
             lab.await(1) { if (dm in bob.custodyIds()) 1 else 0 }
+            val honest = listOf(alice, bob).associateWith { it.custodyIds() }
 
             val sybils = (1..SYBILS).map { LabSybil(seed = 7_000 + it, name = "sybil $it") }
             sybils.forEach { mallory.flood(it.profile(lab.clock.now())) }
@@ -702,10 +707,16 @@ class MaliciousForkLabTest : StrandedLabBase() {
             assertTrue("bob still carries alice's DM under the flood: holds ${held.size}", dm in held)
             val perSybil = sybils.map { s -> bob.custodiedFrom(s.nodeId) }
             assertTrue("the flood paid for the cap from its own buckets: $perSybil", perSybil.all { it < FLOOD_PER_SYBIL })
+            for ((n, before) in honest) {
+                val gone = before - n.custodyIds()
+                assertTrue("${n.name} lost honest frames to the flood: $gone", gone.isEmpty())
+            }
 
             bob.transport.connect(dave.transport, lossy = { it.hops > 0 })
             lab.await(1) { dave.decrypted(dave.dmWith(alice)).count { it.second == "while you were out" } }
-            lab.assertConverged(listOf(alice, dave), atLeast = 1, carriers = listOf(bob)) { it.dmWith(if (it === alice) dave else alice) }
+            lab.assertConverged(listOf(alice, dave), atLeast = 1, carriers = listOf(bob), custody = false) {
+                it.dmWith(if (it === alice) dave else alice)
+            }
         }
 
     /**

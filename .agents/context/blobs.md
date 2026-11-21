@@ -210,7 +210,7 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   cases; unit: `RequestHoldTest`, `BlobDaoTest`, `BlobRepositoryTest`'s request cases,
   `MeshManagerTest.theRequestSweepRereadsAcceptanceJustBeforeItDrops` and its three #321 cases.
 - **When touching `KeyExchange`'s cache / `profileFor` / `serveKey`, `peer_profiles` (`PeerProfileEntity`,
-  `PeerRepository.recordProfileFrame`), or the key-ahead in `ForwardSync.onDigest` (`keylessSenders`):** READ ADR
+  `PeerRepository.recordProfileFrame`), or the key-ahead in `ForwardSync.onDigest` (`KeyExchange.keyFor` / `sendKey`):** READ ADR
   2026-09.g64k (it closes the case ADR 2026-09.9xuu set aside). A carrier keeps the signed profile each pin came from,
   so it can prove the key of anyone whose frames it serves after a restart and after custody lost the profile. A key
   goes point to point, never flooded, and only to a peer holding none of that sender's frames we hold. Don't fold the
@@ -221,19 +221,21 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   `_BROADCAST`, `DEFAULT_MAX_SIGNED_BYTES`, `DEFAULT_TTL_MS`, `DEFAULT_BROADCAST_TTL_MS`), its eviction order (`insertAndTrim`,
   `ForwardDao.largestBucketRows` with `CapEviction`, `evictOldestBy*`), its group gate (`ForwardRepository.carriesGroup`), `StoreDigest`,
   `ForwardStore`'s live reads, `ForwardDao.deleteLongerThan`, or anything else the custody digest folds over:** READ ADR
-  006, ADR 2026-10.7mqm, ADR 2026-10.mqzv and
+  006, ADR 2026-10.7mqm, ADR 2026-10.mqzv, ADR 2026-11.bmks and
   the "Bounds" and "A bounded custody quota must be *convergent*" sections of `.agents/context/store-and-forward.md`.
-  Every bound is the same on every node: a full sender, group or room bucket keeps its newest-N by the frame-global
-  `(sentAt, id)` on every origin, `ORIGIN_SELF` included (bc4ba0a5), and the global cap takes the oldest frame of the
-  largest sender bucket, one row at a time (7mqm: five free identities used to wipe every honest frame; don't make the
-  room or group trim fair, shipped builds and knit-ios keep newest-N there); a group frame is carried only when its
+  Below the row cap every bound is the same on every node: a full sender, group or room bucket keeps its newest-N by the
+  frame-global `(sentAt, id)` on every origin, `ORIGIN_SELF` included (bc4ba0a5), and the global cap takes one row at a
+  time from the largest sender bucket (7mqm: five free identities used to wipe every honest frame; don't make the
+  room or group trim fair, shipped builds and knit-ios keep newest-N there), within the tied buckets by spread
+  descending, then the oldest (bmks: the one place custody reads per-node state, and stores at the cap may differ for
+  good; a new key there needs a security pass, since a peer can read back from our digest whatever eviction reads); a group frame is carried only when its
   roster derives to its id and names its sender (7mqm), and `store` answers false for a frame its own write evicted,
   so nothing pulls its blob; a frame whose `signed` is longer than 60 KiB is refused first of all, and the sweep deletes
   such rows held from before the upgrade, the sweep's one live-set delete (mqzv: never a length filter on the live
   reads); expiry keys off `sentAt`, never `receivedAt` (cf0b6e00); the digest folds live ids only
   (daffbc82) and every decision site reads it through `current()` (3548c123), whose invariant is `current() == liveFingerprint`. A
-  per-node input in the carry gate, the quota or the fold — local receive time, origin, the block list, a setting — is
-  a digest no peer can match, and the cue plane re-attempts a reconcile on every cue for as long as it holds. The TTL
+  per-node input in the carry gate, a quota trim or the fold — local receive time, origin, the block list, a contact, a
+  sighting, a setting — is a digest no peer can match below the cap, and the cue plane re-attempts a reconcile on every cue for as long as it holds. The TTL
   and quota constants are convergence-critical: moving one is a mesh-wide change the iOS port must mirror, checked by
   `vectors/custody-v1.json` (`CustodyVectorTest`). Regression: `ForwardRepositoryTest`'s flood and exchange cases,
   `CustodyGroupGateTest`, `CustodyQuotaLabTest`, `MaliciousForkLabTest`'s custody cases, `CustodyHeadroomLabTest`.
@@ -308,6 +310,22 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   is additive. Only the global cap's choice of row reads `spread`; the event side runs under the repository's mutex and
   never suspends, and the ledger asks the transport's links (`MeshTransport.carries`) with its own lock released. Unit: `CarryLedgerTest`,
   `ForwardSyncTest`'s direct-link and proven-digest cases; lab: `DirectLinkPushLabTest`.
+- **When touching how a digest is answered — `ForwardSync.onDigest` / `serveDue` / `nextDueAt` / `readRosters`,
+  `CustodyPace` / `RoundPlan`, `IndexedFrame` / `ForwardStore.liveIndex` / `ForwardDao.liveIndex`, `CarryLedger.noteRoster`,
+  `MeshManager.serveCustodyRounds`, `LabLimits.custodyPace` — or the 60 s re-offer's back-off (`ForwardSync.reoffer` /
+  `REOFFER_MS` / `REOFFER_MAX_MS`, `MeshManager.reofferToNeighbors`' `force`, `LabNode.reoffer` / `tick`):** READ the
+  custody-carry-policy contract §1, §2 and §7 (its ADR is still owed, a draft until then). One answer per peer, cut in
+  rounds from custody's index (never a decode of every row), tiers profiles → addressed to the peer → its groups by the
+  frame's own roster (read once at store time, ≤ 8 members) → the rest; the carrying plane's budget (Bluetooth's whenever
+  Bluetooth holds the peer), first pick always, stop never skip; a newer digest never brings a round forward; ends on
+  nothing left, no radio (or no view), or 120 s after its digest. Every set an answer keeps is trimmed to custody's live
+  ids each round; a release is forgotten at the first digest `JUDGE_AFTER_MS` after it (revision 7), and then the digest
+  and the memo decide. An unproven digest never overwrites a proven answer, and a round leaves pending and a credit only
+  over a link that proved the peer (`LinkCarrier.proven`, `MeshTransport.linkProven`); a round with no carrier records
+  nothing. A key goes ahead once per answer, charged to its round. The tick's custody digest backs off 60 → 600 s
+  while offers draw nothing, a frame kept off the peer's link resets it, the link-up offer is never held, and only the
+  digest is held. The lab runs unpaced by default; a pace scenario sets `custodyPace` and drives `serveCustodyRounds`.
+  Unit: `ForwardSyncTest`'s round, tier and re-offer cases, `CustodyConstantsTest`.
 - **When touching what a contact's direct Internet link does to blobs or custody — `MeshTransport.radioLinked` /
   `pairView` / `fileRidesInternet` / `PairView`, `ReceivedDigest.via` / `ReceivedFile.via`, `ForwardSync.onDigest`'s
   `via` / `ForwardSync.linked` / `CarryLedger` / `MeshManager.onDirectLinkUp` (`DirectLinkTransport`'s `onLinkUp`), `BlobExchange.reachingFor` / `Rank.Internet` / `Tier.Internet` /

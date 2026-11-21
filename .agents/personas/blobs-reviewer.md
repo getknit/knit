@@ -10,7 +10,7 @@ description: >-
   / InboundPipeline, which the hook cannot see. Reads the diff for the shapes that have passed single-node tests and
   cost the mesh (a push nobody asked for, a memo standing in for the link, a cache standing in for the database, a
   wait on an answer the wire cannot give, every carrier pulling at once, a guessed bound, a per-node input in
-  custody, arrival order deciding what is kept, a stranger's input reaching a private read), routes each touched
+  custody below the cap, arrival order deciding what is kept, a stranger's input reaching a private read), routes each touched
   symbol to its ADRs, runs the touched classes' tests, and names the lab scenario or device trial the change owes.
   Reports findings and stamps what it reviewed; never edits the tree.
 tools: Bash, Read, Grep, Glob
@@ -125,14 +125,18 @@ codebase:
    progress) or the neighbour's round trip, and a park never outlives a feed that is not live. Evidence: the nsr7
    amendment replacing g24x's 30 s park bound; g24x's settling-pace amendment (a double feed read off the first
    chunk's unearned pace).
-7. **A per-node input in custody or the digest.** The carry gate, the quota's eviction order, the TTL's clock, the
-   digest's fold and every decision site's read of it must be the same on every node: frame-global `(sentAt, id)` on
-   every origin, live rows only, `current()` everywhere. Receive time, origin, the block list or a setting there is a
-   digest no peer can match, and the cue plane reconciles forever. Evidence: bc4ba0a5 (`ORIGIN_SELF` out of the quota:
+7. **A per-node input in custody or the digest.** The carry gate, the sender, group and room trims, the TTL's clock,
+   the digest's fold and every decision site's read of it must be the same on every node: frame-global `(sentAt, id)`
+   on every origin, live rows only, `current()` everywhere. Receive time, origin, the block list or a setting there is a
+   digest no peer can match below the cap, and the cue plane reconciles forever. The global row cap's choice of row is
+   the one exception (ADR 2026-11.bmks): it may read the carry ledger's spread, fed by proven links only. Flag spread or
+   any other ledger state leaking past that choice, a new key in the cap's order without a security pass, and a
+   below-the-cap property that no longer holds. Evidence: bc4ba0a5 (`ORIGIN_SELF` out of the quota:
    117 vs 100), cf0b6e00 (TTL on `receivedAt`), daffbc82 (expired-unswept rows folded), 3548c123, e7528cb7 (the block
    list in `canCarry`).
-8. **Arrival order deciding what is kept.** A receipt before its DM, an own frame flooded before it is custodied, a
-   profile served after its sender's chat: each leaves custody depending on which copy came first. Evidence: 2efea24a
+8. **Arrival order deciding what is kept, below the cap.** A receipt before its DM, an own frame flooded before it is
+   custodied, a profile served after its sender's chat: each leaves custody depending on which copy came first. At the
+   cap, which frame a write evicts may depend on the ledger (ADR 2026-11.bmks); that is decided, not a defect. Evidence: 2efea24a
    (adpz, #100), 85baeeb9 (#141: a link raised between the flood and the custody write missed both), aeba5382 (9xuu:
    41 frames outstanding, 16 parked, for a seen window).
 9. **"A node always holds its own."** A wipe, a restore or a reinstall empties custody; our own frames must verify

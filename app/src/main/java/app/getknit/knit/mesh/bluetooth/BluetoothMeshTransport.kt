@@ -37,6 +37,7 @@ import app.getknit.knit.mesh.FileFeed
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.FileProgress
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.LinkCarrier
 import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
@@ -775,8 +776,10 @@ class BluetoothMeshTransport internal constructor(
             )
         }
 
+        // Stamped with this link and its proof, so custody's carry ledger may count the peer only off a proven link and
+        // drop the frame's pending once [linkToken] names another link ([LinkStamp]). A side-channel page is never stamped.
         override suspend fun onInbound(frame: InboundFrame) {
-            handOff.hand(frame)
+            handOff.hand(LinkStamp.frame(frame, link))
         }
 
         /** On the reader, as its loop ends (FramedLink's `onReadEnd`): a spell of waits it was in ends with it. */
@@ -785,7 +788,8 @@ class BluetoothMeshTransport internal constructor(
         }
 
         override fun onDigest(digest: ReceivedDigest) {
-            _incomingDigests.tryEmit(digest)
+            // Still emitted off a replaced link (it is answered), but proven only while [links] holds this link ([LinkStamp]).
+            _incomingDigests.tryEmit(LinkStamp.digest(digest, link) { links[link.nodeId] === link })
         }
 
         override fun onFile(file: ReceivedFile) {
@@ -1192,6 +1196,18 @@ class BluetoothMeshTransport internal constructor(
         fromNodeId: String,
         key: String,
     ) = landing.take(fromNodeId, key)
+
+    // The link [LinkEvents] stamps on what it delivers: a lock-free read of [links], never into custody (the
+    // custody-carry-policy contract's §6). A relink is a new [FramedLink], so the old stamps stop matching.
+    override fun linkToken(nodeId: String): Any? = LinkStamp.linkToken(links, nodeId)
+
+    // The held link's own proof, read the same lock-free way: a round over it may leave a pending or a credit behind.
+    override fun linkProven(nodeId: String): Boolean = LinkStamp.linkProven(links, nodeId)
+
+    // The default reads [links] twice (token, then proof); one read here, so a replacement between them cannot pair the
+    // old link with the new one's proof. Gated on [neighbors] as the default is.
+    override fun carrier(nodeId: String): LinkCarrier? =
+        if (neighbors.value.any { it.nodeId == nodeId }) LinkStamp.carrier(links, nodeId, kind) else null
 
     override fun fileArrivingFrom(nodeId: String): Boolean = links[nodeId]?.rxInProgress ?: false
 

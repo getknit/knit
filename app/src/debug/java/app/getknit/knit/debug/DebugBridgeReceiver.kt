@@ -1933,6 +1933,12 @@ class DebugBridgeReceiver :
             .put("profileOversizeRefused", snap.frames.profileOversizeRefused)
             // Not-kept marks custody's memo set (the custody-carry-policy contract's §8); knit-ios reports the same key.
             .put("custodyNotKept", snap.frames.custodyNotKept)
+            // Paced custody rounds released, answers cut short, re-offers held (§8); knit-ios reports the same keys. And the
+            // frames a round released without their sender's key ahead (§9), Android's own.
+            .put("custodyRoundsCut", snap.frames.custodyRoundsCut)
+            .put("custodyAnswersCutShort", snap.frames.custodyAnswersCutShort)
+            .put("custodyReoffersHeld", snap.frames.custodyReoffersHeld)
+            .put("custodyKeylessReleased", snap.frames.custodyKeylessReleased)
             // Link proof (ADR 2026-11.264w): links registered as proven, failed proofs, unproven claims refused or closed.
             // knit-ios reports the same key.
             .put("linksProven", snap.frames.linksProven)

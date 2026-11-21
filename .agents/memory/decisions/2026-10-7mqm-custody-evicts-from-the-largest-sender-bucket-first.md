@@ -8,7 +8,8 @@ topics: [custody, convergence, security]
 
 # ADR 2026-10.7mqm — Custody evicts from the largest sender bucket first
 
-Status: Accepted (2026-10-26). Amends ADR 006: the global cap's eviction key, and a group gate at store time.
+Status: Accepted (2026-10-26). Amends ADR 006: the global cap's eviction key, and a group gate at store time. Amended
+by ADR 2026-11.bmks: spread breaks the tie inside the largest buckets.
 Malicious-fork review C2 (`.private/docs/fork-review/custody.md` F1, F9, F10). Android only so far; the companion
 change for knit-ios is below.
 
@@ -111,7 +112,7 @@ stores, room, sender and global quotas binding together, converged within 0 to 2
 **Kept true by** `ForwardDaoTest`'s three `evictFairest` cases; `ForwardRepositoryTest`'s Sybil-flood,
 honest-intake, room/group newest-N, permutation and exchange cases; `CustodyGroupGateTest`; `CustodyVectorTest` over
 `vectors/custody-v1.json`; `CustodyQuotaLabTest` (`aFullStoreEvictsFromTheLargestSenderOnEveryNodeAlike`,
-`theRoomQuotaAndTheCapBindingTogetherConvergePastTheSeenWindow`); and `MaliciousForkLabTest`'s Sybil flood, non-member
+`theRoomQuotaAndTheCapBindingTogetherStillDeliverPastTheSeenWindow`, restated by ADR 2026-11.bmks); and `MaliciousForkLabTest`'s Sybil flood, non-member
 group flood and leave/rejoin cases. `.agents/rules/mesh.md` "Custody must converge" states the rule.
 
 ## Companion change for knit-ios
@@ -129,3 +130,13 @@ global cap binds.
 4. **Check against `vectors/custody-v1.json`:** replay `steps` through one store with `limits`, and match each step's
    `kept`, `evicted` and `held`. The file's `about` states the rule. It covers each bucket's trim, both tie-breaks,
    a frame evicted by its own write, expired residue, both refusals and the gate.
+
+## Amendment 2026-11-20 — spread inside the largest buckets
+
+ADR 2026-11.bmks keeps this decision's first key and adds one after it. While live rows exceed the cap, the row that goes
+is the first by (sender's live count desc, spread desc, `sentAt` asc, id asc bytewise), where spread is the carry
+ledger's count of peers believed to hold the row (`CarryLedger`, fed by proven links only). `ForwardDao.evictFairest` is
+gone: `ForwardDao.largestBucketRows` reads the tied buckets and `CapEviction` chooses. With no holders recorded the order
+is this decision's. The flood bound is unchanged: whichever row keys 2 to 4 pick, one of the largest buckets loses exactly
+one row. What a convergent rule gave up: two stores holding the same frames at the cap may now keep different ones. The
+"Android only so far" above is stale: knit-ios ships the rule (its ADR 2026-11.3jry, vector `custody-v1.json` 46 steps).

@@ -58,4 +58,17 @@ internal object NanLinkLife {
         windowMs: Long,
         held: Boolean,
     ): Boolean = (!held && idleMs >= quiescenceMs) || ageMs >= windowMs
+
+    /**
+     * Whether custody's live answer to the peer, carried by this plane ([answerLive]: `CustodyProgress.answerCarrier` names
+     * Wi-Fi Aware), holds a link [ageMs] old not
+     * idle: its paced rounds come a second apart (custody-carry-policy §2), and an answer cut by a quiescence close would
+     * leave its releases unjudged. Only within [windowMs] (`SYNC_MAX_WINDOW_MS`, on either role): an answer is no reason
+     * to hold the one data path longer than a sync may last, and a responder's longer backstop is for a dead initiator.
+     */
+    fun answerHeld(
+        answerLive: Boolean,
+        ageMs: Long,
+        windowMs: Long,
+    ): Boolean = answerLive && ageMs < windowMs
 }

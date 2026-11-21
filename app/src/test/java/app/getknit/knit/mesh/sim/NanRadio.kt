@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.sim
 
 import app.getknit.knit.mesh.BulkRoute
+import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.lab.LinkAir
 import app.getknit.knit.mesh.sim.SimSeeds.Purpose
 import kotlin.math.exp
@@ -42,7 +43,7 @@ class NanRadio(
 
     /** A data path holds as much further than it is found as a Bluetooth link holds past its dial. */
     private val nanDropM = nanRangeM * dropM / connectM
-    private val nanAir = LinkAir(nanBytesPerSecond, sharesNodeAir = false)
+    private val nanAir = LinkAir(nanBytesPerSecond, sharesNodeAir = false, plane = TransportKind.WifiAware)
 
     override val name = NAME
     override val air: LinkAir = ble.air

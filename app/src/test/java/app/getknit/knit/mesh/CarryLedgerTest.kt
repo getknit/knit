@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -455,6 +456,32 @@ class CarryLedgerTest : RoomDbTest() {
         none.watchFresh("p")
         assertEquals(listOf(0L, 0L), listOf(none.progressMark("p"), none.digestSeen("p")))
         assertFalse(none.fresh("p"))
+        assertNull("no answer is ever live: no link is held for one", none.answerCarrier("p"))
+        none.answerCut("p", TransportKind.WifiAware) // and a cut path ends nothing
+    }
+
+    @Test
+    fun anAnswerIsLiveWhileTheSyncSaysSoAndACutPathEndsItsAwarePendingOnly() {
+        air.up["p" to TransportKind.Bluetooth] = bt1
+        val carry = ledger("a", "b")
+        carry.answering("p", TransportKind.WifiAware)
+        assertEquals(TransportKind.WifiAware, carry.answerCarrier("p"))
+        assertNull(carry.answerCarrier("q"))
+        carry.release("p", listOf("a"), now = 0L, plane = TransportKind.WifiAware, link = aware1)
+        carry.release("p", listOf("b"), now = 0L)
+
+        val progress: CustodyProgress = carry // what the Aware plane holds
+        progress.answerCut("p", TransportKind.WifiAware)
+
+        assertFalse("the Aware release ended unjudged: free to go again", carry.blocked("p", "a", now = 1L))
+        assertTrue("the Bluetooth one is still pending", carry.blocked("p", "b", now = 1L))
+        carry.answering("p", TransportKind.Bluetooth)
+        assertEquals("the carrier moves with the rounds", TransportKind.Bluetooth, carry.answerCarrier("p"))
+        carry.answerEnded("p")
+        assertNull(carry.answerCarrier("p"))
+        carry.answering("p", TransportKind.WifiAware)
+        carry.answeringCleared()
+        assertNull(carry.answerCarrier("p"))
     }
 
     // --- the contract's constants ---
@@ -471,6 +498,74 @@ class CarryLedgerTest : RoomDbTest() {
             listOf(TransportKind.Bluetooth, TransportKind.WifiAware, TransportKind.DirectLink, TransportKind.Other)
                 .map(CarryLedger::judgeAfterMs),
         )
+    }
+
+    /**
+     * A release recorded while the ledger asks a plane whether an earlier release's link ended is a new entry: only what
+     * the ask was about ends with that link, whatever link the new one went over, a link the plane names no object for
+     * included.
+     */
+    @Test
+    fun aReleaseMadeWhileTheLedgerAsksAboutAnEndedLinkStaysPending() {
+        val carry = ledger("old", "new")
+        carry.release("p", listOf("old"), now = 0L, link = null)
+        var asked = 0
+        // Ends the first link it is asked about, recording a release over a link it names no object for as it answers.
+        val racing =
+            CarryLedger.Links { _, _, _ ->
+                asked++
+                if (asked == 1) carry.release("p", listOf("new"), now = 1L, link = null)
+                asked > 1
+            }
+        carry.onDigest("p", emptyList(), TransportKind.Bluetooth, link = null, additive = false, now = 1L, links = racing)
+
+        assertFalse("the release the ask was about ended with its link", carry.blocked("p", frame("old"), now = 1L, links = racing))
+        assertTrue("the one made meanwhile is still pending", carry.blocked("p", frame("new"), now = 1L, links = racing))
+    }
+
+    // --- tier 3's rosters (§1) ---
+
+    @Test
+    fun aRosterIsRememberedForAHeldGroupFrameOfAtMostEightMembers() {
+        val carry = ledger("g8", "g9")
+        carry.noteRoster("g8", (1..8).map { "m$it" })
+        carry.noteRoster("g9", (1..9).map { "m$it" })
+        carry.noteRoster("unheld", listOf("m1"))
+
+        assertTrue(carry.rosterLists("g8", "m8"))
+        assertFalse(carry.rosterLists("g8", "m9"))
+        assertTrue("read, and not remembered", carry.rosterRead("g9"))
+        assertFalse("a ninth member orders its frame with the rest", carry.rosterLists("g9", "m1"))
+        assertFalse("an id custody does not hold gets no entry", carry.rosterRead("unheld"))
+    }
+
+    @Test
+    fun aRosterDiesWithItsRowAndAReturningIdInheritsNothing() {
+        val carry = ledger("g1", "g2")
+        carry.noteRoster("g1", listOf("p"))
+        carry.noteRoster("g2", listOf("p"))
+        carry.digest("p", listOf("g1", "g2"), now = 0L)
+
+        carry.onLeft("g1")
+        carry.retainOnly(emptySet())
+        carry.onKept("g1", source = null)
+        carry.onKept("g2", source = null)
+
+        assertEquals(listOf(false, false), listOf("g1", "g2").map(carry::rosterRead))
+        assertEquals("nor any holder", listOf(0, 0), listOf("g1", "g2").map(carry::spread))
+    }
+
+    /** A release and a mark stamped before the wall clock went back further than a lapse count as lapsed. */
+    @Test
+    fun stampsFromBeforeTheWallClockWentBackLapse() {
+        val carry = ledger("a", "b")
+        carry.release("p", listOf("a", "b"), now = 1_000_000L)
+        carry.digest("p", listOf("b"), now = 1_000_000L + CarryLedger.JUDGE_AFTER_BLUETOOTH_MS)
+        val back = 1_000_000L - CarryLedger.NOT_KEPT_LAPSE_MS - CarryLedger.JUDGE_AFTER_BLUETOOTH_MS - 1
+        assertFalse("the mark lapsed", carry.blocked("p", "a", now = back))
+
+        carry.release("p", listOf("b"), now = 2_000_000L)
+        assertFalse("the pending release lapsed", carry.blocked("p", "b", now = 2_000_000L - CarryLedger.NOT_KEPT_LAPSE_MS - 1))
     }
 
     private fun dm(

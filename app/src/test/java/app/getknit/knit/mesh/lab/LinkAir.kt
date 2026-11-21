@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.lab
 
+import app.getknit.knit.mesh.TransportKind
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicLongArray
 
@@ -32,6 +33,12 @@ data class LinkAir(
      * served from one controller; a Wi-Fi Aware data path's ride a radio of their own and do not.
      */
     val sharesNodeAir: Boolean = true,
+    /**
+     * The plane a phone's link at this rate is ([LabTransport.carrier]): what custody paces a round by, Bluetooth's or Wi-Fi
+     * Aware's (the custody-carry-policy contract's §2). Null, the default, reports the lab transport's own kind (`Other`),
+     * which custody paces as Bluetooth, as every lab link did before.
+     */
+    val plane: TransportKind? = null,
 ) {
     init {
         require(bytesPerSecond > 0) { "a link airs at a positive rate: $bytesPerSecond" }

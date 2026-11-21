@@ -583,7 +583,9 @@ suspend fun MeshLab.doorLink(
     }
     val forward = LabDoor.Crossing(dialer.socket, responder.socket, sockets.forward)
     val back = LabDoor.Crossing(responder.socket, dialer.socket, sockets.back)
-    a.transport.connect(b.transport, arm = arm, doors = forward to back)
+    // Proven unless either end's build predates the link proof (v2.10.x's plain door): what custody's carry ledger reads.
+    val proven = a.linkDoor != LinkDoor.PLAIN && b.linkDoor != LinkDoor.PLAIN
+    a.transport.connect(b.transport, arm = arm, doors = forward to back, proven = proven)
     return result
 }
 

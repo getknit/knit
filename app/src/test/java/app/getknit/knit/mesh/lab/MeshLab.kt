@@ -87,8 +87,11 @@ import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.CARRIER_BLOB_BUDGET_BYTES
 import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.CarryLedger
+import app.getknit.knit.mesh.CarryReader
+import app.getknit.knit.mesh.CarrySnapshot
 import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.ContributionLedger
+import app.getknit.knit.mesh.CustodyPace
 import app.getknit.knit.mesh.DmAckCoalescer
 import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.ForwardStore
@@ -691,6 +694,12 @@ class MeshLab {
      * the DM-form frames two near-island nodes mint to each other (a seed or root re-send on the 60 s
      * re-offer) until they meet by radio again.
      *
+     * [custody] false leaves the custody parity of part 4 out, for a scenario whose stores the row cap binds: the cap's
+     * choice of row reads the carry ledger, which is each node's own (ADR 2026-11.bmks), so two full stores may keep
+     * different rows for good and their digests never match. In its place every store is at or under its cap
+     * ([LabNode.custodyCap]); every other part, the per-store checks of part 7 included, still runs. Only where the cap
+     * binds: below it, stores that hold the same frames keep the same ones (ADR 006), and parity is the oracle.
+     *
      * [sealedTo] is the profile leg's parity mode for a sender that spares sessions a sealed profile (ADR 2026-11.gsqu,
      * Stage 5b-1): given (holder, viewer), the newest copy the holder sealed the viewer ([SealedCopy]), or null to ask for the
      * holder's newest. A viewer that holds the holder's presentation at that version, every visible field equal, **and** the
@@ -705,6 +714,7 @@ class MeshLab {
         timeoutMs: Long = AWAIT_MS,
         custodyAcross: List<LabNode> = nodes + carriers,
         sealedTo: (suspend (holder: LabNode, viewer: LabNode) -> SealedCopy?)? = null,
+        custody: Boolean = true,
         conversation: (LabNode) -> String,
     ) {
         val names = nodes.map { it.name }
@@ -745,12 +755,7 @@ class MeshLab {
         )
 
         val stores = nodes + carriers
-        val custodied = tryAwait(1, timeoutMs) { if (custodyAcross.map { it.custodyFingerprint() }.distinct().size == 1) 1 else 0 }
-        val rows = custodyAcross.map { n -> "  ${n.name}: ${n.custodyIds().sorted()}" }.joinToString("\n")
-        assertTrue(
-            "custody did not converge across ${custodyAcross.map { it.name }} within ${timeoutMs}ms:\n$rows\n${report(stores)}",
-            custodied,
-        )
+        assertCustodyAgrees(stores, if (custody) custodyAcross else null, timeoutMs)
 
         assertProfilesAgree(nodes, timeoutMs, sealedTo)
         assertSessionsAgree(nodes, timeoutMs)
@@ -1370,6 +1375,28 @@ data class LabLimits(
     val custodyMaxSignedBytes: Int = ForwardRepository.DEFAULT_MAX_SIGNED_BYTES,
     /** The profile cap (#234): custody's, and the door's, which reads the same value. */
     val custodyMaxProfileSignedBytes: Int = ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES,
+    /**
+     * The round each carrying plane's custody answers are cut to (the custody-carry-policy contract's §2). Unpaced by
+     * default, every answer whole in its first round: a scenario about what crosses, not about the pace, sees custody as
+     * it did before rounds. A pace scenario passes [CustodyPace.CONTRACT] (or its own table) and drives the rounds with
+     * [LabNode.serveCustodyRounds] after each clock move.
+     */
+    val custodyPace: CustodyPace = CustodyPace.UNPACED,
+    /**
+     * Whether the re-offer tick's custody digest backs off while this node's offers draw nothing (§7). Off by default: a
+     * scenario that shortens [reofferIntervalMs] to run the real loop ticks on the wall clock, and would sit out the
+     * back-off's 30 s tolerance. A scenario about the back-off turns it on and ticks with [LabNode.tick]. [LabNode.reoffer]
+     * offers whatever this says.
+     */
+    val custodyReofferBackoff: Boolean = false,
+    /**
+     * Whether the global cap's choice of row reads every spread as 0 (the custody-carry-policy contract's §5, key 2 off):
+     * the node's carry ledger is still fed and still read by the serve order, the memo and the re-offer, and only the
+     * repository's [app.getknit.knit.mesh.CarryReader.snapshot] reads nothing, so the cap orders by `(sentAt, id)` within
+     * the largest bucket as before the ledger. Off by default; the simulator's `knit.meshSimZeroSpread` turns it on, to
+     * measure the eviction key apart from the serve order and the pace.
+     */
+    val custodyZeroSpread: Boolean = false,
     /**
      * How long the ✓✓ for a DM that arrived over the board batches ([DmAckCoalescer.HOLD_MS], ADR 054). The
      * field value by default: a scenario that waits for that tick shortens it.
@@ -2164,6 +2191,10 @@ class LabNode internal constructor(
         private set
     private lateinit var receipts: MessageReceiptRepository
     private lateinit var forwardStore: ForwardRepository
+
+    // Who this node believes holds each frame (the custody-carry-policy contract's §3), rebuilt empty each boot as a
+    // process's is: [carrySpread] reads it.
+    private lateinit var custodyCarry: CarryLedger
     private var scope: CoroutineScope? = null
 
     /** The self-certifying id, computed once from the bundle exactly as [Identity.nodeId] does. */
@@ -2232,6 +2263,7 @@ class LabNode internal constructor(
         // One carry ledger per node, as `di/MeshModule` wires one per process: the store's row cap reads it, the manager's
         // custody sync writes it. In memory, so a restart starts it empty.
         val carryLedger = CarryLedger(metrics = metrics)
+        custodyCarry = carryLedger
         forwardStore =
             ForwardRepository(
                 db.forwardDao(),
@@ -2246,7 +2278,7 @@ class LabNode internal constructor(
                 maxSignedBytes = limits.custodyMaxSignedBytes,
                 maxProfileSignedBytes = limits.custodyMaxProfileSignedBytes,
                 metrics = metrics,
-                carry = carryLedger,
+                carry = custodyReader(carryLedger, zeroSpread = limits.custodyZeroSpread),
             )
         // The leaves with a hardware or UI side. Text allowed unless [flaggedText], every picture unless [picturesExplicit],
         // notifications swallowed. (A relaxed ImageModerator mock hands back a mocked verdict whose `flagged`
@@ -2322,6 +2354,8 @@ class LabNode internal constructor(
                 carrierBlobBudgetBytes = limits.carrierBlobBudgetBytes,
                 proofWaitMs = limits.proofWaitMs,
                 reofferIntervalMs = limits.reofferIntervalMs,
+                custodyPace = limits.custodyPace,
+                custodyReofferBackoff = limits.custodyReofferBackoff,
                 reopenedMax = limits.reopenedMax,
                 blobHolderQuery =
                     BlobExchange.HolderQuery(
@@ -3133,8 +3167,23 @@ class LabNode internal constructor(
     /** Runs the TTL sweep the 10-minute prune loop and the heartbeat run (custody, parked frames, wants), now. */
     suspend fun sweepExpired() = manager.sweepExpired()
 
-    /** Runs one round of the 60 s re-offer to every linked neighbour (custody digest, blob and key re-asks), now. */
-    suspend fun reoffer() = manager.reofferToNeighbors()
+    /**
+     * Runs one round of the 60 s re-offer to every linked neighbour (custody digest, blob and key re-asks), now: the
+     * custody digest goes whatever its back-off says (§7 of the custody-carry-policy contract), as "offer now" means.
+     */
+    suspend fun reoffer() = manager.reofferToNeighbors(force = true)
+
+    /**
+     * Runs one round of the 60 s re-offer as the tick does, the custody digest held back while this node's offers to a
+     * neighbour draw nothing (§7): a scenario about the back-off itself.
+     */
+    suspend fun tick() = manager.reofferToNeighbors()
+
+    /**
+     * Cuts the custody rounds due now on this node's clock (§2): a [LabClock] jump never wakes the serve loop's sleep, so a
+     * scenario run on [LabLimits.custodyPace] moves the clock and runs this.
+     */
+    suspend fun serveCustodyRounds() = manager.serveCustodyRounds()
 
     /**
      * The 60 s tick's re-open of the peer resets our floor refused and held (ADR 2026-11.sfms), alone: a scenario that
@@ -3988,6 +4037,15 @@ class LabNode internal constructor(
     /** `liveFingerprint`: the digest recomputed over the live rows — what two converged stores share. */
     suspend fun custodyFingerprint(): Long = StoreDigest.fingerprint(custodyIds())
 
+    /** The row cap this node's custody keeps to ([LabLimits.custodyMaxRows]): what a store at the cap is read against. */
+    val custodyCap: Int get() = limits.custodyMaxRows
+
+    /**
+     * How many peers this node's carry ledger believes hold [id] (the custody-carry-policy contract's §3), 0 for an id it
+     * does not hold: seen in a proven digest, the proven link it came from, or a round's hand-off credited.
+     */
+    fun carrySpread(id: String): Int = custodyCarry.spread(id)
+
     /** Whether this node has pinned [peer]'s key (its profile arrived). */
     suspend fun knows(peer: LabNode): Boolean = peers.find(peer.nodeId)?.pubKey != null
 
@@ -4711,3 +4769,44 @@ private class SerialChannel(
 
 /** Runs [block] on [this] air's serial context, as one of its own bodies: how a scenario edits a MeshCore topology. */
 internal suspend fun <T> FakeMeshcoreAir.meshcoreEdit(block: FakeMeshcoreAir.() -> T): T = snapshot { confined { block() } }
+
+/**
+ * [assertConverged]'s custody leg: [across] holding one live id set (`liveFingerprint` parity), or, with [across] null for
+ * a scenario the row cap binds, every one of [stores] at or under its cap ([LabNode.custodyCap]) instead.
+ */
+private suspend fun MeshLab.assertCustodyAgrees(
+    stores: List<LabNode>,
+    across: List<LabNode>?,
+    timeoutMs: Long,
+) {
+    if (across == null) {
+        stores.forEach { n ->
+            val held = n.custodyIds().size
+            assertTrue("${n.name} holds $held custody rows, past its cap of ${n.custodyCap}", held <= n.custodyCap)
+        }
+        return
+    }
+    val custodied = tryAwait(1, timeoutMs) { if (across.map { it.custodyFingerprint() }.distinct().size == 1) 1 else 0 }
+    val rows = across.map { n -> "  ${n.name}: ${n.custodyIds().sorted()}" }.joinToString("\n")
+    assertTrue("custody did not converge across ${across.map { it.name }} within ${timeoutMs}ms:\n$rows\n${report(stores)}", custodied)
+}
+
+/** The carry reader a node's repository reads: its ledger, or with [zeroSpread] the ledger with no spread ([ZeroSpread]). */
+private fun custodyReader(
+    ledger: CarryLedger,
+    zeroSpread: Boolean,
+): CarryReader = if (zeroSpread) ZeroSpread(ledger) else ledger
+
+/**
+ * [ledger] as the repository reads it with [LabLimits.custodyZeroSpread]: its held-set events still reach it, so the serve
+ * order's rosters, the memo and the credits work as they do on a phone, while the cap's snapshot reads no holders and
+ * orders the largest bucket by `(sentAt, id)` alone (key 2 of the custody-carry-policy contract's §5 off).
+ */
+private class ZeroSpread(
+    private val ledger: CarryLedger,
+) : CarryReader by ledger {
+    override fun snapshot(
+        newcomer: String,
+        source: String?,
+    ): CarrySnapshot = CarrySnapshot.EMPTY
+}

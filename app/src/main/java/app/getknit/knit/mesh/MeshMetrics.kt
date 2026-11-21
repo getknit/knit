@@ -565,6 +565,9 @@ enum class MeshRound {
     /** The 60 s re-offer to linked neighbours: custody digests, key requests, owed ticks, group seeds, blob asks. */
     REOFFER,
 
+    /** A paced custody answer's round, or a hand-off's credit (the custody-carry-policy contract's §2, §3). */
+    CUSTODY,
+
     /** The 10 min sweep of expired carried frames, the commons outbox and the local storage bounds. */
     SWEEP,
 
@@ -736,6 +739,10 @@ class MeshMetrics {
     private val custodyOversizeRefused = AtomicLong()
     private val profileOversizeRefused = AtomicLong()
     private val custodyNotKept = AtomicLong()
+    private val custodyRoundsCut = AtomicLong()
+    private val custodyAnswersCutShort = AtomicLong()
+    private val custodyReoffersHeld = AtomicLong()
+    private val custodyKeylessReleased = AtomicLong()
     private val linksProven = AtomicLong()
     private val linkProofFailed = AtomicLong()
     private val linkClaimRefused = AtomicLong()
@@ -1429,6 +1436,25 @@ class MeshMetrics {
      */
     fun onCustodyNotKept() {
         custodyNotKept.incrementAndGet()
+    }
+
+    /**
+     * A paced custody answer released a round (the custody-carry-policy contract's §2, §8), [keyless] of whose frames went
+     * without their sender's key ahead: the peer may lack it and none was held to send (§9's late arrival).
+     */
+    fun onCustodyRoundCut(keyless: Int = 0) {
+        custodyRoundsCut.incrementAndGet()
+        if (keyless > 0) custodyKeylessReleased.addAndGet(keyless.toLong())
+    }
+
+    /** A custody answer ended by a lost link or by age while a round cut then would still have released something (§8). */
+    fun onCustodyAnswerCutShort() {
+        custodyAnswersCutShort.incrementAndGet()
+    }
+
+    /** A tick held a neighbour's custody digest back: its last offers drew nothing (§7, §8). */
+    fun onCustodyReofferHeld() {
+        custodyReoffersHeld.incrementAndGet()
     }
 
     /**
@@ -2239,6 +2265,10 @@ class MeshMetrics {
             custodyOversizeRefused = custodyOversizeRefused.get(),
             profileOversizeRefused = profileOversizeRefused.get(),
             custodyNotKept = custodyNotKept.get(),
+            custodyRoundsCut = custodyRoundsCut.get(),
+            custodyAnswersCutShort = custodyAnswersCutShort.get(),
+            custodyReoffersHeld = custodyReoffersHeld.get(),
+            custodyKeylessReleased = custodyKeylessReleased.get(),
             linksProven = linksProven.get(),
             linkProofFailed = linkProofFailed.get(),
             linkClaimRefused = linkClaimRefused.get(),
@@ -2576,6 +2606,13 @@ class MeshMetrics {
             val profileOversizeRefused: Long = 0,
             // custody-carry-policy §6: releases a peer's later digest showed it did not keep, while custody still held them.
             val custodyNotKept: Long = 0,
+            // custody-carry-policy §8: paced rounds released, answers cut short by a lost link or age with something left,
+            // and ticks that held a neighbour's custody digest back.
+            val custodyRoundsCut: Long = 0,
+            val custodyAnswersCutShort: Long = 0,
+            val custodyReoffersHeld: Long = 0,
+            // custody-carry-policy §9: frames a round released whose sender's key the peer may lack and none was held to send.
+            val custodyKeylessReleased: Long = 0,
             // ADR 2026-11.264w: links registered as proven, failed proofs, and unproven claims refused or closed.
             val linksProven: Long = 0,
             val linkProofFailed: Long = 0,

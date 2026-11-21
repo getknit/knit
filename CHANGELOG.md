@@ -49,6 +49,9 @@ document:
   page, Settings › Background running.
 - The Meshtastic room is now titled with the network and its channel, such as "Meshtastic (LongFast)", and
   shows a radio tower instead of Knit's logo, so it no longer looks like one of Knit's own rooms.
+- When two phones are near each other only briefly, each now sends first the messages meant for the other,
+  so a passing meeting delivers them instead of mail carried for other people. A phone whose storage is full
+  also stops resending what the other just turned down.
 
 ### Fixed
 

@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.sim
 
+import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.bluetooth.PromotionConfig
 import app.getknit.knit.mesh.lab.LinkAir
 import kotlin.math.exp
@@ -35,7 +36,7 @@ class BleRadio(
     private val nodeBytesPerSecond: Long = NODE_BYTES_PER_S,
     override val name: String = NAME,
 ) : Radio {
-    override val air = LinkAir(linkBytesPerSecond)
+    override val air = LinkAir(linkBytesPerSecond, plane = TransportKind.Bluetooth)
     override val nodeAirBytesPerSecond = nodeBytesPerSecond
 
     init {

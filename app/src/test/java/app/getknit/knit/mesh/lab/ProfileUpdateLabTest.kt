@@ -202,11 +202,18 @@ class ProfileUpdateLabTest {
         }
 
     /**
-     * #335: custody's cap takes the largest sender's oldest frame on every node alike (ADR 2026-10.7mqm), so Alice's
-     * posts evict her own profile everywhere. A settings write after that is not an edit: her version and stamp stay,
-     * and nothing is republished or sealed. Before the fix it minted a version, flooded it and sealed it to Bob, and in a
-     * crowd those copies filled every store. A re-link past the routers' seen window re-serves her profile from the frame
-     * she kept, the same bytes under the same id, and the stores still agree; a rename then publishes once.
+     * #335: custody's cap takes from the largest sender's bucket (ADR 2026-10.7mqm), so Alice's posts evict her own
+     * profile everywhere: on her store it is the oldest of her bucket and no post is more widely held, and on Bob's and
+     * Carol's it came from a neighbour as every post did. A settings write after that is not an edit: her version and
+     * stamp stay, and nothing is republished or sealed. Before the fix it minted a version, flooded it and sealed it to
+     * Bob, and in a crowd those copies filled every store. A re-link past the routers' seen window re-serves her profile
+     * from the frame she kept, the same bytes under the same id; a rename then publishes once.
+     *
+     * The cap binds on every store, and its choice of row reads each node's carry ledger (ADR 2026-11.bmks): after the
+     * re-link Bob's digest lists Alice's posts and not her profile, so her store, taking the kept frame back, trims a post
+     * more widely held than it, while Bob's and Carol's trim by their own holders. The stores may then keep different rows
+     * for good, so the oracle past the first eviction reads delivery, profiles and every store at or under its cap, not
+     * custody parity.
      */
     @Test
     fun anEvictedOwnProfileIsNotRepublishedByASettingsWrite() =
@@ -234,7 +241,7 @@ class ProfileUpdateLabTest {
 
             // Twenty posts into a 20-row store: Alice's bucket is the largest everywhere, and her profile its oldest frame.
             (1..20).forEach { assertTrue(alice.sendRoom("alice $it")) }
-            lab.assertConverged(three, atLeast = 20) { Conversations.NEARBY }
+            lab.assertConverged(three, atLeast = 20, custody = false) { Conversations.NEARBY }
             three.forEach { assertTrue("${it.name} still holds alice's profile", profileId !in it.custodyIds()) }
 
             alice.settings.setThemeMode(ThemeMode.Dark) // a write to a key the profile does not carry
@@ -244,8 +251,8 @@ class ProfileUpdateLabTest {
             assertEquals("and no new stamp", stamp, alice.settings.profilePublishedAt.first())
             assertEquals("and nothing republished", republished, alice.metrics.seals().profileRepublishedBy)
 
-            // Past the seen window, the re-link's push re-serves the kept frame and Bob takes it in again: every store
-            // trims it as the oldest of the largest bucket, alike, and Bob still holds Alice at the version she shows.
+            // Past the seen window, the re-link's push re-serves the kept frame and Bob takes it in again, and still holds
+            // Alice at the version she shows; which row each full store trims for it is its own (see the KDoc).
             // The push is held on the way, so what it carries is read: the bytes signed at the stamp, not a re-signing.
             val kept = checkNotNull(alice.settings.ownProfileFrame.first()) { "alice kept no profile frame" }
             lab.unlink(alice, bob)
@@ -256,11 +263,11 @@ class ProfileUpdateLabTest {
             assertEquals(profileId, WireCodec.decodeEnvelope(pushed.signed)?.id)
             assertTrue("the push re-signed alice's profile", pushed.signed.contentEquals(kept.signed) && pushed.sig.contentEquals(kept.sig))
             alice.transport.release(bob.transport)
-            lab.assertConverged(three, atLeast = 20) { Conversations.NEARBY }
+            lab.assertConverged(three, atLeast = 20, custody = false) { Conversations.NEARBY }
             assertEquals(version, alice.settings.profileVersion.first())
 
             alice.setDisplayName("Alice the Second")
-            lab.assertConverged(three, atLeast = 20) { Conversations.NEARBY }
+            lab.assertConverged(three, atLeast = 20, custody = false) { Conversations.NEARBY }
             assertEquals("Alice the Second", bob.peer(alice)?.name)
             assertEquals("Alice the Second", carol.peer(alice)?.name)
             assertEquals("the rename published once", 1L, changedSince())

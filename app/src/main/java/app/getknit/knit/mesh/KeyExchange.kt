@@ -155,16 +155,33 @@ class KeyExchange(
 
     /**
      * Hands [peer] the key of [nodeId] — its signed profile, point to point — if we hold one; returns whether it
-     * went. The digest reply's door ([ForwardSync.onDigest]): a key goes ahead of a backlog its reader has no
-     * key for, so nothing in it is refused and nothing waits on a request.
+     * went. [keyFor] then [sendKey].
      */
     suspend fun serveKey(
         nodeId: String,
         peer: Peer,
     ): Boolean {
-        val held = profileFor(nodeId) ?: return false
-        serve(held, peer)
+        val key = keyFor(nodeId) ?: return false
+        sendKey(key, peer)
         return true
+    }
+
+    /**
+     * The key of [nodeId] as it would go to a peer — its signed profile in a point-to-point wrapper (`relay = false`) — or
+     * null when we hold none. The digest reply's door ([ForwardSync]): a key goes ahead of a backlog its reader has no key
+     * for, so nothing in it is refused and nothing waits on a request, and a paced round charges its bytes to the round
+     * before it goes (the custody-carry-policy contract's §1), so it reads the key first and sends it with [sendKey].
+     */
+    suspend fun keyFor(nodeId: String): WireEnvelope? =
+        profileFor(nodeId)?.let { WireEnvelope(relay = false, sig = it.sig, signed = it.signed) }
+
+    /** Sends [key], one [keyFor] answered, to [peer], and counts it served. */
+    suspend fun sendKey(
+        key: WireEnvelope,
+        peer: Peer,
+    ) {
+        transport.send(key, peer)
+        metrics.onKeyServed()
     }
 
     /** [nodeId]'s signed profile: the cache, else the pin store (cached on the way out). One over the profile cap is neither. */

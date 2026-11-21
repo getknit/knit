@@ -9,8 +9,8 @@ topics: [custody, groups]
 # ADR 2026-10.hr9f — Custody serves a group's frames to any peer
 
 Status: Accepted (2026-10-29). Applies ADR 006's convergence rule to who a digest reply serves. Part 1 of the fix for
-issues #176 and #235; the bounded sealed re-ack (Part 2) is its own decision. Android only so far; the companion
-change for knit-ios is below.
+issues #176 and #235; the bounded sealed re-ack (Part 2) is its own decision. The companion change for knit-ios is
+below. Amended by ADR 2026-11.bmks: the answer goes in paced rounds, ordered for the asking peer.
 
 **What was observed.** `ForwardSync.onDigest` served a carried group frame only to a peer named in the frame's
 roster, and a DM or a room post to anyone. Every custody bucket keeps its newest N by the frame-global `(sentAt, id)`
@@ -94,3 +94,11 @@ is the precedent for mirroring a custody rule across the two ports.
    back-fill, once per frame, and the "busy groups the peer is not in cannot starve" sentence no longer holds as
    worded: a non-member's first round may be spent on a group's frames, and the rest follow at its next digest.
 4. A test beside the Android pair: a non-member that lacks a group frame is served it.
+
+## Amendment 2026-11-20 — the same frames, in paced rounds
+
+ADR 2026-11.bmks keeps this decision: an answer still owes the peer every live frame its digest lacks, a group's to a
+non-member too. What changed is the order and the pace. Rounds are cut fresh from an index at the carrying plane's pace
+(Bluetooth 16 KiB every 2 s), profiles first, then frames addressed to the peer, then group frames whose roster lists it,
+then the rest; less the not-kept memo, which only a proven link has. "A non-member's first round may be spent on a
+group's frames" above now reads: a non-member's group frames go in tier 4, after the frames addressed to it.

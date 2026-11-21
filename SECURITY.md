@@ -61,6 +61,11 @@ they are documented and out of scope for reports:
   build ships). Outside links, the adverts, the Wi-Fi Aware discovery messages and the Bluetooth side
   channel stay readable.
 
+- **A nearby phone can choose which carried message a full phone lets go.** When a phone's message store is full,
+  it picks which frame of its largest sender's batch to drop partly from what nearby phones say they hold. A nearby
+  phone with its own proven identities can steer that pick to a particular frame, the newest included. It cannot
+  change how many frames that batch loses, or reach a smaller one.
+
 - **A build that names your MeshCore board shows who you change as a contact.** On a build that claims a
   MeshCore board (today only debug builds, behind `MESHCORE_PLANE`), your sealed profile carries the board's key to
   your direct contacts only. When you accept, verify, block or remove someone, the updated profile goes to that one

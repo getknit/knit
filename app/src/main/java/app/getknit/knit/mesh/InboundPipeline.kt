@@ -406,7 +406,7 @@ class InboundPipeline(
         // SeenSet window — the three digests disagreed for up to eleven minutes after every key request, and
         // the cue plane raised a reconcile with nothing to transfer (ADR 2026-09.7bu7, issue #49).
         if (env.isStorable() && (wire.relay || env.type == FrameType.PROFILE)) {
-            forwardSync.onSeen(wire, env, ForwardStore.ORIGIN_RELAY, from = fromNodeId, fromProven = proven && onLink)
+            forwardSync.onSeen(wire, env, ForwardStore.ORIGIN_RELAY, from = fromNodeId, fromProven = proven && onLink, fromLink = onLink)
         }
         // Multi-hop coordination-plane fan-out: re-fan a small flood frame to our own neighbors so it spreads
         // across the mesh at message-plane speed (no data path), not just one hop from the originator. onDeliver

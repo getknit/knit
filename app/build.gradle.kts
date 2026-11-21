@@ -847,7 +847,9 @@ android {
                 // `knit.meshSimPassPictures`, `knit.meshSimPictureKb`, `knit.meshSimPassLoad` and `knit.meshSimPassAuthors`
                 // shape PassBySimTest's sidewalk;
                 // `knit.meshSimNanRangeM`, `knit.meshSimNanFail` and `knit.meshSimNanDiscoverMs` the `ble1m+nan` radio's
-                // Aware reach, failed data paths and discovery median; `knit.meshSimTrace` a
+                // Aware reach, failed data paths and discovery median; `knit.meshSimUnpaced=true` runs custody as before
+                // its pace and re-offer back-off (production's both unless set), and `knit.meshSimZeroSpread=true` has
+                // the cap read no carry spread; `knit.meshSimTrace` a
                 // `.movements` file FieldSimTest replays. `knit.meshSimOut` (an absolute directory) and `knit.meshSimTag` say where the
                 // report goes and what its name ends in. An outing is a measurement, so it runs every time it is asked:
                 // never up to date, never from the cache.
@@ -891,6 +893,8 @@ android {
                             "knit.meshSimNanRangeM",
                             "knit.meshSimNanFail",
                             "knit.meshSimNanDiscoverMs",
+                            "knit.meshSimUnpaced",
+                            "knit.meshSimZeroSpread",
                         )
                     (sizes + shapes + listOf("knit.meshSimOut", "knit.meshSimTag")).forEach { key ->
                         providers.gradleProperty(key).orNull?.let { test.systemProperty(key, it) }

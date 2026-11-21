@@ -142,9 +142,10 @@ class CustodyQuotaLabTest {
 
     /**
      * A full store: twenty rows everywhere, and Alice posting twelve times to the others' two. The cap takes from the largest sender
-     * bucket (ADR 2026-10.7mqm), on every node alike, so Bob's and Carol's frames — their posts and their profiles, the
-     * oldest frames in the store — are all still carried, and only Alice's are gone. Under the old rule (the globally
-     * oldest frame) their profiles went first.
+     * bucket (ADR 2026-10.7mqm), on every node, so Bob's and Carol's frames — their posts and their profiles, the oldest
+     * frames in the store — are all still carried, and only Alice's are gone. Under the old rule (the globally oldest
+     * frame) their profiles went first. Which of Alice's rows a store takes reads its own carry ledger (ADR 2026-11.bmks),
+     * so the stores at the cap need not agree: the oracle reads delivery and every store at its cap, not custody parity.
      */
     @Test
     fun aFullStoreEvictsFromTheLargestSenderOnEveryNodeAlike() =
@@ -161,7 +162,7 @@ class CustodyQuotaLabTest {
             lab.assertConverged(three, atLeast = 4) { Conversations.NEARBY }
             val before = listOf(bob, carol).associate { it.name to alice.custodiedFrom(it.nodeId) }
             (1..12).forEach { assertTrue(alice.sendRoom("alice $it")) }
-            lab.assertConverged(three, atLeast = 16) { Conversations.NEARBY }
+            lab.assertConverged(three, atLeast = 16, custody = false) { Conversations.NEARBY }
             three.forEach { n ->
                 assertEquals("${n.name} holds a full store", 20, n.custodyIds().size)
                 assertEquals(
@@ -184,14 +185,18 @@ class CustodyQuotaLabTest {
      * theirs still counts in their bucket, and a newer post's room trim then drops that post as well. So the exchange
      * past one window can itself leave two stores a frame apart, each refusing the other's as seen, and only the next
      * window settles it. The ADR's simulation settled within about two windows and `ForwardRepositoryTest`'s exchange
-     * case bounds it at three, as [pastSeenWindowsUntilCustodyAgrees] does here through the real stacks (a chaos sweep
-     * of 50 seeds, #141: agreed past the first window 33 times, past the second 17, never needed a third). The pairs
-     * meet their DM sessions before the partition, so the meeting mints no custodied frame of its own. Messages differ
-     * by design — a post the quotas evicted before it crossed never reaches the other side — so only Carol's thread is
-     * the oracle's, and the others are carriers.
+     * case bounded it at three (a chaos sweep of 50 seeds, #141: agreed past the first window 33 times, past the second
+     * 17, never needed a third). The pairs meet their DM sessions before the partition, so the meeting mints no custodied
+     * frame of its own. Messages differ by design — a post the quotas evicted before it crossed never reaches the other
+     * side — so only Carol's thread is the oracle's, and the others are carriers.
+     *
+     * Since ADR 2026-11.bmks the cap's choice of row also reads each node's carry ledger, so stores at the cap may keep
+     * different rows for good, and [pastSeenWindowsUntilCustodyAgrees] stops at agreement or after its three windows,
+     * whichever is first. What still holds is read instead of parity: the oracle's per-store checks over all three, every
+     * store at or under the cap, and none holding more than the room's quota of posts.
      */
     @Test
-    fun theRoomQuotaAndTheCapBindingTogetherConvergePastTheSeenWindow() =
+    fun theRoomQuotaAndTheCapBindingTogetherStillDeliverPastTheSeenWindow() =
         runBlocking {
             val limits = LabLimits(custodyMaxRows = 12, custodyMaxBroadcast = 5)
             val alice = lab.node("alice", limits).apply { setDisplayName("Alice") }
@@ -216,15 +221,23 @@ class CustodyQuotaLabTest {
             awaitSessionsSettled(alice to bob) // Bob's answer is in their island's custody before Carol meets either
             (1..3).forEach { assertTrue(carol.sendRoom("carol $it")) }
 
-            val bobsLast = bob.ownMessageId(Conversations.NEARBY, "bob 2")
+            // Bob and Carol's exchange lands before they part: both newcomer passes, both digests answered, what they carried
+            // handled. Not "Carol holds Bob's last post": at the cap her store may take that very post in its own write
+            // (ADR 2026-11.bmks; chaos seed 363285217 waited on it for good).
             lab.link(bob, carol)
-            lab.await(1) { if (bobsLast in carol.custodyIds()) 1 else 0 }
+            listOf(bob, carol).forEach { it.transport.awaitNeighborsHandled() }
+            listOf(bob, carol).forEach { it.transport.awaitDigestsAnswered() }
+            listOf(bob, carol).forEach { it.transport.awaitInboundDrained() }
             lab.unlink(bob, carol)
             lab.unlink(alice, bob)
             pastSeenWindowsUntilCustodyAgrees(alice, bob, carol)
 
-            lab.assertConverged(listOf(carol), atLeast = 3, carriers = listOf(alice, bob)) { Conversations.NEARBY }
-            listOf(alice, bob, carol).forEach { assertTrue("${it.name}: the cap held", it.custodyIds().size <= 12) }
+            lab.assertConverged(listOf(carol), atLeast = 3, carriers = listOf(alice, bob), custody = false) { Conversations.NEARBY }
+            listOf(alice, bob, carol).forEach { n ->
+                assertTrue("${n.name}: the cap held", n.custodyIds().size <= 12)
+                val posts = n.custodyFrames().count { it.split(':')[1] == "chat" && it.contains("→null@") }
+                assertTrue("${n.name} holds $posts room posts, past the room's quota of 5", posts <= 5)
+            }
         }
 
     /**

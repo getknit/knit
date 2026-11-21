@@ -6,6 +6,7 @@ import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.FileFeed
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.LinkCarrier
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.OwnPresenceKey
 import app.getknit.knit.mesh.PartialBlobs
@@ -13,6 +14,7 @@ import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.bluetooth.BleFastRoutePolicy
 import app.getknit.knit.mesh.bluetooth.BleInbound
 import app.getknit.knit.mesh.furthestByKey
@@ -296,6 +298,20 @@ class LabTransport(
             }
         }
 
+    /**
+     * Hands this node's manager a custody digest listing [ids] from a link that proved nothing and claims [claimed]'s node
+     * id: what a plane carries from a build older than the link proof, or from a phone that says it is someone else
+     * (ADR 2026-11.264w). Its own link token, never the claimed node's pipe's, as a second link under the same id would
+     * have; counted in, so [awaitDigestsAnswered] waits for its answer.
+     */
+    suspend fun hearClaimedDigest(
+        claimed: String,
+        ids: List<String>,
+    ) {
+        digestsIn.incrementAndGet()
+        _incomingDigests.emit(ReceivedDigest(claimed, ids, proven = false, link = LabLinkToken(proven = false)))
+    }
+
     /** One of this plane's digests answered by the manager behind a composite ([handledDownstream]). */
     internal fun digestAnswered() {
         digestsAnswered.incrementAndGet()
@@ -316,6 +332,8 @@ class LabTransport(
      */
     private class Pipe(
         val target: LabTransport,
+        // The link both directions belong to: what each end stamps on what it delivers and answers for [linkToken].
+        val link: LabLinkToken,
     ) {
         // Written and read under the `held` lock, so a frame is either parked before a release takes the batch
         // or delivered after it — never parked into a batch already taken, with no one left to release it.
@@ -641,16 +659,20 @@ class LabTransport(
         doors: Pair<LabDoor.Crossing, LabDoor.Crossing>? = null,
         // Both directions' airtime ([LinkAir]), or null for a link that delivers as it sends, as every lab link did before.
         air: LinkAir? = null,
+        // Whether the link proved both ends' node ids, as a phone's link between two builds that carry the link proof does
+        // (ADR 2026-11.264w): what custody's carry ledger and memo read. False plays a link to a build older than the proof.
+        proven: Boolean = true,
     ) {
         if (other.nodeId == nodeId) return
+        val token = LabLinkToken(proven)
         val mine =
-            Pipe(other).also {
+            Pipe(other, token).also {
                 it.lossy = lossy
                 it.door = doors?.first
                 it.air = air
             }
         val theirs =
-            Pipe(this).also {
+            Pipe(this, token).also {
                 it.door = doors?.second
                 it.air = air
             }
@@ -682,6 +704,37 @@ class LabTransport(
             publishNeighbors()
             other.publishNeighbors()
         }
+    }
+
+    /**
+     * This node's live link to [nodeId], the object it stamps on what that link delivers: a new one per [connect], as a
+     * phone's plane makes a new link object per link-up (custody tells a relink from the same link by it).
+     */
+    override fun linkToken(nodeId: String): Any? = pipes[nodeId]?.link
+
+    /** Whether this node's live link to [nodeId] proved both ends' ids ([LabLinkToken.proven]). */
+    override fun linkProven(nodeId: String): Boolean = pipes[nodeId]?.link?.proven == true
+
+    /**
+     * The link a send to [nodeId] would go over, as the default reads it, but on the plane its air says ([LinkAir.plane]):
+     * a simulator pipe on a Wi-Fi Aware data path is paced as Aware's, and on Bluetooth as Bluetooth's, re-read at each
+     * round so a [setAir] onto another plane moves the pace with it. A link with no air, or an air naming no plane, reports
+     * this transport's own kind, as before.
+     */
+    override fun carrier(nodeId: String): LinkCarrier? {
+        val base = super.carrier(nodeId) ?: return null
+        val plane = pipes[nodeId]?.air?.plane ?: return base
+        return LinkCarrier(plane, base.link, base.proven)
+    }
+
+    /** Whether [link] is still this node's link to [nodeId] on [kind]: the plane [carrier] reports for it now. */
+    override fun carries(
+        kind: TransportKind,
+        nodeId: String,
+        link: Any?,
+    ): Boolean {
+        val pipe = pipes[nodeId] ?: return false
+        return kind == (pipe.air?.plane ?: this.kind) && neighbors.value.any { it.nodeId == nodeId } && pipe.link === link
     }
 
     /** Publishes the current link set as `neighbors`, which is what starts the profile push on the far side. */
@@ -1670,9 +1723,9 @@ class LabTransport(
         if (pipe?.air != null) {
             enqueueDigest(pipe, ids)
         } else {
-            pipe?.target?.let { target ->
-                target.digestsIn.incrementAndGet()
-                target._incomingDigests.emit(ReceivedDigest(nodeId, ids))
+            pipe?.let { p ->
+                p.target.digestsIn.incrementAndGet()
+                p.target._incomingDigests.emit(ReceivedDigest(nodeId, ids, proven = p.link.proven, link = p.link))
             }
         }
         chaos?.jitter()
@@ -1688,7 +1741,7 @@ class LabTransport(
         via: String,
     ) {
         val bounded = slots != null
-        val frame = received(wire, sender.nodeId, via, mark = !bounded) ?: return
+        val frame = received(wire, sender.nodeId, via, mark = !bounded, pipe.link) ?: return
         if (bounded) hold(pipe, sender, frame) else _inbound.emit(frame)
     }
 
@@ -1699,7 +1752,7 @@ class LabTransport(
         via: String,
     ) {
         val bounded = slots != null
-        val frame = received(wire, sender.nodeId, via, mark = !bounded) ?: return
+        val frame = received(wire, sender.nodeId, via, mark = !bounded, pipe.link) ?: return
         if (bounded) hold(pipe, sender, frame) else emitNow(frame)
     }
 
@@ -1950,7 +2003,8 @@ class LabTransport(
                 } else {
                     target.airDigestsIn += record.ids
                     target.digestsIn.incrementAndGet()
-                    check(target._incomingDigests.tryEmit(ReceivedDigest(nodeId, record.ids))) { "an unbounded flow refused a digest" }
+                    val digest = ReceivedDigest(nodeId, record.ids, proven = pipe.link.proven, link = pipe.link)
+                    check(target._incomingDigests.tryEmit(digest)) { "an unbounded flow refused a digest" }
                 }
                 target.airInbound.decrementAndGet()
                 false
@@ -1998,6 +2052,8 @@ class LabTransport(
         via: String,
         // Whether the crossing is marked here: always but with [inboundSlots], where [handOver] marks it.
         mark: Boolean,
+        // The link it came over, stamped on the frame as a phone's plane stamps its own (custody's source reads it).
+        link: LabLinkToken,
     ): InboundFrame? {
         val envelope = WireCodec.decodeEnvelope(wire.signed) ?: return null
         // In counts, a relayed frame's (`LinkCrossings.marksInbound`): it never goes back this way.
@@ -2035,7 +2091,7 @@ class LabTransport(
         )
         // Every pipe delivery is a link's, the fast path's copy too (the real one rides the same `FramedLink`): the frame's
         // hop identity is the linked peer, as `FramedLink.handleFrame` says (ADR 2026-11.264w). [hearPage] is not a link.
-        return InboundFrame(wire, envelope, fromNodeId, onLink = true)
+        return InboundFrame(wire, envelope, fromNodeId, onLink = true, proven = link.proven, link = link)
     }
 
     // A page heard with every slot taken: dropped, and counted handled at once, so a drain waits only on what the router
@@ -2120,3 +2176,12 @@ class AiredRecord(
 ) {
     enum class Kind { FRAME, DIGEST, FILE }
 }
+
+/**
+ * One lab link's identity, shared by its two directions ([LabTransport.connect]): stamped on every frame and digest it
+ * delivers and answered by [LabTransport.linkToken], compared by identity. [proven] says the link proved both ends' node
+ * ids, as every lab radio link between two current builds does.
+ */
+class LabLinkToken(
+    val proven: Boolean,
+)

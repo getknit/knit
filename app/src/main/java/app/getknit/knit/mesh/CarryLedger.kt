@@ -1,6 +1,9 @@
 package app.getknit.knit.mesh
 
 import app.getknit.knit.mesh.protocol.RelayEnvelope
+import java.util.Collections
+import java.util.IdentityHashMap
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Who this phone believes holds each frame custody holds, and what it released to each peer that the peer did not keep:
@@ -39,6 +42,9 @@ import app.getknit.knit.mesh.protocol.RelayEnvelope
  * **A contact's direct-link digest is additive** (Android's own): it lists only the pair's view, so what it lists adds
  * holders and judges pending ids kept, and what it lacks judges only releases a view-filtered answer made. It never
  * replaces what a radio digest said.
+ *
+ * **Rosters** (§1's tier 3), per held group frame, the members its own roster lists, read once when custody keeps it
+ * ([noteRoster]) so no answer decodes a row to order it; at most [MAX_MEMBERS] each, and an entry dies with its row.
  *
  * What it costs a peer to lie: holders can be faked over a proven link, and that only picks which row of a largest
  * sender bucket the cap takes (`CapEviction`); what eviction reads, a peer can read back from our digest, so nothing but
@@ -120,8 +126,19 @@ class CarryLedger(
     // [progressMark] never keeps a peer's memo alive.
     private val memos = LinkedHashMap<String, Memo>()
 
+    // The peers [ForwardSync] has a live answer to, with the plane carrying it ([answerCarrier]), bounded by its answers (one
+    // per linked peer). Concurrent, so a plane reads it lock-free.
+    private val answering = ConcurrentHashMap<String, TransportKind>()
+
     // The one counter every mark is stamped from (see [CustodyProgress]).
     private var stamps = 0L
+
+    // Per peer, the stamp of its last Wi-Fi Aware path cut with an answer live ([awareCutMark]); [maxPeers] at most.
+    private val awareCuts = LinkedHashMap<String, Long>()
+
+    // Tier 3 of the serve order (§1): per held group frame, the members its own roster lists, read once when custody kept
+    // it, or [UNREMEMBERED] for a roster longer than [MAX_MEMBERS]. Keys ⊆ [held], so it dies with the row.
+    private val rosters = HashMap<String, Array<String>>()
 
     // --- CarryReader: the repository's side, under its mutex ---
 
@@ -159,6 +176,7 @@ class CarryLedger(
             held.clear()
             held.addAll(liveIds)
             holders.keys.retainAll(liveIds)
+            rosters.keys.retainAll(liveIds)
             val liveHashes = liveIds.mapTo(HashSet(liveIds.size)) { hash(it) }
             memos.values.forEach { memo ->
                 memo.pending.keys.retainAll(liveIds)
@@ -172,6 +190,7 @@ class CarryLedger(
         synchronized(lock) {
             held.remove(id)
             holders.remove(id)
+            rosters.remove(id)
             val h = hash(id)
             memos.values.forEach { memo ->
                 memo.pending.remove(id)
@@ -203,7 +222,7 @@ class CarryLedger(
         now: Long,
         links: Links,
     ) {
-        val ended = endedLinks(peer, links)
+        val ended = endedPending(peer, links)
         synchronized(lock) {
             val memo = memoFor(peer)
             memo.digestAt = ++stamps
@@ -232,9 +251,17 @@ class CarryLedger(
         frame: RelayEnvelope,
         now: Long,
         links: Links,
+    ): Boolean = blocked(peer, frame.id, frame.recipientId, now, links)
+
+    /** [blocked] for the frame [id] addressed to [recipientId]: what a round reads off custody's index, bytes unloaded. */
+    fun blocked(
+        peer: String,
+        id: String,
+        recipientId: String?,
+        now: Long,
+        links: Links,
     ): Boolean {
-        if (frame.recipientId == peer) return false
-        val id = frame.id
+        if (recipientId == peer) return false
         // The link is asked outside the lock (see [Links]); an entry replaced meanwhile was released since, so it counts.
         val asked = synchronized(lock) { memos[peer]?.pending?.get(id) }
         val askedUp = asked == null || !relinks(asked.plane) || links.carries(asked.plane, peer, asked.link)
@@ -243,11 +270,11 @@ class CarryLedger(
             val pending = memo.pending[id]
             if (pending != null) {
                 val linkUp = pending !== asked || askedUp
-                if (linkUp && now - pending.releasedAt < lapseMs) return true
+                if (linkUp && !lapsed(pending.releasedAt, now)) return true
                 memo.pending.remove(id)
             }
             val marked = memo.notKept[id] ?: return false
-            if (now - marked < lapseMs) return true
+            if (!lapsed(marked, now)) return true
             memo.notKept.remove(id)
             return false
         }
@@ -305,17 +332,57 @@ class CarryLedger(
      * Wi-Fi Aware ending the contract's §6 names; a path that closed at quiescence never calls this, and the next path's
      * digest judges its releases.
      */
-    fun answerCut(
+    override fun answerCut(
         peer: String,
         plane: TransportKind,
     ) {
-        synchronized(lock) { memos[peer]?.pending?.values?.removeAll { it.plane == plane } }
+        synchronized(lock) {
+            memos[peer]?.pending?.values?.removeAll { it.plane == plane }
+            if (plane == TransportKind.WifiAware) {
+                // Stamped for every peer, memo or none: the answer under way forgets what that path carried ([awareCutMark]).
+                awareCuts.remove(peer)
+                awareCuts[peer] = ++stamps
+                if (awareCuts.size > maxPeers) awareCuts.remove(awareCuts.keys.first())
+            }
+        }
     }
+
+    /**
+     * Moves each time [peer]'s Wi-Fi Aware path is cut with an answer live ([answerCut]): what an answer reads, at its
+     * next round, to forget the releases that path carried, so they are owed again (they may never have crossed). 0 when
+     * none was cut (or the mark was evicted with the 64-peer bound).
+     */
+    fun awareCutMark(peer: String): Long = synchronized(lock) { awareCuts[peer] ?: 0 }
 
     /** Forgets every peer's memo (the holders stay: they describe the store, not a session). */
     fun clearMemos() {
         synchronized(lock) { memos.clear() }
     }
+
+    /**
+     * Custody holds the group frame [id], whose own roster lists [members] (`group.members`; `departed` does not count):
+     * remembered for tier 3 of the serve order (§1) when it lists at most [MAX_MEMBERS], which no honest build exceeds, else
+     * remembered as unrememberable, so its frame orders in tier 4 and the restart rebuild does not read it again. An id
+     * custody does not hold (evicted since its write) is not recorded.
+     */
+    fun noteRoster(
+        id: String,
+        members: List<String>,
+    ) {
+        synchronized(lock) {
+            if (id !in held) return
+            rosters[id] = if (members.size <= MAX_MEMBERS) members.toTypedArray() else UNREMEMBERED
+        }
+    }
+
+    /** Whether [noteRoster] has read the group frame [id]'s roster since custody kept it (this process). */
+    fun rosterRead(id: String): Boolean = synchronized(lock) { id in rosters }
+
+    /** Whether the group frame [id]'s own roster lists [peer]; false when unread or unremembered (tier 4, §1). */
+    fun rosterLists(
+        id: String,
+        peer: String,
+    ): Boolean = synchronized(lock) { rosters[id]?.contains(peer) == true }
 
     /** How many peers are believed to hold [id] now, 0 to [spreadMax]. */
     fun spread(id: String): Int = synchronized(lock) { holders[id]?.size ?: 0 }
@@ -335,6 +402,32 @@ class CarryLedger(
     override fun fresh(peer: String): Boolean = synchronized(lock) { memos[peer]?.fresh == true }
 
     override fun digestSeen(peer: String): Long = synchronized(lock) { memos[peer]?.digestAt ?: 0 }
+
+    // Outside [lock]: a plane asks it from its link supervisor every second, and it reads no memo.
+    override fun answerCarrier(peer: String): TransportKind? = answering[peer]
+
+    /** [ForwardSync]'s answer to [peer] is live, carried by [carrier] now: what [answerCarrier] answers. */
+    fun answering(
+        peer: String,
+        carrier: TransportKind,
+    ) {
+        answering[peer] = carrier
+    }
+
+    /** [ForwardSync]'s answer to [peer] ended. */
+    fun answerEnded(peer: String) {
+        answering.remove(peer)
+    }
+
+    /** Every answer ended with the session ([ForwardSync.resetSession]). */
+    fun answeringCleared() = answering.clear()
+
+    // Whether a release or a mark stamped [at] has lapsed by [now]. One stamped further ahead than a lapse was stamped before
+    // the wall clock went back: it would otherwise never be judged and never lapse, so it counts as lapsed.
+    private fun lapsed(
+        at: Long,
+        now: Long,
+    ): Boolean = now - at >= lapseMs || at - now > lapseMs
 
     // --- under [lock] ---
 
@@ -360,39 +453,44 @@ class CarryLedger(
         memo.links[plane] = link
     }
 
-    // Pending ids whose release lapsed or whose link is in [ended], and marks that lapsed, leave.
+    // Pending ids whose release lapsed or that are among [ended] (by identity), and marks that lapsed, leave.
     private fun expire(
         memo: Memo,
         now: Long,
-        ended: List<Pair<TransportKind, Any?>>,
+        ended: Set<Pending>,
     ) {
-        memo.pending.values.removeAll { p ->
-            now - p.releasedAt >= lapseMs || ended.any { (plane, link) -> plane == p.plane && link === p.link }
-        }
-        memo.notKept.values.removeAll { now - it >= lapseMs }
+        memo.pending.values.removeAll { p -> lapsed(p.releasedAt, now) || p in ended }
+        memo.notKept.values.removeAll { lapsed(it, now) }
     }
 
     /**
-     * The links [peer]'s pending releases went over that [links] says have ended. The links are read with the ledger's
-     * lock released: the transport's reads are its own, and a plane that asks custody's progress under its own lock must
-     * never meet this lock held the other way round. A release recorded meanwhile on a link found ended ends with it.
+     * The pending releases to [peer] whose link [links] says has ended, as the entries themselves. The links are read with
+     * the ledger's lock released: the transport's reads are its own, and a plane that asks custody's progress under its own
+     * lock must never meet this lock held the other way round. So a release recorded meanwhile is a new entry, outside
+     * this snapshot, and stays pending whatever link it went over (a null token included): only what was read ends.
      */
-    private fun endedLinks(
+    private fun endedPending(
         peer: String,
         links: Links,
-    ): List<Pair<TransportKind, Any?>> {
+    ): Set<Pending> {
         val used =
             synchronized(lock) {
                 memos[peer]
                     ?.pending
                     ?.values
                     ?.filter { relinks(it.plane) }
-                    ?.map { it.plane to it.link }
                     .orEmpty()
             }
-        val distinct = ArrayList<Pair<TransportKind, Any?>>()
-        used.forEach { u -> if (distinct.none { it.first == u.first && it.second === u.second }) distinct += u }
-        return distinct.filterNot { (plane, link) -> links.carries(plane, peer, link) }
+        if (used.isEmpty()) return emptySet()
+        // One question per distinct link, never one per release.
+        val verdicts = ArrayList<Pair<Pending, Boolean>>()
+        val ended = Collections.newSetFromMap(IdentityHashMap<Pending, Boolean>())
+        used.forEach { p ->
+            val known = verdicts.firstOrNull { (q, _) -> q.plane == p.plane && q.link === p.link }
+            val up = known?.second ?: links.carries(p.plane, peer, p.link).also { verdicts += p to it }
+            if (!up) ended += p
+        }
+        return ended
     }
 
     private fun judge(
@@ -452,6 +550,11 @@ class CarryLedger(
     companion object {
         /** Holders remembered per frame (§3): a ninth is not recorded, and `spread` is 0 to 8. */
         const val SPREAD_MAX = 8
+
+        /** Members of a group frame's roster remembered for tier 3 (§1); a longer roster is not remembered. */
+        const val MAX_MEMBERS = 8
+
+        private val UNREMEMBERED = emptyArray<String>()
 
         /** Peers with a memo at once (§6), least recently written out first. */
         const val MEMO_MAX_PEERS = 64

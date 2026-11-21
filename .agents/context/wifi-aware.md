@@ -185,6 +185,34 @@ is in `docs/NAN_CONCURRENCY_REAUDIT.md` and `docs/DIGEST_PULL_REATTACH.md`.
   `FramedLink.security`, never stored beside it: a node with no live link has no entry. Every change to `peers` (the
   `registerConn` put, the `teardownPeer` remove) ends in `refreshNeighbors`; stop and NAN-down clear both flows.
   Tests: `NanLinkViewTest`.
+- **When touching `DigestTracker`'s hold-off (`open` / `onReconciled` / `Exchange` / `Verdict`, `reconcileWanted`'s
+  `initiator`), `judgeExchange`, `NanLink.exchange`, `NanLinkLife.answerHeld`, `NanLinkStamp`, `linkToken`, the
+  `ConnCallbacks` stamps, or the `custody` reads in `superviseLink` / `teardownPeer`:** READ ADR 2026-11.bmks. Full stores
+  never show equal digests again, so the no-progress throttle is judged on custody's progress (`CustodyProgress`), per
+  exchange, against that link's own marks (`Exchange`, read at `registerConn`, so a displaced link never judges the
+  newcomer). Equal digests: `CONVERGED`, cleared. No digest seen or no exchange: `NO_WORD`, counted as before (so
+  `CustodyProgress.NONE` and unproven peers behave as before). Bulk-only, or the digest mark didn't move: `UNJUDGED`. The
+  progress mark moved (frames kept from the peer, or releases a later digest judged kept): `MOVED`, cleared. Otherwise
+  `STILL`, counted, and `watchFresh`; the three-in-a-minute tally before it engages is kept, because the path after a
+  one-way catch-up is the one that proves progress (initiator only). The initiator alone keeps a hold-off; only it
+  lifts one on `fresh`, and an unjudged path a fresh lift opened spends the lift. The responder (smaller id) keeps none:
+  for a larger peer its digest-pure want (the watchdog's owed episodes and the ICM relight) is false on digest
+  divergence alone while it trusts the link, within `RESPONDER_TRUST_MS` (2 × `COOLDOWN_MAX_MS`) of the last data path
+  with that peer that came up (it served the peer's dial: proof the link is alive) or closed with the digests still
+  different, or of the plane's start (a restart grace, so a responder that restarts, a Tier-2 kill included, cannot
+  loop). Observed convergence (a converged last exchange, or equal digests read by the gate) ends that peer's trust and
+  its restart grace, so a new divergence is owed at once, as before; bulk wants still count; `forget` keeps the trust
+  and `clear` drops it. 1,200 s is above the initiator's worst gap between dials while its one NDI is free (600 s
+  hold-off, two 240 s idle ticks, the settle and the handshake: 1,096.5 s); a busy NDI can push past it, which the
+  renewal at each path that comes up covers, and a gap past the cap reads as owed, the watchdog's to judge. Cost: a
+  responder whose initiator truly wedged after a non-convergent exchange, or right after a restart, notices it up to
+  20 min later, and meanwhile doesn't relight ICM for that peer.
+  A link is held while a custody answer to its peer rides Wi-Fi Aware (`CustodyProgress.answerCarrier`,
+  `answerHeld`, at most `SYNC_MAX_WINDOW_MS`), and a path cut with such an answer live calls `answerCut`, outside every
+  transport lock. Frames and
+  digests are stamped with the link's proof and `FramedLink` (a digest off a path `peers` no longer holds reads
+  unproven), and `linkToken` returns that same link, lock-free; hop-less coordination-plane frames stay unstamped.
+  Tests: `DigestTrackerTest`, `NanSyncPolicyTest`, `NanLinkHoldTest`, `NanLinkStampTest`.
 
 ## Adding an entry
 

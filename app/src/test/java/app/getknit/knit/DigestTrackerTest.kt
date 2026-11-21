@@ -1,6 +1,8 @@
 package app.getknit.knit
 
+import app.getknit.knit.mesh.CustodyProgress
 import app.getknit.knit.mesh.DigestTracker
+import app.getknit.knit.mesh.DigestTracker.Verdict
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -228,5 +230,266 @@ class DigestTrackerTest {
 
         r.now += DigestTracker.COOLDOWN_INITIAL_MS
         assertEquals("a spent cooldown is not shown", "p(pv=2,sv=1002) q(pv=7,sv=null)", r.t.debug())
+    }
+
+    // --- The hold-off keyed on progress (custody-carry-policy android order, step 8) ---
+
+    /** Custody's word on peer "p", moved by hand: the marks a [DigestTracker] reads at an exchange's open and its end. */
+    private class Custody : CustodyProgress {
+        var progress = 0L
+        var digests = 0L
+        var fresh = false
+        var watches = 0
+
+        override fun progressMark(peer: String) = progress
+
+        override fun digestSeen(peer: String) = digests
+
+        override fun watchFresh(peer: String) {
+            watches++
+            fresh = false
+        }
+
+        override fun fresh(peer: String) = fresh
+    }
+
+    /** A tracker over [custody] on a test clock, and one exchange with "p" at a time, judged as a path would be. */
+    private class Rig {
+        var now = 1_000_000L
+        val custody = Custody()
+        val t = DigestTracker(custody) { now }
+
+        init {
+            t.onCue("p", 1L) // the peer's digest differs from ours (500) throughout: two full stores
+        }
+
+        /** One path: opened, then closed with custody's marks moved as [moved] / [digest] say, judged as [initiator]. */
+        fun exchange(
+            moved: Boolean = false,
+            digest: Boolean = true,
+            digestWanted: Boolean = true,
+            initiator: Boolean = true,
+        ): Verdict {
+            val opened = t.open("p", digestWanted)
+            if (digest) custody.digests++
+            if (moved) custody.progress++
+            return t.onReconciled("p", 500L, opened, initiator)
+        }
+
+        fun wanted(initiator: Boolean = true) = t.reconcileWanted("p", 500L, initiator)
+
+        /** Three exchanges that moved nothing, a second apart: the tally engages the hold-off. */
+        fun engage(initiator: Boolean = true) =
+            repeat(DigestTracker.THROTTLE_SYNCS) {
+                if (it > 0) now += 1_000
+                exchange(initiator = initiator)
+            }
+    }
+
+    @Test
+    fun theDefaultCustodyKeepsTheThrottleAsItWas() {
+        // CustodyProgress.NONE: never moved, never fresh — every exchange short of equal digests counts, as before.
+        var now = 0L
+        val t = DigestTracker { now }
+        t.onCue("p", 1L)
+        repeat(2) {
+            assertEquals(Verdict.NO_WORD, t.onReconciled("p", 500L, t.open("p", digestWanted = true)))
+            assertTrue(t.reconcileWanted("p", 500L))
+        }
+        assertEquals(Verdict.NO_WORD, t.onReconciled("p", 500L, t.open("p", digestWanted = false)))
+        assertFalse("the third engages, a bulk-only path included", t.reconcileWanted("p", 500L))
+        now += DigestTracker.COOLDOWN_INITIAL_MS
+        assertTrue(t.reconcileWanted("p", 500L))
+    }
+
+    @Test
+    fun anExchangeThatMovedNothingCountsTowardTheHoldOffAndWatchesForAFreshFrame() {
+        val r = Rig()
+        assertEquals(Verdict.STILL, r.exchange())
+        assertEquals("the watch starts at the exchange's end", 1, r.custody.watches)
+        assertTrue("one is the converge-in-two dance, not yet a hold-off", r.wanted())
+        r.exchange()
+        assertTrue(r.wanted())
+        r.exchange()
+        assertFalse("three in a minute engage it", r.wanted())
+        r.now += DigestTracker.COOLDOWN_INITIAL_MS
+        assertTrue(r.wanted())
+    }
+
+    @Test
+    fun theHoldOffDoublesToItsCeilingWhileNothingMoves() {
+        // The real cadence: each path comes the moment the hold-off ends and moves nothing again.
+        val r = Rig()
+        r.engage()
+        val spans = mutableListOf<Long>()
+        var span = DigestTracker.COOLDOWN_INITIAL_MS
+        repeat(7) {
+            spans += span
+            r.now += span - 1
+            assertFalse("held off for the whole span", r.wanted())
+            r.now += 1
+            assertTrue(r.wanted())
+            r.exchange()
+            span = minOf(span * 2, DigestTracker.COOLDOWN_MAX_MS)
+        }
+        assertEquals(listOf(30_000L, 60_000L, 120_000L, 240_000L, 480_000L, 600_000L, 600_000L), spans)
+    }
+
+    @Test
+    fun anExchangeThatMovedSomethingClearsTheHoldOff() {
+        val r = Rig()
+        r.engage()
+        r.now += DigestTracker.COOLDOWN_INITIAL_MS
+        assertEquals(Verdict.MOVED, r.exchange(moved = true))
+        assertTrue("cleared at once", r.wanted())
+        r.exchange()
+        assertTrue("and the tally starts over", r.wanted())
+    }
+
+    @Test
+    fun equalDigestsStillClearTheHoldOffAndSkipTheSync() {
+        val r = Rig()
+        r.engage()
+        assertFalse("equal digests: nothing to exchange", r.t.reconcileWanted("p", 1L))
+        assertTrue("and the hold-off is gone", r.wanted())
+        r.engage()
+        r.t.onCue("p", 500L)
+        assertEquals(Verdict.CONVERGED, r.t.onReconciled("p", 500L, r.t.open("p", true)))
+        r.t.onCue("p", 2L)
+        assertTrue(r.wanted())
+    }
+
+    @Test
+    fun aFreshFrameLiftsTheInitiatorsHoldOff() {
+        val r = Rig()
+        r.engage()
+        assertFalse(r.wanted())
+        r.custody.fresh = true // custody newly keeps a frame the peer's last digest lacked
+        assertTrue("the side that brings the path up goes", r.wanted(initiator = true))
+        r.exchange()
+        assertFalse("the exchange it raised moved nothing: watched afresh and held again", r.wanted())
+    }
+
+    @Test
+    fun noHoldOffWithoutThePeersCustodyDigestInTheExchange() {
+        val r = Rig()
+        r.custody.digests = 7 // custody has the peer's word from earlier paths
+        repeat(5) { assertEquals(Verdict.UNJUDGED, r.exchange(digest = false)) }
+        assertTrue("an exchange that carried no digest says nothing about progress", r.wanted())
+        r.engage()
+        r.now += 1_000
+        assertEquals(Verdict.UNJUDGED, r.exchange(digest = false))
+        r.now += DigestTracker.COOLDOWN_INITIAL_MS
+        assertTrue("nor does it re-arm a running hold-off doubled", r.wanted())
+        assertEquals("no watch for an exchange that judged nothing", DigestTracker.THROTTLE_SYNCS, r.custody.watches)
+    }
+
+    @Test
+    fun noHoldOffOnAPathOpenedBulkOnly() {
+        val r = Rig()
+        repeat(5) { assertEquals(Verdict.UNJUDGED, r.exchange(digestWanted = false)) }
+        assertTrue(r.wanted())
+    }
+
+    @Test
+    fun aPeerCustodyKeepsNoWordForIsThrottledAsBefore() {
+        // An unproven link (or a build older than the proof): custody's marks read 0, so the old throttle applies.
+        val r = Rig()
+        repeat(DigestTracker.THROTTLE_SYNCS) { assertEquals(Verdict.NO_WORD, r.exchange(digest = false)) }
+        assertFalse(r.wanted())
+        assertEquals("nothing to watch for a peer custody keeps no word for", 0, r.custody.watches)
+    }
+
+    @Test
+    fun theMarksAreTheLinksOwnSoADisplacedLinksNeverJudgeTheNewcomer() {
+        val r = Rig()
+        r.engage()
+        val displaced = r.t.open("p", digestWanted = true)
+        r.custody.progress++ // kept off the displaced link before the newcomer came up
+        r.custody.digests++
+        val newcomer = r.t.open("p", digestWanted = true)
+        r.custody.digests++
+        assertEquals("the newcomer moved nothing since its own open", Verdict.STILL, r.t.onReconciled("p", 500L, newcomer))
+        assertFalse(r.wanted())
+        assertEquals("the displaced link's own verdict would have read it", Verdict.MOVED, r.t.onReconciled("p", 500L, displaced))
+    }
+
+    @Test
+    fun aMarkThatReadsLowerMovedNothing() {
+        // Custody dropped the peer's word mid-exchange (its memo evicted): marks restart lower, never higher.
+        val r = Rig()
+        r.custody.progress = 40
+        r.custody.digests = 40
+        val opened = r.t.open("p", digestWanted = true)
+        r.custody.progress = 3
+        r.custody.digests = 41
+        assertEquals(Verdict.STILL, r.t.onReconciled("p", 500L, opened))
+    }
+
+    @Test
+    fun anUnjudgedPathAFreshFrameOpenedSpendsTheLift() {
+        val r = Rig()
+        r.engage()
+        r.custody.fresh = true
+        assertTrue(r.wanted())
+        assertEquals(Verdict.UNJUDGED, r.exchange(digest = false)) // the lifted path carried no digest of the peer's
+        assertFalse("the lift is spent: no loop of digest-less paths on one fresh frame", r.wanted())
+        assertEquals(DigestTracker.THROTTLE_SYNCS + 1, r.custody.watches)
+    }
+
+    @Test
+    fun theResponderKeepsNoHoldOffAndTrustsTheLinkAfterANonConvergentPath() {
+        val r = Rig()
+        assertTrue("divergent, no path yet, no start grace: owed, as before", r.wanted(initiator = false))
+        assertEquals(Verdict.STILL, r.exchange(initiator = false))
+        assertEquals("the responder starts no watch", 0, r.custody.watches)
+        assertTrue("and counts nothing: the initiator's gate is untouched", r.wanted(initiator = true))
+        assertFalse("but trusts the link it just had", r.wanted(initiator = false))
+        r.t.forget("p") // the 150 s prune: the peer heard again resumes its trust
+        r.t.onCue("p", 1L)
+        r.now += DigestTracker.RESPONDER_TRUST_MS - 1
+        assertFalse(r.wanted(initiator = false))
+        r.now += 1
+        assertTrue("the trust lapses: the wedge detection comes back", r.wanted(initiator = false))
+    }
+
+    @Test
+    fun aConvergedPathOrAClearLeavesNoTrust() {
+        val r = Rig()
+        r.t.onPlaneStarted() // as production runs it: the restart grace is live
+        assertFalse("inside the grace", r.wanted(initiator = false))
+        r.exchange(initiator = false)
+        r.t.onCue("p", 500L)
+        assertEquals(Verdict.CONVERGED, r.t.onReconciled("p", 500L, r.t.open("p", true), initiator = false))
+        r.t.onCue("p", 2L)
+        assertTrue("a new divergence after a converged path is owed at once, grace or not", r.wanted(initiator = false))
+        r.exchange(initiator = false)
+        r.t.clear()
+        r.t.onCue("p", 1L)
+        assertTrue("a stopped plane forgets it; its next start grants the grace instead", r.wanted(initiator = false))
+        r.t.onPlaneStarted()
+        assertFalse(r.wanted(initiator = false))
+    }
+
+    @Test
+    fun equalDigestsReadByTheGateEndThePeersRestartGrace() {
+        val r = Rig()
+        r.t.onPlaneStarted()
+        r.t.onCue("q", 1L)
+        assertFalse(r.t.reconcileWanted("p", 1L, initiator = false)) // equal: converged, seen by the gate
+        assertFalse("another peer's grace stands", r.t.reconcileWanted("q", 500L, initiator = false))
+        assertTrue("diverged again: owed at once, inside the grace", r.wanted(initiator = false))
+    }
+
+    @Test
+    fun aPathComingUpRenewsTheTrust() {
+        val r = Rig()
+        r.exchange(initiator = false) // the last non-convergent close
+        r.now += DigestTracker.RESPONDER_TRUST_MS - 1_000
+        r.t.onPathUp("p") // the larger's dial landed late, behind a busy NDI: the link is alive
+        r.now += DigestTracker.RESPONDER_TRUST_MS - 1
+        assertFalse("trusted from the path's start", r.wanted(initiator = false))
+        r.now += 1
+        assertTrue(r.wanted(initiator = false))
     }
 }

@@ -18,6 +18,22 @@ data class ForwardIdExpiry(
 )
 
 /**
+ * A live carried frame's routing columns and byte lengths, never its bytes ([ForwardDao.liveIndex]): what a custody
+ * answer reads to order and charge a round (the custody-carry-policy contract's §1 and §2).
+ */
+data class ForwardIndexRow(
+    val id: String,
+    val type: String,
+    val senderId: String,
+    val recipientId: String?,
+    val groupId: String?,
+    val sentAt: Long,
+    val receivedAt: Long,
+    val sigBytes: Int,
+    val signedBytes: Int,
+)
+
+/**
  * Carry-store queries. **Every quota/eviction/digest query is live-filtered (`expiresAt >= :now`)**: an
  * expired-but-unswept row is per-node state (sweep ticks phase independently), so any bounding rule that
  * reads it would evict different *live* rows on different nodes and de-converge the content digest — the
@@ -200,6 +216,16 @@ interface ForwardDao {
      */
     @Query("SELECT * FROM forward_store ORDER BY receivedAt DESC")
     suspend fun allRows(): List<ForwardEntity>
+
+    /**
+     * Every non-expired carried frame without its bytes, their lengths instead (`length` of a BLOB is its byte count): the
+     * index a paced custody round orders and charges (`ForwardStore.liveIndex`), so it loads only what it sends.
+     */
+    @Query(
+        "SELECT id, type, senderId, recipientId, groupId, sentAt, receivedAt, length(sig) AS sigBytes, " +
+            "length(signed) AS signedBytes FROM forward_store WHERE expiresAt >= :now",
+    )
+    suspend fun liveIndex(now: Long): List<ForwardIndexRow>
 
     /** Ids of every non-expired carried frame — advertised on link-up so a peer replies with only what we lack. */
     @Query("SELECT id FROM forward_store WHERE expiresAt >= :now")

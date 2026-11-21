@@ -44,10 +44,12 @@ import app.getknit.knit.fieldlog.FieldEvent
 import app.getknit.knit.fieldlog.FieldRecorder
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.ArrivingFile
+import app.getknit.knit.mesh.CustodyProgress
 import app.getknit.knit.mesh.DigestTracker
 import app.getknit.knit.mesh.FastPathDrop
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.LinkCarrier
 import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
@@ -178,6 +180,10 @@ class WifiAwareTransport(
     // [LinkHandshake.answerPlain] or [LinkHandshake.answerSealed] (ADR 2026-11.8mhs).
     private val claims: LinkClaims,
     private val prover: LinkProver,
+    // Custody's word on each peer (`CarryLedger`, the custody-carry-policy android order step 8): what an exchange moved,
+    // for the hold-off ([DigestTracker]), and whether an answer to a peer is live, for the link's hold and the pending
+    // ids a cut path ends. [CustodyProgress.NONE] keeps the throttle and the links as they were before it.
+    private val custody: CustodyProgress = CustodyProgress.NONE,
 ) : MeshTransport {
     private val appContext = context.applicationContext
     private val awareManager = appContext.getSystemService(Context.WIFI_AWARE_SERVICE) as WifiAwareManager?
@@ -407,12 +413,15 @@ class WifiAwareTransport(
         // Set by [registerConn] before the link's loops start, so it is never null when they call back.
         @Volatile var conn: NanLink? = null
 
+        // Stamped with the data path that carried it, and its proof ([NanLinkStamp], custody-carry-policy §3 and §6).
         override suspend fun onInbound(frame: InboundFrame) {
-            _inbound.tryEmit(frame)
+            _inbound.tryEmit(conn?.let { NanLinkStamp.frame(frame, it.link) } ?: frame)
         }
 
+        // A digest off a path no longer the peer's current one (displaced, or torn down while its reader finished the
+        // record) is still answered, but stamped unproven, so custody takes nothing from it.
         override fun onDigest(digest: ReceivedDigest) {
-            _incomingDigests.tryEmit(digest)
+            _incomingDigests.tryEmit(conn?.let { c -> NanLinkStamp.digest(digest, c.link, current = peers[c.nodeId] === c) } ?: digest)
         }
 
         override fun onFile(file: ReceivedFile) {
@@ -424,7 +433,12 @@ class WifiAwareTransport(
             // A read/write-loop end means packets flowed moments ago (EOF needs the peer's FIN, an error
             // needs a reset — a dead NDP just goes silent and ends via quiescence instead), so the NDP was
             // alive recently: the ghost-proof recycle window (see teardownPeer/recycleResponder).
-            conn?.let { teardownPeer(nodeId, eofDriven = true, only = it) }
+            conn?.let { c ->
+                // The responder's clean end is usually this EOF (the initiator's quiescence close and its FIN), not its own
+                // longer quiescence: the exchange is judged here too, so the smaller id renews its trust ([judgeExchange]).
+                // A reset lands here as well: the path still came up, which is what the trust is about.
+                if (teardownPeer(nodeId, eofDriven = true, only = c) && !c.isInitiator) judgeExchange(c)
+            }
         }
     }
 
@@ -472,7 +486,7 @@ class WifiAwareTransport(
 
     // Anti-entropy state for the cue plane: each peer's advertised digest version + our last-synced version,
     // plus the no-progress throttle (P3) — on the transport's monotonic clock.
-    private val digestTracker = DigestTracker(SystemClock::elapsedRealtime)
+    private val digestTracker = DigestTracker(custody, SystemClock::elapsedRealtime)
 
     // Peers a bulk (attachment) transfer is pending with (expectBulkTransfer): counts as sync-wanted at the
     // NDP admission sites only — see the syncWanted/digestSyncWanted split — so a large blob can raise the
@@ -799,6 +813,7 @@ class WifiAwareTransport(
             return
         }
         started = true
+        digestTracker.onPlaneStarted() // the responder's restart grace: a Tier-2 kill or a restart cannot loop on its own owed clock
         // R3/R4 (ADR 2026-11.264w): an id that just proved itself or became proof-capable closes the unproven link this
         // plane holds claiming it, and ends a refused claim's wait (what the next dial decides has changed); an id
         // that stopped being proof-capable ends it too. Both arrive on the notifier's thread: schedule only.
@@ -1603,6 +1618,21 @@ class WifiAwareTransport(
         }
         return expectBulkTransfer(nodeId)
     }
+
+    /**
+     * The live data path's [FramedLink] for [nodeId], the object its frames and digests are stamped with ([NanLinkStamp]):
+     * a lock-free read of the concurrent [peers], never under [lock], and nothing here calls into custody.
+     */
+    override fun linkToken(nodeId: String): Any? = NanLinkStamp.token(peers, nodeId) { it.link }
+
+    /** Whether the live data path to [nodeId] proved its id, read as [linkToken] is: lock-free off [peers]. */
+    override fun linkProven(nodeId: String): Boolean = NanLinkStamp.proven(peers, nodeId) { it.link }
+
+    /**
+     * The live data path a send to [nodeId] goes over, its token and its proof from ONE read of [peers]: an R3 displacement
+     * between two reads would pair the displaced path's token with the newcomer's proof. Lock-free, as [linkToken].
+     */
+    override fun carrier(nodeId: String): LinkCarrier? = NanLinkStamp.carrier(peers, nodeId, kind) { it.link }
 
     override suspend fun send(
         wire: WireEnvelope,
@@ -2992,7 +3022,10 @@ class WifiAwareTransport(
         localVersion: Long,
     ): Boolean =
         !claimRefusals.isHeld(nodeId) && // the probe lifts the initiator hold only, never a refused claim's wait
-            (bulkWanted.isWanted(nodeId) || (nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion)))
+            (
+                bulkWanted.isWanted(nodeId) ||
+                    (nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion, initiator = localNodeId > nodeId))
+            )
 
     /**
      * The digest-pure sync gate: [nodeId]'s advertised digest differs from ours
@@ -3017,12 +3050,18 @@ class WifiAwareTransport(
      * The **claim-refused mark** ([NanClaimRefusalPolicy], ADR 2026-11.264w) is folded in the same way: a peer whose
      * reply failed its proof, or came unproven for an id that must prove itself, is not owed while its wait holds, so
      * neither the 10 s redial nor the watchdog's tiers run on a refusal that will repeat.
+     *
+     * The tracker is read with our role (custody-carry-policy step 8): for a peer we initiate to, its hold-off, lifted by a
+     * frame custody saw since it began; for a larger peer, which brings the path up, the responder's trust in the link
+     * ([DigestTracker.RESPONDER_TRUST_MS] after the last non-convergent path or the plane's start), so the smallest id's
+     * watchdog and ICM relight never run against the larger's hold-off.
      */
     private fun digestSyncWanted(
         nodeId: String,
         localVersion: Long,
     ): Boolean =
-        nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion) && !initiatorHeld(nodeId) &&
+        nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion, initiator = localNodeId > nodeId) &&
+            !initiatorHeld(nodeId) &&
             !claimRefusals.isHeld(nodeId)
 
     /**
@@ -4238,7 +4277,11 @@ class WifiAwareTransport(
                 landing = landing,
                 proven = proven,
             )
-        val conn = NanLink(framed, callback)
+        // Read before the path is in [peers]: whether a digest sync was wanted as it came up (false for a bulk-only path).
+        val exchange = digestTracker.open(peerNodeId, digestWanted = digestSyncWanted(peerNodeId, storeDigest.current()))
+        // A larger peer's path came up: the link to it is alive, so the responder's trust renews ([DigestTracker.onPathUp]).
+        if (localNodeId < peerNodeId) digestTracker.onPathUp(peerNodeId)
+        val conn = NanLink(framed, callback, exchange)
         callbacks.conn = conn // before framed.start(): the loops' callbacks always know their link
         lastLinkOrAcceptAt = SystemClock.elapsedRealtime() // the data plane produced a link (either role) — clears the wedge watchdog
         val prev = peers.put(peerNodeId, conn)
@@ -4306,6 +4349,10 @@ class WifiAwareTransport(
             val held = now - conn.link.linkStartedAt
             // A live call's link is not idle between its bursts ([holdLink]); its window still ends it.
             val callHeld = linkHolds.isHeld(conn.nodeId)
+            // Nor is one custody is still answering over this plane in paced rounds a second apart (custody-carry-policy §2),
+            // up to SYNC_MAX_WINDOW_MS on either role: an idle close mid-answer would cut it ([NanLinkLife.answerHeld]). An
+            // answer Bluetooth carries holds no Aware path.
+            val answerHeld = NanLinkLife.answerHeld(custody.answerCarrier(conn.nodeId) == TransportKind.WifiAware, held, SYNC_MAX_WINDOW_MS)
             val done =
                 if (isInitiator) {
                     // Cut the post-backfill linger short when another pair is waiting on our single NDI, so a
@@ -4313,15 +4360,15 @@ class WifiAwareTransport(
                     // main lever on multi-node propagation latency (one NDP at a time). Full linger only when no
                     // one else is sync-wanted, so an active 1:1 chat still re-uses the warm NDP.
                     val quiescence = if (initiateOwed()) CONTENDED_QUIESCENCE_MS else QUIESCENCE_MS
-                    NanLinkLife.done(idle, held, quiescence, SYNC_MAX_WINDOW_MS, callHeld)
+                    NanLinkLife.done(idle, held, quiescence, SYNC_MAX_WINDOW_MS, callHeld || answerHeld)
                 } else {
-                    NanLinkLife.done(idle, held, RESPONDER_QUIESCENCE_MS, RESPONDER_MAX_HOLD_MS, callHeld)
+                    NanLinkLife.done(idle, held, RESPONDER_QUIESCENCE_MS, RESPONDER_MAX_HOLD_MS, callHeld || answerHeld)
                 }
             if (done) {
                 // Record the sync at our *post-backfill* digest: if we gained nothing new after ingesting the
                 // peer's data, our version now equals theirs and the pair stays quiet (the identical-digest
-                // skip); if we later gain something, the version moves and re-triggers. Initiator-only — see kdoc.
-                if (isInitiator) digestTracker.onReconciled(conn.nodeId, storeDigest.current())
+                // skip); if we later gain something, the version moves and re-triggers. Both roles: see [judgeExchange].
+                judgeExchange(conn)
                 Log.i(
                     TAG,
                     "sync with ${conn.nodeId} done (initiator=$isInitiator idle=${idle}ms held=${held}ms call=$callHeld) — disconnecting",
@@ -4330,6 +4377,19 @@ class WifiAwareTransport(
                 break
             }
         }
+    }
+
+    /**
+     * The exchange [conn] carried is over ([DigestTracker.onReconciled]). **Both roles**: the initiator's hold-off judges it
+     * by what custody says it moved against the marks the path opened with; the responder renews its trust in the link
+     * when it closed with the digests still different, so its digest-pure gate (the watchdog's owed clock and the ICM
+     * relight) does not run its tiers against every pair the initiator holds off.
+     * Once per link ([NanLink.judged]): from the supervisor's close, or the responder's EOF ([ConnCallbacks.onLinkDown]).
+     */
+    private fun judgeExchange(conn: NanLink) {
+        if (!conn.judged.compareAndSet(false, true)) return
+        val verdict = digestTracker.onReconciled(conn.nodeId, storeDigest.current(), conn.exchange, initiator = conn.isInitiator)
+        Log.i(TAG, "exchange with ${conn.nodeId} judged $verdict (initiator=${conn.isInitiator})")
     }
 
     /**
@@ -4428,6 +4488,7 @@ class WifiAwareTransport(
                 peers.remove(peerNodeId) ?: return false
             }
         conn.close()
+        cutLiveAnswer(peerNodeId)
         // Only client links own a per-peer network callback; server links share the responder — leave it.
         val wasServerLink = !conn.isInitiator
         conn.callback?.let { cb ->
@@ -4487,6 +4548,19 @@ class WifiAwareTransport(
             }
         }
         return true
+    }
+
+    /**
+     * [peerNodeId]'s path just ended ([teardownPeer]). With custody's answer to the peer still live over Wi-Fi Aware (an
+     * answer Bluetooth carries is not this path's to cut), its window ran out
+     * ([superviseLink] holds an idle link while an answer is live, so a quiescence close never gets here with one) or the
+     * link was lost: what that answer released over Aware may never have crossed, so it ends pending unjudged
+     * (custody-carry-policy §6). A path closed at quiescence leaves its releases for the next path's digest to judge.
+     */
+    private fun cutLiveAnswer(peerNodeId: String) {
+        if (custody.answerCarrier(peerNodeId) != TransportKind.WifiAware) return // none live, or Bluetooth carries it: not this path's cut
+        custody.answerCut(peerNodeId, TransportKind.WifiAware)
+        Log.i(TAG, "custody answer to $peerNodeId cut with its path")
     }
 
     /**
@@ -4928,10 +5002,16 @@ class WifiAwareTransport(
     private inner class NanLink(
         val link: FramedLink,
         val callback: ConnectivityManager.NetworkCallback?,
+        // Custody's marks as this path came up ([DigestTracker.open]): its own exchange's verdict reads them, never a
+        // displaced link's.
+        val exchange: DigestTracker.Exchange,
     ) {
         val nodeId: String get() = link.nodeId
         val isInitiator: Boolean get() = callback != null
         var reaperJob: Job? = null
+
+        // Set once its exchange is judged ([judgeExchange]): the supervisor's close and the EOF that follows it are one end.
+        val judged = AtomicBoolean(false)
 
         fun close() {
             reaperJob?.cancel()

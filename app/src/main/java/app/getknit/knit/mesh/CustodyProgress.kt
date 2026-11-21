@@ -30,8 +30,26 @@ interface CustodyProgress {
     /** Moves each time custody takes a custody digest from [peer] over a proven link: whether an exchange carried one. */
     fun digestSeen(peer: String): Long = 0
 
+    /**
+     * The plane that carries custody's paced answer to [peer] (`ForwardSync`'s, §2), or null when none is live: the plane
+     * its last round went over ([MeshTransport.carrier]), or before its first round the plane that held the peer when its
+     * digest came. While it names a plane, that plane holds its link to [peer] not idle between rounds; another plane's
+     * link is not held for it. Lock-free.
+     */
+    fun answerCarrier(peer: String): TransportKind? = null
+
+    /**
+     * [peer]'s [plane] path ended while [answerCarrier] named [plane] for a live answer to it (its window ran out, or the link was
+     * lost): what was pending on that plane ends unjudged, since it may never have crossed (§6, `CarryLedger.answerCut`). A
+     * path that closed at quiescence never calls this.
+     */
+    fun answerCut(
+        peer: String,
+        plane: TransportKind,
+    ) = Unit
+
     companion object {
-        /** Never moved, never fresh: the throttle a plane runs today. */
+        /** Never moved, never fresh, no answer live: the throttle a plane runs today. */
         val NONE: CustodyProgress = object : CustodyProgress {}
     }
 }

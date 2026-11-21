@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.sim
 
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.mesh.CustodyPace
 import app.getknit.knit.mesh.lab.LabLimits
 import app.getknit.knit.mesh.lab.LabNode
 import app.getknit.knit.mesh.lab.MeshLab
@@ -68,6 +69,13 @@ data class SimScenario(
      */
     val load: Int = 0,
     val loadAuthors: Int = DEFAULT_LOAD_AUTHORS,
+    /**
+     * Custody as before its pace ([SimProperties.UNPACED]): every answer whole in its first round, the 60 s re-offer never
+     * held back. False, the default, runs production's pace and back-off (the custody-carry-policy contract's §2, §7).
+     */
+    val unpaced: Boolean = false,
+    /** Every store's global cap reads each frame's spread as 0 ([LabLimits.custodyZeroSpread], [SimProperties.ZERO_SPREAD]). */
+    val zeroSpread: Boolean = false,
     /** Frames a node's router may have queued before its plane drops the next ([LabLimits.inboundSlots]); null holds all. */
     val inboundSlots: Int? = null,
     /** How long after the gather to keep reading custody across the field for parity ([MeshSim.settleLine]); 0 skips it. */
@@ -436,7 +444,15 @@ class MeshSim(
     private suspend fun boot(): String {
         val heapBefore = usedHeapMb()
         val started = System.nanoTime()
-        val limits = LabLimits(inboundSlots = scenario.inboundSlots, nodeAirBytesPerSecond = radio.nodeAirBytesPerSecond)
+        val limits =
+            LabLimits(
+                inboundSlots = scenario.inboundSlots,
+                nodeAirBytesPerSecond = radio.nodeAirBytesPerSecond,
+                // Production's custody, unless the outing asks for the old one to compare: the lab's own default is unpaced.
+                custodyPace = if (scenario.unpaced) CustodyPace.UNPACED else CustodyPace.CONTRACT,
+                custodyReofferBackoff = !scenario.unpaced,
+                custodyZeroSpread = scenario.zeroSpread,
+            )
         nodes = (0 until scenario.walkers).map { i -> lab.node("w$i", limits).apply { setDisplayName("Walker $i") } }
         val bootMs = (System.nanoTime() - started) / NANOS_PER_MS / scenario.walkers
         // Everyone who DMs each other meets first: a group, or under circles its whole circle. Friends who came separately

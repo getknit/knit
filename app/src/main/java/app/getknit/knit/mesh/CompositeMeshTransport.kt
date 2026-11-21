@@ -814,9 +814,14 @@ class CompositeMeshTransport(
 
     /**
      * The child [send] would use for [nodeId] and its link: Bluetooth whenever a Bluetooth link holds the peer, whatever
-     * plane the digest being answered crossed (the custody-carry-policy contract's §2).
+     * plane the digest being answered crossed (the custody-carry-policy contract's §2). The child's own [carrier], so a
+     * plane that reads its link and that link's proof in one read (Bluetooth, Wi-Fi Aware) never pairs an old link's
+     * token with a replacement's proof.
      */
-    override fun carrier(nodeId: String): LinkCarrier? = childHoldingLinkTo(nodeId)?.let { LinkCarrier(it.kind, it.linkToken(nodeId)) }
+    override fun carrier(nodeId: String): LinkCarrier? = childHoldingLinkTo(nodeId)?.carrier(nodeId)
+
+    /** The proof of the link [carrier] names: the child [send] uses. */
+    override fun linkProven(nodeId: String): Boolean = childHoldingLinkTo(nodeId)?.linkProven(nodeId) ?: false
 
     /** Whether any child of [kind] still holds [link] to [nodeId]: a release ends with its own link, not the peer's last. */
     override fun carries(

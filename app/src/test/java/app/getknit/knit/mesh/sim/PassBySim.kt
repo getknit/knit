@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.sim
 
 import app.getknit.knit.data.forward.ForwardRepository
+import app.getknit.knit.mesh.CustodyPace
 import app.getknit.knit.mesh.lab.LabLimits
 import app.getknit.knit.mesh.lab.LabNode
 import app.getknit.knit.mesh.lab.MeshLab
@@ -47,6 +48,13 @@ data class PassByScenario(
     val startMarginM: Double = PassBy.START_MARGIN_M,
     /** How long a pair is watched once it is out of reach again: what was on the air lands, nothing else can. */
     val watchAfterMs: Long = DEFAULT_WATCH_AFTER_MS,
+    /**
+     * Custody as before its pace ([SimProperties.UNPACED]): every answer whole in its first round, the 60 s re-offer never
+     * held back. False, the default, runs production's pace and back-off (the custody-carry-policy contract's §2, §7).
+     */
+    val unpaced: Boolean = false,
+    /** Every store's global cap reads each frame's spread as 0 ([LabLimits.custodyZeroSpread], [SimProperties.ZERO_SPREAD]). */
+    val zeroSpread: Boolean = false,
 ) {
     init {
         require(load == 0 || loadAuthors >= 1) { "a load needs an author: $loadAuthors" }
@@ -93,7 +101,7 @@ data class PassByScenario(
             "picture_kb" to pictureBytes / BYTES_PER_KB,
             "load_each" to load,
             "load_authors" to loadAuthors,
-        )
+        ) + custodyModeValues(unpaced, zeroSpread)
 
     companion object {
         const val DEFAULT_PAIRS = 20
@@ -297,7 +305,14 @@ class PassBySim(
 
     // Every pair met, and every walker its home contact, then cut; then each walker queues what it brings, out of reach.
     private suspend fun boot(): String {
-        val limits = LabLimits(nodeAirBytesPerSecond = radio.nodeAirBytesPerSecond)
+        val limits =
+            LabLimits(
+                nodeAirBytesPerSecond = radio.nodeAirBytesPerSecond,
+                // Production's custody, unless the run asks for the old one to compare: the lab's own default is unpaced.
+                custodyPace = if (scenario.unpaced) CustodyPace.UNPACED else CustodyPace.CONTRACT,
+                custodyReofferBackoff = !scenario.unpaced,
+                custodyZeroSpread = scenario.zeroSpread,
+            )
         walkers =
             (0 until scenario.pairs * 2).map { w ->
                 val node = lab.node("w$w", limits).apply { setDisplayName("Walker $w") }

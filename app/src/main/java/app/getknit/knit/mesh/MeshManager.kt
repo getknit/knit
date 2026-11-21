@@ -346,6 +346,12 @@ class MeshManager(
     // contract's §3 and §6): the process's one instance, which the forward store reads `spread` from too (di/MeshModule).
     // A fresh one by default, for the rigs that build a manager by hand.
     carryLedger: CarryLedger = CarryLedger(metrics = metrics),
+    // The round each carrying plane's custody answers are cut to (the custody-carry-policy contract's §2): the contract's
+    // table. Injectable for `mesh/lab`, whose scenarios about what crosses run unpaced and whose pace scenarios run this.
+    custodyPace: CustodyPace = CustodyPace.CONTRACT,
+    // Whether the 60 s tick's custody offer backs off while offers draw nothing (§7): always in production. Injectable for
+    // `mesh/lab`, whose scenarios about the loop itself tick it on a short real interval.
+    custodyReofferBackoff: Boolean = true,
     // One event per *new* validated default network (`InternetGate.routeChanges`): the Internet plane's
     // cue to dial a relay it is backing off from again at once, because a socket the old route swallowed
     // says nothing about this one. The default never fires, which is every test and every build without
@@ -719,9 +725,16 @@ class MeshManager(
             // A contact's direct link earns nothing: Your mesh credits what this phone's radios carried.
             onServed = { env, to -> if (radioLinked(to)) ledger.onHandedOff(env, setOf(to)) },
             // A sender whose backlog goes to a peer that may not hold their key, and whose profile custody no
-            // longer holds: the pin store's copy goes first (ADR 2026-09.g64k).
-            serveKey = { senderId, to -> keyExchange.serveKey(senderId, to) },
+            // longer holds: the pin store's copy goes first (ADR 2026-09.g64k), read first so its round is charged for it.
+            keyFor = { senderId -> keyExchange.keyFor(senderId) },
+            sendKey = { key, to -> keyExchange.sendKey(key, to) },
             carry = carryLedger,
+            pace = custodyPace,
+            metrics = metrics,
+            reofferBackoff = custodyReofferBackoff,
+            // Counts only: no peer id beside frame ids in a log line.
+            onDigestDropped = { Log.w(TAG, "custody digest dropped: the index read failed (${it.message})") },
+            onRoundFailed = { roundFailed(MeshRound.CUSTODY, it) },
             // (The carry store grew → the store impl folds the id into StoreDigest, whose version change re-cues.)
         )
 
@@ -1572,6 +1585,8 @@ class MeshManager(
         started = true
         startSweepsDone = false
         profileSeedDone = false
+        // A custody answer, a credit owed and a re-offer back-off are a session's, and the memo is in memory only (§6).
+        forwardSync.resetSession()
         blobStore.clearTransfers() // drop any plaintext transfer temp files left by a previous session
         partials.purge() // and the cut transfers' kept prefixes: a resume lives within one session (#116)
         // Child of the app Job so app-scope cancellation still propagates; SupervisorJob isolates a
@@ -1616,6 +1631,7 @@ class MeshManager(
         resumePendingFetches(session)
         pruneForwardStorePeriodically(session)
         reofferToNeighborsPeriodically(session)
+        serveCustodyRoundsPeriodically(session)
         logMetricsPeriodically(session)
         fieldLog?.start(session, transportStatuses)
         session.launch { introSync.prime() }
@@ -4560,6 +4576,10 @@ class MeshManager(
             pins.deleteOrphans(settings.blockedNodeIds.first()) // ...pins left by them, or on a since-blocked sender's
             receipts.deleteOrphans() // ...and per-recipient delivery rows left by a deleted thread or a retention trim
             sweepExpired() // carried DMs whose TTL elapsed while we were down (the in-memory sets are usually empty)
+            // The serve order's group tier, which the restart emptied: read off the group rows alone, after the sweep has told
+            // the carry ledger what custody holds, on its own so a failed read stops nothing behind it. Until then a group
+            // frame orders with the rest.
+            session.launch { runRound({ roundFailed(MeshRound.CUSTODY, it) }) { forwardSync.readRosters() } }
             sweepLocalStorage() // bound the local messages/peers tables against a Sybil flood (Message Requests hardening)
             // The photos refused over their ceiling in earlier sessions stay refused in this one, and the holders passed over
             // for one stay passed over (ADR 2026-11.4ckq); the rows from before DB v30 learn what photo they advertise from
@@ -5080,10 +5100,38 @@ class MeshManager(
     }
 
     /**
-     * One round of the 60 s re-offer ([reofferToNeighborsPeriodically]). `internal` so `mesh/lab` can run the tick
-     * inside a scenario, whose `delay()`-based loop a lab clock jump never wakes.
+     * Cuts the custody rounds and credits due (the custody-carry-policy contract's §2, §3), sleeping until the next is due
+     * or a digest arrives. Its own loop, off the digest collector, which cuts only an answer's first round. A failed pass
+     * (a SQLite error) costs that pass: the next runs when the next round is due (#206).
      */
-    internal suspend fun reofferToNeighbors() {
+    private fun serveCustodyRoundsPeriodically(session: CoroutineScope) {
+        session.launch {
+            var failed = false
+            while (true) {
+                val due = forwardSync.nextDueAt()?.let { it - clock() } ?: Long.MAX_VALUE
+                // After a failed pass the round it owed is still due: it waits a beat rather than spin on the error.
+                forwardSync.awaitWake(if (failed) maxOf(due, CUSTODY_RETRY_MS) else due)
+                failed = false
+                runRound({
+                    failed = true
+                    roundFailed(MeshRound.CUSTODY, it)
+                }) { forwardSync.serveDue(clock()) }
+            }
+        }
+    }
+
+    /**
+     * Cuts the custody rounds due now. `internal` for `mesh/lab`: a lab clock jump never wakes the serve loop's sleep, so a
+     * paced scenario moves the clock and runs this.
+     */
+    internal suspend fun serveCustodyRounds() = forwardSync.serveDue(clock())
+
+    /**
+     * One round of the 60 s re-offer ([reofferToNeighborsPeriodically]). `internal` so `mesh/lab` can run the tick
+     * inside a scenario, whose `delay()`-based loop a lab clock jump never wakes; [force] offers custody's digest whatever
+     * its back-off says (§7), which is what a scenario's "offer now" means.
+     */
+    internal suspend fun reofferToNeighbors(force: Boolean = false) {
         // A link-set pass that failed part-way runs again now: the link set may never change again to re-run it (#206).
         // On the set the watcher was last handed, never a newer `neighbors.value`: the watcher may hold that one queued
         // on the lock, and would then act on it after the newer one, departing a peer still linked.
@@ -5097,8 +5145,10 @@ class MeshManager(
         // Before the blob re-ask below, so a want the 30-min sweep reclaimed is back in the memo it
         // reads from; skipped with nobody linked, where a want has nowhere to go anyway.
         if (neighbors.isNotEmpty()) rewantMissingBlobs()
+        forwardSync.retainOffers(neighbors.mapTo(HashSet()) { it.nodeId })
         neighbors.forEach { peer ->
-            forwardSync.onNeighborAdded(peer) // re-advertise our custody digest → pull anything we lack
+            // Re-advertise our custody digest → pull anything we lack, held back while our offers draw nothing (§7, #64).
+            forwardSync.reoffer(peer, force)
             keyExchange.onNeighborAdded(peer) // re-ask for keys we still need
             ackSync.onNeighborAdded(peer) // re-send any broadcast/group delivery tick we owe it
             flushPendingGroupKeysFor(peer.nodeId) // re-send unacked group epoch seeds it never got
@@ -5582,8 +5632,12 @@ class MeshManager(
         session.launch {
             // A neighbor advertised the custody ids it holds → push it just the frames it lacks (the id-diff).
             // By the plane it crossed: one off a contact's direct link is answered inside that link's rule (ADR 2026-10.a5yj).
+            // Its first round is cut here and goes at once; later rounds are the serve loop's, so this collector never
+            // waits on a pace ([serveCustodyRoundsPeriodically]). One failed answer costs that digest, never the collector.
             transport.incomingDigests.collect {
-                forwardSync.onDigest(it.fromNodeId, it.ids, it.via, it.proven, it.link)
+                runRound({ e -> roundFailed(MeshRound.CUSTODY, e) }) {
+                    forwardSync.onDigest(it.fromNodeId, it.ids, it.via, it.proven, it.link)
+                }
                 onDigestAnswered?.invoke(it)
             }
         }
@@ -7986,6 +8040,9 @@ class MeshManager(
         // ephemeral links get for free. Short enough to converge a missed message within ~a minute, long enough
         // to stay cheap on battery/bandwidth.
         const val NEIGHBOR_REOFFER_INTERVAL_MS = 60_000L
+
+        // How long the custody serve loop waits after a failed pass before it tries the round it owed again.
+        private const val CUSTODY_RETRY_MS = 1_000L
 
         // Min spacing between first-contact profile floods (watchReachable): a burst of newcomers costs one
         // origination; custody + the per-link pushProfileTo cover anyone the coalesced flood skipped. Behind

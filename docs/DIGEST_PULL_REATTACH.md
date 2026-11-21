@@ -156,6 +156,11 @@ New `AwareFraming.Type.DIGEST` record. On link-up, instead of `ForwardSync` blas
 3. Profiles / keys / blobs keep their current `onNeighborAdded` exchange (already diff-ish: blobs pull by
    hash, keys by `keyreq`); the digest folds a profile-gen counter so a profile change still triggers a sync.
 
+> **Since ADR 2026-11.bmks** the difference in step 2 goes out in paced rounds at the carrying plane's pace (Bluetooth
+> 16 KiB every 2 s, Aware 512 KiB a second), the frames addressed to the asking peer first, less a per-peer memo of what
+> it was released and did not keep. Stores agree only below the row cap: at the cap they may differ for good, and
+> "identical stores exchange digests then do nothing" below holds below the cap only.
+
 Win: a sync transfers exactly the diff, completes fast (short NDP hold ⇒ fewer serves held open), and
 **identical stores exchange digests then do nothing** — but see A4, we want to skip the NDP entirely.
 
