@@ -28,15 +28,20 @@ enum class TransferPhase {
         get() = this == Done || this == Declined || this == Expired || this == Cancelled || this == Failed
 }
 
-/** [TransferRecord.app]: the update an app-update transfer carried, as its offer pinned it. [sha256] is lowercase hex. */
+/**
+ * [TransferRecord.app]: the update an app-update transfer carried, as its offer pinned it. [sha256] is lowercase hex.
+ * [requestId] is the ask the offer answered, which ties the sender's transfer to that ask's card (`ui/chat/
+ * foldAskedTransfers`); null on rows written before it was kept.
+ */
 @Serializable
 data class AppUpdateRecord(
     val versionCode: Long,
     val sha256: String,
+    val requestId: String? = null,
 ) {
     companion object {
         /** The record of an offer's [pin]. */
-        fun of(pin: AppPin): AppUpdateRecord = AppUpdateRecord(pin.versionCode, hexOf(pin.sha256))
+        fun of(pin: AppPin): AppUpdateRecord = AppUpdateRecord(pin.versionCode, hexOf(pin.sha256), pin.requestId)
 
         /** [bytes] as lowercase hex, the spelling [sha256] is stored and compared in. */
         fun hexOf(bytes: ByteArray): String =

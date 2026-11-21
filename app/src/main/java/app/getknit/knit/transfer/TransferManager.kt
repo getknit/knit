@@ -104,6 +104,8 @@ data class TransferTimings(
     val tcpConnectRetryMs: Long = 1_000L,
     val soTimeoutMs: Int = 30_000,
     val verdictWaitMs: Int = 20_000,
+    /** How long a receiver holds the link after its verdict for the host to close (TransferDialer.answer). */
+    val verdictLingerMs: Long = 5_000L,
     val progressEveryMs: Long = 200L,
 )
 
@@ -665,7 +667,7 @@ class TransferManager(
                 transition(l, TransferPhase.Transferring)
                 // A bundle's pins are checked before the verdict, so a refusal reads as corrupt on both cards.
                 val ok = receive(l, socket.getInputStream(), sink) && sink.check()
-                TransferStream.writeVerdict(socket.getOutputStream(), ok)
+                dialer.answer(socket, ok)
                 if (ok) {
                     sink.commitOrNotSaved()
                     l.committed = true
@@ -793,6 +795,7 @@ class TransferManager(
         l.state = l.state.copy(phase = phase, reason = reason, savedUri = savedUri ?: l.state.savedUri, bytes = l.bytes)
         writeRow(l)
         if (phase.terminal) live.remove(l.state.id)
+        ends.ended(l.state)
         publish()
         ends.unretryableSource(l.state, l.sourceUri)?.let { scope.launch(io) { ends.release(it) } }
     }

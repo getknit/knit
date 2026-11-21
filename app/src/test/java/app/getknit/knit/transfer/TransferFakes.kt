@@ -24,6 +24,7 @@ import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import kotlin.random.Random
 
 /**
@@ -56,6 +57,12 @@ class FakeDirectWifi(
     /** Which loopback family the receiver dials — the stand-in for a client that took an IPv6 link-local. */
     var joinOverIpv6 = false
     val released: MutableList<Unit> = Collections.synchronizedList(mutableListOf())
+
+    /** Every port this side's manager picked to host on, in order (the side rig records them). */
+    val portsPicked: MutableList<Int> = Collections.synchronizedList(mutableListOf())
+
+    /** When set, a join reaches the host through this link, and [release] cuts it as a torn-down group would. */
+    var lossy: LossyLink? = null
     val swept: MutableList<Unit> = Collections.synchronizedList(mutableListOf())
 
     override fun refusal(): TransferRefusal? = refusal
@@ -95,11 +102,13 @@ class FakeDirectWifi(
             if (joinFailures != Int.MAX_VALUE) joinFailures -= 1
             throw DirectWifiException("no group formed")
         }
+        lossy?.let { return JoinedGroup(it.open()) }
         return JoinedGroup(if (joinOverIpv6) V6 else V4)
     }
 
     override suspend fun release() {
         log.note("release")
+        lossy?.cut()
         released += Unit
     }
 
@@ -161,6 +170,86 @@ class FakeDirectWifi(
                     }
                 }
             }.isSuccess
+    }
+}
+
+/**
+ * The radio between a joiner and its host, as the joiner's release meets it: Wi-Fi Direct carries a byte only while the
+ * group stands, and leaving the group takes whatever is still in flight with it. A loopback socket delivers a written
+ * byte at once, so the receiver-to-host direction here is held [lagMs] before it is passed on, and [cut] drops what is
+ * held and resets both ends. The host side runs unlagged. It listens on 127.0.0.2 at the port the host picked
+ * ([upstreamPort], read when the joiner dials) and forwards to the host's listener on 127.0.0.1.
+ */
+class LossyLink(
+    private val upstreamPort: () -> Int,
+    private val lagMs: Long,
+) {
+    private val sockets = CopyOnWriteArrayList<Socket>()
+    private var server: ServerSocket? = null
+
+    @Volatile private var dead = false
+
+    /** Binds the joiner's side of the link and returns the address it should dial. */
+    fun open(): InetAddress {
+        val port = upstreamPort()
+        val listening = ServerSocket().apply { bind(InetSocketAddress(JOINER_SIDE, port)) }.also { server = it }
+        thread(name = "lossy-accept") {
+            runCatching {
+                val joiner = listening.accept().also { sockets += it }
+                val host = dialHost(port).also { sockets += it }
+                thread(name = "lossy-down") { carry(host.getInputStream(), joiner, lag = 0L) }
+                thread(name = "lossy-up") { carry(joiner.getInputStream(), host, lag = lagMs) }
+            }
+        }
+        return JOINER_SIDE
+    }
+
+    // READY leaves before the host listens, so the joiner can be on the link first: wait for the host as the dialer would.
+    private fun dialHost(port: Int): Socket {
+        repeat(HOST_TRIES) {
+            runCatching { return Socket(InetAddress.getByName("127.0.0.1"), port) }
+            Thread.sleep(HOST_RETRY_MS)
+        }
+        error("the host never listened on $port")
+    }
+
+    // Copies [input] onto [to], each read held [lag] ms first; the end of [input] half-closes [to], late as well.
+    private fun carry(
+        input: InputStream,
+        to: Socket,
+        lag: Long,
+    ) {
+        val buffer = ByteArray(64 * 1024)
+        runCatching {
+            while (true) {
+                val n = input.read(buffer)
+                if (lag > 0) Thread.sleep(lag)
+                if (dead) return
+                if (n < 0) {
+                    to.shutdownOutput()
+                    return
+                }
+                to.getOutputStream().write(buffer, 0, n)
+            }
+        }
+    }
+
+    /** The group goes away: nothing held is delivered, and both ends see a reset. */
+    fun cut() {
+        dead = true
+        runCatching { server?.close() }
+        sockets.forEach { s ->
+            runCatching {
+                s.setSoLinger(true, 0)
+                s.close()
+            }
+        }
+    }
+
+    private companion object {
+        val JOINER_SIDE: InetAddress = InetAddress.getByName("127.0.0.2")
+        const val HOST_TRIES = 100
+        const val HOST_RETRY_MS = 50L
     }
 }
 

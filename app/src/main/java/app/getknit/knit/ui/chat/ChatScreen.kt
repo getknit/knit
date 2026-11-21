@@ -305,7 +305,7 @@ import app.getknit.knit.ui.update.PeerUpdateViewModel
 import app.getknit.knit.ui.update.UpdateConsent
 import app.getknit.knit.ui.update.UpdateEvent
 import app.getknit.knit.ui.update.UpdateHintLine
-import app.getknit.knit.ui.update.UpdateRequestBand
+import app.getknit.knit.ui.update.UpdateRequestCard
 import app.getknit.knit.ui.update.openInstallGrant
 import app.getknit.knit.ui.util.countText
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
@@ -1924,15 +1924,6 @@ internal fun ChatScreenContent(
                         )
                     }
                     if (state.commonsStale) CommonsStaleNotice(onClick = { onOpenCommonsDetails(conversationId) })
-                    peerUpdate.request?.let {
-                        UpdateRequestBand(
-                            peerName = state.title,
-                            versionName = BuildConfig.VERSION_NAME,
-                            size = peerUpdate.ownSize,
-                            onSend = peerUpdate.onSend,
-                            onNotNow = peerUpdate.onNotNow,
-                        )
-                    }
                 }
                 // Cold open: the state is a five-way combine, and its Room arm reads the *whole* thread and folds
                 // every row before it first emits. On a conversation with a lot of history that gap is long
@@ -2007,6 +1998,7 @@ internal fun ChatScreenContent(
                                             row == null -> "day_separator"
                                             row.transfer != null -> "transfer"
                                             row.call != null -> "call"
+                                            row.updateRequest != null -> "update_request"
                                             row.kind == MessageEntity.KIND_NORMAL -> "bubble"
                                             else -> "notice"
                                         }
@@ -2037,8 +2029,21 @@ internal fun ChatScreenContent(
                                     val notice = statusNoticeText(row, state.memberTitle)
                                     val transfer = row.transfer
                                     val call = row.call
+                                    val asked = row.updateRequest
                                     if (call != null) {
                                         CallNotice(record = call, sentAt = row.sentAt, modifier = itemMotion)
+                                    } else if (asked != null) {
+                                        UpdateRequestCard(
+                                            record = asked,
+                                            peerName = state.title,
+                                            live = peerUpdate.request?.requestId == asked.requestId,
+                                            size = peerUpdate.ownSize,
+                                            onSend = peerUpdate.onSend,
+                                            onNotNow = peerUpdate.onNotNow,
+                                            modifier = itemMotion,
+                                            transfer = row.askedTransfer,
+                                            onCancel = { row.askedTransfer?.let { onCancelTransfer(it.id) } },
+                                        )
                                     } else if (transfer != null) {
                                         TransferCard(
                                             view = transfer,

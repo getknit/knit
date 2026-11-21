@@ -20,6 +20,7 @@ import app.getknit.knit.ui.chat.messagePreview
 import app.getknit.knit.ui.chat.transferPreview
 import app.getknit.knit.ui.isPending
 import app.getknit.knit.ui.speakerLabel
+import app.getknit.knit.ui.update.updateRequestPreview
 import app.getknit.knit.ui.visibleConversations
 
 /**
@@ -108,8 +109,7 @@ internal class ChatListAssembler(
         val mineLast = last?.takeIf { reaction == null && it.writtenBy(me) }
         val isDm = thread.kind == ConversationKind.DM
         val transferLine = if (reaction == null) transferLineFor(last) else null
-        val callLine = last?.takeIf { it.kind == MessageEntity.KIND_CALL }?.let { callPreview(context, it) }
-        val ownLine = reaction?.let { reactionLineFor(it, isDm) } ?: transferLine ?: callLine
+        val ownLine = reaction?.let { reactionLineFor(it, isDm) } ?: transferLine ?: recordLineFor(last)
         val translated = translationLineFor(last, ownLine)
         val isGroup = thread.kind == ConversationKind.GROUP
         val row =
@@ -212,6 +212,14 @@ internal class ChatListAssembler(
         val text: String,
         val from: String?,
     )
+
+    /** A call's line, or the newer phone's ask for an update: each says what happened, so it takes no "You: " either. */
+    private fun recordLineFor(last: MessageEntity?): String? =
+        when (last?.kind) {
+            MessageEntity.KIND_CALL -> callPreview(context, last)
+            MessageEntity.KIND_APP_UPDATE_REQUEST -> updateRequestPreview(context, last)
+            else -> null
+        }
 
     /**
      * The transfer line for [last], or null when it is not a transfer row this build can read. Resolved

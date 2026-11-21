@@ -107,17 +107,7 @@ fun TransferCard(
                         )
                     }
                 }
-                if (view.phase == TransferPhase.Transferring && !view.interrupted) {
-                    LinearProgressIndicator(
-                        progress = { (view.bytes.toFloat() / view.size.coerceAtLeast(1L)).coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    )
-                    Text(
-                        stringResource(R.string.chat_transfer_progress, Formatter.formatShortFileSize(context, view.bytes), size),
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                }
+                TransferProgress(view)
                 if (view.incomingModelsOffer) {
                     ModelsOfferLines(view)
                 }
@@ -158,8 +148,28 @@ private fun ModelsOfferLines(view: TransferView) {
     lines.forEach { Text(it, style = style, modifier = Modifier.padding(top = 4.dp)) }
 }
 
+/** The bar and the "12 MB of 259 MB" line while the bytes move; nothing in any other phase. */
 @Composable
-private fun TransferActions(
+internal fun TransferProgress(view: TransferView) {
+    if (view.phase != TransferPhase.Transferring || view.interrupted) return
+    val context = LocalContext.current
+    LinearProgressIndicator(
+        progress = { (view.bytes.toFloat() / view.size.coerceAtLeast(1L)).coerceIn(0f, 1f) },
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+    )
+    Text(
+        stringResource(
+            R.string.chat_transfer_progress,
+            Formatter.formatShortFileSize(context, view.bytes),
+            Formatter.formatShortFileSize(context, view.size),
+        ),
+        style = MaterialTheme.typography.labelSmall,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+}
+
+@Composable
+internal fun TransferActions(
     view: TransferView,
     onAccept: () -> Unit,
     onDecline: () -> Unit,
@@ -218,7 +228,7 @@ private fun TransferActions(
 }
 
 @Composable
-private fun transferStatusText(
+internal fun transferStatusText(
     view: TransferView,
     installReady: Boolean,
     installing: Boolean,

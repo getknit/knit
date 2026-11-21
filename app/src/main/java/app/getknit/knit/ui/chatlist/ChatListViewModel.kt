@@ -580,6 +580,12 @@ class ChatListViewModel(
          * list. Status notices may not; a direct-transfer row and a call's record are the exceptions, for the
          * reasons `ChatListAssembler.rowFor` sets out.
          */
-        val CHAT_LIST_KINDS = setOf(MessageEntity.KIND_NORMAL, MessageEntity.KIND_FILE_TRANSFER, MessageEntity.KIND_CALL)
+        val CHAT_LIST_KINDS =
+            setOf(
+                MessageEntity.KIND_NORMAL,
+                MessageEntity.KIND_FILE_TRANSFER,
+                MessageEntity.KIND_CALL,
+                MessageEntity.KIND_APP_UPDATE_REQUEST,
+            )
     }
 }

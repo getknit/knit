@@ -255,6 +255,7 @@ private object CodeNames {
             MessageEntity.KIND_FILE_TRANSFER -> "FILE_TRANSFER"
             MessageEntity.KIND_MEMBER_REJOINED -> "MEMBER_REJOINED"
             MessageEntity.KIND_CALL -> "CALL"
+            MessageEntity.KIND_APP_UPDATE_REQUEST -> "APP_UPDATE_REQUEST"
             else -> "unknown ($kind)"
         }
 

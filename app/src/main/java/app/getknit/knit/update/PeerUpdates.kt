@@ -1,5 +1,7 @@
 package app.getknit.knit.update
 
+import app.getknit.knit.data.message.UpdateRequestPhase
+import app.getknit.knit.data.message.UpdateRequestRecord
 import app.getknit.knit.mesh.protocol.AppPin
 import app.getknit.knit.mesh.protocol.AppUpdatePayload
 import app.getknit.knit.mesh.protocol.FrameId
@@ -23,6 +25,18 @@ fun interface UpdateSignals {
         peerId: String,
         payload: AppUpdatePayload,
     ): Boolean
+}
+
+/**
+ * The thread's record of a contact's ask (ADR 2026-11.29m7's amendment): [write] upserts [peerId]'s card for [record],
+ * at [askedAt], this phone's clock when the ask arrived. A write that fails loses that one change and nothing else.
+ */
+fun interface UpdateRequestRows {
+    suspend fun write(
+        peerId: String,
+        record: UpdateRequestRecord,
+        askedAt: Long,
+    )
 }
 
 /** This phone as a peer update sees it: its [build], and whether it may hand that build out or take a newer one. */
@@ -70,10 +84,16 @@ sealed interface AskState {
         val at: Long,
     ) : AskState
 
-    /** The contact's offer answered it at [at]; the transfer card carries it from here. */
+    /** The contact's offer answered it ([requestId]) at [at]; the transfer card carries it from here. */
     data class Answered(
         override val build: AppBuild,
+        val requestId: String,
         val at: Long,
+    ) : AskState
+
+    /** The transfer that answered it ended short of done (failed, cancelled, or turned away here): ask again. */
+    data class Failed(
+        override val build: AppBuild,
     ) : AskState
 
     /** The contact turned it down, for [reason] (an `AppUpdatePayload.REASON_*`). */
@@ -113,6 +133,8 @@ enum class AskOutcome { Sent, Already, NotWorthAsking, NotNearby, NotSent }
  * transfer (`transfer/TransferManager.offerApp`); [expects] is how that transfer knows an update offer was asked for.
  *
  * Everything here is memory only and ends with the process: an update restarts it, so a new build announces afresh.
+ * The one exception is [rows], the newer phone's card for each ask it admitted, which outlives the ask: after a restart
+ * a waiting card reads as expired, since the ask it waited on is gone.
  * Every value a contact sent is bounded here before anything reads it, and a frame counts only when its sender's own
  * link carried it ([onSignal]'s `fromOwnLink`), recently, while that contact is near.
  */
@@ -131,6 +153,7 @@ class PeerUpdates(
     private val log: (String) -> Unit = {},
     /** The block list: a contact on it is forgotten at once ([forget]), whatever was under way with it. */
     private val blocked: Flow<Set<String>> = emptyFlow(),
+    private val rows: UpdateRequestRows = UpdateRequestRows { _, _, _ -> },
 ) {
     private class Heard(
         val build: AppBuild,
@@ -141,6 +164,11 @@ class PeerUpdates(
     private val dwell = HashMap<String, Job>()
     private val announcedAt = HashMap<String, Long>()
     private val quietUntil = HashMap<String, Long>()
+
+    // The asks whose cards may still move, by contact: added when an ask is admitted, dropped when its card reaches an
+    // end or the contact is forgotten (a block or a removal). Only an ask held here writes, so a lapse or an answer
+    // still in flight never puts a row back into a thread a removal deleted.
+    private val cards = HashMap<String, MutableSet<String>>()
 
     // Request ids this phone has seen from each contact, kept for as long as a request can live, so a replay is never a
     // second request.
@@ -300,9 +328,28 @@ class PeerUpdates(
         synchronized(lock) {
             val ask = _asks.value[peerId] as? AskState.Waiting ?: return false
             val ok = ask.names(pin, size) && clock() - ask.at < timings.askTtlMs
-            if (ok) setAsk(peerId, AskState.Answered(ask.build, clock()))
+            if (ok) setAsk(peerId, AskState.Answered(ask.build, ask.requestId, clock()))
             ok
         }
+
+    /**
+     * The transfer an offer answered [peerId]'s ask with ([pin]) ended: [done] leaves the ask answered, the staged card
+     * taking it from there; anything short of done frees it at once ([AskState.Failed]), so the hint offers Ask again
+     * without waiting out [UpdateTimings.askTtlMs]. An end naming another request changes nothing.
+     */
+    fun ended(
+        peerId: String,
+        pin: AppPin,
+        done: Boolean,
+    ) {
+        if (done) return
+        synchronized(lock) {
+            val ask = _asks.value[peerId] as? AskState.Answered ?: return
+            if (ask.requestId != pin.requestId) return
+            setAsk(peerId, AskState.Failed(ask.build))
+        }
+        log("update: the transfer from ${peer(peerId)} did not finish")
+    }
 
     // The request and the version this ask sent, and no more bytes than its announce said.
     private fun AskState.Waiting.names(
@@ -319,17 +366,20 @@ class PeerUpdates(
      */
     suspend fun claim(peerId: String): UpdateRequest? {
         val mine = local()
-        val request =
+        val taken =
             synchronized(lock) {
-                val r = _requests.value[peerId] ?: return@synchronized null
-                _requests.value -= peerId
-                r.takeIf { clock() - it.at < timings.requestTtlMs }
+                _requests.value[peerId]?.also { _requests.value -= peerId }
             } ?: return null
-        if (mine == null || !mine.canServe || mine.build.versionCode != request.versionCode) {
-            answerDecline(peerId, request, AppUpdatePayload.REASON_GONE)
+        if (clock() - taken.at >= timings.requestTtlMs) {
+            record(taken, UpdateRequestPhase.Expired)
             return null
         }
-        return request
+        if (mine == null || !mine.canServe || mine.build.versionCode != taken.versionCode) {
+            answerDecline(peerId, taken, AppUpdatePayload.REASON_GONE)
+            return null
+        }
+        record(taken, UpdateRequestPhase.Sent)
+        return taken
     }
 
     /** Turns down [peerId]'s waiting request ([reason] Not now keeps that contact quiet for a while). */
@@ -350,8 +400,29 @@ class PeerUpdates(
         request: UpdateRequest,
         reason: Int,
     ) {
-        if (reason == AppUpdatePayload.REASON_NOT_NOW) synchronized(lock) { quietUntil[peerId] = clock() + timings.quietMs }
+        val notNow = reason == AppUpdatePayload.REASON_NOT_NOW
+        if (notNow) synchronized(lock) { quietUntil[peerId] = clock() + timings.quietMs }
+        record(request, if (notNow) UpdateRequestPhase.Declined else UpdateRequestPhase.Unsent)
         sendDecline(peerId, request, reason)
+    }
+
+    // [request]'s card in its thread, moved to [phase]; the row keeps the time the ask arrived.
+    private suspend fun record(
+        request: UpdateRequest,
+        phase: UpdateRequestPhase,
+    ) {
+        val held =
+            synchronized(lock) {
+                val ids = cards[request.peerId]
+                (ids?.contains(request.requestId) == true).also {
+                    // Sent can still turn Unsent (the transfer could not start); every other phase after Waiting is the end.
+                    if (it && phase != UpdateRequestPhase.Waiting && phase != UpdateRequestPhase.Sent) {
+                        ids?.remove(request.requestId)
+                        if (ids?.isEmpty() == true) cards.remove(request.peerId)
+                    }
+                }
+            }
+        if (held) rows.write(request.peerId, UpdateRequestRecord(request.requestId, request.versionCode, phase), request.at)
     }
 
     private suspend fun sendDecline(
@@ -456,13 +527,24 @@ class PeerUpdates(
             return null
         }
         val admitted = request
-        synchronized(lock) { _requests.value += senderId to admitted }
-        scope.launch {
-            delay(timings.requestTtlMs)
-            synchronized(lock) { if (_requests.value[senderId] == admitted) _requests.value -= senderId }
+        synchronized(lock) {
+            _requests.value += senderId to admitted
+            cards.getOrPut(senderId) { HashSet() } += admitted.requestId
         }
+        record(admitted, UpdateRequestPhase.Waiting)
+        scope.launch { lapse(admitted) }
         log("update: ${peer(senderId)} asked for ${p.versionCode}")
         return admitted
+    }
+
+    // [request] ends unanswered once its time is up, unless the person answered it first.
+    private suspend fun lapse(request: UpdateRequest) {
+        delay(timings.requestTtlMs)
+        val lapsed =
+            synchronized(lock) {
+                (_requests.value[request.peerId] == request).also { if (it) _requests.value -= request.peerId }
+            }
+        if (lapsed) record(request, UpdateRequestPhase.Expired)
     }
 
     private fun onDecline(
@@ -479,6 +561,7 @@ class PeerUpdates(
     /** Drops everything held about [peerId]: a block or a removal ends whatever was under way with it. */
     fun forget(peerId: String) {
         synchronized(lock) {
+            cards.remove(peerId)
             dwell.remove(peerId)?.cancel()
             announcedAt.remove(peerId)
             quietUntil.remove(peerId)

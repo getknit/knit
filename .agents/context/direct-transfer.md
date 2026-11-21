@@ -54,7 +54,10 @@ they are the reasoning.
   `AppUpdatePayload`: ANNOUNCE, REQUEST, DECLINE), sent like a presence key (`MeshManager.sendAppUpdate`, never
   custodied) and acted on only from its sender's own link (`InboundPipeline.onAppUpdateSignal`,
   `DropReason.APP_UPDATE_NOT_FROM_LINK`). `update/PeerUpdates` holds the announces, asks and requests in memory
-  (`UpdateEligibility`, `VersionNames`); the newer phone answers with `TransferManager.offerApp`, an ordinary file
+  (`UpdateEligibility`, `VersionNames`). Its one write is the newer phone's card for each ask it put to the person, a
+  `KIND_APP_UPDATE_REQUEST` row (`UpdateRequestRecord`, drawn by `ui/update/UpdateRequestCard`), which absorbs the
+  transfer Send started (`ui/chat/foldAskedTransfers`, by `AppUpdateRecord.requestId`); a transfer that ends
+  short of done frees the asker's ask at once (`PeerUpdates.ended`), so its hint offers Ask again. The newer phone answers with `TransferManager.offerApp`, an ordinary file
   offer plus `TransferPayload.ap` (`AppPin`). **An `ap` offer accepts itself only when it answers this phone's own ask**
   (`TransferAppUpdate.expects`, spent once, read last in `OfferReading.readApp`); any other is dropped without a row.
   The bytes stage under `noBackupFilesDir/update/<transfer id>/` (`UpdateStaging`), `check()` hashes them against the
@@ -89,6 +92,13 @@ they are the reasoning.
   `awaitingVerdict` goes up as the last chunk leaves, before the trailer, and a CANCEL that lands then is kept
   (`peerCancel`) and used only if no OK verdict comes. The receiver's own card for a failed commit reads
   `REASON_NOT_SAVED` (a local outcome, 10: "arrived but couldn't be saved / installed"), never `REASON_CONNECTION`.
+- **The receiver holds the link until the sender has its verdict** (`TransferDialer.answer`). The verdict is the
+  stream's last byte, and releasing the radio straight after writing it took the group down with the byte in flight:
+  in the 2026-11-20 peer-update trial the staged APK committed in milliseconds, the Pixel 7 left the group 5 ms after
+  its verdict, and the Pixel 9 sat at 259/259 MB until its 20 s verdict wait failed a transfer that had landed. A
+  file's commit into Downloads had hidden the race. The receiver now half-closes and reads until the sender closes,
+  bounded by `TransferTimings.verdictLingerMs`; `TransferManagerTest.theReceiverHoldsTheLinkUntilTheSenderHasItsVerdict`
+  runs it over a `LossyLink` that drops in-flight bytes on release.
 - **The receiver may hold no IPv4 address at all.** IP provisioning mode is the *client's* choice (API 34,
   not 33 — lint is right and AOSP's `@RequiresApi` is wrong) and the host is never told which was used, so
   the host binds every address on the group interface. Interface names differ per phone, so re-pin a

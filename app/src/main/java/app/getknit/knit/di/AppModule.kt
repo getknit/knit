@@ -111,6 +111,7 @@ import app.getknit.knit.ui.theme.AndroidNightMode
 import app.getknit.knit.ui.theme.NightMode
 import app.getknit.knit.ui.theme.ThemePreferences
 import app.getknit.knit.ui.voice.VoicePlayer
+import app.getknit.knit.update.PeerUpdates
 import kotlinx.coroutines.CoroutineScope
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
@@ -256,7 +257,11 @@ val appModule =
         single { ContactCards(get(), get(), get<MessageCrypto>()::signRaw, home = get<HomeStore>().home) }
         single { ContactImporter(get(), get(), get(), get(), BuildConfig.INTERNET_PLANE) }
         // Its inverse: clears our own contact signals locally, tells no one (ADR 2026-09.adgd).
-        single { ContactRemover(get(), get(), get(), get(), get(), get(), get(), get()) }
+        single {
+            ContactRemover(get(), get(), get(), get(), get(), get(), get(), get()) { id ->
+                if (BuildConfig.PEER_UPDATE) get<PeerUpdates>().forget(id)
+            }
+        }
         // Relay invites (docs/RELAY_INVITE.md): the link handoff inbox and the one apply sequence both doors
         // share. The commons store rides only while `BuildConfig.COMMONS` is on — null is the wx8e seam.
         single { RelayInviteInbox() }

@@ -31,6 +31,13 @@ interface TransferAppUpdate {
         pin: AppPin,
         size: Long,
     ): TransferSink?
+
+    /** An admitted offer from [peerId] pinning [pin] reached its end: [done] when the bytes landed and checked. */
+    fun ended(
+        peerId: String,
+        pin: AppPin,
+        done: Boolean,
+    )
 }
 
 /** [TransferAppUpdate.source]'s answer: the file to send and what its offer pins. */

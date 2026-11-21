@@ -122,7 +122,7 @@ class TransferManagerTest {
                 peerNearby = { side.nearby },
                 timings = timings,
                 clock = clock,
-                newPort = FakeDirectWifi::freeLoopbackPort,
+                newPort = { FakeDirectWifi.freeLoopbackPort().also { wifi.portsPicked += it } },
                 log = { trace += "${clock()} $it" },
                 models = models,
             )
@@ -246,6 +246,28 @@ class TransferManagerTest {
                 assertFalse(row.body.contains(ready.passphrase!!))
                 assertFalse(row.body.contains(ready.key!!))
             }
+        }
+
+    @Test
+    fun theReceiverHoldsTheLinkUntilTheSenderHasItsVerdict() =
+        runBlocking {
+            // The 2026-11-20 trial: the Pixel 7 left the group 5 ms after its verdict, the byte never reached the Pixel 9,
+            // and a transfer that had landed ended Failed on the sender. Leaving the group here loses what is in flight.
+            val (a, b) = pair()
+            b.wifi.lossy = LossyLink(upstreamPort = { a.wifi.portsPicked.last() }, lagMs = 300)
+            a.withClip()
+            val id = offer(a)
+            awaitIncoming(b, id)
+            assertNull(b.manager.accept(id))
+            awaitPhase(b, id, TransferPhase.Done)
+            awaitPhase(a, id, TransferPhase.Done)
+            assertArrayEquals(
+                payload,
+                b.files.sinks
+                    .single()
+                    .buffer
+                    .toByteArray(),
+            )
         }
 
     @Test

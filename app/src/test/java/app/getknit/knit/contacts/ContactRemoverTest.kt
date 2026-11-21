@@ -42,6 +42,7 @@ class ContactRemoverTest {
     private val mesh = mockk<MeshController>(relaxed = true)
     private val notifier = mockk<Notifier>(relaxed = true)
     private val identity = mockk<Identity>(relaxed = true)
+    private val forgetUpdates = mockk<(String) -> Unit>(relaxed = true)
 
     // River is a contact three ways (accepted, verified, a DM we wrote in) and the only known peer who has
     // posted in Ridge, a group we neither accepted nor wrote in — so Ridge is a chat only because of River.
@@ -61,7 +62,7 @@ class ContactRemoverTest {
         coEvery { peers.verifiedNodeIds() } returns listOf(RIVER)
     }
 
-    private fun remover() = ContactRemover(settings, peers, messages, groups, drafts, mesh, notifier, identity)
+    private fun remover() = ContactRemover(settings, peers, messages, groups, drafts, mesh, notifier, identity, forgetUpdates)
 
     @Test
     fun clearsEveryOwnSignalAfterPinningTheGroupAndTheAcceptLast() =
@@ -73,6 +74,8 @@ class ContactRemoverTest {
                 mesh.cancelIntro(RIVER)
                 mesh.forgetReadsFor(RIVER)
                 notifier.forgetConversation(RIVER)
+                // Before the thread goes: a waiting update ask must not write its card back into it (ADR 2026-11.29m7).
+                forgetUpdates(RIVER)
                 messages.deleteByConversation(RIVER)
                 mesh.dropScopeAnchor(RIVER)
                 drafts.clear(RIVER)

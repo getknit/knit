@@ -73,6 +73,9 @@ class TransferAppUpdateTest {
         val asks: MutableSet<Triple<String, String, Long>> = Collections.synchronizedSet(mutableSetOf())
         val asked: MutableList<AppPin> = Collections.synchronizedList(mutableListOf())
         val sinks: MutableList<Sink> = Collections.synchronizedList(mutableListOf())
+
+        /** Every [ended] call, as (peer, request id, done). */
+        val ends: MutableList<Triple<String, String, Boolean>> = Collections.synchronizedList(mutableListOf())
         var archiveOk = true
 
         override suspend fun source(): AppSource =
@@ -98,6 +101,14 @@ class TransferAppUpdateTest {
             pin: AppPin,
             size: Long,
         ): TransferSink = Sink(transferId, pin) { archiveOk }.also { sinks += it }
+
+        override fun ended(
+            peerId: String,
+            pin: AppPin,
+            done: Boolean,
+        ) {
+            ends += Triple(peerId, pin.requestId, done)
+        }
 
         class Sink(
             val transferId: String,
@@ -223,12 +234,18 @@ class TransferAppUpdateTest {
             assertEquals(VERSION, b.record(id)!!.app!!.versionCode)
             assertEquals(sha256(apk).joinToString("") { "%02x".format(it) }, b.record(id)!!.app!!.sha256)
             assertEquals(VERSION, a.record(id)!!.app!!.versionCode)
+            // The sender's row names the ask it answered, which folds this transfer into that ask's card.
+            assertEquals(requestId, a.record(id)!!.app!!.requestId)
             // The ask is spent: it named this offer once.
             assertTrue(b.app.asks.isEmpty())
             // The receiver's name for it is its own, never the sender's file name.
             assertEquals(OfferReading.APP_LABEL, b.record(id)!!.name)
             // Never offered again from the sender's card.
             assertFalse(a.record(id)!!.retryable(live = false))
+            // The receiver's coordinator hears it landed, once; the sender's is told nothing (it asked for nothing).
+            await("bob's end is told") { b.app.ends.isNotEmpty() }
+            assertEquals(listOf(Triple("alice", requestId, true)), b.app.ends.toList())
+            assertTrue(a.app!!.ends.isEmpty())
         }
 
     @Test
@@ -271,6 +288,9 @@ class TransferAppUpdateTest {
             await("alice fails it") { a.record(id)?.phase == TransferPhase.Failed }
             assertEquals(TransferPayload.REASON_CORRUPT, b.record(id)!!.reason)
             assertEquals(TransferPayload.REASON_CORRUPT, a.record(id)!!.reason)
+            // A transfer short of done frees the ask at once (the hint's Ask again), told once.
+            await("bob's end is told") { b.app.ends.isNotEmpty() }
+            assertEquals(listOf(Triple("alice", requestId, false)), b.app.ends.toList())
             await("bob threw the staging away") {
                 b.app.sinks
                     .single()

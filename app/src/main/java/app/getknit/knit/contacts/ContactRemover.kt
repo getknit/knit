@@ -38,6 +38,9 @@ class ContactRemover(
     private val mesh: MeshController,
     private val notifier: Notifier,
     private val identity: Identity,
+    // Drops what the peer-update coordinator holds for them (ADR 2026-11.29m7), so an ask of theirs still waiting
+    // cannot write its card back into the thread this removal deletes.
+    private val forgetUpdates: (String) -> Unit = {},
 ) {
     /**
      * Removes [nodeId] from contacts. Every step is idempotent and the explicit accept — the signal most often
@@ -59,6 +62,9 @@ class ContactRemover(
             // The reads still owed to them go (ADR 2026-11.z6jw): a removed contact is told nothing more.
             mesh.forgetReadsFor(nodeId)
             notifier.forgetConversation(nodeId)
+            // Before the thread goes, as the scope anchor below is for the same reason the other way round: a waiting
+            // ask's lapse would otherwise write an `upd:` row into the thread just deleted.
+            forgetUpdates(nodeId)
             messages.deleteByConversation(nodeId)
             // After the thread goes: a keeper pass starting before it would still see a DM target and write the row
             // back (ADR 2026-11.dgj2). One already running finishes before the drop (`MeshManager.anchorPass`).

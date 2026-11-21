@@ -54,6 +54,7 @@ import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.PeerRename
 import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.TransferRecord
+import app.getknit.knit.data.message.UpdateRequestRecord
 import app.getknit.knit.data.message.groupFaces
 import app.getknit.knit.data.message.groupTitle
 import app.getknit.knit.data.message.hiddenByFilter
@@ -402,6 +403,11 @@ data class ChatRow(
     // A call's record ([MessageEntity.KIND_CALL], §3.12), decoded. Null on every other row; a row carrying one is a
     // call line, never a bubble.
     val call: CallRecord? = null,
+    // A contact's ask for this phone's Knit ([MessageEntity.KIND_APP_UPDATE_REQUEST], ADR 2026-11.29m7), decoded. Null
+    // on every other row; a row carrying one is the newer phone's card, never a bubble.
+    val updateRequest: UpdateRequestRecord? = null,
+    // The transfer Send started for [updateRequest], folded into its card (foldAskedTransfers); null until then.
+    val askedTransfer: TransferView? = null,
 )
 
 /**
@@ -1764,7 +1770,7 @@ class ChatViewModel(
                 } else {
                     emptySet()
                 }
-            val rows =
+            val mapped =
                 msgs.map { m ->
                     // A heard post's author is the Meshtastic speaker, NOT the row's sender — that is this
                     // phone, by convention. Resolve the origin first so the name, avatar and tap target below
@@ -1896,8 +1902,10 @@ class ChatViewModel(
                                 null
                             },
                         call = if (m.kind == MessageEntity.KIND_CALL) CallRecord.decode(m.body) else null,
+                        updateRequest = if (m.kind == MessageEntity.KIND_APP_UPDATE_REQUEST) UpdateRequestRecord.decode(m.body) else null,
                     )
                 }
+            val rows = foldAskedTransfers(mapped)
             // Autocomplete candidates: everyone we've received a message from, plus a group's roster (so
             // @-mentions work in a fresh group before anyone has spoken), resolved to a display name.
             val candidates =

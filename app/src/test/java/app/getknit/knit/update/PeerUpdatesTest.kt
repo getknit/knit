@@ -1,5 +1,7 @@
 package app.getknit.knit.update
 
+import app.getknit.knit.data.message.UpdateRequestPhase
+import app.getknit.knit.data.message.UpdateRequestRecord
 import app.getknit.knit.mesh.protocol.AppPin
 import app.getknit.knit.mesh.protocol.AppUpdatePayload
 import app.getknit.knit.mesh.protocol.FrameId
@@ -30,6 +32,8 @@ class PeerUpdatesTest {
         val updates: PeerUpdates,
         val sent: MutableList<Pair<String, AppUpdatePayload>>,
         val neighbors: MutableStateFlow<Set<String>>,
+        // Every card write, as (peer, record, the time the ask arrived).
+        val rows: MutableList<Triple<String, UpdateRequestRecord, Long>>,
     )
 
     private fun TestScope.rig(
@@ -40,6 +44,7 @@ class PeerUpdatesTest {
         sendOk: () -> Boolean = { true },
     ): Rig {
         val sent = mutableListOf<Pair<String, AppUpdatePayload>>()
+        val rows = mutableListOf<Triple<String, UpdateRequestRecord, Long>>()
         val neighbors = MutableStateFlow<Set<String>>(emptySet())
         val updates =
             PeerUpdates(
@@ -51,9 +56,10 @@ class PeerUpdatesTest {
                 sdkInt = 34,
                 clock = { testScheduler.currentTime + EPOCH },
                 timings = TIMINGS,
+                rows = { peer, record, at -> rows += Triple(peer, record, at) },
             )
         updates.start()
-        return Rig(updates, sent, neighbors)
+        return Rig(updates, sent, neighbors, rows)
     }
 
     private fun announce(b: AppBuild) =
@@ -267,6 +273,48 @@ class PeerUpdatesTest {
         }
 
     @Test
+    fun aTransferThatEndsShortOfDoneFreesTheAskAtOnce() =
+        runTest {
+            // The 2026-11-20 trial: a join that failed left "is sending" up for the whole ask time, with no Ask again.
+            val r = rig(old)
+            r.neighbors.value = setOf("alice")
+            r.updates.onSignal("alice", announce(new), fromOwnLink = true)
+            r.updates.ask("alice")
+            val rid =
+                checkNotNull(
+                    r.sent
+                        .single()
+                        .second.requestId,
+                )
+            val pin = AppPin(rid, new.versionCode, ByteArray(AppPin.SHA256_BYTES))
+            assertTrue(r.updates.expects("alice", pin, new.size))
+            // An end naming another request, or one that landed, leaves it answered.
+            r.updates.ended("alice", AppPin(FrameId.new(), new.versionCode, pin.sha256), done = false)
+            r.updates.ended("alice", pin, done = true)
+            assertTrue(
+                r.updates
+                    .hintFor("alice")
+                    .first()
+                    ?.ask is AskState.Answered,
+            )
+            r.updates.ended("alice", pin, done = false)
+            assertEquals(
+                AskState.Failed(new),
+                r.updates
+                    .hintFor("alice")
+                    .first()
+                    ?.ask,
+            )
+            // No waiting out the ask's time: Ask again goes now, as a new request.
+            assertEquals(AskOutcome.Sent, r.updates.ask("alice"))
+            assertTrue(
+                r.sent
+                    .last()
+                    .second.requestId != rid,
+            )
+        }
+
+    @Test
     fun anAskNobodyAnswersLapsesAndCanBeAskedAgain() =
         runTest {
             val r = rig(old)
@@ -325,6 +373,103 @@ class PeerUpdatesTest {
         rid: String = FrameId.new(),
         version: Long = new.versionCode,
     ) = AppUpdatePayload(AppUpdatePayload.PHASE_REQUEST, version, requestId = rid)
+
+    @Test
+    fun eachAdmittedAskKeepsOneCardThatMovesWithIt() =
+        runTest {
+            // ADR 2026-11.29m7's amendment: the newer phone's card, one row per ask, at the time the ask arrived.
+            val r = rig(new)
+            r.neighbors.value = setOf("bob")
+            val at = testScheduler.currentTime + EPOCH
+
+            fun phases(rid: String) = r.rows.filter { it.second.requestId == rid }.map { it.second.phase }
+
+            val sent = FrameId.new()
+            r.updates.onSignal("bob", request(sent), fromOwnLink = true)
+            assertEquals(Triple("bob", UpdateRequestRecord(sent, new.versionCode, UpdateRequestPhase.Waiting), at), r.rows.single())
+            r.updates.claim("bob")
+            assertEquals(listOf(UpdateRequestPhase.Waiting, UpdateRequestPhase.Sent), phases(sent))
+            // A replay inside the request's time is no second card, nor is an ask for a version this phone does not run.
+            r.updates.onSignal("bob", request(sent), fromOwnLink = true)
+            r.updates.onSignal("bob", request(version = new.versionCode + 1), fromOwnLink = true)
+            assertEquals(2, r.rows.size)
+            assertEquals(
+                AppUpdatePayload.REASON_GONE,
+                r.sent
+                    .last()
+                    .second.reason,
+            )
+
+            val busy = FrameId.new()
+            r.updates.onSignal("bob", request(busy), fromOwnLink = true)
+            val claimed = checkNotNull(r.updates.claim("bob"))
+            r.updates.decline("bob", AppUpdatePayload.REASON_BUSY, claimed)
+            assertEquals(listOf(UpdateRequestPhase.Waiting, UpdateRequestPhase.Sent, UpdateRequestPhase.Unsent), phases(busy))
+
+            // An ask that lapses: its Expired card keeps the time the ask arrived, not the time it lapsed.
+            advanceTimeBy(1_000)
+            val lapsedAt = testScheduler.currentTime + EPOCH
+            val lapsed = FrameId.new()
+            r.updates.onSignal("bob", request(lapsed), fromOwnLink = true)
+            advanceTimeBy(TIMINGS.requestTtlMs + 1)
+            assertEquals(listOf(UpdateRequestPhase.Waiting, UpdateRequestPhase.Expired), phases(lapsed))
+            assertTrue(r.rows.filter { it.second.requestId == lapsed }.all { it.third == lapsedAt })
+            assertTrue(
+                "the earlier asks' cards stayed at their own time",
+                r.rows.filter { it.second.requestId == sent }.all {
+                    it.third ==
+                        at
+                },
+            )
+
+            // Send tapped after the ask's time is up: claim() records it Expired itself.
+            val late = FrameId.new()
+            r.updates.onSignal("bob", request(late), fromOwnLink = true)
+            // Exactly its time later: the lapse is due this instant but has not run (advanceTimeBy stops short of tasks
+            // at its end), so the tap gets there first, as one racing it would.
+            advanceTimeBy(TIMINGS.requestTtlMs)
+            assertNull(r.updates.claim("bob"))
+            assertEquals(listOf(UpdateRequestPhase.Waiting, UpdateRequestPhase.Expired), phases(late))
+
+            val notNow = FrameId.new()
+            r.updates.onSignal("bob", request(notNow), fromOwnLink = true)
+            r.updates.decline("bob")
+            assertEquals(listOf(UpdateRequestPhase.Waiting, UpdateRequestPhase.Declined), phases(notNow))
+
+            // Within the quiet hour a new ask is answered without the person, so it gets no card at all.
+            val quiet = FrameId.new()
+            r.updates.onSignal("bob", request(quiet), fromOwnLink = true)
+            assertTrue(phases(quiet).isEmpty())
+        }
+
+    @Test
+    fun aForgottenContactsAskWritesNoCardAfterwards() =
+        runTest {
+            // A removal deletes the thread right after forget(): nothing still in flight may write a row back into it.
+            val r = rig(new)
+            r.neighbors.value = setOf("bob")
+            r.updates.onSignal("bob", request(), fromOwnLink = true)
+            assertEquals(1, r.rows.size)
+            r.updates.forget("bob")
+            advanceTimeBy(TIMINGS.requestTtlMs + 1)
+            assertNull(r.updates.claim("bob"))
+            r.updates.decline("bob")
+            assertEquals("only the card written before the forget", 1, r.rows.size)
+
+            // The write only `forgottenAt` stops: one that already holds the request. Send was tapped (claimed), the
+            // removal runs, then the transfer could not start and the decline would record Unsent.
+            advanceTimeBy(1)
+            r.updates.onSignal("bob", request(), fromOwnLink = true)
+            val claimed = checkNotNull(r.updates.claim("bob"))
+            val before = r.rows.size
+            r.updates.forget("bob")
+            r.updates.decline("bob", AppUpdatePayload.REASON_BUSY, claimed)
+            assertEquals("no Unsent card after the forget", before, r.rows.size)
+
+            // An ask after the forget, even in its own millisecond, is a new card.
+            r.updates.onSignal("bob", request(), fromOwnLink = true)
+            assertEquals(before + 1, r.rows.size)
+        }
 
     @Test
     fun aRequestWaitsForThePersonOnceAndAReplayIsNotASecond() =

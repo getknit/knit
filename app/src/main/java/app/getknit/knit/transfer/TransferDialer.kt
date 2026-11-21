@@ -51,4 +51,42 @@ internal class TransferDialer(
         }
         throw last ?: IOException("could not connect")
     }
+
+    /**
+     * Sends the receiver's verdict on [socket] and holds the link until the host has read it. The verdict is the last
+     * byte of the stream, and releasing the radio straight after writing it can take the group down with the byte still
+     * in flight: in the 2026-11-20 trial a staged update committed within milliseconds, the Pixel 7 left the group 5 ms
+     * after its verdict, and the Pixel 9 waited out its verdict wait to fail a transfer that had landed. The host closes
+     * once it has the verdict, so its close is the receipt; [TransferTimings.verdictLingerMs] bounds a host that never
+     * closes, or keeps writing.
+     */
+    fun answer(
+        socket: Socket,
+        ok: Boolean,
+    ) {
+        TransferStream.writeVerdict(socket.getOutputStream(), ok)
+        val until = clock() + timings.verdictLingerMs
+        try {
+            socket.shutdownOutput()
+            val input = socket.getInputStream()
+            val drain = ByteArray(DRAIN_BYTES)
+            // An honest host sends nothing after the trailer: each read gets only the time left, and the bytes have a cap
+            // of their own, so neither a trickle nor a clock stepping back holds the radio past the bound.
+            var drained = 0
+            var left = until - clock()
+            while (drained < DRAIN_CAP_BYTES && left > 0) {
+                socket.soTimeout = left.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                val n = input.read(drain)
+                drained = if (n == -1) DRAIN_CAP_BYTES else drained + n
+                left = until - clock()
+            }
+        } catch (_: IOException) {
+            // A host that reset the link, or never closed in time: the verdict went as far as it could.
+        }
+    }
+
+    private companion object {
+        const val DRAIN_BYTES = 512
+        const val DRAIN_CAP_BYTES = 64 * 1024
+    }
 }

@@ -15,6 +15,7 @@ import app.getknit.knit.call.TurnTargets
 import app.getknit.knit.crash.ProcessExitReasons
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MeshBlobStore
+import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.meshcore.MeshcoreSetupStore
@@ -126,6 +127,7 @@ import app.getknit.knit.update.PeerUpdates
 import app.getknit.knit.update.UpdateInstaller
 import app.getknit.knit.update.UpdateSignals
 import app.getknit.knit.update.UpdateStaging
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -792,6 +794,19 @@ val meshModule =
                 sdkInt = Build.VERSION.SDK_INT,
                 log = { line -> Log.i("KnitUpdate", line) },
                 blocked = get<SettingsStore>().blockedNodeIds,
+                // The newer phone's card for each ask (29m7's amendment). The repository is resolved at the first
+                // write, not here: the encrypted database may not be open yet. A failed write loses that one change.
+                rows = { peer, record, askedAt ->
+                    try {
+                        get<MessageRepository>().save(record.toEntity(peer, get<Identity>().nodeId(), askedAt))
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (
+                        @Suppress("TooGenericExceptionCaught") e: Exception,
+                    ) {
+                        Log.i("KnitUpdate", "update: the ask's card was not saved (${e.javaClass.simpleName})")
+                    }
+                },
             )
         }
         single { UpdateInstaller(androidContext(), get(), get()) { line -> Log.i("KnitUpdate", line) } }

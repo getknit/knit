@@ -636,14 +636,19 @@
     <string name="update_hint_declined_busy">%1$s is busy with a call or another transfer</string>
     <string name="update_hint_declined_gone">%1$s no longer has that version</string>
     <string name="update_hint_unanswered">%1$s didn\'t answer</string>
+    <string name="update_hint_failed">The update from %1$s didn\'t finish</string>
     <!-- The close button's spoken label on the update hint. -->
     <string name="update_hint_dismiss">Hide this update</string>
     <string name="update_hint_gone">That update can\'t install on this phone</string>
     <!-- On the phone that was asked. %1$s is the contact's name, %2$s this phone's version, %3$s its size, e.g. 124 MB. -->
-    <string name="update_request_band">%1$s asked for your Knit %2$s (%3$s)</string>
+    <string name="update_request_title">%1$s asked for your Knit %2$s</string>
     <string name="update_request_send">Send</string>
     <string name="update_request_not_now">Not now</string>
     <string name="update_request_gone">That ask has expired</string>
+    <string name="update_request_card_waiting">Waiting for your answer</string>
+    <string name="update_request_card_accepted">You accepted</string>
+    <string name="update_request_card_declined">You said not now</string>
+    <string name="update_request_card_unsent">Couldn\'t send it</string>
     <!-- The card of a transfer carrying Knit itself. %1$s is the version, e.g. 2.14.0. -->
     <string name="chat_transfer_app_title">Knit %1$s</string>
     <string name="chat_transfer_app_title_plain">Knit update</string>

@@ -66,8 +66,9 @@ keeps that for every package but one.
   given, sends the user to "Install unknown apps" for Knit if that is off, checks free space against the announced
   size, then sends REQUEST with a fresh request id and the announced versionCode. The asking phone keeps the
   announce it asked from: the version, the size and the contact. The newer phone shows a notification that opens the
-  DM, and a band there with Send and Not now; the notification carries no actions of its own, so the first Send can
-  still show the one-time disclosure. One request per contact is live at a time; after Not now (a DECLINE) that
+  DM, and a card in the thread with Send and Not now; the notification carries no actions of its own, so the first
+  Send can still show the one-time disclosure. (Amended after the 2026-11-20 trial: a card where the ask arrived, drawn
+  like a transfer card, replaced a band at the top of the chat.) One request per contact is live at a time; after Not now (a DECLINE) that
   contact is quiet for an hour, and an ask in that hour is answered Not now without asking the person again.
 - **The bytes are an ordinary Direct transfer** with one additive field, `TransferPayload.ap`: the request id, the
   versionCode and the APK's full SHA-256. The sender reads its installed base APK in place. The receiver accepts an
@@ -138,9 +139,17 @@ keeps that for every package but one.
   crossed, and so that the requester ran an older one, perhaps one with known holes.
 - **On the phone**, the installer of record becomes `app.getknit.knit`, which any app can read through
   `getInstallSourceInfo` without a permission: every app learns this phone took an update from a peer.
-- **What is kept.** Announces heard, requests and their answers live in memory only and end with the process. The
-  field log gets one line per phase with the reason and the contact's short id, never a version name; the transfer row
-  is the ordinary `xfer:` row, which a contact's removal deletes with the thread.
+- **What is kept.** Announces heard, asks and requests live in memory only and end with the process. The newer phone
+  keeps one row per ask it put to the person (`MessageEntity.KIND_APP_UPDATE_REQUEST`, `UpdateRequestRecord`: the
+  request id, the versionCode asked for and how it ended; id `upd:<asker>:<request id>`, written through
+  `UpdateRequestRows`), so the card outlives the ask: a waiting card reads as expired once the ask is gone, and Send
+  shows only while the ask it answers is live. Once Send has started the transfer, that card follows it and the thread
+  draws no second card: the sender's transfer row keeps the request id (`AppUpdateRecord.requestId`), and
+  `ui/chat/foldAskedTransfers` folds it into the ask's card (`AskedTransfersTest`). The card's own word for Send is
+  "You accepted", never "sent", since the bytes have not moved yet. An ask answered without the person (the quiet hour, a version this
+  phone does not run, a replay) gets no row. The row and the transfer's ordinary `xfer:` row are local, never on the
+  wire, and a contact's removal deletes both with the thread. The field log gets one line per phase with the reason
+  and the contact's short id, never a version name.
 
 ## What it costs, and what it does not cover
 
@@ -182,7 +191,7 @@ after ten minutes and dropped. The golden vectors pin the `au` and `ap` bytes.
 
 Two phones under one debug key, one on this branch and one on the same branch with a local, uncommitted versionName
 bump. The hint shows on the older phone only while the two are in range; Ask reaches the newer phone as a notification
-and a band; Send starts the transfer; the card offers Install and restart; one tap installs silently on API 31+ (the
+and a card in the thread; Send starts the transfer; the card offers Install and restart; one tap installs silently on API 31+ (the
 platform dialog on 29 or 30 if a phone is available); afterwards the mesh is back and the UI relaunches or the
 notification shows. Negative cases: a release-key build beside a debug-key build shows no hint, a stable phone beside a
 pre-release shows none, Not now reads on the asker's hint and keeps that contact quiet, and

@@ -25,6 +25,12 @@ internal class TransferEnds(
 
     fun freeBytes(): Long = files.freeBytes()
 
+    /** Tells the update coordinator an incoming app transfer ended, so one short of done frees the ask (29m7). */
+    fun ended(s: TransferState) {
+        val pin = s.app?.takeIf { !s.outgoing && s.phase.terminal } ?: return
+        app?.ended(s.peerId, pin, s.phase == TransferPhase.Done)
+    }
+
     /**
      * [payload] from [senderId] as an offer to admit, or null: an app update read against this phone's own ask (ADR
      * 2026-11.29m7), anything else as a file or a models offer ([OfferReading.read]).

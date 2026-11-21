@@ -187,6 +187,12 @@ class AndroidAppUpdateFiles(
         size: Long,
     ): Boolean = updates().expects(peerId, pin, size)
 
+    override fun ended(
+        peerId: String,
+        pin: AppPin,
+        done: Boolean,
+    ) = updates().ended(peerId, pin, done)
+
     override suspend fun sink(
         transferId: String,
         pin: AppPin,

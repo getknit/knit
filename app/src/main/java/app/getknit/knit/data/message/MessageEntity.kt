@@ -425,6 +425,13 @@ data class MessageEntity(
          * carried on the wire, so each side keeps its own. Drawn as a line with the call's time (`ui/chat/CallNotice`).
          */
         const val KIND_CALL = 10
+
+        /**
+         * [kind]: a contact's ask for this phone's Knit (ADR 2026-11.29m7) — the newer phone's card for it, with Send
+         * and Not now while the ask is live. [body] holds an [UpdateRequestRecord]; [senderId] is the asker. Written
+         * here only, never carried on the wire. Drawn as a card (`ui/update/UpdateRequestCard`), not a line.
+         */
+        const val KIND_APP_UPDATE_REQUEST = 11
     }
 }
 
