@@ -39,6 +39,9 @@ document:
 
 ### Changed
 
+- Settings is now sorted into groups: Conversations, Connections, Privacy, Appearance and This phone. Blocked
+  users is a row under Privacy instead of a menu item, and the battery and unused-app notes have their own
+  page, Settings › Background running.
 - The Meshtastic room is now titled with the network and its channel, such as "Meshtastic (LongFast)", and
   shows a radio tower instead of Knit's logo, so it no longer looks like one of Knit's own rooms.
 

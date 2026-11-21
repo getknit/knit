@@ -86,6 +86,7 @@ import app.getknit.knit.ui.requests.MessageRequestsScreen
 import app.getknit.knit.ui.review.RateReviewDialog
 import app.getknit.knit.ui.review.ReviewPromptInbox
 import app.getknit.knit.ui.search.SearchScreen
+import app.getknit.knit.ui.settings.BackgroundRunningScreen
 import app.getknit.knit.ui.settings.ChatSettingsScreen
 import app.getknit.knit.ui.settings.SettingsScreen
 import app.getknit.knit.ui.share.ShareInbox
@@ -112,6 +113,7 @@ private object Routes {
     const val SETTINGS = "settings"
     const val CHAT_SETTINGS = "chatSettings"
     const val STARTING_POINT = "startingPoint"
+    const val BACKGROUND_RUNNING = "backgroundRunning"
     const val PROFILE = "profile"
     const val DIAGNOSTICS = "diagnostics"
 
@@ -635,6 +637,7 @@ fun KnitApp(startRoute: String? = null) {
                     onOpenProfile = { navController.navigate(Routes.PROFILE) },
                     onOpenChats = { navController.navigate(Routes.CHAT_SETTINGS) },
                     onOpenStartingPoint = { navController.navigate(Routes.STARTING_POINT) },
+                    onOpenBackgroundRunning = { navController.navigate(Routes.BACKGROUND_RUNNING) },
                     onOpenRelays = { navController.navigate(Routes.INTERNET_RELAYS) },
                     onOpenLora = { navController.navigate(Routes.LORA_RADIO) },
                     onOpenCalls = { navController.navigate(Routes.CALLS) },
@@ -650,6 +653,9 @@ fun KnitApp(startRoute: String? = null) {
             }
             composable(Routes.STARTING_POINT) { entry ->
                 StartingPointScreen(onBack = { navController.popFrom(entry) })
+            }
+            composable(Routes.BACKGROUND_RUNNING) { entry ->
+                BackgroundRunningScreen(onBack = { navController.popFrom(entry) })
             }
             composable(Routes.WHATS_NEW) { entry ->
                 // Reading the screen reads the newest announcement, whichever door it came through.

@@ -22,7 +22,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.Article
-import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhonelinkErase
 import androidx.compose.material.icons.outlined.Info
@@ -36,7 +35,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -45,11 +43,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -62,27 +60,20 @@ import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.power.LOW_POWER_OFFERED
 import app.getknit.knit.mesh.power.LowPowerReason
 import app.getknit.knit.ui.BackgroundBattery
-import app.getknit.knit.ui.DeviceSupervision
-import app.getknit.knit.ui.UnusedAppPause
 import app.getknit.knit.ui.backgroundBattery
-import app.getknit.knit.ui.camera.openAppSettings
 import app.getknit.knit.ui.components.AdaptiveRow
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.BarTitle
-import app.getknit.knit.ui.deviceSupervision
-import app.getknit.knit.ui.openUnusedAppPauseSettings
 import app.getknit.knit.ui.preset.StartingPoint
 import app.getknit.knit.ui.preset.titleRes
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.rememberOnResume
 import app.getknit.knit.ui.rememberWifiAwareSupported
-import app.getknit.knit.ui.requestIgnoreBatteryOptimizations
 import app.getknit.knit.ui.signout.SignOut
 import app.getknit.knit.ui.signout.SignOutDialog
 import app.getknit.knit.ui.theme.DYNAMIC_COLOR_SUPPORTED
 import app.getknit.knit.ui.theme.THEME_MODE_SUPPORTED
 import app.getknit.knit.ui.theme.ThemeMode
-import app.getknit.knit.ui.unusedAppPause
 import org.koin.androidx.compose.koinViewModel
 
 /** UI-local projection of [SettingsViewModel]'s per-setting flows for the stateless content. */
@@ -126,6 +117,7 @@ fun SettingsScreen(
     onOpenBlockedUsers: () -> Unit = {},
     onOpenWhatsNew: () -> Unit = {},
     onOpenStartingPoint: () -> Unit = {},
+    onOpenBackgroundRunning: () -> Unit = {},
     viewModel: SettingsViewModel = koinViewModel(),
 ) {
     val header by viewModel.header.collectAsStateWithLifecycle()
@@ -169,9 +161,8 @@ fun SettingsScreen(
                 startingPoint = startingPoint,
                 secureScreens = secureScreens,
             ),
+        // Read on resume for the Background running row's line; the page behind it reads its own three facts.
         battery = rememberOnResume { backgroundBattery(context) },
-        unusedPause = rememberOnResume { unusedAppPause(context) },
-        supervision = rememberOnResume { deviceSupervision(context) },
         onBack = onBack,
         onOpenProfile = onOpenProfile,
         onOpenChats = onOpenChats,
@@ -190,10 +181,8 @@ fun SettingsScreen(
         onOpenBackup = onOpenBackup,
         onOpenBlockedUsers = onOpenBlockedUsers,
         onOpenWhatsNew = onOpenWhatsNew,
+        onOpenBackgroundRunning = onOpenBackgroundRunning,
         onSignOut = { showSignOut = true },
-        onAllowBattery = { requestIgnoreBatteryOptimizations(context) },
-        onOpenBatterySettings = { openAppSettings(context) },
-        onOpenUnusedPauseSettings = { openUnusedAppPauseSettings(context) },
     )
 }
 
@@ -220,6 +209,7 @@ internal fun SettingsScreenContent(
     onOpenBackup: () -> Unit = {},
     onOpenBlockedUsers: () -> Unit = {},
     onOpenWhatsNew: () -> Unit = {},
+    onOpenBackgroundRunning: () -> Unit = {},
     // The clone row's action — opens the confirmation in the stateful wrapper, never the wipe itself.
     onSignOut: () -> Unit = {},
     // Whether the Internet-relay plane is introduced at all in this build. A parameter rather than a
@@ -242,14 +232,6 @@ internal fun SettingsScreenContent(
     wifiAware: Boolean = rememberWifiAwareSupported(),
     // Whether low-power mode is offered (`LOW_POWER_OFFERED`, false since GitHub #44): its row stays in the code.
     showLowPower: Boolean = LOW_POWER_OFFERED,
-    onAllowBattery: () -> Unit,
-    onOpenBatterySettings: () -> Unit = {},
-    // Who else holds this phone's switches (a Family Link parent, an administrator). Read in the stateful
-    // wrapper like `battery`, so the preview and the content test can show either phone.
-    supervision: DeviceSupervision = DeviceSupervision.None,
-    // Android's "Pause app activity if unused" switch, read the same way; null where the platform has none.
-    unusedPause: UnusedAppPause? = null,
-    onOpenUnusedPauseSettings: () -> Unit = {},
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Scaffold(
@@ -262,8 +244,9 @@ internal fun SettingsScreenContent(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
                     }
                 },
-                // Blocked users, What's new, About and the licenses list live behind the overflow rather than as rows:
-                // none is a setting, and the column below is for things that change how Knit behaves.
+                // What's new, About and the licenses list live behind the overflow rather than as rows: none is a
+                // setting, and the column below is for things that change how Knit behaves. Blocked users left the menu
+                // for a row under Privacy: it is a list you keep, like the backup beside it.
                 actions = {
                     Box {
                         IconButton(
@@ -273,15 +256,6 @@ internal fun SettingsScreenContent(
                             Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.chat_more_options))
                         }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.blocked_users_title)) },
-                                leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
-                                onClick = {
-                                    menuOpen = false
-                                    onOpenBlockedUsers()
-                                },
-                                modifier = Modifier.testTag("settings_menu_blocked"),
-                            )
                             // Where the announcements stay once the chat list's card has gone.
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.settings_menu_whats_new)) },
@@ -333,88 +307,27 @@ internal fun SettingsScreenContent(
                 CloneNoticeRow(onClick = onSignOut)
             }
 
-            // Where the defaults below come from: the preset picked at onboarding, changed here.
-            val presetName = stringResource(form.startingPoint.preset.titleRes())
-            NavigatingRow(
-                title = stringResource(R.string.settings_preset_title),
-                subtitle =
-                    if (form.startingPoint.customised) {
-                        stringResource(R.string.settings_preset_subtitle_customised, presetName)
-                    } else {
-                        presetName
-                    },
-                onClick = onOpenStartingPoint,
-                modifier = Modifier.testTag("settings_starting_point"),
-            )
+            // The rows sit in five groups, most-used first within each. A group's heading shows only where at least one of
+            // its rows does: the flag-gated rows (calls, relays, LoRa, watch) and the API-gated ones (theme, wallpaper
+            // colours, Wi-Fi Aware) can each be absent.
 
             // What a chat sends, shows and lets in — typing, link previews, content filtering, large Bluetooth downloads —
-            // on its own screen, so this column keeps to the app, its planes and the phone.
+            // on its own screen, so this column keeps to the app, its planes and the phone. Calls beside it: the other
+            // way of talking to someone.
+            SettingsSection(stringResource(R.string.settings_section_conversations))
             NavigatingRow(
                 title = stringResource(R.string.settings_chats_title),
                 subtitle = stringResource(R.string.settings_chats_subtitle),
                 onClick = onOpenChats,
                 modifier = Modifier.testTag("settings_chats"),
             )
-
-            // Both appearance controls are hidden rather than disabled below API 31, matching the two plane
-            // rows: a control that can never move needs a reason next to it, and there is nowhere here to
-            // put one. They sit together because they answer the same question about how the app looks.
-            if (showThemeMode) {
-                ThemeModeRow(
-                    selected = form.themeMode,
-                    onSelect = onSelectThemeMode,
-                    modifier = Modifier.testTag("settings_theme_mode"),
-                )
-            }
-
-            if (showDynamicColor) {
-                ToggleRow(
-                    title = stringResource(R.string.settings_dynamic_color_title),
-                    subtitle = stringResource(R.string.settings_dynamic_color_subtitle),
-                    enabled = form.dynamicColor,
-                    onToggle = onToggleDynamicColor,
-                    modifier = Modifier.testTag("settings_dynamic_color"),
-                )
-            }
-
             // Not under the Internet plane's flag: the person's own TURN server relays a call without any relay.
             if (showCalls) CallsRow(summary = form.calls, onClick = onOpenCalls)
 
-            if (showInternetRelays) InternetRelayRow(summary = form.relay, onClick = onOpenRelays)
-
-            if (showLoraRadio) LoraRadioRow(summary = form.lora, onClick = onOpenLora)
-
-            // What this phone tells a paired watch. Off by default: the status leaves the phone, so the subtitle says
-            // what the watch reads (ADR 2026-09.wetm's seventh amendment).
-            if (showWatch) {
-                ToggleRow(
-                    title = stringResource(R.string.settings_watch_title),
-                    subtitle =
-                        stringResource(if (form.watchOn) R.string.settings_watch_subtitle_on else R.string.settings_watch_subtitle_off),
-                    enabled = form.watchOn,
-                    onToggle = onToggleWatch,
-                    modifier = Modifier.testTag("settings_watch"),
-                )
-            }
-
-            // What this phone shows to whoever holds it, beside the backup that carries what it keeps.
-            ToggleRow(
-                title = stringResource(R.string.settings_secure_screens_title),
-                subtitle = stringResource(R.string.settings_secure_screens_subtitle),
-                enabled = form.secureScreens,
-                onToggle = onToggleSecureScreens,
-                modifier = Modifier.testTag("settings_secure_screens"),
-            )
-
-            NavigatingRow(
-                title = stringResource(R.string.settings_backup_title),
-                subtitle = stringResource(R.string.settings_backup_subtitle),
-                onClick = onOpenBackup,
-                modifier = Modifier.testTag("settings_backup"),
-            )
-
-            // The Wi-Fi Aware switch sits with the battery rows, where low-power mode was: what Knit asks of this phone's
-            // radios, above what Android lets it do. The subtitle states the trade (GitHub #44).
+            // How Knit reaches people beyond Bluetooth, which is always on and so has no row. The Wi-Fi Aware subtitle
+            // states its battery trade (GitHub #44).
+            val anyConnection = wifiAware || showInternetRelays || showLoraRadio
+            if (anyConnection || showLowPower) SettingsSection(stringResource(R.string.settings_section_connections))
             if (wifiAware) {
                 ToggleRow(
                     title = stringResource(R.string.settings_wifi_aware_title),
@@ -427,7 +340,8 @@ internal fun SettingsScreenContent(
                     modifier = Modifier.testTag("settings_wifi_aware"),
                 )
             }
-
+            if (showInternetRelays) InternetRelayRow(summary = form.relay, onClick = onOpenRelays)
+            if (showLoraRadio) LoraRadioRow(summary = form.lora, onClick = onOpenLora)
             if (showLowPower) {
                 ToggleRow(
                     title = stringResource(R.string.settings_low_power_title),
@@ -438,9 +352,84 @@ internal fun SettingsScreenContent(
                 )
             }
 
-            BatteryOptimizationRow(battery = battery, onAllow = onAllowBattery, onOpenSettings = onOpenBatterySettings)
-            UnusedAppPauseRow(unusedPause = unusedPause, onOpenSettings = onOpenUnusedPauseSettings)
-            SupervisionRow(supervision = supervision)
+            // What this phone shows to whoever holds it, who can reach you, and the backup that carries what it keeps.
+            SettingsSection(stringResource(R.string.settings_section_privacy))
+            ToggleRow(
+                title = stringResource(R.string.settings_secure_screens_title),
+                subtitle = stringResource(R.string.settings_secure_screens_subtitle),
+                enabled = form.secureScreens,
+                onToggle = onToggleSecureScreens,
+                modifier = Modifier.testTag("settings_secure_screens"),
+            )
+            NavigatingRow(
+                title = stringResource(R.string.blocked_users_title),
+                subtitle = stringResource(R.string.settings_blocked_subtitle),
+                onClick = onOpenBlockedUsers,
+                modifier = Modifier.testTag("settings_blocked"),
+            )
+            NavigatingRow(
+                title = stringResource(R.string.settings_backup_title),
+                subtitle = stringResource(R.string.settings_backup_subtitle),
+                onClick = onOpenBackup,
+                modifier = Modifier.testTag("settings_backup"),
+            )
+
+            // Both appearance controls are hidden rather than disabled below API 31: a control that can never move needs
+            // a reason next to it, and there is nowhere here to put one.
+            if (showThemeMode || showDynamicColor) {
+                SettingsSection(stringResource(R.string.settings_section_appearance))
+            }
+            if (showThemeMode) {
+                ThemeModeRow(
+                    selected = form.themeMode,
+                    onSelect = onSelectThemeMode,
+                    modifier = Modifier.testTag("settings_theme_mode"),
+                )
+            }
+            if (showDynamicColor) {
+                ToggleRow(
+                    title = stringResource(R.string.settings_dynamic_color_title),
+                    subtitle = stringResource(R.string.settings_dynamic_color_subtitle),
+                    enabled = form.dynamicColor,
+                    onToggle = onToggleDynamicColor,
+                    modifier = Modifier.testTag("settings_dynamic_color"),
+                )
+            }
+
+            // The phone itself: what Android lets Knit do in the background, a paired watch, and the preset the defaults
+            // above come from — touched at onboarding and rarely after, so last.
+            SettingsSection(stringResource(R.string.settings_section_this_phone))
+            NavigatingRow(
+                title = stringResource(R.string.settings_background_title),
+                subtitle = stringResource(backgroundSummary(battery)),
+                subtitleColor = if (battery == BackgroundBattery.Restricted) MaterialTheme.colorScheme.error else Color.Unspecified,
+                onClick = onOpenBackgroundRunning,
+                modifier = Modifier.testTag("settings_background"),
+            )
+            // What this phone tells a paired watch. Off by default: the status leaves the phone, so the subtitle says
+            // what the watch reads (ADR 2026-09.wetm's seventh amendment).
+            if (showWatch) {
+                ToggleRow(
+                    title = stringResource(R.string.settings_watch_title),
+                    subtitle =
+                        stringResource(if (form.watchOn) R.string.settings_watch_subtitle_on else R.string.settings_watch_subtitle_off),
+                    enabled = form.watchOn,
+                    onToggle = onToggleWatch,
+                    modifier = Modifier.testTag("settings_watch"),
+                )
+            }
+            val presetName = stringResource(form.startingPoint.preset.titleRes())
+            NavigatingRow(
+                title = stringResource(R.string.settings_preset_title),
+                subtitle =
+                    if (form.startingPoint.customised) {
+                        stringResource(R.string.settings_preset_subtitle_customised, presetName)
+                    } else {
+                        presetName
+                    },
+                onClick = onOpenStartingPoint,
+                modifier = Modifier.testTag("settings_starting_point"),
+            )
         }
     }
 }
@@ -696,116 +685,6 @@ private fun loraConnectedSubtitle(
         else -> stringResource(R.string.lora_summary_connected, boardName)
     }
 
-/**
- * The app's battery position and what it means for the mesh, with the one action that can move it:
- * the exemption prompt from Optimized, the app-info page from Restricted (no prompt of ours lifts that one —
- * ADR 2026-09.f69x is what a Restricted install used to crash on).
- */
-@Composable
-private fun BatteryOptimizationRow(
-    battery: BackgroundBattery,
-    onAllow: () -> Unit,
-    onOpenSettings: () -> Unit,
-) {
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("settings_battery"),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            text =
-                stringResource(
-                    when (battery) {
-                        BackgroundBattery.Unrestricted -> R.string.battery_allowed
-                        BackgroundBattery.Optimized -> R.string.battery_optimized
-                        BackgroundBattery.Restricted -> R.string.battery_restricted
-                    },
-                ),
-            style = MaterialTheme.typography.bodySmall,
-            color =
-                if (battery == BackgroundBattery.Restricted) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            textAlign = TextAlign.Center,
-        )
-        when (battery) {
-            BackgroundBattery.Unrestricted -> {
-                // Nothing to press: the quiet state.
-            }
-
-            BackgroundBattery.Optimized -> {
-                TextButton(onClick = onAllow, modifier = Modifier.testTag("settings_battery_allow")) {
-                    Text(stringResource(R.string.battery_allow_button))
-                }
-            }
-
-            BackgroundBattery.Restricted -> {
-                TextButton(onClick = onOpenSettings, modifier = Modifier.testTag("settings_battery_settings")) {
-                    Text(stringResource(R.string.action_open_settings))
-                }
-            }
-        }
-    }
-}
-
-/**
- * Android's "Pause app activity if unused" switch and what it means for the grants, in the battery row's
- * shape: a status line, and "Open settings" while the switch is on — no prompt of ours flips it, and its
- * default is not a fault, so the line keeps the quiet colour. Absent where the platform has no switch.
- */
-@Composable
-private fun UnusedAppPauseRow(
-    unusedPause: UnusedAppPause?,
-    onOpenSettings: () -> Unit,
-) {
-    if (unusedPause == null) return
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("settings_unused"),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            text =
-                stringResource(
-                    when (unusedPause) {
-                        UnusedAppPause.Off -> R.string.unused_pause_off
-                        UnusedAppPause.On -> R.string.unused_pause_on
-                    },
-                ),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-        if (unusedPause == UnusedAppPause.On) {
-            TextButton(onClick = onOpenSettings, modifier = Modifier.testTag("settings_unused_settings")) {
-                Text(stringResource(R.string.action_open_settings))
-            }
-        }
-    }
-}
-
-/**
- * One quiet line on a phone somebody else administers — a Family Link parent, an organisation — saying so,
- * and what it means for Knit. Nothing to press: the switches it talks about live in the parent app or the
- * EMM, not in Settings. A plain consumer phone renders nothing here. ADR 2026-09.a8ud.
- */
-@Composable
-private fun SupervisionRow(supervision: DeviceSupervision) {
-    val text =
-        when (supervision) {
-            DeviceSupervision.None -> return
-            DeviceSupervision.FamilyLink -> R.string.settings_supervised_family_link
-            DeviceSupervision.Managed -> R.string.settings_supervised_managed
-        }
-    Text(
-        text = stringResource(text),
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth().padding(top = 12.dp).testTag("settings_supervised"),
-    )
-}
-
 @Preview(showBackground = true)
 @Composable
 fun ToggleRowPreview() =
@@ -838,27 +717,6 @@ fun ThemeModeRowPreview() =
 
 @Preview(showBackground = true)
 @Composable
-fun BatteryOptimizationRowPreview() =
-    KnitPreview {
-        Column {
-            BatteryOptimizationRow(battery = BackgroundBattery.Unrestricted, onAllow = {}, onOpenSettings = {})
-            BatteryOptimizationRow(battery = BackgroundBattery.Optimized, onAllow = {}, onOpenSettings = {})
-            BatteryOptimizationRow(battery = BackgroundBattery.Restricted, onAllow = {}, onOpenSettings = {})
-        }
-    }
-
-@Preview(showBackground = true)
-@Composable
-fun SupervisionRowPreview() =
-    KnitPreview {
-        Column {
-            SupervisionRow(supervision = DeviceSupervision.FamilyLink)
-            SupervisionRow(supervision = DeviceSupervision.Managed)
-        }
-    }
-
-@Preview(showBackground = true)
-@Composable
 fun SettingsScreenPreview() =
     KnitPreview {
         SettingsScreenContent(
@@ -875,7 +733,6 @@ fun SettingsScreenPreview() =
             battery = BackgroundBattery.Optimized,
             onBack = {},
             onOpenRelays = {},
-            onAllowBattery = {},
             // The screen a shipped build shows: it has no calls (`CALL_SETTINGS_WIRED` off), and so no Calls row, and
             // serves no watch (`WEAR_STATUS` off), and so no Watch row.
             showCalls = false,
@@ -893,7 +750,6 @@ fun SettingsScreenClonePreview() =
             battery = BackgroundBattery.Unrestricted,
             onBack = {},
             onOpenRelays = {},
-            onAllowBattery = {},
             showCalls = false,
             showWatch = false,
         )
@@ -910,7 +766,6 @@ fun SettingsScreenNewUserPreview() =
             battery = BackgroundBattery.Unrestricted,
             onBack = {},
             onOpenRelays = {},
-            onAllowBattery = {},
             showCalls = false,
             showWatch = false,
         )

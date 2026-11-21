@@ -20,8 +20,6 @@ import app.getknit.knit.mesh.lora.BoardBattery
 import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.ui.BackgroundBattery
-import app.getknit.knit.ui.DeviceSupervision
-import app.getknit.knit.ui.UnusedAppPause
 import app.getknit.knit.ui.theme.KnitTheme
 import app.getknit.knit.ui.theme.ThemeMode
 import org.junit.Assert.assertEquals
@@ -32,8 +30,9 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The app's settings: the switches, the rows that hand off to Settings › Chats and to a plane's own screen (each plane
- * present only in a build that introduces it), and the profile header row that leads to the profile editor.
+ * The app's settings, in five headed groups: the switches, the rows that hand off to Settings › Chats and to a plane's
+ * own screen (each plane present only in a build that introduces it), and the profile header row that leads to the
+ * profile editor.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -64,15 +63,13 @@ class SettingsScreenContentTest {
         onToggleDynamicColor: (Boolean) -> Unit = {},
         showDynamicColor: Boolean = true,
         battery: BackgroundBattery = BackgroundBattery.Unrestricted,
-        onAllowBattery: () -> Unit = {},
-        onOpenBatterySettings: () -> Unit = {},
+        onOpenBackgroundRunning: () -> Unit = {},
         onOpenAbout: () -> Unit = {},
         onOpenLicenses: () -> Unit = {},
         onOpenBackup: () -> Unit = {},
         onOpenBlockedUsers: () -> Unit = {},
-        supervision: DeviceSupervision = DeviceSupervision.None,
-        unusedPause: UnusedAppPause? = null,
-        onOpenUnusedPauseSettings: () -> Unit = {},
+        onOpenStartingPoint: () -> Unit = {},
+        showLoraRadio: Boolean = true,
         cloneVisible: Boolean = false,
         onSignOut: () -> Unit = {},
         wifiAwareOn: Boolean = true,
@@ -97,7 +94,6 @@ class SettingsScreenContentTest {
                             watchOn = watchOn,
                         ),
                     battery = battery,
-                    supervision = supervision,
                     onBack = {},
                     onOpenProfile = onOpenProfile,
                     onOpenChats = onOpenChats,
@@ -114,15 +110,14 @@ class SettingsScreenContentTest {
                     onOpenRelays = onOpenRelays,
                     onOpenLora = onOpenLora,
                     showInternetRelays = showInternetRelays,
-                    onAllowBattery = onAllowBattery,
-                    onOpenBatterySettings = onOpenBatterySettings,
+                    showLoraRadio = showLoraRadio,
+                    onOpenBackgroundRunning = onOpenBackgroundRunning,
+                    onOpenStartingPoint = onOpenStartingPoint,
                     onOpenAbout = onOpenAbout,
                     onOpenLicenses = onOpenLicenses,
                     onOpenBackup = onOpenBackup,
                     onOpenBlockedUsers = onOpenBlockedUsers,
                     onSignOut = onSignOut,
-                    unusedPause = unusedPause,
-                    onOpenUnusedPauseSettings = onOpenUnusedPauseSettings,
                 )
             }
         }
@@ -352,102 +347,79 @@ class SettingsScreenContentTest {
         compose.onNodeWithTag("settings_calls").performScrollTo().assertIsDisplayed()
     }
 
-    /** Unrestricted is the quiet state: a status line and nothing to press. */
+    /** The battery position, the one fact on Background running that can stop the mesh, is the row's line. */
     @Test
-    fun theBatteryRowIsQuietWhenUnrestricted() {
-        render(battery = BackgroundBattery.Unrestricted)
-        compose.onNodeWithText(context.getString(R.string.battery_allowed)).performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("settings_battery_allow").assertDoesNotExist()
-        compose.onNodeWithTag("settings_battery_settings").assertDoesNotExist()
-    }
-
-    /** Optimized (Android's default) offers the exemption prompt, the one dialog the app can raise itself. */
-    @Test
-    fun theBatteryRowOffersTheExemptionWhenOptimized() {
-        var allowed = 0
-        render(battery = BackgroundBattery.Optimized, onAllowBattery = { allowed++ })
-        compose.onNodeWithText(context.getString(R.string.battery_optimized)).performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("settings_battery_allow").performScrollTo().performClick()
-        assertEquals(1, allowed)
-    }
-
-    /**
-     * Restricted is the state ADR 2026-09.f69x's crash lived in, and no prompt of ours can lift it: the row
-     * says so and sends the user to the app's info page instead of the exemption dialog.
-     */
-    @Test
-    fun theBatteryRowSendsARestrictedInstallToSettings() {
-        var allowed = 0
+    fun theBackgroundRowCarriesTheBatteryPositionAndOpensItsPage() {
         var opened = 0
-        render(battery = BackgroundBattery.Restricted, onAllowBattery = { allowed++ }, onOpenBatterySettings = { opened++ })
-        compose.onNodeWithText(context.getString(R.string.battery_restricted)).performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("settings_battery_allow").assertDoesNotExist()
-        compose.onNodeWithTag("settings_battery_settings").performScrollTo().performClick()
+        render(battery = BackgroundBattery.Optimized, onOpenBackgroundRunning = { opened++ })
+        compose
+            .onNodeWithText(context.getString(R.string.settings_background_summary_optimized))
+            .performScrollTo()
+            .assertIsDisplayed()
+        compose.onNodeWithTag("settings_background").performClick()
         assertEquals(1, opened)
-        assertEquals(0, allowed)
-    }
-
-    /** Android 10 has no unused-app switch, so a phone that reports none gets no line about it. */
-    @Test
-    fun theUnusedAppRowIsAbsentWhereThePlatformHasNoSwitch() {
-        render(unusedPause = null)
-        compose.onNodeWithTag("settings_unused").assertDoesNotExist()
+        // The rows themselves live on the page behind it (BackgroundRunningScreenContentTest).
+        compose.onNodeWithTag("settings_battery").assertDoesNotExist()
     }
 
     @Test
-    fun theUnusedAppRowIsQuietOnceTheSwitchIsOff() {
-        render(unusedPause = UnusedAppPause.Off)
-        compose.onNodeWithText(context.getString(R.string.unused_pause_off)).performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("settings_unused_settings").assertDoesNotExist()
+    fun theBackgroundRowSaysARestrictedInstallStopsTheMesh() {
+        render(battery = BackgroundBattery.Restricted)
+        compose
+            .onNodeWithText(context.getString(R.string.settings_background_summary_restricted))
+            .performScrollTo()
+            .assertIsDisplayed()
     }
 
-    /** The switch has no prompt of its own, so the only action while it is on is its settings page. */
+    /** Blocked users is a row under Privacy, beside the backup: a list you keep, not a menu item. */
     @Test
-    fun theUnusedAppRowSendsTheDefaultToSettings() {
-        var opened = 0
-        render(unusedPause = UnusedAppPause.On, onOpenUnusedPauseSettings = { opened++ })
-        compose.onNodeWithText(context.getString(R.string.unused_pause_on)).performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("settings_unused_settings").performScrollTo().performClick()
-        assertEquals(1, opened)
-    }
-
-    /** A plain phone has nobody to name, so the supervision line is not there at all. */
-    @Test
-    fun aPlainPhoneShowsNoSupervisionLine() {
-        render()
-        compose.onNodeWithTag("settings_supervised").assertDoesNotExist()
-    }
-
-    /**
-     * A Family Link phone says so under the battery row, in the words the trial earned: the mesh keeps
-     * running through a pause, and a parent holds the permissions (ADR 2026-09.a8ud).
-     */
-    @Test
-    fun aFamilyLinkPhoneSaysSoUnderTheBatteryRow() {
-        render(supervision = DeviceSupervision.FamilyLink)
-        compose.onNodeWithTag("settings_supervised").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText(context.getString(R.string.settings_supervised_family_link)).assertIsDisplayed()
-    }
-
-    @Test
-    fun aManagedPhoneNamesItsAdministrator() {
-        render(supervision = DeviceSupervision.Managed)
-        compose.onNodeWithText(context.getString(R.string.settings_supervised_managed)).performScrollTo().assertIsDisplayed()
-    }
-
-    /** Blocked users, About and the licenses list sit behind the overflow: none is a setting, so none is a row. */
-    @Test
-    fun theOverflowMenuOpensBlockedUsersAboutAndTheLicenses() {
+    fun theBlockedUsersRowOpensTheBlockedList() {
         var blocked = 0
+        render(onOpenBlockedUsers = { blocked++ })
+        compose.onNodeWithTag("settings_blocked").performScrollTo().performClick()
+        assertEquals(1, blocked)
+    }
+
+    /** The starting point is a row in its own right, last on the screen: touched at onboarding and rarely after. */
+    @Test
+    fun theStartingPointRowOpensTheStartingPointScreen() {
+        var opened = 0
+        render(onOpenStartingPoint = { opened++ })
+        compose.onNodeWithTag("settings_starting_point").performScrollTo().performClick()
+        assertEquals(1, opened)
+    }
+
+    /** Every group shows its heading where at least one of its rows does. */
+    @Test
+    fun eachGroupHeadingShowsOverItsRows() {
+        render()
+        listOf(
+            R.string.settings_section_conversations,
+            R.string.settings_section_connections,
+            R.string.settings_section_privacy,
+            R.string.settings_section_appearance,
+            R.string.settings_section_this_phone,
+        ).forEach { compose.onNodeWithText(context.getString(it)).performScrollTo().assertIsDisplayed() }
+    }
+
+    /** A group with none of its rows in this build or on this phone leaves no heading standing over nothing. */
+    @Test
+    fun aGroupWithNoRowsHasNoHeading() {
+        render(wifiAware = false, showInternetRelays = false, showLoraRadio = false, showThemeMode = false, showDynamicColor = false)
+        compose.onNodeWithText(context.getString(R.string.settings_section_connections)).assertDoesNotExist()
+        compose.onNodeWithText(context.getString(R.string.settings_section_appearance)).assertDoesNotExist()
+        compose.onNodeWithText(context.getString(R.string.settings_section_privacy)).performScrollTo().assertIsDisplayed()
+    }
+
+    /** What's new, About and the licenses list sit behind the overflow: none is a setting, so none is a row. */
+    @Test
+    fun theOverflowMenuOpensAboutAndTheLicenses() {
         var about = 0
         var licenses = 0
-        render(onOpenBlockedUsers = { blocked++ }, onOpenAbout = { about++ }, onOpenLicenses = { licenses++ })
+        render(onOpenAbout = { about++ }, onOpenLicenses = { licenses++ })
 
         compose.onNodeWithContentDescription(context.getString(R.string.chat_more_options)).performClick()
-        compose.onNodeWithText(context.getString(R.string.blocked_users_title)).performClick()
-        assertEquals(1, blocked)
-
-        compose.onNodeWithContentDescription(context.getString(R.string.chat_more_options)).performClick()
+        compose.onNodeWithTag("settings_menu_blocked").assertDoesNotExist()
         compose.onNodeWithText(context.getString(R.string.settings_menu_about)).performClick()
         assertEquals(1, about)
 
@@ -455,7 +427,6 @@ class SettingsScreenContentTest {
         compose.onNodeWithText(context.getString(R.string.settings_menu_licenses)).performClick()
         assertEquals(1, licenses)
         assertEquals(1, about)
-        assertEquals(1, blocked)
     }
 
     /** Backup and restore is a row, not a menu item: it changes what happens to your data, so it sits with the settings. */

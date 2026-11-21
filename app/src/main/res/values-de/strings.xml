@@ -873,6 +873,16 @@
     <string name="profile_alias_label">Alias</string>
     <string name="settings_chats_title">Chats</string>
     <string name="settings_chats_subtitle">Tippindikatoren, Lesebestätigungen, Linkvorschauen, Inhaltsfilter und große Downloads</string>
+    <string name="settings_section_conversations">Unterhaltungen</string>
+    <string name="settings_section_connections">Verbindungen</string>
+    <string name="settings_section_privacy">Datenschutz</string>
+    <string name="settings_section_appearance">Darstellung</string>
+    <string name="settings_section_this_phone">Dieses Smartphone</string>
+    <string name="settings_blocked_subtitle">Personen, von denen du keine Nachrichten erhältst</string>
+    <string name="settings_background_title">Hintergrundbetrieb</string>
+    <string name="settings_background_summary_allowed">Akkunutzung: erlaubt</string>
+    <string name="settings_background_summary_optimized">Akkunutzung: optimiert – Android kann das Mesh pausieren, solange der Bildschirm aus ist</string>
+    <string name="settings_background_summary_restricted">Akkunutzung: eingeschränkt – das Mesh stoppt, wenn du Knit verlässt</string>
     <string name="settings_content_filtering_title">Inhaltsfilter</string>
     <string name="settings_content_filtering_subtitle">Blendet explizite Bilder und beleidigende Nachrichten aus, die du von anderen erhältst</string>
     <string name="settings_theme_title">Design</string>

@@ -901,6 +901,16 @@
     <string name="profile_alias_label">Псевдонім</string>
     <string name="settings_chats_title">Чати</string>
     <string name="settings_chats_subtitle">Індикатор набору, звіти про прочитання, попередній перегляд посилань, фільтр вмісту й великі завантаження</string>
+    <string name="settings_section_conversations">Спілкування</string>
+    <string name="settings_section_connections">З’єднання</string>
+    <string name="settings_section_privacy">Конфіденційність</string>
+    <string name="settings_section_appearance">Вигляд</string>
+    <string name="settings_section_this_phone">Цей телефон</string>
+    <string name="settings_blocked_subtitle">Люди, від яких ви не отримуєте повідомлень</string>
+    <string name="settings_background_title">Робота у фоні</string>
+    <string name="settings_background_summary_allowed">Використання батареї: дозволено</string>
+    <string name="settings_background_summary_optimized">Використання батареї: оптимізовано — Android може призупиняти mesh-мережу, коли екран вимкнено</string>
+    <string name="settings_background_summary_restricted">Використання батареї: обмежено — mesh-мережа зупиняється, коли ви виходите з Knit</string>
     <string name="settings_content_filtering_title">Фільтр вмісту</string>
     <string name="settings_content_filtering_subtitle">Приховувати відверті зображення й образливі повідомлення, які вам надсилають</string>
     <string name="settings_theme_title">Тема</string>

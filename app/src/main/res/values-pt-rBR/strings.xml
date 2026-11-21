@@ -887,6 +887,16 @@
     <string name="profile_alias_label">Apelido</string>
     <string name="settings_chats_title">Conversas</string>
     <string name="settings_chats_subtitle">Indicador de digitação, confirmações de leitura, prévias de links, filtro de conteúdo e downloads grandes</string>
+    <string name="settings_section_conversations">Comunicação</string>
+    <string name="settings_section_connections">Conexões</string>
+    <string name="settings_section_privacy">Privacidade</string>
+    <string name="settings_section_appearance">Aparência</string>
+    <string name="settings_section_this_phone">Este celular</string>
+    <string name="settings_blocked_subtitle">Pessoas de quem você não recebe mensagens</string>
+    <string name="settings_background_title">Execução em segundo plano</string>
+    <string name="settings_background_summary_allowed">Uso de bateria: permitido</string>
+    <string name="settings_background_summary_optimized">Uso de bateria: otimizado — o Android pode pausar a mesh com a tela desligada</string>
+    <string name="settings_background_summary_restricted">Uso de bateria: restrito — a mesh para quando você sai do Knit</string>
     <string name="settings_content_filtering_title">Filtro de conteúdo</string>
     <string name="settings_content_filtering_subtitle">Oculta imagens explícitas e mensagens abusivas que você recebe de outras pessoas</string>
     <string name="settings_theme_title">Tema</string>

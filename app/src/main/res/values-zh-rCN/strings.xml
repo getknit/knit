@@ -859,6 +859,16 @@
     <string name="profile_alias_label">别名</string>
     <string name="settings_chats_title">聊天</string>
     <string name="settings_chats_subtitle">输入状态提示、已读回执、链接预览、内容过滤和大文件下载</string>
+    <string name="settings_section_conversations">交流</string>
+    <string name="settings_section_connections">连接</string>
+    <string name="settings_section_privacy">隐私</string>
+    <string name="settings_section_appearance">外观</string>
+    <string name="settings_section_this_phone">这部手机</string>
+    <string name="settings_blocked_subtitle">你不会收到其消息的人</string>
+    <string name="settings_background_title">后台运行</string>
+    <string name="settings_background_summary_allowed">电池用量：允许</string>
+    <string name="settings_background_summary_optimized">电池用量：优化。屏幕关闭时，Android 可能会暂停 Mesh 网络</string>
+    <string name="settings_background_summary_restricted">电池用量：受限。你离开 Knit 后，Mesh 网络就会停止</string>
     <string name="settings_content_filtering_title">内容过滤</string>
     <string name="settings_content_filtering_subtitle">隐藏你从他人那里收到的露骨图片和辱骂消息</string>
     <string name="settings_theme_title">主题</string>

@@ -859,6 +859,16 @@
     <string name="profile_alias_label">Alias</string>
     <string name="settings_chats_title">Chat</string>
     <string name="settings_chats_subtitle">Indikator mengetik, tanda dibaca, pratinjau tautan, filter konten, dan unduhan besar</string>
+    <string name="settings_section_conversations">Percakapan</string>
+    <string name="settings_section_connections">Koneksi</string>
+    <string name="settings_section_privacy">Privasi</string>
+    <string name="settings_section_appearance">Tampilan</string>
+    <string name="settings_section_this_phone">Ponsel ini</string>
+    <string name="settings_blocked_subtitle">Orang yang pesannya tidak Anda terima</string>
+    <string name="settings_background_title">Berjalan di latar belakang</string>
+    <string name="settings_background_summary_allowed">Penggunaan baterai: diizinkan</string>
+    <string name="settings_background_summary_optimized">Penggunaan baterai: dioptimalkan — Android mungkin menjeda mesh saat layar mati</string>
+    <string name="settings_background_summary_restricted">Penggunaan baterai: dibatasi — mesh berhenti saat Anda keluar dari Knit</string>
     <string name="settings_content_filtering_title">Filter konten</string>
     <string name="settings_content_filtering_subtitle">Sembunyikan gambar eksplisit dan pesan kasar yang Anda terima dari orang lain</string>
     <string name="settings_theme_title">Tema</string>

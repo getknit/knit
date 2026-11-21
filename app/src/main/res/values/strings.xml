@@ -1086,6 +1086,16 @@
          and lets in. The subtitle names the screen's rows. -->
     <string name="settings_chats_title">Chats</string>
     <string name="settings_chats_subtitle">Typing indicators, read receipts, link previews, content filtering and large downloads</string>
+    <string name="settings_section_conversations">Conversations</string>
+    <string name="settings_section_connections">Connections</string>
+    <string name="settings_section_privacy">Privacy</string>
+    <string name="settings_section_appearance">Appearance</string>
+    <string name="settings_section_this_phone">This phone</string>
+    <string name="settings_blocked_subtitle">People you won\'t receive messages from</string>
+    <string name="settings_background_title">Background running</string>
+    <string name="settings_background_summary_allowed">Battery use: allowed</string>
+    <string name="settings_background_summary_optimized">Battery use: optimized — Android may pause the mesh while the screen is off</string>
+    <string name="settings_background_summary_restricted">Battery use: restricted — the mesh stops when you leave Knit</string>
     <string name="settings_content_filtering_title">Content filtering</string>
     <string name="settings_content_filtering_subtitle">Hide explicit images and abusive messages you receive from others</string>
     <string name="settings_theme_title">Theme</string>

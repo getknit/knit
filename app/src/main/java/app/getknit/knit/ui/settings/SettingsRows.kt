@@ -18,12 +18,34 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.ui.components.ChoiceButtons
 
 // The rows Settings and the screens it hands off to share, so a switch on Settings › Chats reads like one on Settings.
+
+/**
+ * A group's label on Settings (Conversations, Connections, …): the screen's rows sorted under a few headings rather
+ * than one flat column. A heading to a screen reader, so its headings navigation jumps group to group. The caller
+ * leaves it out when no row of its group shows in this build or on this phone.
+ */
+@Composable
+internal fun SettingsSection(
+    title: String,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = modifier.fillMaxWidth().padding(top = 16.dp).semantics { heading() },
+    )
+}
 
 /** A titled switch row — every switch on Settings and on Settings › Chats shares it. */
 @Composable
@@ -98,13 +120,17 @@ internal fun <T> ChoiceRow(
     }
 }
 
-/** A titled row that hands off to another screen: title, live subtitle, chevron. One tap target. */
+/**
+ * A titled row that hands off to another screen: title, live subtitle, chevron. One tap target. [subtitleColor] is
+ * for a subtitle that reports a fault (Background running while Android restricts it); unset, it is the quiet colour.
+ */
 @Composable
 internal fun NavigatingRow(
     title: String,
     subtitle: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    subtitleColor: Color = Color.Unspecified,
 ) {
     Row(
         modifier =
@@ -122,7 +148,7 @@ internal fun NavigatingRow(
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = subtitleColor.takeOrElse { MaterialTheme.colorScheme.onSurfaceVariant },
             )
         }
         Spacer(Modifier.width(12.dp))
