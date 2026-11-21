@@ -64,6 +64,8 @@ internal class MeshcoreAirRig(
         val reached: MutableList<String> = mutableListOf(),
         /** Every ✓✓ the plane said did not land (`onDirectUndelivered`), in order. */
         val undelivered: MutableList<String> = mutableListOf(),
+        /** Every compact frame of any kind the plane said its peer's own board acked (`onBoardAcked`): frame id to peer. */
+        val boardAcked: MutableList<Pair<String, String>> = mutableListOf(),
         /** The plane's config: set it null and back to lose the board and bind it again (a reconnect, as the plane sees it). */
         val config: MutableStateFlow<LoraConfig?> = MutableStateFlow(null),
     ) {
@@ -142,6 +144,7 @@ internal class MeshcoreAirRig(
         val unacked = LinkedHashMap<String, DirectDm>()
         val reached = java.util.concurrent.CopyOnWriteArrayList<String>()
         val undelivered = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val boardAcked = java.util.concurrent.CopyOnWriteArrayList<Pair<String, String>>()
         var hooks: MeshcoreHooks? = null
         val config = MutableStateFlow<LoraConfig?>(LoraConfig(address, MeshcoreHooks.NO_CONFIGURED_SLOT, dms = true))
         val holders =
@@ -187,6 +190,7 @@ internal class MeshcoreAirRig(
                     },
                 boardMap = flowOf(MeshcoreContacts.holdersOf(holders)),
                 onRadioReached = { frameId, _, _ -> reached += frameId },
+                onBoardAcked = { frameId, peerId -> boardAcked += frameId to peerId },
                 onDirectUndelivered = { frameId, _ -> undelivered += frameId },
                 scope = scope.backgroundScope,
                 metrics = metrics,
@@ -217,6 +221,7 @@ internal class MeshcoreAirRig(
                 made,
                 reached,
                 undelivered,
+                boardAcked,
                 config,
             )
         nodes[name] = node

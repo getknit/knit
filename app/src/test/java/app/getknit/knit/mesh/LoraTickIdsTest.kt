@@ -18,6 +18,16 @@ class LoraTickIdsTest {
     }
 
     @Test
+    fun anUndeliveredTickIsReportedOnceAndStaysForALateAck() {
+        val ticks = LoraTickIds()
+        ticks.record("t1", "alice", listOf("m1"), now = 0)
+        assertEquals(listOf("m1"), ticks.undelivered("t1", now = 1)?.ids)
+        assertNull("reported once", ticks.undelivered("t1", now = 2))
+        assertEquals("still there for its late ack", listOf("m1"), ticks.take("t1", now = 3)?.ids)
+        assertNull(ticks.undelivered("t1", now = 4))
+    }
+
+    @Test
     fun anEmptyTickIsNeverRecorded() {
         val ticks = LoraTickIds()
         ticks.record("t1", "alice", emptyList(), now = 0)

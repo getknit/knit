@@ -213,6 +213,9 @@ internal fun Module.loraPlaneOf(
             // The destination's board acked one of our compact DMs: the chat's "reached their LoRa radio" (ADR 040's
             // 2026-10-31 amendment). Runs on the plane's outcome collector; the manager's side is one lock-free update.
             onRadioReached = { frameId, peerId, late -> get<MeshManager>().onLoraRadioReached(frameId, peerId, late) },
+            // Their board acked any compact frame of ours, a ✓✓ included (ADR 2026-10.x9fa's 2026-11-19 amendment): the
+            // ride-only ✓✓s held for that peer go. The same contract: the manager launches the release on its own scope.
+            onBoardAcked = { frameId, peerId -> get<MeshManager>().onLoraBoardAcked(frameId, peerId) },
             // A ✓✓'s compact copy did not land (ADR 2026-10.x9fa's 2026-11-19 amendment): the manager holds its ids to ride
             // the next DM the user types. The same contract: lock-free map and hold updates only.
             onDirectUndelivered = { frameId, peerId -> get<MeshManager>().onLoraDirectUndelivered(frameId, peerId) },

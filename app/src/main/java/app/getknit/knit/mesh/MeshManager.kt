@@ -1475,13 +1475,12 @@ class MeshManager(
     /**
      * The LoRa plane's word that our DM [frameId] reached its recipient's radio (`LoraMeshTransport.onRadioReached`,
      * wired in `di/MeshModule`); [late] when the ack came after the send ended. Runs on the outcome collector, or on the
-     * pacer for an answer held for its send (ADR 2026-11.gsqu's Stage 5c-2b amendment), so it does lock-free updates
-     * only: no database read, nothing that calls the plane back. Its one launch, onto the session scope (the default
-     * dispatcher, never inline), is the release of the ✓✓ waiting in [DmAckCoalescer]'s ride-only hold for [peerId], the
-     * recipient the acked send was addressed to: their board just took a DM, so the link is up, perhaps only briefly
-     * (ADR 2026-10.x9fa's 2026-11-19 amendment). Nothing waiting, no launch.
+     * pacer for an answer held for its send (ADR 2026-11.gsqu's Stage 5c-2b amendment), so it does exactly one lock-free
+     * thing: no database read, no launch, nothing that calls the plane back. [peerId] is the recipient the acked send was
+     * addressed to; the ride-only ✓✓ release is [onLoraBoardAcked]'s, which the plane calls for this ack too.
      * Stamped on [clock], the wall clock a row's `sentAt` uses; the first ack wins.
      */
+    @Suppress("UNUSED_PARAMETER") // peerId: the plane's contract; the release reads its own edge
     internal fun onLoraRadioReached(
         frameId: String,
         peerId: String,
@@ -1489,6 +1488,25 @@ class MeshManager(
     ) {
         val reach = LoraRadioReached(atMs = clock(), late = late)
         loraReached.update { held -> LoraRadioReached.record(held, frameId, reach) }
+    }
+
+    /**
+     * The LoRa plane's word that [peerId]'s own board acked one of our compact frames, a DM, a ✓✓ or a reaction alike
+     * (`LoraMeshTransport.onBoardAcked`, ADR 2026-10.x9fa's 2026-11-19 amendment): the link is up, perhaps only briefly, so
+     * the ✓✓ waiting in [DmAckCoalescer]'s ride-only hold for them go now, as one compact tick. Runs on the plane's
+     * coroutines under [onLoraRadioReached]'s contract, so its one launch is onto the session scope (the default
+     * dispatcher, never inline); nothing waiting, no launch.
+     *
+     * When [frameId] is one of our compact ✓✓ ticks, its ack proves the ids it carried landed — even an ack that comes
+     * after the plane gave it up and they were held again — so those leave the hold first, and are never released anew
+     * on their own tick's ack (security-reviewer: a late ack, honest or forged, would otherwise loop a release without
+     * end). What is left still goes.
+     */
+    internal fun onLoraBoardAcked(
+        frameId: String,
+        peerId: String,
+    ) {
+        loraTicks.take(frameId, clock())?.takeIf { it.authorId == peerId }?.let { dmAcks.dropRiding(peerId, it.ids) }
         if (dmAcks.ridingFor(peerId) == 0) return
         sessionScope?.launch {
             val released = dmAcks.releaseRiding(peerId)
@@ -1508,9 +1526,9 @@ class MeshManager(
         frameId: String,
         peerId: String,
     ) {
-        val tick = loraTicks.take(frameId, clock()) ?: return
+        val tick = loraTicks.undelivered(frameId, clock()) ?: return
         if (tick.authorId != peerId) return
-        dmAcks.holdRiding(peerId, tick.ids)
+        dmAcks.holdRiding(peerId, tick.ids, since = tick.at)
         metrics.onReceiptsRideHeld(tick.ids.size)
     }
 
@@ -7339,9 +7357,9 @@ class MeshManager(
         kind: DirectKind,
         loraHeld: List<String> = emptyList(),
         loraRiding: List<String> = emptyList(),
-    ) {
-        val sink = loraDirectSink(recipientId) ?: return
-        offerLoraDirect(sink, sink.budgetFor(recipientId), recipientId, frameId, sentAt, content, kind, loraHeld, loraRiding)
+    ): Boolean {
+        val sink = loraDirectSink(recipientId) ?: return false
+        return offerLoraDirect(sink, sink.budgetFor(recipientId), recipientId, frameId, sentAt, content, kind, loraHeld, loraRiding)
     }
 
     /**
@@ -7360,11 +7378,11 @@ class MeshManager(
         kind: DirectKind,
         loraHeld: List<String>,
         loraRiding: List<String> = emptyList(),
-    ) {
-        if (clock() - sentAt >= LORA_DIRECT_SEND_WINDOW_MS) return
-        val peer = peers.find(recipientId) ?: return
-        if (!LoraDoorClaim.claims(sink.boardKind, peer)) return
-        val copy = compactCopyOf(content, budget.plaintextBytes, loraHeld) ?: return
+    ): Boolean {
+        if (clock() - sentAt >= LORA_DIRECT_SEND_WINDOW_MS) return false
+        val peer = peers.find(recipientId) ?: return false
+        if (!LoraDoorClaim.claims(sink.boardKind, peer)) return false
+        val copy = compactCopyOf(content, budget.plaintextBytes, loraHeld) ?: return false
         // A peer pinned a moment ago is in the seal's index before the peer table's flow comes round.
         peer.pubKey?.let { PublicKeyBundle.decode(it) }?.let { loraSeal?.learn(recipientId, it.dhPublicKey()) }
         sink.offer(recipientId, frameId, sentAt, copy.plaintext, kind)
@@ -7380,12 +7398,19 @@ class MeshManager(
             if (held.isNotEmpty()) dmAcks.giveBack(recipientId, held)
             dmAcks.giveBackRiding(recipientId, riders)
         }
+        return true
     }
 
     /**
      * The compact copies of a sealed ✓✓ covering [ids] (Crypto 5): one-packet ticks of at most [LORA_DIRECT_TICK_ACKS]
      * ids each, the first under the signed tick's own id ([firstId]) and the rest under fresh ones, all stamped
      * [sentAt]. A receipt keeps no `lora_direct_seen` mark on the far side, so a fresh id costs nothing there.
+     *
+     * The ✓✓ waiting in [DmAckCoalescer]'s ride-only hold for [authorId] fill the room these packets have anyway, after
+     * [ids] and never into a packet of their own (ADR 2026-10.x9fa's 2026-11-19 amendment, the 2026-11-20 field trial): a
+     * tick going to them is the cheapest ride there is. They are answered already ([DmReAckLedger]), so they ride the
+     * compact ticks alone. One that rides a tick that does not land is held again through [loraTicks]; one whose chunk was
+     * never offered goes back with the age it had.
      */
     private suspend fun offerLoraTicks(
         authorId: String,
@@ -7396,11 +7421,18 @@ class MeshManager(
         // One sink and one budget for every chunk (ADR 2026-11.gsqu, Stage 1a.4): the ticks are cut to that board's count.
         val sink = loraDirectSink(authorId) ?: return
         val budget = sink.budgetFor(authorId)
-        // The read marks among [ids] (ADR 2026-11.z6jw), told or not; null toward an author who reads no mask. Each chunk
+        val perTick = budget.tickAcks.coerceAtLeast(1)
+        val base = ids.distinct()
+        if (base.isEmpty()) return
+        val room = (base.size + perTick - 1) / perTick * perTick - base.size
+        val riders = dmAcks.takeRiding(authorId, room).filterNot { it in base }
+        val all = base + riders
+        // The read marks among them (ADR 2026-11.z6jw), told or not; null toward an author who reads no mask. Each chunk
         // carries its own mask over its own list as built, as wide as with none of it read: never a packet of its own, never
         // a told read, and the same chunks and bytes as a flush with no read.
-        val read = readSync.readSet(peers.find(authorId)?.capabilities, ids)
-        ids.distinct().chunked(budget.tickAcks.coerceAtLeast(1)).forEachIndexed { i, chunk ->
+        val read = readSync.readSet(peers.find(authorId)?.capabilities, all)
+        var rode = 0
+        all.chunked(perTick).forEachIndexed { i, chunk ->
             val rm = read?.let { ReadMask.encode(chunk, it) }
             val content = receiptContent(chunk, rm)
             // Counted only for a chunk with a read in it: past four ids a mask is never 0 (its width bit), read or not.
@@ -7408,8 +7440,17 @@ class MeshManager(
             val id = if (i == 0) firstId else FrameId.new()
             // Recorded before the offer: a tick the plane holds at once is reported from inside it (onLoraDirectUndelivered).
             loraTicks.record(id, authorId, chunk, clock())
-            offerLoraDirect(sink, budget, authorId, id, sentAt, content, DirectKind.RECEIPT, loraHeld = emptyList())
+            val itsRiders = chunk.filter { it in riders }
+            if (offerLoraDirect(sink, budget, authorId, id, sentAt, content, DirectKind.RECEIPT, loraHeld = emptyList())) {
+                // A tick held at the offer (the author's board marked unreachable) is reported from inside it and its
+                // riders are held again: they did not go, so they are not counted as released (lora-reviewer).
+                if (!loraTicks.wasUndelivered(id)) rode += itsRiders.size
+            } else {
+                loraTicks.take(id, clock())
+                dmAcks.giveBackRiding(authorId, itsRiders)
+            }
         }
+        if (rode > 0) metrics.onReceiptsRideReleased(rode)
     }
 
     /**

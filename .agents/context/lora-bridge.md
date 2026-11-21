@@ -479,8 +479,11 @@ the DM off PKI, was wrong, and the 2.8 board trial that "confirmed it" passed th
   (`parked`) or when the board goes (`board lost`, with every ✓✓ in flight); or its own send ended unreachable or
   unanswered (`unreachable`). Never for their board's refusal, a missing key, a cover, slot 0, `NOT_DIRECT` or a seal
   too long. The app holds its ids to ride the next DM the user types (`DmAckCoalescer`'s ride-only hold, by the tick's
-  frame id through `LoraTickIds`), or releases them as one compact tick when that author's board next acks one of our
-  DMs (`onRadioReached`'s `peerId`). Never on the 45-s timer: against an unreachable board that would loop.
+  frame id through `LoraTickIds`), or releases them as one compact tick when that author's board next acks a compact
+  frame of ours of any kind (`LoraMeshTransport.onBoardAcked(frameId, peerId)`, wired to `MeshManager.onLoraBoardAcked`: a DM,
+  a ✓✓ or a reaction, on time in `settle` or late in `onUnawaited`; never an implicit ack nor an `AckProof.INVALID`
+  one; the same lock-free contract as `onRadioReached`; field trial 2026-11-20, where a landed ✓✓ released nothing and a
+  held one waited 70 min). Never on the 45-s timer: against an unreachable board that would loop.
 - **Outcomes** (`MeshtasticSession.routeNak` → `PacketOutcome`). `Acked(byDestination)` only when the `Routing`
   packet comes from the destination's board: the board is `Reachable` (45-min linger), the re-probe resets, parked
   offers go. An implicit ack — a relay, or our own board hearing it repeated — is counted (`loraDirectImplicitAck`)

@@ -267,7 +267,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   (`BoardOption.pickable`), so it never binds to the Meshtastic session (ADR 2026-11.gsqu's Stage 3c/3d amendment).
 
 - **When touching the chat's "reached their LoRa radio" — `LoraMeshTransport.onRadioReached` (`frameId`, `peerId`,
-  `late`), `radioReached`,
+  `late`), `destinationAcked`, `onBoardAcked`,
   `MeshManager.onLoraRadioReached`, `MeshController.loraRadioReached`, `LoraRadioReached`, `DeliveryStatus.RadioReached`
   / `ofTick`, `tickGlyph` / `tickGlyphTag`, `AckProof` / `PacketOutcome.Acked.proof` (`ack_proof_status`), or
   `LoraDirectPolicy.launch`'s eviction:** READ ADR 040's 2026-10-31 amendment and ADR 2026-10.x9fa, then "UI surfaces" in

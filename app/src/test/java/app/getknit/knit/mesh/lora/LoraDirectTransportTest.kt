@@ -114,15 +114,42 @@ class LoraDirectTransportTest {
         val boards: MutableStateFlow<Map<String, LoraBoardHolder>?>,
         val config: MutableStateFlow<LoraConfig?>,
         val pace: LoraPacePolicy,
+        edges: Edges,
+    ) {
+        val reached = edges.reached
+        val reachedPeers = edges.reachedPeers
+        val undelivered = edges.undelivered
+        val boardAcked = edges.boardAcked
+    }
+
+    /** What the plane told the app through its constructor edges, in order. */
+    private class Edges {
         /** Every `onRadioReached` the plane made: the frame id, and whether the ack came late. */
-        val reached: MutableList<Pair<String, Boolean>>,
+        val reached = mutableListOf<Pair<String, Boolean>>()
+
         /** The peer each `onRadioReached` named, in the same order. */
-        val reachedPeers: MutableList<String>,
+        val reachedPeers = mutableListOf<String>()
+
         /** Every `onDirectUndelivered` the plane made: the ✓✓'s frame id and its peer. */
-        val undelivered: MutableList<Pair<String, String>>,
-    )
+        val undelivered = mutableListOf<Pair<String, String>>()
+
+        /** Every `onBoardAcked` the plane made: the compact frame of ours, of any kind, and the peer whose own board acked it. */
+        val boardAcked = mutableListOf<Pair<String, String>>()
+    }
 
     private val wallBase = 1_700_000_000_000L
+
+    /** A compact ✓✓ in these tests is a body "ack:<id>", applied to our own unacked set as the pipeline would. */
+    private fun inboxOf(
+        delivered: MutableList<OpenedDirect>,
+        source: FakeSource,
+    ) = LoraDirectInbox { opened ->
+        delivered += opened
+        opened.plaintext
+            .decodeToString()
+            .takeIf { it.startsWith("ack:") }
+            ?.let { source.ack(it.removePrefix("ack:")) }
+    }
 
     private fun TestScope.node(
         air: FakeMeshtasticAir,
@@ -157,31 +184,23 @@ class LoraDirectTransportTest {
         val delivered = mutableListOf<OpenedDirect>()
         val config = MutableStateFlow<LoraConfig?>(LoraConfig("AA:$nodeNum", knitIndex))
         val pace = LoraPacePolicy(minGapMs = 0)
-        val reached = mutableListOf<Pair<String, Boolean>>()
-        val reachedPeers = mutableListOf<String>()
-        val undelivered = mutableListOf<Pair<String, String>>()
+        val edges = Edges()
         val transport =
             LoraMeshTransport(
                 selfId = { id },
                 link = link,
                 config = config,
                 crypto = seal,
-                // A compact ✓✓ in these tests is a body "ack:<id>", applied to our own unacked set as the pipeline would.
-                inbox = { opened ->
-                    delivered += opened
-                    opened.plaintext
-                        .decodeToString()
-                        .takeIf { it.startsWith("ack:") }
-                        ?.let { source.ack(it.removePrefix("ack:")) }
-                },
+                inbox = inboxOf(delivered, source),
                 source = source,
                 boardMap = boardFlow.filterNotNull(),
                 onRadioReached = { frameId, peerId, late ->
-                    reached += frameId to late
-                    reachedPeers += peerId
+                    edges.reached += frameId to late
+                    edges.reachedPeers += peerId
                     source.took += frameId
                 },
-                onDirectUndelivered = { frameId, peerId -> undelivered += frameId to peerId },
+                onBoardAcked = { frameId, peerId -> edges.boardAcked += frameId to peerId },
+                onDirectUndelivered = { frameId, peerId -> edges.undelivered += frameId to peerId },
                 scope = scope,
                 metrics = metrics,
                 state = state,
@@ -190,7 +209,19 @@ class LoraDirectTransportTest {
                 pace = pace,
                 log = log,
             )
-        return Node(id, transport, link, metrics, seal, source, delivered, boardFlow, config, pace, reached, reachedPeers, undelivered)
+        return Node(
+            id,
+            transport,
+            link,
+            metrics,
+            seal,
+            source,
+            delivered,
+            boardFlow,
+            config,
+            pace,
+            edges,
+        )
     }
 
     private fun TestScope.up(vararg nodes: Node) {
@@ -1972,6 +2003,77 @@ class LoraDirectTransportTest {
             assertEquals(2L, a.lora.loraDirectAcked)
             assertEquals(listOf("f2" to false), a.reached)
             assertTrue(logs.any { it == "lora direct ack proof invalid f1 -> bob" })
+        }
+
+    // --- their board acked a frame of ours, of any kind: the ride-only ✓✓'s release (ADR 2026-10.x9fa, 2026-11-19) ---
+
+    /**
+     * Field trial 2026-11-20: a ✓✓ held for bob waited 70 min because only a typed DM's ack released it, while a later ✓✓
+     * that bob's board did ack released nothing. Every kind's ack by the destination's own board says so, once each.
+     */
+    @Test
+    fun theDestinationsAckOfAnyKindTellsTheAppTheirBoardTookIt() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, _) = pair(air)
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            settle(10_000)
+            assertEquals("a ✓✓'s ack, once", listOf("r1" to "bob"), a.boardAcked)
+            assertTrue("and never the chat's middle state", a.reached.isEmpty())
+            a.dm("bob", "f1")
+            settle(10_000)
+            assertEquals("a DM's ack too, once", listOf("r1" to "bob", "f1" to "bob"), a.boardAcked)
+            assertEquals(listOf("f1" to false), a.reached)
+            a.dm("bob", "x1", kind = DirectKind.REACTION)
+            settle(10_000)
+            assertEquals("and a reaction's", listOf("r1" to "bob", "f1" to "bob", "x1" to "bob"), a.boardAcked)
+        }
+
+    @Test
+    fun aDestinationsAckAfterTheSendEndedStillTellsTheAppTheirBoardTookIt() =
+        runTest {
+            val air = FakeMeshtasticAir().apply { silent = { _, _ -> true } }
+            val (a, _) = pair(air)
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            settle(1_000)
+            val handle = a.link.sentIds.single()
+            settle(LoraDirectPolicy.deadlineMs(priced(hiPacket), LoraAirtime().slotTimeMs()))
+            assertEquals(1L, a.lora.loraDirectNoOutcome)
+            assertTrue(a.boardAcked.isEmpty())
+            a.link.emitOutcome(PacketOutcome.Acked(handle, byDestination = true))
+            settle(1_000)
+            assertEquals("the late ack of a ✓✓, by its frame id", listOf("r1" to "bob"), a.boardAcked)
+        }
+
+    @Test
+    fun anImplicitAckNeverSaysTheirBoardTookIt() =
+        runTest {
+            val air = FakeMeshtasticAir().apply { implicitAcks = true }
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)))
+            up(a) // bob's board is off; a relay repeats alice's packets
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            a.dm("bob", "f1")
+            settle(air.untilGiveUp())
+            settle(LoraDirectPolicy.deadlineMs(priced(hiPacket), LoraAirtime().slotTimeMs()))
+            assertTrue(a.lora.loraDirectImplicitAck >= 1)
+            assertTrue("a relay's repeat is nobody's board having it", a.boardAcked.isEmpty())
+        }
+
+    @Test
+    fun anAckWhoseProofOurBoardFoundForgedNeverSaysTheirBoardTookIt() =
+        runTest {
+            val air = FakeMeshtasticAir().apply { silent = { _, _ -> true } }
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u), "carol" to holder(3u)))
+            up(a)
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            a.dm("carol", "r2", kind = DirectKind.RECEIPT)
+            settle(1_000)
+            val (forged, absent) = a.link.sentIds
+            a.link.emitOutcome(PacketOutcome.Acked(forged, byDestination = true, proof = AckProof.INVALID))
+            a.link.emitOutcome(PacketOutcome.Acked(absent, byDestination = true, proof = AckProof.ABSENT))
+            settle(1_000)
+            assertEquals(2L, a.lora.loraDirectAcked)
+            assertEquals("an absent proof still counts; a forged one never", listOf("r2" to "carol"), a.boardAcked)
         }
 
     // --- PKI: firmware 2.8 encrypts every compact DM to the destination board's key (ADR 2026-10.aajj) ---

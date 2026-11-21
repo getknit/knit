@@ -1074,6 +1074,60 @@ class MeshcoreDirectLabTest {
         }
 
     /**
+     * The 2026-11-20 field case: Bob's ✓✓ for alice's first DM is lost on the way back, so its id waits in his ride-only
+     * hold. Alice's second DM lands, and the ✓✓ Bob sends for it carries the held one in the room its packet has anyway
+     * (ADR 2026-10.x9fa's 2026-11-19 amendment): both of alice's DMs show their ✓✓ over the board at once, and she
+     * re-probes neither.
+     */
+    @Test
+    @Suppress("LongMethod") // one scenario: the DM, its lost ✓✓, the second DM, the ✓✓ that carries both
+    fun aHeldTickRidesTheNextTickToItsAuthorAndBothDmsShowTheirTicks() =
+        runBlocking {
+            val air = lab.meshcoreAir(channel = true)
+            val (alice, bob) = pair(air, bobLimits = fieldHold)
+            assertTrue(alice.sendDm(bob, "first"))
+            val first = alice.ownMessageId(alice.dmWith(bob), "first")
+            lab.await(1) { holds(bob, alice, first) }
+            lab.await(1) { alice.loraLog.count { it.startsWith("lora direct acked $first -> ${bob.nodeId}") } }
+            // The row lands before its ✓✓ is held: wait for the hold itself, or the jump below stamps it after (mesh-lab B1).
+            lab.await(1) { if (first in bob.manager.dmAcks.pending(alice.nodeId)) 1 else 0 }
+
+            // Bob's board no longer reaches alice's: his ✓✓ for the first DM is lost and held to ride.
+            air.meshcoreEdit { lossy("bob", "alice") }
+            lab.clock.advance(46_000L) // past `DmAckCoalescer.HOLD_MS`, 45 s: the ✓✓ goes alone
+            bob.heal()
+            lab.await(1) { bob.loraLog.count { it.startsWith("lora direct undelivered ") && it.contains("-> ${alice.nodeId}") } }
+            lab.await(1) { bob.manager.dmAcks.ridingFor(alice.nodeId) }
+            assertEquals(listOf(first), bob.manager.dmAcks.riding(alice.nodeId))
+
+            // The way back heals; alice's second DM draws a ✓✓ that carries the held one.
+            air.meshcoreEdit { lossless("bob", "alice") }
+            assertTrue(alice.sendDm(bob, "second"))
+            val second = alice.ownMessageId(alice.dmWith(bob), "second")
+            lab.await(1) { holds(bob, alice, second) }
+            lab.await(1) { if (second in bob.manager.dmAcks.pending(alice.nodeId)) 1 else 0 }
+            // Bob's board marked alice unreachable when his ✓✓ failed; her DM lifts it, but only after it is delivered:
+            // wait for the lift, or the next ✓✓ is held at its offer (mesh-lab B2). The first such line of the scenario.
+            lab.await(1) { bob.loraLog.count { it.startsWith("lora direct heard ${alice.nodeId}") } }
+            lab.clock.advance(46_000L)
+            bob.heal()
+
+            assertEquals("the second's ✓✓ came over the board", DeliveryPlane.LoRa, lab.awaitReceipt(alice, second, bob))
+            assertEquals("and carried the first's", DeliveryPlane.LoRa, lab.awaitReceipt(alice, first, bob))
+            val bobAcks = bob.manager.dmAcks
+            // Bumped after the offer returns, which alice's receipt does not order: wait for it (mesh-lab NB).
+            lab.await(1) {
+                bob.metrics
+                    .receipts()
+                    .receiptsRideReleased
+                    .toInt()
+            }
+            assertTrue("nothing left waiting", bobAcks.riding(alice.nodeId).isEmpty())
+            assertEquals("alice re-probed neither", 0L, alice.metrics.lora().loraReprobed)
+            converge(alice, bob, atLeast = 2)
+        }
+
+    /**
      * A board that is off, and a burst of five DMs typed at it: the first goes, every attempt of its ladder, and gives up;
      * of the four typed while it was out only the newest gets an attempt of its own, which gives up too. Two flights, never
      * five, and nothing more before the re-probe (ADR 2026-10.x9fa's 2026-11-19 amendment).

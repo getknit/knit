@@ -277,7 +277,7 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   never the re-probe's wait — the oracle of the typed-DM trial, beside the `lora direct past hold` and
   `lora direct next` log lines. In the metrics block (`STATE`'s `metrics`, `LORA`'s `counters`), `receiptsRideHeld` counts ✓✓ ids whose compact tick did not land
   and now wait to ride the next DM typed to their author (`lora direct undelivered`), and `receiptsRideReleased` those
-  flushed as a compact tick when that author's board next acked one of our DMs; the ones that rode inline count in
+  sent on a compact tick: one already going to that author (in its free room), or one flushed when that author's board next acked any of our compact frames; the ones that rode inline count in
   `receiptsCoalesced`. Both are also field-log counters.
   <!-- doc-lint: allow loraDmSent — a dump key ADR 2026-10.x9fa removed, named so an old trial log can be read -->
   <!-- doc-lint: allow loraReoffered — a dump key ADR 2026-10.x9fa removed, named so an old trial log can be read -->

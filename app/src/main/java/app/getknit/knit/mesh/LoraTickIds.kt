@@ -14,11 +14,12 @@ internal class LoraTickIds(
     private val cap: Int = CAP,
     private val ttlMs: Long = LORA_DIRECT_SEND_WINDOW_MS,
 ) {
-    /** One tick's author and ids, and when it was offered. */
+    /** One tick's author and ids, when it was offered, and whether the plane has reported it undelivered. */
     class Tick(
         val authorId: String,
         val ids: List<String>,
         val at: Long,
+        var undelivered: Boolean = false,
     )
 
     private val ticks = LinkedHashMap<String, Tick>()
@@ -43,8 +44,33 @@ internal class LoraTickIds(
         frameId: String,
         now: Long,
     ): Tick? {
-        ticks.values.removeAll { now - it.at > ttlMs }
+        purge(now)
         return ticks.remove(frameId)
+    }
+
+    /**
+     * The tick [frameId] names, the first time the plane reports it undelivered, or null (never recorded, aged out, or
+     * reported already). It stays recorded: a late ack of the same tick is read back through [take] and proves its ids
+     * landed after all.
+     */
+    @Synchronized
+    fun undelivered(
+        frameId: String,
+        now: Long,
+    ): Tick? {
+        purge(now)
+        val tick = ticks[frameId] ?: return null
+        if (tick.undelivered) return null
+        tick.undelivered = true
+        return tick
+    }
+
+    /** Whether the plane has reported tick [frameId] undelivered (a tick held at its offer is reported inside it). */
+    @Synchronized
+    fun wasUndelivered(frameId: String): Boolean = ticks[frameId]?.undelivered == true
+
+    private fun purge(now: Long) {
+        ticks.values.removeAll { now - it.at > ttlMs }
     }
 
     /** How many ticks are recorded (the JVM tests). */

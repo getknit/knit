@@ -589,14 +589,23 @@ it gets the next attempt; the older ones follow its ack, or wait for the next ty
 - **The app's half** (`MeshManager`, `DmAckCoalescer`, ADR 054 decision 4 amended): such a ✓✓'s ids wait in a ride-only
   hold modelled on `AckSync`'s ride hold for room ticks (ADR 2026-09.aa27), never flushed on the 45-s timer, ride the next
   DM the user types inline (`inlineAcksFor`, ahead of the timed hold's ids), and what did not fit is released as one
-  compact tick, with whatever the timed hold has for that author, on their board's next ack of one of our DMs
-  (`onLoraRadioReached`, its one launch onto the session scope). `mesh/LoraTickIds` maps each compact tick's frame
+  compact tick, with whatever the timed hold has for that author, on their board's next ack of any of our compact
+  frames, a ✓✓ or a reaction as much as a DM (`LoraMeshTransport.onBoardAcked` → `MeshManager.onLoraBoardAcked`, its
+  one launch onto the session scope; an implicit ack or an `INVALID` ack proof never). Before that, every compact ✓✓
+  going to that author carries the held ones in the room its packets have anyway (`offerLoraTicks`: after the ids being
+  flushed, never into a packet of their own), and a chunk that is never offered gives its riders back. `mesh/LoraTickIds` maps each compact tick's frame
   id to its ids, recorded before the offer since a tick held at the offer is reported inside it. A ride-only id the
   compact copy sheds goes back to the ride-only hold, never the timed one, so no flush re-seals its signed receipt;
   `DmReAckLedger` already records them answered, so the release seals none either. Bounded per author at 12 and at
   500 in all (past that the largest author's oldest go, so one author minting ids cannot grow it or crowd out the
   rest), and aged out inside the compact send window; a given-back id keeps the age it had. Counters: `receiptsRideHeld`, `receiptsRideReleased` (the ones that ride inline count
   in `receiptsCoalesced`).
+
+**The two later release triggers (2026-11-20 field trial).** The P9's ✓✓ for the P7's 12:37 DM did not land and was
+held to ride; at 12:42 the P9's next ✓✓ to the P7 landed, its board acked in 4 s, but the held one released only on an
+ack of a typed DM, so the P7 showed that DM without its ✓✓ until the P9's 13:49 DM carried it, and re-flooded the DM
+twice meanwhile. Riding a tick already going costs no packet; a release on a ✓✓'s ack costs one compact tick, as a typed
+DM's ack already did.
 
 **What is superseded.** In this ADR's gates, "the peer not marked unreachable" for a typed DM, and "dropped to the
 source on a failure" for the newest DM typed during the failed send. In the 2026-11-04 amendment, "A ✓✓ is still never

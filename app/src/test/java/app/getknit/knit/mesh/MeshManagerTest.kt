@@ -2055,11 +2055,12 @@ class MeshManagerTest {
         }
 
     /**
-     * Their board just acked one of our DMs: the link is up, perhaps only briefly, so what waited for a ride goes now, as
-     * one compact tick and no second signed receipt (the ledger has them answered). Nothing waiting: nothing goes.
+     * Their board just acked one of our compact frames: the link is up, perhaps only briefly, so what waited for a ride
+     * goes now, as one compact tick and no second signed receipt (the ledger has them answered). Nothing waiting: nothing
+     * goes.
      */
     @Test
-    fun aRadioAckFromTheAuthorReleasesTheRideOnlyAcksAsOneCompactTick() =
+    fun aBoardAckFromTheAuthorReleasesTheRideOnlyAcksAsOneCompactTick() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
             val acks = rig.manager.dmAcks
@@ -2074,11 +2075,11 @@ class MeshManagerTest {
                 val tick = rig.flushedTick(held, rig.loraOffers) { advanceUntilIdle() }
                 val custodied = rig.metrics.receipts().receiptsCustodied
 
-                rig.manager.onLoraRadioReached("our-dm", rig.bob.nodeId, late = false)
+                rig.manager.onLoraBoardAcked("our-dm", rig.bob.nodeId)
                 assertEquals("nothing waiting: nothing released", 0L, rig.metrics.receipts().receiptsRideReleased)
 
                 rig.manager.onLoraDirectUndelivered(tick.frameId, rig.bob.nodeId)
-                rig.manager.onLoraRadioReached("our-dm", rig.bob.nodeId, late = false)
+                rig.manager.onLoraBoardAcked("our-dm", rig.bob.nodeId)
                 // The release's last write: its offer comes before it on the same coroutine.
                 rig.await(2) { released(rig) }
 
@@ -2089,6 +2090,188 @@ class MeshManagerTest {
                 assertEquals(2L, rig.metrics.receipts().receiptsRideReleased)
                 assertTrue(acks.riding(rig.bob.nodeId).isEmpty())
                 assertEquals("no second signed receipt", custodied, rig.metrics.receipts().receiptsCustodied)
+            } finally {
+                rig.manager.stop()
+            }
+        }
+
+    /**
+     * The 2026-11-20 field case: the first ✓✓ to an author did not land, and the next one going to them does carry it, in
+     * the room its packet has anyway — one RECEIPT offer, never a packet of its own, and no second signed receipt. A tick
+     * that then does not land holds both again.
+     */
+    @Test
+    fun aHeldAckRidesTheNextTickToItsAuthorInTheRoomItHas() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val acks = rig.manager.dmAcks
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val first = FrameId.new()
+            val lost = rig.flushedTick(listOf(first), rig.loraOffers) { advanceUntilIdle() }
+            rig.manager.onLoraDirectUndelivered(lost.frameId, rig.bob.nodeId)
+            assertEquals(listOf(first), acks.riding(rig.bob.nodeId))
+            val custodied = rig.metrics.receipts().receiptsCustodied
+
+            val second = FrameId.new()
+            acks.hold(rig.bob.nodeId, second)
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            acks.flushDue()
+            advanceUntilIdle()
+
+            val ticks = rig.loraOffers.filter { it.kind == DirectKind.RECEIPT }
+            assertEquals("one more tick, no packet of the rider's own", 2, ticks.size)
+            assertEquals("the held one rides after the flushed one", listOf(second, first), ackedBy(ticks.last()))
+            assertTrue(acks.riding(rig.bob.nodeId).isEmpty())
+            assertEquals(1L, rig.metrics.receipts().receiptsRideReleased)
+            assertEquals("a signed receipt for the new id alone", custodied + 1, rig.metrics.receipts().receiptsCustodied)
+
+            rig.manager.onLoraDirectUndelivered(ticks.last().frameId, rig.bob.nodeId)
+            assertEquals("that tick lost too: both wait again", setOf(first, second), acks.riding(rig.bob.nodeId).toSet())
+        }
+
+    /**
+     * The author's board is marked unreachable: the plane holds the tick at its offer and reports it undelivered from
+     * inside the offer, so its riders are held again — and not counted as released, since nothing aired (lora-reviewer).
+     */
+    @Test
+    fun ridersOfATickHeldAtItsOfferAreHeldAgainAndNotCountedReleased() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val acks = rig.manager.dmAcks
+            val held = CopyOnWriteArrayList<String>()
+            // The plane holding every RECEIPT at its offer, as `LoraMeshTransport.clearOfMark` does for an unreachable board.
+            val sink =
+                object : LoraDirectSink {
+                    override fun offer(
+                        recipientId: String,
+                        frameId: String,
+                        sentAtMs: Long,
+                        plaintext: ByteArray,
+                        kind: DirectKind,
+                    ) {
+                        if (kind == DirectKind.RECEIPT) {
+                            held += frameId
+                            rig.manager.onLoraDirectUndelivered(frameId, recipientId)
+                        }
+                    }
+                }
+            val seal = LoraDirectSeal(ownDhPrivate = { ByteArray(32) { 1 } }, clock = { rig.clockNow })
+            rig.manager.bindLoraDirect(sink = { sink }, seal = seal)
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val riders = List(2) { FrameId.new() }
+            acks.holdRiding(rig.bob.nodeId, riders)
+
+            val fresh = FrameId.new()
+            acks.hold(rig.bob.nodeId, fresh)
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            acks.flushDue()
+            advanceUntilIdle()
+
+            assertEquals("one tick, held at its offer", 1, held.size)
+            assertEquals("all held again", (riders + fresh).toSet(), acks.riding(rig.bob.nodeId).toSet())
+            assertEquals("nothing aired: nothing released", 0L, rig.metrics.receipts().receiptsRideReleased)
+        }
+
+    /** Riders fill only the free places of the packets going anyway: past them they keep waiting. */
+    @Test
+    fun ridersPastTheTicksRoomKeepWaiting() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val acks = rig.manager.dmAcks
+            val twoPerTick = LoraDirectBudget(168, 2)
+            val sink = rig.bindBudgetedLora(twoPerTick, twoPerTick, twoPerTick, twoPerTick)
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val riders = List(3) { FrameId.new() }
+            acks.holdRiding(rig.bob.nodeId, riders)
+
+            val fresh = FrameId.new()
+            acks.hold(rig.bob.nodeId, fresh)
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            acks.flushDue()
+            advanceUntilIdle()
+
+            val tick = sink.offers.single { it.kind == DirectKind.RECEIPT }
+            assertEquals("one place left beside the flushed id", listOf(fresh, riders[0]), ackedBy(tick))
+            assertEquals(riders.drop(1), acks.riding(rig.bob.nodeId))
+        }
+
+    /** A tick that is never offered (the author's profile no longer claims the compact door) gives its riders back. */
+    @Test
+    fun ridersOfATickNeverOfferedGoBackToTheRide() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val acks = rig.manager.dmAcks
+            rig.bindLora()
+            rig.pinWithCaps(rig.bob, RatchetCrypto.generateKeyPair().pub, Protocol.LOCAL_CAPABILITIES and Protocol.CAP_LORA_DIRECT.inv())
+            rig.answered(rig.bob)
+            val riders = List(2) { FrameId.new() }
+            acks.holdRiding(rig.bob.nodeId, riders)
+
+            acks.hold(rig.bob.nodeId, FrameId.new())
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            acks.flushDue()
+            advanceUntilIdle()
+
+            assertTrue("nothing offered", rig.loraOffers.none { it.kind == DirectKind.RECEIPT })
+            assertEquals(riders, acks.riding(rig.bob.nodeId))
+            assertEquals(0L, rig.metrics.receipts().receiptsRideReleased)
+        }
+
+    /**
+     * security-reviewer's loop: a tick the plane gave up on holds its ids again, and a late ack of that same tick — honest
+     * or forged — proves they landed, so they leave the hold rather than being released as a new tick, without end.
+     */
+    @Test
+    fun aLateAckOfAGivenUpTickDropsItsIdsAndReleasesNothing() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val acks = rig.manager.dmAcks
+            // Not started: with no session scope a release could only be the regression's, and it cannot run, so the
+            // drop must be the synchronous one this test is about (unit-test-reviewer).
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val tick = rig.flushedTick(listOf(FrameId.new()), rig.loraOffers) { advanceUntilIdle() }
+            rig.manager.onLoraDirectUndelivered(tick.frameId, rig.bob.nodeId)
+            assertEquals(1, acks.ridingFor(rig.bob.nodeId))
+
+            rig.manager.onLoraBoardAcked(tick.frameId, rig.bob.nodeId) // the late ack of that very tick
+            assertEquals("its ids landed: out of the hold", 0, acks.ridingFor(rig.bob.nodeId))
+            rig.manager.onLoraDirectUndelivered(tick.frameId, rig.bob.nodeId) // reported again: holds nothing
+            assertEquals(0, acks.ridingFor(rig.bob.nodeId))
+            assertEquals("nothing released", 0L, rig.metrics.receipts().receiptsRideReleased)
+            assertEquals("no second tick", 1, rig.loraOffers.count { it.kind == DirectKind.RECEIPT })
+        }
+
+    /** A released tick that is lost too, then acked late, ends there: no third tick for the same ids. */
+    @Test
+    fun aReleasedTickLostThenAckedLateReleasesNoThird() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val acks = rig.manager.dmAcks
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            rig.manager.start()
+            try {
+                val first = rig.flushedTick(listOf(FrameId.new()), rig.loraOffers) { advanceUntilIdle() }
+                rig.manager.onLoraDirectUndelivered(first.frameId, rig.bob.nodeId)
+                rig.manager.onLoraBoardAcked("our-dm", rig.bob.nodeId) // a DM's ack: the held one is released
+                rig.await(1) { released(rig) }
+                val second = rig.loraOffers.last { it.kind == DirectKind.RECEIPT }
+                rig.manager.onLoraDirectUndelivered(second.frameId, rig.bob.nodeId)
+                assertEquals("lost again: held again", 1, acks.ridingFor(rig.bob.nodeId))
+
+                rig.manager.onLoraBoardAcked(second.frameId, rig.bob.nodeId) // its late ack
+                assertEquals(0, acks.ridingFor(rig.bob.nodeId))
+                assertEquals("two ticks, never a third", 2, rig.loraOffers.count { it.kind == DirectKind.RECEIPT })
+                assertEquals(1L, rig.metrics.receipts().receiptsRideReleased)
             } finally {
                 rig.manager.stop()
             }

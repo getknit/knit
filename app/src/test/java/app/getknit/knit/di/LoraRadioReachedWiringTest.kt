@@ -72,4 +72,17 @@ class LoraRadioReachedWiringTest {
 
         verify(exactly = 1) { manager.onLoraDirectUndelivered("tick-1", "bob") }
     }
+
+    /** Their board's ack of any compact frame, a ✓✓ included, releases the ride-only ✓✓s (field trial 2026-11-20). */
+    @Test
+    fun theTransportsBoardAckedEdgeReachesTheManager() {
+        val transport = app.koin.get<LoraMeshTransport>(loraPlane(BoardKind.MESHTASTIC))
+        val field = LoraMeshTransport::class.java.getDeclaredField("onBoardAcked").apply { isAccessible = true }
+
+        @Suppress("UNCHECKED_CAST")
+        val edge = field.get(transport) as (String, String) -> Unit
+        edge("tick-1", "bob")
+
+        verify(exactly = 1) { manager.onLoraBoardAcked("tick-1", "bob") }
+    }
 }

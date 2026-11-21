@@ -70,11 +70,12 @@ class DmAckCoalescer(
     private val riding = ConcurrentHashMap<String, Riders>()
 
     /**
-     * When each ride-only id a [takeRiding] lent out first went ride-only, so a [giveBackRiding] keeps its age rather than
-     * restarting it: a DM that keeps falling short of v2 must not hold an id past [rideTtlMs]. Bounded at [ridingCap] and
-     * aged out like the hold; an id that rode is simply never given back.
+     * When each ride-only id that left the hold (taken to ride a DM, or released on a tick) first went ride-only, so one
+     * that comes back — given back unridden, or reported undelivered again — keeps its age rather than restarting it: no
+     * ride that keeps failing, nor a late or forged ack that keeps releasing (security-reviewer), holds an id past
+     * [rideTtlMs]. Bounded at [ridingCap] and aged out like the hold; an id that landed is simply never held again.
      */
-    private val lent = ConcurrentHashMap<String, Long>()
+    private val firstHeld = ConcurrentHashMap<String, Long>()
 
     /**
      * Records that we owe [authorId] a receipt for [frameId]. A repeated id (a re-delivery inside the hold) is
@@ -207,9 +208,12 @@ class DmAckCoalescer(
     fun holdRiding(
         authorId: String,
         ids: Collection<String>,
+        since: Long? = null,
     ) {
-        val at = now()
-        holdRidingAt(authorId, ids.map { it to at })
+        // An id with no first age kept starts from [since] (the tick's own offer), never from now: a memo swept or evicted
+        // meanwhile must not buy it another whole window (security-reviewer).
+        val at = since ?: now()
+        holdRidingAt(authorId, ids.map { it to (firstHeld.remove(it) ?: at) })
     }
 
     private fun holdRidingAt(
@@ -279,9 +283,34 @@ class DmAckCoalescer(
                 if (riders.ids.isEmpty()) riding.remove(authorId, riders)
                 oldest
             }
-        taken.forEach { (id, at) -> lent[id] = at }
-        while (lent.size > ridingCap) lent.entries.minByOrNull { it.value }?.let { lent.remove(it.key, it.value) } ?: break
+        remember(taken)
         return taken.map { it.first }
+    }
+
+    /** Keeps [left]'s first-held ages for [firstHeld], bounded at [ridingCap], oldest dropped. */
+    private fun remember(left: List<Pair<String, Long>>) {
+        left.forEach { (id, at) -> firstHeld[id] = at }
+        while (firstHeld.size > ridingCap) {
+            firstHeld.entries.minByOrNull { it.value }?.let { firstHeld.remove(it.key, it.value) } ?: break
+        }
+    }
+
+    /**
+     * [ids] owed to [authorId] are known to have landed — the destination's board acked the compact tick that carried them,
+     * on time or late: they leave the ride-only hold for good, and are never released again on their own tick's ack
+     * (security-reviewer: a late ack of a released tick would otherwise release its own ids anew, without end).
+     */
+    fun dropRiding(
+        authorId: String,
+        ids: Collection<String>,
+    ) {
+        if (ids.isEmpty()) return
+        ids.forEach { firstHeld.remove(it) }
+        val riders = riding[authorId] ?: return
+        synchronized(riders) {
+            riders.ids.keys.removeAll(ids.toSet())
+            if (riders.ids.isEmpty()) riding.remove(authorId, riders)
+        }
     }
 
     /** Restores ride-only ids a [takeRiding] could not carry; they wait for the next ride, keeping the age they had. */
@@ -290,7 +319,7 @@ class DmAckCoalescer(
         ids: List<String>,
     ) {
         val at = now()
-        holdRidingAt(authorId, ids.map { it to (lent.remove(it) ?: at) })
+        holdRidingAt(authorId, ids.map { it to (firstHeld.remove(it) ?: at) })
     }
 
     /**
@@ -300,12 +329,14 @@ class DmAckCoalescer(
      */
     suspend fun releaseRiding(authorId: String): Int {
         val riders = riding.remove(authorId) ?: return 0
-        val ids =
+        val held =
             synchronized(riders) {
                 agedOut(riders)
-                riders.ids.keys.toList()
+                riders.ids.entries.map { (id, at) -> id to at }
             }
-        if (ids.isEmpty()) return 0
+        if (held.isEmpty()) return 0
+        remember(held)
+        val ids = held.map { it.first }
         val timed = pending.remove(authorId)?.let { batch -> synchronized(batch) { batch.ids.keys.toList() } }.orEmpty()
         flush(authorId, (ids + timed).distinct())
         return ids.size
@@ -325,7 +356,7 @@ class DmAckCoalescer(
 
     private fun sweepRiding() {
         val cutoff = now() - rideTtlMs
-        lent.entries.removeAll { it.value < cutoff }
+        firstHeld.entries.removeAll { it.value < cutoff }
         riding.entries.removeAll { (_, riders) ->
             synchronized(riders) {
                 agedOut(riders)

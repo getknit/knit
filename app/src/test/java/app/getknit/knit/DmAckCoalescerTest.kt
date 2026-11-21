@@ -275,6 +275,37 @@ class DmAckCoalescerTest {
         }
 
     @Test
+    fun aReleasedRiderHeldAgainKeepsItsFirstAgeAndADroppedOneNever() =
+        runTest {
+            val c = DmAckCoalescer(now = { testScheduler.currentTime }, flush = { a, ids -> flushes += a to ids }, rideTtlMs = 10_000)
+            c.holdRiding("alice", listOf("m1", "m2"))
+            advanceTimeBy(8_000)
+            assertEquals(2, c.releaseRiding("alice"))
+            c.holdRiding("alice", listOf("m1", "m2")) // the released tick was lost: held again
+            c.dropRiding("alice", listOf("m2")) // m2's tick was acked late: it landed
+            assertEquals(listOf("m1"), c.riding("alice"))
+            advanceTimeBy(2_001)
+            assertEquals("aged from when it was first held, not re-held", 0, c.ridingFor("alice"))
+            c.holdRiding("alice", listOf("m2"))
+            advanceTimeBy(9_999)
+            assertEquals("a dropped id held anew starts fresh", 1, c.ridingFor("alice"))
+            advanceTimeBy(2)
+            assertEquals("and ages out a whole window after that", 0, c.ridingFor("alice"))
+        }
+
+    @Test
+    fun anIdWithNoKeptAgeStartsFromSinceNotNow() =
+        runTest {
+            val c = DmAckCoalescer(now = { testScheduler.currentTime }, flush = { a, ids -> flushes += a to ids }, rideTtlMs = 10_000)
+            advanceTimeBy(5_000)
+            c.holdRiding("alice", listOf("m1"), since = 0) // reported undelivered at 5 s, its tick offered at 0
+            advanceTimeBy(4_999)
+            assertEquals("aged from the tick's offer", 1, c.ridingFor("alice"))
+            advanceTimeBy(2)
+            assertEquals("gone one window after the offer, not after the report", 0, c.ridingFor("alice"))
+        }
+
+    @Test
     fun anAckOlderThanTheTtlIsForgottenNotTicked() =
         runTest {
             val c = DmAckCoalescer(now = { testScheduler.currentTime }, flush = { a, ids -> flushes += a to ids }, ttlMs = 10_000)

@@ -126,10 +126,24 @@ internal class LoraMeshTransport(
      * send — or, for an answer that outran its send's registration and was held for it, on the pacer as it registers the
      * send (ADR 2026-11.gsqu's Stage 5c-2b amendment): it must return at once, take no lock that waits and never call back
      * into this plane — a stall there drops the answers queued behind it, and a re-entry would reorder the parked offers.
-     * Anything slower goes onto a scope of the receiver's own (`MeshManager` launches the ride-only ✓✓'s release there,
-     * ADR 2026-10.x9fa's 2026-11-19 amendment), never inline.
+     * Anything slower goes onto a scope of the receiver's own, never inline.
      */
     private val onRadioReached: (frameId: String, peerId: String, late: Boolean) -> Unit = { _, _, _ -> },
+    /**
+     * The destination's own board, `peerId`'s, acked our compact frame `frameId` (the id it was offered under) of **any**
+     * kind — a DM, a ✓✓ or a reaction — on time or late: that board is reachable now, so a ✓✓ the app holds for it can
+     * go (ADR 2026-10.x9fa's 2026-11-19 amendment; field trial 2026-11-20, where a landed ✓✓ released nothing and a held
+     * one waited 70 min).
+     * Under [onRadioReached]'s proof rule: never for an ack our board found forged ([AckProof.INVALID]), never for an
+     * implicit ack. It says their radio took a packet, never their phone. The frame id lets the app tell a late ack of a
+     * ✓✓ tick it already put back in the hold (whose own ids that ack proves landed, so they are dropped, not re-sent)
+     * from any other: without it, a late ack of a released tick would release the same ids again, forever.
+     *
+     * Same contract as [onRadioReached]: called on the plane's coroutines, it must return at once, take no lock that
+     * waits and never call back into this plane. Anything slower goes onto a scope of the receiver's own (`MeshManager`
+     * launches the ride-only ✓✓'s release there).
+     */
+    private val onBoardAcked: (frameId: String, peerId: String) -> Unit = { _, _ -> },
     /**
      * The compact copy of one of our ✓✓s ([DirectKind.RECEIPT], under the frame id it was offered with) to `peerId` did not
      * land, and riding a later DM could still carry it (ADR 2026-10.x9fa's 2026-11-19 amendment): held at the offer by an
@@ -214,6 +228,7 @@ internal class LoraMeshTransport(
         onPublicPost: suspend (MeshPost) -> Unit = {},
         onBoardBound: suspend (BoardBinding) -> Unit = {},
         onRadioReached: (frameId: String, peerId: String, late: Boolean) -> Unit = { _, _, _ -> },
+        onBoardAcked: (frameId: String, peerId: String) -> Unit = { _, _ -> },
         onDirectUndelivered: (frameId: String, peerId: String) -> Unit = { _, _ -> },
         scope: CoroutineScope,
         metrics: MeshMetrics,
@@ -234,6 +249,7 @@ internal class LoraMeshTransport(
         source = source,
         boardMap = boardMap,
         onRadioReached = onRadioReached,
+        onBoardAcked = onBoardAcked,
         onDirectUndelivered = onDirectUndelivered,
         scope = scope,
         metrics = metrics,
@@ -1663,10 +1679,8 @@ internal class LoraMeshTransport(
                 val send = direct.ended(outcome.id) ?: return
                 direct.onAcked(send.peerId, now)
                 hooks.onDelivered(send.addr)
-                if (send.kind == DirectKind.MESSAGE) {
-                    reprobe.onAcked(send.peerId, now, fresh = !send.resend)
-                    radioReached(send, outcome, late = true)
-                }
+                if (send.kind == DirectKind.MESSAGE) reprobe.onAcked(send.peerId, now, fresh = !send.resend)
+                destinationAcked(send, outcome, late = true)
                 stateWake.trySend(Unit)
                 publishStatus()
                 log("lora direct late ack ${send.frameId} -> ${send.peerId}")
@@ -1724,12 +1738,15 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * Tells the chat our DM [send] reached its recipient's radio ([onRadioReached]), unless our board found the ack's
-     * proof forged: the ack's `from` is a cleartext header anyone with the channel key can write, and a claim shown to
-     * the user needs more than that. An absent proof (an older firmware, ham mode) still counts — the residual trust ADR
-     * 040's 2026-10-31 amendment records. A resend or a re-probe carries the same frame id, so its ack counts the same.
+     * Tells the app the destination's own board acked [send] — the chat that our DM reached its recipient's radio
+     * ([onRadioReached], a [DirectKind.MESSAGE] only), and the ✓✓ hold that their board took a frame of any kind
+     * ([onBoardAcked]) — unless our board found the ack's proof forged: the ack's `from` is a cleartext header anyone
+     * with the channel key can write, and a claim shown to the user, or a send it triggers, needs more than that. An
+     * absent proof (an older firmware, ham mode) still counts — the residual trust ADR 040's 2026-10-31 amendment
+     * records. A resend or a re-probe carries the same frame id, so its ack counts the same. Callers pass only a
+     * destination's ack, never an implicit one.
      */
-    private fun radioReached(
+    private fun destinationAcked(
         send: DirectSend,
         ack: PacketOutcome.Acked,
         late: Boolean,
@@ -1738,7 +1755,10 @@ internal class LoraMeshTransport(
             log("lora direct ack proof invalid ${send.frameId} -> ${send.peerId}")
             return
         }
-        runCatching { onRadioReached(send.frameId, send.peerId, late) }.onFailure { log("lora direct radio reached failed: $it") }
+        if (send.kind == DirectKind.MESSAGE) {
+            runCatching { onRadioReached(send.frameId, send.peerId, late) }.onFailure { log("lora direct radio reached failed: $it") }
+        }
+        runCatching { onBoardAcked(send.frameId, send.peerId) }.onFailure { log("lora direct board acked failed: $it") }
     }
 
     /**
@@ -1771,10 +1791,8 @@ internal class LoraMeshTransport(
                 direct.onAcked(peer, now)
                 // Their board took a PKI packet under the key ours holds: should ours lose it again, it may be taught once more.
                 hooks.onDelivered(send.addr)
-                if (send.kind == DirectKind.MESSAGE) {
-                    reprobe.onAcked(peer, now, fresh = !send.resend)
-                    radioReached(send, outcome, late = false)
-                }
+                if (send.kind == DirectKind.MESSAGE) reprobe.onAcked(peer, now, fresh = !send.resend)
+                destinationAcked(send, outcome, late = false)
                 log("lora direct acked ${send.frameId} -> $peer")
                 direct.unpark(peer).forEach { offer(peer, it.frameId, it.sentAtMs, it.plaintext, it.kind) }
                 if (send.flushAfter.isNotEmpty()) scope.launch { flush(peer, send.flushAfter) }
