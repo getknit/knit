@@ -18,6 +18,23 @@ document:
 
 # Knit changelog
 
+## Unreleased
+
+### Fixed
+
+- The waveform on a voice note under about four seconds long no longer has gaps every few bars. Voice notes
+  already in your chats keep the waveform they were first drawn with.
+- On a phone whose security chip refuses to make keys, Knit stopped at "Waiting for secure storage" the first
+  time you opened it, and Try again never got past it. Knit now uses the phone's regular secure storage there
+  and opens as usual (#351).
+- On some phones, such as the Galaxy A51 and the Redmi Note 13 Pro+, every video you picked failed with
+  "Couldn't read that video". Those videos now send, at the same small size as on other phones (#353).
+- The lock beside a chat's name, which you tap to see that the chat is encrypted, is now easier to hit on a
+  narrow phone or with a larger display size. A long name now gets cut short a little sooner to make room
+  (#354).
+- On some phones, Knit crashed while downloading the speech model for transcripts and call captions. The
+  download now finishes without Knit closing.
+
 ## [2.12.0](https://github.com/getknit/knit/releases/tag/v2.12.0) — 2026-11-18T23:31:49Z
 
 > Encrypted links between phones, Simplified Chinese, and a clearer view of who's nearby
