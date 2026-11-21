@@ -80,6 +80,10 @@ reasoning.
   question (`androidTest/…/transfer/`, Device Farm only: CI's emulators have no Wi-Fi Direct). When a transfer
   between two phones fails at the join, read `…debug.XFER`'s `channels` on both and `group channel=…` in the host's
   `KnitTransfer` log before anything else.
+- **Below API 33 a sender off screen cannot host.** The platform gates Wi-Fi Direct on the foreground-only location
+  AppOp there and answers only `ERROR`; `AndroidDirectWifi.backgrounded` reads that as `TransferRefusal.Background`
+  ("Keep Knit on screen") on API 29–32. Android 10 included: a Galaxy A51 on 29 refused every group off screen on
+  Device Farm (2026-11-21), and `DirectGroupBackgroundProbeTest` pins the refusal there.
 - **Wi-Fi Aware must be paused explicitly.** On Android 12+ our own P2P does *not* evict our own NAN session
   — same-app interface requests have equal priority — so `createGroup` returns `BUSY` while Aware is
   attached, and `WifiAwareManager.isAvailable()` stays true the whole time. There is no availability edge to

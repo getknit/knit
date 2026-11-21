@@ -474,14 +474,16 @@ class AndroidDirectWifi(
         }
 
     /**
-     * Whether a refused call is most likely the API 30-32 background gap rather than a device that cannot do
+     * Whether a refused call is most likely the API 29-32 background gap rather than a device that cannot do
      * Wi-Fi Direct at all. Below `NEARBY_WIFI_DEVICES` (33+) the framework gates P2P on the *location* AppOp,
      * which a foreground-only grant does not satisfy off-screen — and the sender hosts when an ACCEPT lands,
-     * which may be minutes after the user left. Telling them to open Knit is the only fix this cut carries; a
-     * foreground service of our own declaring the `location` type would be the other one.
+     * which may be minutes after the user left. Android 10 gates it too: a Galaxy A51 on 29 refused every group with
+     * "UID … has no location permission" while nothing of Knit's was on screen, and formed every one with a screen up
+     * (Device Farm, 2026-11-21). Telling them to open Knit is the only fix this cut carries; a foreground service of
+     * our own declaring the `location` type would be the other one.
      */
     private fun backgrounded(): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return false
         val state = ActivityManager.RunningAppProcessInfo()
         ActivityManager.getMyMemoryState(state)
         return state.importance > ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
