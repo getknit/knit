@@ -160,6 +160,25 @@ class ContactImporterTest {
         }
 
     @Test
+    fun aHintWhoseRowWouldNameAnotherHostIsNeverListed() =
+        runTest {
+            // ADR 2026-11.ut8g: the row would read the house relay while its Add dials evil.example. A hint this build
+            // may not dial but some build could (`ws://`) is a different case: it stays, and its Add says why. A card
+            // holds three hints (ContactCard.MAX_SPOOLS), so the spoof forms are split across two cards.
+            val spoofed =
+                listOf(
+                    "wss://public-1.spool.getknit.app@evil.example/spool/v1",
+                    "wss://evil.example\\@public-1.spool.getknit.app/spool/v1",
+                    "wss://p\u0443blic-1.spool.getknit.app/spool/v1",
+                )
+            val none = importer().preview(bob.card(spools = spoofed)) as ContactImporter.Preview.Ready
+            assertEquals(emptyList<String>(), none.unknownRelays)
+            val mixed = bob.card(spools = listOf(spoofed[1], "ws://lab.example/spool/v1", "wss://theirs.example/spool/v1"))
+            val ready = importer().preview(mixed) as ContactImporter.Preview.Ready
+            assertEquals(listOf("ws://lab.example/spool/v1", "wss://theirs.example/spool/v1"), ready.unknownRelays)
+        }
+
+    @Test
     fun aCardNamingTheRenamedRelaysFormerHostAsksForNothingHeld() =
         runTest {
             // ADR 2026-10.qpja: an old card still names lax, which this phone holds as public-1.

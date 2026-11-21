@@ -90,12 +90,15 @@ class ContactImporter(
             // in a build where the plane is dark, where there is no screen to add one to.
             // Folded to the stored form first, so a card naming a renamed relay's former host asks for nothing held. A
             // public relay is not one to add while this phone keeps one in its list: a home on a card is reached
-            // through the directory (ADR 2026-10.8kfx).
+            // through the directory (ADR 2026-10.8kfx). A hint of a shape no build dials is never listed: its row would
+            // be titled with a host other than the one the socket reaches (ADR 2026-11.ut8g). One this build may not dial
+            // (`ws://` in a release) stays listed, and its Add says why.
             unknownRelays =
                 if (internetPlane) {
                     val held = settings.spoolUrls.first()
                     val public = ScopeSpools.publicOn(held)
                     card.spools
+                        .filter(SpoolUrl::isWellFormed)
                         .map(SpoolUrl::canonical)
                         .filterNot { public && PublicSpools.isDirectoryUrl(it) }
                         .distinct() - held

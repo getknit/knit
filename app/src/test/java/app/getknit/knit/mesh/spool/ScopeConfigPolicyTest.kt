@@ -57,9 +57,32 @@ class ScopeConfigPolicyTest {
     }
 
     @Test
+    fun aConfigDropsAUrlWhoseTicketHostIsNotTheHostItDials() {
+        // ADR 2026-11.ut8g: a member's config is dialled with no sheet, and each of these reaches evil.example while
+        // SpoolUrl read the house relay off two of them, so the house relay's ticket would have gone there.
+        val config =
+            valid(
+                payload(
+                    spools =
+                        listOf(
+                            "wss://public-1.spool.getknit.app@evil.example/spool/v1",
+                            "wss://evil.example\\@public-1.spool.getknit.app/spool/v1",
+                            "wss://evil.example#@public-1.spool.getknit.app/spool/v1",
+                            "wss://b.example/spool/v1",
+                        ),
+                ),
+            )
+        assertEquals(listOf("wss://b.example/spool/v1"), config.spools)
+    }
+
+    @Test
     fun aConfigWithNoDialableUrlTooManyUrlsOrANonPositiveNumberIsRefusedWhole() {
         assertEquals(ScopeConfigPolicy.Refusal.MALFORMED, refusal(payload(spools = listOf("ws://cleartext.example/spool/v1"))))
         assertEquals(ScopeConfigPolicy.Refusal.MALFORMED, refusal(payload(spools = emptyList())))
+        assertEquals(
+            ScopeConfigPolicy.Refusal.MALFORMED,
+            refusal(payload(spools = listOf("wss://evil.example\\@public-1.spool.getknit.app/spool/v1"))),
+        )
         val nine = (1..ScopeConfigPolicy.MAX_SPOOLS + 1).map { "wss://r$it.example/spool/v1" }
         assertEquals(ScopeConfigPolicy.Refusal.MALFORMED, refusal(payload(spools = nine)))
         assertEquals(8, valid(payload(spools = nine.take(ScopeConfigPolicy.MAX_SPOOLS))).spools.size)

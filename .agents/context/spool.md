@@ -32,6 +32,11 @@ lines.
   share — `acceptSpoolConsent()` stays the only consent write (ADR 063), a relay is matched by
   `SpoolUrl.redact`, and a different room secret at the same relay joins a second room beside the first,
   never a rotation (spec C-7.4-18): only the spool's HELLO says a room is gone.
+  **Before touching how a spool URL is checked or read — `SpoolUrl.isAcceptable` / `isWellFormed`, `SpoolUrl.host` /
+  `hostname` / `canonical`, `RelayInvite`'s `BAD_URL`, `ScopeConfigPolicy`'s URL filter, a card hint's row:** READ
+  ADR 2026-11.ut8g. One shape rule (a bare `host[:port]`, printable ASCII, no `\` or `#`) sits inside the dialer's
+  own rule, so every door and the dialer refuse together, and every reader splits the authority the way OkHttp does
+  (`OkHttpSpoolDialerSocketTest` pins the agreement): the sheet's title, a ticket's `aud` and the socket name one host.
 - **When touching `data/commons/`, `mesh/spool/Commons*`, `ConversationKind.COMMONS`, `ui/commons/`, or the relay row's
   Join/Leave:** READ ADR 2026-09.wx8e and `docs/SPOOL_PROTOCOL.md` §7.4. The commons is a private relay's
   group chat: members' `profile` frames pin them through the ordinary door and make them accepted contacts,

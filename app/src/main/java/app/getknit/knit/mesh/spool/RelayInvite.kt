@@ -97,7 +97,10 @@ object RelayInvite {
         MALFORMED,
         BAD_VERSION,
 
-        /** The URL is not one this build may dial — the dialer's own rule, [SpoolUrl.isAcceptable]. */
+        /**
+         * The URL is not one this build may dial — the dialer's own rule, [SpoolUrl.isAcceptable], whose shape half
+         * refuses an authority that is not a bare host[:port] (#340) — or it is longer than [MAX_URL_CHARS].
+         */
         BAD_URL,
 
         /** A room secret of the wrong length: a typo must never hash into a subscription to nothing. */
@@ -191,17 +194,15 @@ object RelayInvite {
     }
 
     /**
-     * A URL the dialer would accept: the one scheme rule (ADR 019 M6), plus the shape checks a settings
-     * field never needed because nobody types a control character — a link is attacker-typed.
+     * A URL the dialer would accept, and no longer than a daemon's config would hold. A link is attacker-typed, so
+     * the shape matters as much as the scheme (ADR 019 M6): the sheet titles the invite with [SpoolUrl.host], and
+     * [SpoolUrl.isAcceptable] refuses every form where that could name a host other than the one the socket dials —
+     * user info, a `\` or `#` in the authority, a percent-escape or a non-ASCII letter in the host (ADR 2026-11.ut8g).
      */
     private fun isUsableUrl(
         url: String,
         allowCleartext: Boolean,
-    ): Boolean =
-        url.isNotBlank() &&
-            url.length <= MAX_URL_CHARS &&
-            url.none { it.isWhitespace() || it.isISOControl() } &&
-            SpoolUrl.isAcceptable(url, allowCleartext)
+    ): Boolean = url.length <= MAX_URL_CHARS && SpoolUrl.isAcceptable(url, allowCleartext)
 
     /** The compact invite after the first link prefix found in [text], or null when there is none. */
     private fun extractCompact(text: String): String? {

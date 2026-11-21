@@ -13,6 +13,13 @@ package app.getknit.knit.mesh.spool
  * A scheme is read through [schemeOf] or not at all — never a bare `startsWith(WSS_SCHEME)`. It is
  * case-insensitive (RFC 3986 §3.1), and [sourceUrl] picks https-or-http off the same read, so a
  * case-sensitive test there would GET a `WSS://` relay's build document in the clear. ADR 2026-09.66cw.
+ *
+ * The same rule covers the URL's *shape* ([isWellFormed], #340): its authority is a bare `host[:port]`, the whole URL
+ * is printable ASCII, and nothing in it is a `\` or a `#`. A relay invite, a card's hint and a scope config all hand
+ * over a URL someone else typed, and OkHttp reads its authority as a browser does: `a@b` dials `b`, and `b\@a` or
+ * `b#@a` dial `b` too. A label read off the text by hand would name `a` while the socket reaches `b`. So the
+ * authority is split here the way the socket splits it ([authorityOf]), every door refuses the forms where the two
+ * could still differ, and the dialer refuses them again, so a URL stored before the rule never dials.
  */
 object SpoolUrl {
     private const val WSS_SCHEME = "wss://"
@@ -34,16 +41,65 @@ object SpoolUrl {
             else -> null
         }
 
-    /** Whether this URL's scheme is usable in this build. `wss://` always; `ws://` only when [allowCleartext]. */
+    /**
+     * Whether this URL is usable in this build: a scheme it may dial (`wss://` always, `ws://` only when
+     * [allowCleartext]) on a URL [isWellFormed] passes.
+     */
     fun isAcceptable(
         url: String,
         allowCleartext: Boolean,
-    ): Boolean =
-        when (schemeOf(url)) {
-            WSS_SCHEME -> true
-            WS_SCHEME -> allowCleartext
-            else -> false
-        }
+    ): Boolean {
+        val scheme =
+            when (schemeOf(url)) {
+                WSS_SCHEME -> true
+                WS_SCHEME -> allowCleartext
+                else -> false
+            }
+        return scheme && isWellFormed(url)
+    }
+
+    /**
+     * Whether [url] has the one shape a spool URL takes, whatever its scheme: `scheme://host[:port]` then nothing, a
+     * path or a query, all printable ASCII, with no `\` and no `#` anywhere. The host is dot-separated labels of
+     * letters, digits, `-` and `_` or a bracketed IPv6 literal; a port is 1..65535 with no leading zero. A host the
+     * resolver would read as a number (every label digits or `0x` hex) must be four plain decimal octets, because
+     * `inet_aton` reads `010` as octal and `3232235777` as one address. No user info, no percent-escape and no non-ASCII
+     * letter can reach the host, so what [host] shows is what the socket dials (#340, ADR 2026-11.ut8g).
+     */
+    fun isWellFormed(url: String): Boolean {
+        val match = SHAPE.matchEntire(url) ?: return false
+        val (host, port) = match.destructured
+        val numeric = host.split('.').all { NUMERIC_LABEL.matches(it) }
+        return (!numeric || DOTTED_QUAD.matches(host)) && (port.isEmpty() || port.toInt() <= MAX_PORT)
+    }
+
+    private val SHAPE =
+        Regex(
+            "^[A-Za-z]+://" +
+                "([A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*|\\[[0-9A-Fa-f:.]+])" +
+                "(?::([1-9][0-9]{0,4}))?" +
+                // Printable ASCII but `#` (0x23) and `\` (0x5C).
+                "(?:[/?][\\x21\\x22\\x24-\\x5B\\x5D-\\x7E]*)?$",
+        )
+
+    /** A label `inet_aton` would read as part of a number: decimal, octal or `0x` hex. */
+    private val NUMERIC_LABEL = Regex("[0-9]+|0[xX][0-9A-Fa-f]*")
+
+    /** The one numeric host whose text is the address dialled: four octets 0..255, no leading zero. */
+    private val DOTTED_QUAD = Regex("(?:$OCTET\\.){3}$OCTET")
+
+    private const val OCTET = "(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
+
+    private const val MAX_PORT = 65_535
+
+    /** What ends an authority when OkHttp reads one: a `\` is a `/` to it, as to a browser. */
+    private const val AUTHORITY_END = "/\\?#"
+
+    /** [afterScheme]'s authority, user info included, ended where the socket ends it. */
+    private fun authorityOf(afterScheme: String): String {
+        val end = afterScheme.indexOfFirst { it in AUTHORITY_END }
+        return if (end < 0) afterScheme else afterScheme.substring(0, end)
+    }
 
     /**
      * A house relay's former host name → its current one (knit-spool-coordinator ADR 2026-10.ftp9): the same spool,
@@ -74,8 +130,8 @@ object SpoolUrl {
     fun canonical(url: String): String {
         val scheme = schemeOf(url) ?: return url
         val rest = url.substring(scheme.length)
-        val end = rest.indexOfFirst { it == '/' || it == '?' || it == '#' }.let { if (it < 0) rest.length else it }
-        val authority = rest.substring(0, end)
+        val authority = authorityOf(rest)
+        val end = authority.length
         val userInfo = authority.substringBeforeLast('@', missingDelimiterValue = "")
         val hostPort = authority.substringAfterLast('@')
         // An IPv6 literal is never a renamed relay.
@@ -94,14 +150,14 @@ object SpoolUrl {
     fun redact(url: String): String = url.substringBefore('?')
 
     /**
-     * The host[:port] for a compact settings row, with the scheme, path and token dropped. Falls back to
-     * the redacted URL when the shape is unexpected, so a row never renders empty.
+     * The host[:port] for a compact settings row and the invite sheet's title, with the scheme, user info, path and
+     * token dropped: the host the socket dials, read off the same split ([authorityOf]). Falls back to the redacted
+     * URL when the shape is unexpected, so a row never renders empty.
      */
     fun host(url: String): String {
         val withoutToken = redact(url)
         val afterScheme = withoutToken.substringAfter("://", missingDelimiterValue = "")
-        val authority = afterScheme.substringBefore('/')
-        return authority.ifEmpty { withoutToken }
+        return authorityOf(afterScheme).substringAfterLast('@').ifEmpty { withoutToken }
     }
 
     /**
@@ -110,7 +166,7 @@ object SpoolUrl {
      * lowercase host name (knit-spool's `SPOOL_TICKET_AUDIENCE`), never a port. Null when [url] carries none.
      */
     fun hostname(url: String): String? {
-        val authority = redact(url).substringAfter("://", missingDelimiterValue = "").substringBefore('/').substringAfterLast('@')
+        val authority = authorityOf(redact(url).substringAfter("://", missingDelimiterValue = "")).substringAfterLast('@')
         val name = if (authority.startsWith('[')) authority.substringBefore(']') + "]" else authority.substringBefore(':')
         return name.lowercase().ifEmpty { null }
     }
@@ -133,7 +189,7 @@ object SpoolUrl {
         val withoutToken = redact(url)
         val scheme = if (schemeOf(withoutToken) == WSS_SCHEME) "https://" else "http://"
         val afterScheme = withoutToken.substringAfter("://", missingDelimiterValue = "")
-        val authority = afterScheme.substringBefore('/').ifEmpty { return null }
+        val authority = authorityOf(afterScheme).ifEmpty { return null }
         val path = afterScheme.removePrefix(authority).trimEnd('/')
         val mountedAt = if (path.endsWith(SPOOL_PATH)) path.removeSuffix(SPOOL_PATH) else ""
         return "$scheme$authority$mountedAt/source"
