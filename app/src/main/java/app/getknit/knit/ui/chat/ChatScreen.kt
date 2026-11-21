@@ -1463,7 +1463,7 @@ internal fun ChatScreenContent(
                                     )
                                     EncryptionBadge { showEncryptionInfo = true }
                                     if (state.verified) {
-                                        Spacer(Modifier.width(6.dp))
+                                        // No spacer: the badge's 48 dp target already leaves room after the lock.
                                         Icon(
                                             imageVector = Icons.Filled.VerifiedUser,
                                             contentDescription = stringResource(R.string.verify_verified),
@@ -2714,16 +2714,20 @@ private fun MeshRoomNotice(
  * Lock badge shown in the header of encrypted threads (1:1 DMs and groups, never the plaintext Nearby
  * room). Tapping it explains that the conversation is end-to-end encrypted. Neutral-tinted so it reads
  * distinctly from the green verified shield it sits to the left of.
+ *
+ * It lays out its own 48 dp target around the 24 dp circle it draws, which also spaces it from the name. A target
+ * borrowed from its neighbours is cut wherever the top bar's actions cover it: beside a name that fills the title
+ * slot, on a 360 dp phone, it measured 41 dp wide (GitLab #354).
  */
 @Composable
 private fun EncryptionBadge(onClick: () -> Unit) {
-    Spacer(Modifier.width(6.dp))
     Icon(
         imageVector = Icons.Filled.Lock,
         contentDescription = stringResource(R.string.chat_encrypted_desc),
         tint = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier =
             Modifier
+                .minimumInteractiveComponentSize()
                 .clip(CircleShape)
                 .clickable(onClick = onClick)
                 .padding(3.dp)
