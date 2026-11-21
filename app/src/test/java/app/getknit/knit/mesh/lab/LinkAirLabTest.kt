@@ -133,7 +133,9 @@ class LinkAirLabTest {
     /**
      * Bob sends Alice a run of DMs over a slow link, and the link is cut while some are still queued. The cut loses them,
      * at once: nothing reaches her after the cut returns, and nothing counts as on the air toward her. The next link's
-     * custody exchange re-serves them, well inside the crossing window, and no write of one is skipped as already crossed.
+     * custody exchange re-serves them, well inside the crossing window, and no write of one over it is skipped as already
+     * crossed. Before the cut a second write of a queued DM is skipped, as it should be: with boards (`KNIT_LAB_BOARDS=1`)
+     * the node's transport is a composite, whose `fastSend` writes each DM to the link again behind the flood's copy.
      */
     @Test
     fun aCutLosesItsQueueAndTheNextLinkReServesIt() =
@@ -176,12 +178,14 @@ class LinkAirLabTest {
             alice.transport.awaitNeighborsObserved()
             bob.transport.awaitNeighborsObserved()
 
+            // The skips the old link's memo made are its own: only the next link's count.
+            val skipsBeforeRelink = bob.transport.dupSkipped.size
             lab.link(alice, bob, air = SLOW_AIR)
             lab.assertConverged(listOf(alice, bob), atLeast = 2 + DM_BURST, timeoutMs = BURST_AWAIT_MS) {
                 it.dmWith(if (it === alice) bob else alice)
             }
             assertTrue("the lab clock passed the crossing window", lab.clock.now() - from < SeenSet.DEFAULT_TTL_MS)
-            val skipped = cutKeys.sumOf { bob.transport.skipsToward(alice.nodeId, it) }
+            val skipped = cutKeys.sumOf { bob.transport.skipsToward(alice.nodeId, it, since = skipsBeforeRelink) }
             assertEquals("writes of a cut frame skipped as already crossed", 0, skipped)
         }
 

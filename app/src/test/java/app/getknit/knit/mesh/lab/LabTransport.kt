@@ -604,11 +604,15 @@ class LabTransport(
     /** Every write [crossings] skipped, as `to key via`: the second copy of a frame for one pipe, or an echo. */
     val dupSkipped = CopyOnWriteArrayList<String>()
 
-    /** How many writes of [key] (`FrameKey`) toward [nodeId] [crossings] has skipped, by either path. */
+    /**
+     * How many writes of [key] (`FrameKey`) toward [nodeId] [crossings] has skipped, by either path, from the [since]th
+     * entry of [dupSkipped] on (its size when a scenario took the mark).
+     */
     fun skipsToward(
         nodeId: String,
         key: String,
-    ): Int = dupSkipped.count { it.startsWith("${nodeId.take(NODE_ID_CHARS)} $key ") }
+        since: Int = 0,
+    ): Int = dupSkipped.drop(since).count { it.startsWith("${nodeId.take(NODE_ID_CHARS)} $key ") }
 
     /**
      * One write per pipe per frame, either way, as `BluetoothMeshTransport` keeps it, and on the node's [clock], which
