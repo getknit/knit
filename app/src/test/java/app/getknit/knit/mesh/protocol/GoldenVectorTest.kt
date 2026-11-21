@@ -440,6 +440,23 @@ class GoldenVectorTest {
                             reason = AppUpdatePayload.REASON_NOT_NOW,
                         ),
                 ).encode(),
+            // A joiner's Wi-Fi Direct client channels (ADR 2026-11.8zm5): the receiver's ACCEPT and the callee's joining RINGING
+            // carry the packed `ch` mask (2.4 GHz channel 6 and 5180 MHz here: bits 5 and 13).
+            "messageContentTransferAcceptChannels" to
+                MessageContent(
+                    body = "",
+                    ctl = MessageContent.CTL_TRANSFER,
+                    xf = TransferPayload(id = frameId(3), phase = TransferPayload.PHASE_ACCEPT, ch = (1L shl 5) or (1L shl 13)),
+                ).encode(),
+            "messageContentCallRingingChannels" to
+                call(
+                    CallPayload(
+                        id = frameId(8),
+                        ph = CallPayload.PHASE_RINGING,
+                        dx = CallPayload.DIRECT_JOINING,
+                        ch = (1L shl 5) or (1L shl 13),
+                    ),
+                ),
             // The sealed voice-call ctl plaintext (docs/VOICE_CALLS.md §3.2; experimental, CAP_CALL builds only): the
             // additive `cl` beside the ctl marker, on the named form like the transfer's (MessageContentV2 refuses it).
             // An OFFER naming the Wi-Fi Direct group its caller would host (§3.10), the callee's joining RINGING, the

@@ -29,6 +29,7 @@ import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.VideoInfo
 import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.transfer.DirectChannels
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -681,6 +682,26 @@ class MessageContentTest {
         val bare = MessageContent(body = "", ctl = MessageContent.CTL_APP_UPDATE).encode().size
         assertEquals(39, content.encode().size - bare)
         assertNull(MessageContent.decode(MessageContent(body = "hi").encode())!!.au)
+    }
+
+    @Test
+    fun aJoinersChannelsCostAtMostTwelveBytesAndNothingWhenUnsaid() {
+        // ADR 2026-11.8zm5: one packed uint beside the ACCEPT's or the RINGING's other fields.
+        val every = DirectChannels.mask((2412..2472 step 5).toSet() + (5180..5320 step 20) + (5500..5720 step 20) + (5745..5885 step 20))
+        val accept = TransferPayload(id = "t5", phase = TransferPayload.PHASE_ACCEPT, ch = every)
+
+        fun size(p: TransferPayload) = MessageContent(body = "", ctl = MessageContent.CTL_TRANSFER, xf = p).encode().size
+        assertEquals(accept, MessageContent.decode(MessageContent(body = "", ctl = MessageContent.CTL_TRANSFER, xf = accept).encode())!!.xf)
+        // The "ch" key (3) and a uint64 (9): the whole table set is the worst case.
+        assertEquals(12, size(accept) - size(accept.copy(ch = null)))
+        val unsaid = MessageContent(body = "", ctl = MessageContent.CTL_TRANSFER, xf = accept.copy(ch = null)).encode()
+        assertFalse(unsaid.toList().windowed(3).any { it == listOf(0x62.toByte(), 'c'.code.toByte(), 'h'.code.toByte()) })
+
+        val ringing = CallPayload(id = "c9", ph = CallPayload.PHASE_RINGING, dx = CallPayload.DIRECT_JOINING, ch = every)
+
+        fun callSize(p: CallPayload) = MessageContent(body = "", ctl = MessageContent.CTL_CALL, cl = p).encode().size
+        assertEquals(ringing, MessageContent.decode(MessageContent(body = "", ctl = MessageContent.CTL_CALL, cl = ringing).encode())!!.cl)
+        assertEquals(12, callSize(ringing) - callSize(ringing.copy(ch = null)))
     }
 
     @Test

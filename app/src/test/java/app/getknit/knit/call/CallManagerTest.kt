@@ -6,6 +6,7 @@ import app.getknit.knit.fieldlog.FieldEvent
 import app.getknit.knit.fieldlog.FieldRecorder
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.DirectInvite
+import app.getknit.knit.transfer.DirectChannels
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -150,6 +151,13 @@ class CallManagerTest {
         var laneUp = false
         val joins: MutableList<String> = Collections.synchronizedList(mutableListOf())
         val hosts: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+        // The channels this phone says it can join on as the callee, and what each host() was handed (ADR 2026-11.8zm5).
+        var channelMask: Long? = null
+        val hostedFor: MutableList<Set<Int>?> = Collections.synchronizedList(mutableListOf())
+
+        override fun clientChannels(): Long? = channelMask
+
         val ends: MutableList<Pair<String, CallPayload?>> = Collections.synchronizedList(mutableListOf())
         val laneCands: MutableList<String> = Collections.synchronizedList(mutableListOf())
         private val legs = Collections.synchronizedSet(mutableSetOf<String>())
@@ -184,8 +192,10 @@ class CallManagerTest {
             callId: String,
             peerId: String,
             invite: DirectInvite,
+            peerChannels: Set<Int>?,
         ) {
             hosts += callId
+            hostedFor += peerChannels
             legs += callId
         }
 
@@ -1511,6 +1521,18 @@ class CallManagerTest {
     private fun Side.lastOf(ph: Int): CallPayload = synchronized(sent) { sent.last { it.ph == ph } }
 
     @Test
+    fun theCalleeSaysWhereItCanJoinAndTheCallerHostsThere() =
+        runTest {
+            // ADR 2026-11.8zm5: the callee's channels ride beside its "joining", and reach the caller's host().
+            val (_, alice, bob) = neighbours()
+            bob.direct.channelMask = DirectChannels.mask(setOf(2437, 5180))
+            alice.manager.start(BOB)
+            runCurrent()
+            assertEquals(bob.direct.channelMask, bob.lastOf(CallPayload.PHASE_RINGING).ch)
+            assertEquals(listOf<Set<Int>?>(setOf(2437, 5180)), alice.direct.hostedFor)
+        }
+
+    @Test
     fun aNeighbourCallOffersItsGroupAndTheCallerHostsOnlyOnceTheCalleeJoins() =
         runTest {
             val (_, alice, bob) = neighbours()
@@ -1728,16 +1750,21 @@ class CallManagerTest {
         runTest {
             val (_, alice, bob) = neighbours()
             bob.manager.directMode = DirectMode.ANSWER
+            bob.direct.channelMask = DirectChannels.mask(setOf(5180))
             alice.manager.start(BOB)
             runCurrent()
             assertNull(bob.lastOf(CallPayload.PHASE_RINGING).dx)
+            // Not joining yet, so not saying where it could (ADR 2026-11.8zm5).
+            assertNull(bob.lastOf(CallPayload.PHASE_RINGING).ch)
             assertTrue(bob.direct.joins.isEmpty() && alice.direct.hosts.isEmpty())
             val first = bob.state!!.id
             bob.manager.answer(first)
             runCurrent()
             assertEquals(listOf(first), bob.direct.joins)
             assertEquals(CallPayload.DIRECT_JOINING, bob.lastOf(CallPayload.PHASE_ANSWER).dx)
+            assertEquals(bob.direct.channelMask, bob.lastOf(CallPayload.PHASE_ANSWER).ch)
             assertEquals(listOf(first), alice.direct.hosts)
+            assertEquals(listOf<Set<Int>?>(setOf(5180)), alice.direct.hostedFor.toList())
             alice.manager.hangUp()
             runCurrent()
 

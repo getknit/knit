@@ -7,8 +7,9 @@ them, and the chat keeps a small record of what happened.
 
 Decisions: ADR 2026-09.wtmz (the carrier and the protocol), ADR 2026-09.37ce (the seal), ADR 2026-09.7uqe
 (the surfaces), ADR 2026-10.5hzt (READY sent until the receiver connects; the sender's Retry), ADR 2026-11.29m7
-(Knit's own update between nearby contacts, `update/`). Read those before changing behaviour — this file is the map,
-they are the reasoning.
+(Knit's own update between nearby contacts, `update/`), ADR 2026-11.8zm5 (the group's channel: `DirectChannels`,
+`TransferPayload.ch`, `DirectWifi.channels`). Read those before changing behaviour — this file is the map, they are the
+reasoning.
 
 ## Shape
 
@@ -68,6 +69,13 @@ they are the reasoning.
 
 ## What will bite you
 
+- **A group on a channel the joiner cannot use is never found** (ADR 2026-11.8zm5). A group owner follows its own
+  Wi-Fi's channel, and some phones host Wi-Fi Direct on DFS channels (5260–5720 MHz) that others cannot join: a
+  Pixel 9 on an access point at 5500 put its group there and a Pixel 7 failed every join (`REASON_JOIN_FAILED`,
+  `FORMATION_FAILED` in the supplicant). The receiver's ACCEPT now carries `ch`, its client frequencies, and the
+  host's `DirectChannels.choose` keeps `GROUP_OWNER_BAND_AUTO` only when the peer can join there. When a transfer
+  between two phones fails at the join, read `…debug.XFER`'s `channels` on both and `group channel=…` in the host's
+  `KnitTransfer` log before anything else.
 - **Wi-Fi Aware must be paused explicitly.** On Android 12+ our own P2P does *not* evict our own NAN session
   — same-app interface requests have equal priority — so `createGroup` returns `BUSY` while Aware is
   attached, and `WifiAwareManager.isAvailable()` stays true the whole time. There is no availability edge to
@@ -136,4 +144,6 @@ Pixel 7 → Pixel 9 Pro XL, both API 37: **~70 MB/s on 5.2 GHz**, 1 GB in 15.2 s
 Accept→joined ~6.2 s, of which ~4.1 s is the framework's own `connect()` and is flat regardless of when it
 starts. Aware teardown 120–146 ms. `createGroup`→formed ~650 ms. Sealing runs 1765 MB/s on the host JVM,
 about 25× the link, so the crypto is not the bottleneck. A GO on a different channel from the STA costs
-about 9× to multi-channel time-slicing.
+about 9× to multi-channel time-slicing. 2026-11-20, 250 MB Pixel 9 → Pixel 7 with both stations on DFS 5500 and the
+group pinned (8zm5): 4.3 MB/s on 5180, 2.4 MB/s on a 2.4 GHz group (2462). Off the station's channel, 5 GHz beats
+2.4 GHz.

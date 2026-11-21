@@ -72,10 +72,18 @@ class FakeDirectWifi(
 
     override fun mayHost(): Boolean = !cannotHost
 
+    /** The channel view [channels] answers, and every peer channel set a [host] was handed, in order. */
+    var view = DirectChannelView()
+    val hostedFor: MutableList<Set<Int>?> = Collections.synchronizedList(mutableListOf())
+
+    override fun channels(): DirectChannelView = view
+
     override suspend fun host(
         credentials: GroupCredentials,
         timeoutMs: Long,
+        peerChannels: Set<Int>?,
     ): HostedGroup {
+        hostedFor += peerChannels
         log.note("host")
         builderChecks(credentials)
         if (hostFails) throw DirectWifiException("host refused", hostRefusal)

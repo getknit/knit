@@ -16,6 +16,9 @@ internal class LiveTransfer(
     var credentials: GroupCredentials? = null
     var key: ByteArray? = null
     var port: Int = 0
+
+    // The frequencies the receiver said it can join a group on (ADR 2026-11.8zm5), null when it did not say.
+    var peerChannels: Set<Int>? = null
     val ready = CompletableDeferred<Unit>()
     var job: Job? = null
 

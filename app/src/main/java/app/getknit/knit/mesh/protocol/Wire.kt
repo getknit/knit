@@ -966,6 +966,10 @@ class BadgeEntry(
  * [ap] marks the transfer as this app's own update (ADR 2026-11.29m7): set only on an OFFER that answers the
  * receiver's `CTL_APP_UPDATE` request, and read only by a receiver that sent that request. Absent from every other
  * frame, which encodes as it did before the field existed.
+ *
+ * [ch] rides the ACCEPT only (ADR 2026-11.8zm5): the frequencies the receiver can join a Wi-Fi Direct group on as a
+ * client, packed by `transfer/DirectChannels.mask`, so the host puts its group where the receiver can find it. Absent
+ * from a build that cannot say (an older one, or one below API 34), whose ACCEPT encodes as it did before.
  */
 @Serializable
 data class TransferPayload(
@@ -981,6 +985,7 @@ data class TransferPayload(
     val reason: Int? = null,
     val md: List<Long>? = null,
     val ap: AppPin? = null,
+    val ch: Long? = null,
 ) {
     companion object {
         const val PHASE_OFFER = 1
@@ -1113,6 +1118,9 @@ data class CallPayload(
     val dx: Int? = null,
     val ct: Boolean = false,
     val hr: Boolean = false,
+    // The callee's Wi-Fi Direct client frequencies (ADR 2026-11.8zm5), packed by `transfer/DirectChannels.mask`: beside
+    // [dx] on the RINGING or ANSWER that says it is joining, so the caller hosts where the callee can find the group.
+    val ch: Long? = null,
 ) {
     companion object {
         const val PHASE_OFFER = 1

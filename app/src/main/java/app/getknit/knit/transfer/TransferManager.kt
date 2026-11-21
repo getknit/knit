@@ -326,7 +326,8 @@ class TransferManager(
         val sent =
             signals.sendTransferSignal(
                 l.state.peerId,
-                TransferPayload(id = id, phase = TransferPayload.PHASE_ACCEPT, md = take?.take),
+                // `ch`: where this phone can join a group, so the host puts it there (ADR 2026-11.8zm5).
+                TransferPayload(id = id, phase = TransferPayload.PHASE_ACCEPT, md = take?.take, ch = wifi.clientMask()),
             )
         return if (sent) {
             l.job = scope.launch { joinAndReceive(l) }
@@ -476,6 +477,7 @@ class TransferManager(
                         l.credentials = credentials()
                         l.key = newKey()
                         l.port = newPort()
+                        l.peerChannels = DirectChannels.freqs(payload.ch)
                         transitionLocked(l, TransferPhase.Connecting)
                     }
                     ok
@@ -570,7 +572,7 @@ class TransferManager(
             // a cancel during the wait ends the job before it ever hosts.
             delay(timings.readyGraceMs)
             withContext(io) {
-                val group = wifi.host(checkNotNull(l.credentials), timings.groupUpMs)
+                val group = wifi.host(checkNotNull(l.credentials), timings.groupUpMs, l.peerChannels)
                 log(
                     "xfer ${l.state.id} hosting ${l.credentials?.ssid} " +
                         "on ${group.addresses.joinToString { it.address.hostAddress.orEmpty() }} freq=${group.frequencyMhz}",

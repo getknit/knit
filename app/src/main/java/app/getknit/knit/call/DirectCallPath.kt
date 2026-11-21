@@ -4,6 +4,7 @@ import app.getknit.knit.fieldlog.FieldEvent
 import app.getknit.knit.fieldlog.FieldRecorder
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.DirectInvite
+import app.getknit.knit.transfer.DirectChannels
 import app.getknit.knit.transfer.DirectWifi
 import app.getknit.knit.transfer.DirectWifiException
 import app.getknit.knit.transfer.DirectWifiLease
@@ -235,14 +236,17 @@ class DirectCallPath(
         }
     }
 
+    override fun clientChannels(): Long? = DirectChannels.mask(lease.channels().client)
+
     override fun host(
         callId: String,
         peerId: String,
         invite: DirectInvite,
+        peerChannels: Set<Int>?,
     ) {
         val leg = begin(callId, peerId, invite, hosting = true) ?: return
         run(leg) {
-            val group = leg.wifi.host(leg.credentials, timings.groupUpMs)
+            val group = leg.wifi.host(leg.credentials, timings.groupUpMs, peerChannels)
             up(leg, DirectLink(group.interfaceName, group.addresses))
             val listener =
                 TransferListener(group, leg.port, io, clock, timings.hostWindowMs, timings.handshakeMs) {

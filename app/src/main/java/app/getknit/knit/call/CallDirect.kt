@@ -113,12 +113,19 @@ interface CallDirect {
         invite: DirectInvite,
     )
 
-    /** The caller's side: hosts [invite]'s group and listens for the lane. One attempt per call. */
+    /**
+     * The caller's side: hosts [invite]'s group and listens for the lane. One attempt per call. [peerChannels] are the
+     * frequencies the callee said it can join on (ADR 2026-11.8zm5), null when it did not say.
+     */
     fun host(
         callId: String,
         peerId: String,
         invite: DirectInvite,
+        peerChannels: Set<Int>? = null,
     )
+
+    /** The callee's side: the frequencies this phone can join a group on, packed for its RINGING or ANSWER (8zm5). */
+    fun clientChannels(): Long? = null
 
     /** Sends [payload] over [callId]'s lane too, queued until the lane is up; nothing when the call has no leg. */
     fun mirror(
@@ -176,6 +183,7 @@ interface CallDirect {
             callId: String,
             peerId: String,
             invite: DirectInvite,
+            peerChannels: Set<Int>?,
         ) = Unit
 
         override fun mirror(

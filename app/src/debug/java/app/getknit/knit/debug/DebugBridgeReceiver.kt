@@ -4165,6 +4165,14 @@ class DebugBridgeReceiver :
             .put("failed", s.chunksFailed)
             .put("path", s.path ?: JSONObject.NULL)
 
+    // The XFER dump's channel view (the DFS trial, 2026-11-20): this phone's Wi-Fi frequency and the frequencies it can
+    // join or own a Wi-Fi Direct group on, sorted, or null where the platform will not say.
+    private fun app.getknit.knit.transfer.DirectChannelView.toJson(): JSONObject =
+        JSONObject()
+            .put("sta", sta ?: JSONObject.NULL)
+            .put("client", client?.sorted()?.let(::JSONArray) ?: JSONObject.NULL)
+            .put("go", go?.sorted()?.let(::JSONArray) ?: JSONObject.NULL)
+
     /**
      * Drives a direct file transfer headless (transfer/TransferManager) so two lab phones can run one
      * without touching a screen: `--es to <nodeId> --es path <file>` offers the file at `path` to that peer;
@@ -4251,6 +4259,7 @@ class DebugBridgeReceiver :
             .put("status", "ok")
             .put("refusal", directWifi.refusal()?.name ?: JSONObject.NULL)
             .put("hostRefusal", directWifi.hostRefusal()?.name ?: JSONObject.NULL)
+            .put("channels", directWifi.channels().toJson())
             .put(
                 "directHost",
                 getKoin()

@@ -358,7 +358,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   installed translation models as one archive (ADR 2026-11.ejn8; each live transfer then lists its `models` pins),
   `--es accept|decline|cancel <transferId>` answers one,
   `--ez sweep true` clears a group a dead process left on air, and no extras dumps `refusal` plus every live
-  transfer — add `--es conv <peerId>` for that thread's `xfer:` rows. Stage the file the SENDIMG way (`run-as`
+  transfer — add `--es conv <peerId>` for that thread's `xfer:` rows. The dump's `channels` is
+  `{sta, client, go}` (ADR 2026-11.8zm5): this phone's Wi-Fi frequency and the frequencies it can join or own a
+  group on, null below API 34 — read it on both phones when a join fails. Stage the file the SENDIMG way (`run-as`
   into the app's own storage): scoped storage means the app cannot read a `/sdcard` path. The bridge steps
   around the file picker **and the first-use disclosure sheet**, so a phone nobody has driven by hand still
   transfers.

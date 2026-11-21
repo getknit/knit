@@ -4,6 +4,8 @@ import app.getknit.knit.fieldlog.FieldEvent
 import app.getknit.knit.fieldlog.FieldRecorder
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.DirectInvite
+import app.getknit.knit.transfer.DirectChannelView
+import app.getknit.knit.transfer.DirectChannels
 import app.getknit.knit.transfer.DirectWifiLease
 import app.getknit.knit.transfer.FakeDirectWifi
 import app.getknit.knit.transfer.SideLog
@@ -114,6 +116,19 @@ class DirectCallPathTest {
             assertEquals(listOf(GROUP_CAND), cands.lines)
             // The joiner took an IPv4 lease: libwebrtc never gathers on an IPv6 link-local.
             assertEquals(listOf(true), bob.wifi.joinIpv4)
+        }
+
+    @Test
+    fun theCalleesChannelsGoOutThroughTheLeaseAndTheCallersHostTakesThem() =
+        runBlocking {
+            // ADR 2026-11.8zm5 through the hops production runs: the path, the lease, the radio.
+            bob.wifi.view = DirectChannelView(client = setOf(2437, 5180))
+            assertEquals(DirectChannels.mask(setOf(2437, 5180)), bob.path.clientChannels())
+            val invite = invite()
+            bob.path.join(ID, ALICE, invite)
+            alice.path.host(ID, BOB, invite, setOf(5180))
+            until("alice hosted") { alice.wifi.hostedFor.isNotEmpty() }
+            assertEquals(listOf<Set<Int>?>(setOf(5180)), alice.wifi.hostedFor.toList())
         }
 
     @Test

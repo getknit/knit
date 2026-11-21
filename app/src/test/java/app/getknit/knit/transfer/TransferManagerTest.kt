@@ -271,6 +271,39 @@ class TransferManagerTest {
         }
 
     @Test
+    fun theReceiverSaysWhereItCanJoinAndTheHostHostsWithIt() =
+        runBlocking {
+            // ADR 2026-11.8zm5: the ACCEPT carries the receiver's client channels, and the sender's host() gets them.
+            val (a, b) = pair()
+            a.withClip()
+            b.wifi.view = DirectChannelView(sta = 5500, client = setOf(2437, 5180))
+            val id = offer(a)
+            awaitIncoming(b, id)
+            assertNull(b.manager.accept(id))
+            awaitPhase(a, id, TransferPhase.Done)
+            val accept = b.signals.sent.first { it.phase == TransferPayload.PHASE_ACCEPT }
+            assertEquals(DirectChannels.mask(setOf(2437, 5180)), accept.ch)
+            assertEquals(listOf<Set<Int>?>(setOf(2437, 5180)), a.wifi.hostedFor)
+        }
+
+    @Test
+    fun aReceiverThatCannotSayLeavesTheChannelToTheHost() =
+        runBlocking {
+            val (a, b) = pair()
+            a.withClip()
+            val id = offer(a)
+            awaitIncoming(b, id)
+            assertNull(b.manager.accept(id))
+            awaitPhase(a, id, TransferPhase.Done)
+            assertNull(
+                b.signals.sent
+                    .first { it.phase == TransferPayload.PHASE_ACCEPT }
+                    .ch,
+            )
+            assertEquals(listOf<Set<Int>?>(null), a.wifi.hostedFor)
+        }
+
+    @Test
     fun aFileThatArrivesButCannotBeSavedFailsOnlyTheReceiver() =
         runBlocking {
             // Every byte crosses and checks out, then Bob's save fails: his card says so, not that the link dropped, and

@@ -48,13 +48,15 @@ lines.
   a self-managed Telecom call through core-telecom (packaged only with calls, an RC by a recorded exception in
   `context/toolchain.md`), and Telecom owns its route, mode and focus. Never set a route beside it
   (`setCommunicationDevice`, `startBluetoothSco`, a track's preferred device). A walkie differs only in starting on
-  the loudspeaker. The sync follows `CallManager.state` and is never on the inbound path. **Before touching `CallPayload.dw` / `dx`, `call/CallDirect`, `DirectCallPath`,
+  the loudspeaker. The sync follows `CallManager.state` and is never on the inbound path. **Before touching `CallPayload.dw` / `dx` / `ch`, `call/CallDirect`, `DirectCallPath`,
   `CallLane`, `MediaEvent.DirectCandidates`, `ui/call/DirectNetworkDetector`, `transfer/DirectWifiLease` or
   `DirectWifi.join`'s `ipv4`:** READ ADR 2026-10.kxnw and `docs/VOICE_CALLS.md` §3.10 — a call to a mesh neighbour
   rides a Wi-Fi Direct group: the caller offers, the callee says it is joining (and joins while it rings, with an
   IPv4 lease), the caller hosts only then; the group reaches libwebrtc through our own detector as an Ethernet-typed
   network (never `setIncludeWifiDirect`, which leaks a P2P channel), and a sealed lane over it carries every signal
-  beside the mesh, since Wi-Fi Aware is paused while the group is up. Relay-only goes direct nowhere.
+  beside the mesh, since Wi-Fi Aware is paused while the group is up. Relay-only goes direct nowhere. The callee's
+  "joining" carries `ch`, where it can join (`CallDirect.clientChannels`), and the caller hosts there (ADR
+  2026-11.8zm5): a group on a DFS channel the callee cannot use is never found.
   **Before touching `SpoolEnt` / `SpoolTicket`, `mesh/spool/SpoolTickets`, `SpoolConnection.present` /
   `ticketState` / `ticketedTurn`, the order in `ScopeSync.turnCredentials`, `stunUrls`, `TurnSource.stunUrls`,
   `call/StunServers`, the `spool_ticket` settings keys or `…debug.SPOOL --es ticket`:** READ ADR 2026-10.xkp4 and

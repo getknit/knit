@@ -11,7 +11,8 @@ topics: [transfer, mesh, wifi]
 Status: Accepted (2026-09-10; `transfer/TransferManager`, `TransferStream`, `TransferListener`, the
 `DirectWifi`/`TransferFiles`/`TransferSignals` seams, `AndroidDirectWifi`, `AndroidTransferFiles`,
 `MeshTransport.pause`/`resume`, `WifiAwareTransport`, `MessageContent.CTL_TRANSFER`,
-`Protocol.CAP_DIRECT_TRANSFER`, `MessageEntity.KIND_FILE_TRANSFER`, `TransferRecord`)
+`Protocol.CAP_DIRECT_TRANSFER`, `MessageEntity.KIND_FILE_TRANSFER`, `TransferRecord`) — its declined channel
+pinning is amended by ADR 2026-11.8zm5: a host now pins a channel when its peer cannot join on its own
 
 An attachment is capped at 8 MiB, sealed, content-addressed and custodied by every phone that carries it.
 That is the right shape for a message and the wrong one for a video: two people standing next to each other

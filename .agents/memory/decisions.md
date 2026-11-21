@@ -316,6 +316,7 @@ carries; never renumber an old one.
 | [2026-11.82s7](decisions/2026-11-82s7-the-mesh-service-s-alarms-call-into-the-running-service.md) | The mesh service's alarms call into the running service, never start it | service, power, reliability |
 | [2026-11.89gg](decisions/2026-11-89gg-an-android-phone-reads-a-blinded-gatt-payload-as-a-blinded-sighting.md) | An Android phone reads a blinded GATT payload as a blinded sighting | ble, mesh, privacy |
 | [2026-11.8mhs](decisions/2026-11-8mhs-a-link-seals-everything-after-an-ephemeral-key-exchange.md) | A link seals everything after an ephemeral key exchange | mesh, security |
+| [2026-11.8zm5](decisions/2026-11-8zm5-the-host-puts-a-wi-fi-direct-group-on-a-channel-its-peer-can-join.md) | The host puts a Wi-Fi Direct group on a channel its peer can join | transfer, calls, wire |
 | [2026-11.acs5](decisions/2026-11-acs5-detekt-runs-only-type-resolved.md) | detekt runs only type-resolved, on every source folder | build, toolchain, static-analysis |
 | [2026-11.b37x](decisions/2026-11-b37x-hiding-a-known-node-is-presentation-only.md) | Hiding a known node is presentation only | contacts, diagnostics, ui |
 | [2026-11.dgj2](decisions/2026-11-dgj2-a-restore-carries-each-dm-scope-so-its-reset-reaches-a-relay-only-contact.md) | a restore carries each DM scope so its reset reaches a relay-only contact | backup, spool, ratchet |

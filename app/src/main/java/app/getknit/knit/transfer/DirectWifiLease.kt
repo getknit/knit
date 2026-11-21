@@ -33,6 +33,9 @@ class DirectWifiLease(
     /** The radio as [owner] sees it: [owner]'s groups only, and nothing of anyone else's. */
     fun leasedTo(owner: String): DirectWifi = Leased(owner)
 
+    /** The radio's channel view, whoever holds it: a reading, never a hold (ADR 2026-11.8zm5). */
+    fun channels(): DirectChannelView = radio.channels()
+
     private inner class Leased(
         private val owner: String,
     ) : DirectWifi {
@@ -48,16 +51,19 @@ class DirectWifiLease(
 
         override fun mayHost(): Boolean = this@DirectWifiLease.mayHost()
 
+        override fun channels(): DirectChannelView = radio.channels()
+
         override suspend fun host(
             credentials: GroupCredentials,
             timeoutMs: Long,
+            peerChannels: Set<Int>?,
         ): HostedGroup {
             if (!mayHost()) throw cannotHost()
             take()
             // After take(): a host refused Busy must leave no marker, since its release is a no-op for this owner.
             if (!gate.hosting()) throw cannotHost()
             hostingTold.set(true)
-            return radio.host(credentials, timeoutMs)
+            return radio.host(credentials, timeoutMs, peerChannels)
         }
 
         override suspend fun join(

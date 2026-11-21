@@ -121,10 +121,18 @@ interface DirectWifi {
      */
     fun hostRefusal(): TransferRefusal? = if (mayHost()) refusal() else TransferRefusal.CannotHost
 
-    /** Stands up the group and returns once it is formed (within [timeoutMs]); throws [DirectWifiException] otherwise. */
+    /** The channels this device's Wi-Fi sits on and can host or join a group on, as far as the platform says. */
+    fun channels(): DirectChannelView = DirectChannelView()
+
+    /**
+     * Stands up the group and returns once it is formed (within [timeoutMs]); throws [DirectWifiException] otherwise.
+     * [peerChannels] are the frequencies the joiner said it can join on (ADR 2026-11.8zm5), null when it did not say:
+     * the group goes where it can find it ([DirectChannels.choose]).
+     */
     suspend fun host(
         credentials: GroupCredentials,
         timeoutMs: Long,
+        peerChannels: Set<Int>? = null,
     ): HostedGroup
 
     /**

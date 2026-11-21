@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.protocol.DirectInvite
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.spool.ScopeRegistry
 import app.getknit.knit.mesh.spool.TurnHosts
+import app.getknit.knit.transfer.DirectChannels
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -629,7 +630,7 @@ class CallManager(
         val joining = directMode == DirectMode.PREWARM && commitJoin(l, prewarm = true)
         publish()
         log("call ${p.id} from $sender: alerting${if (joining) ", joining its group" else ""}${if (l.walkie) " (walkie)" else ""}")
-        return listOf(Send(sender, CallPayload(id = p.id, ph = CallPayload.PHASE_RINGING, dx = directVerdict(l))))
+        return listOf(Send(sender, CallPayload(id = p.id, ph = CallPayload.PHASE_RINGING, dx = directVerdict(l), ch = directChannels(l))))
     }
 
     /**
@@ -740,6 +741,9 @@ class CallManager(
 
     private fun directVerdict(l: Live): Int? = if (l.directCommitted) CallPayload.DIRECT_JOINING else null
 
+    // Beside a "joining": where this phone can join the caller's group, so it hosts there (ADR 2026-11.8zm5).
+    private fun directChannels(l: Live): Long? = if (l.directCommitted) direct.clientChannels() else null
+
     /**
      * The caller's side: hosts [l]'s group on the callee's first fresh "joining" ([p] a RINGING or an ANSWER). Only
      * then: an older build, a callee that could not join, or a glare loser never says it, and nothing is raised.
@@ -757,7 +761,7 @@ class CallManager(
         }
         l.directCommitted = true
         log("call ${l.id}: the peer is joining; hosting the group")
-        direct.host(l.id, l.peerId, invite)
+        direct.host(l.id, l.peerId, invite, DirectChannels.freqs(p.ch))
     }
 
     /**
@@ -1169,7 +1173,10 @@ class CallManager(
                 }
                 remoteApplied(l, session)
                 val answer =
-                    withLiveMedia(CallPayload(id = l.id, ph = CallPayload.PHASE_ANSWER, sdp = sdp, dx = directVerdict(l)), l.walkieOk)
+                    withLiveMedia(
+                        CallPayload(id = l.id, ph = CallPayload.PHASE_ANSWER, sdp = sdp, dx = directVerdict(l), ch = directChannels(l)),
+                        l.walkieOk,
+                    )
                 listOf(Send(l.peerId, answer))
             }
         if (!deliver(sends)) {

@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.wifi.WifiAvailableChannel
 import android.net.wifi.WifiManager
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pGroup
@@ -99,16 +100,32 @@ class AndroidDirectWifi(
     override suspend fun host(
         credentials: GroupCredentials,
         timeoutMs: Long,
+        peerChannels: Set<Int>?,
     ): HostedGroup =
         mutex.withLock {
             val manager = ready()
             val ch = prepare(manager)
-            val config = config(credentials, band = true, ipv6 = false)
+            val view = channels()
+            val pick = DirectChannels.choose(view.sta, peerChannels, view.go)
+            Log.i(TAG, "group channel=${pick.channel} sta=${view.sta} peerChannels=${peerChannels?.size} (${pick.reason})")
+            // A pinned frequency the platform will not use costs one try, never the transfer: 2.4 GHz is everyone's. That
+            // holds whether it refuses the request outright or forms nothing in time.
+            val pinned = pick.channel is GroupChannel.Frequency
+            val first =
+                try {
+                    createGroup(manager, ch, credentials, pick.channel, timeoutMs)
+                } catch (e: DirectWifiException) {
+                    if (!pinned) throw e
+                    Log.w(TAG, "a group on ${pick.channel} was refused: ${e.message}")
+                    null
+                }
             val formed =
-                undoOnCancel(manager, ch, joining = false) {
-                    withTimeoutOrNull(timeoutMs) {
-                        awaitFormation(manager, ch, credentials.ssid, owner = true) { manager.createGroup(ch, config, it) }
-                    }
+                first ?: if (pinned) {
+                    Log.w(TAG, "no group on ${pick.channel}; trying 2.4 GHz")
+                    runCatching { withTimeoutOrNull(RELEASE_MS) { act("removeGroup(pinned)") { manager.removeGroup(ch, it) } } }
+                    createGroup(manager, ch, credentials, GroupChannel.Band24, timeoutMs)
+                } else {
+                    null
                 } ?: throw DirectWifiException("group did not form within ${timeoutMs}ms", TransferRefusal.NoWifiDirect)
             val addresses = addressesOf(formed.group, formed.address)
             Log.i(
@@ -119,6 +136,22 @@ class AndroidDirectWifi(
             HostedGroup(addresses, frequencyOf(formed.group), formed.group.`interface`)
         }
 
+    // One createGroup on [channel], or null when no group formed within [timeoutMs]. A refused request throws, as before.
+    private suspend fun createGroup(
+        manager: WifiP2pManager,
+        ch: WifiP2pManager.Channel,
+        credentials: GroupCredentials,
+        channel: GroupChannel,
+        timeoutMs: Long,
+    ): Formation? {
+        val config = config(credentials, channel, ipv6 = false)
+        return undoOnCancel(manager, ch, joining = false) {
+            withTimeoutOrNull(timeoutMs) {
+                awaitFormation(manager, ch, credentials.ssid, owner = true) { manager.createGroup(ch, config, it) }
+            }
+        }
+    }
+
     override suspend fun join(
         credentials: GroupCredentials,
         attemptMs: Long,
@@ -128,7 +161,7 @@ class AndroidDirectWifi(
             val manager = ready()
             val ch = prepare(manager)
             val ipv6 = !ipv4 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && ipv6LinkLocalSupported()
-            val config = config(credentials, band = false, ipv6 = ipv6)
+            val config = config(credentials, channel = null, ipv6 = ipv6)
             val formed =
                 undoOnCancel(manager, ch, joining = true) {
                     withTimeoutOrNull(attemptMs) {
@@ -273,6 +306,24 @@ class AndroidDirectWifi(
             }
     }
 
+    override fun channels(): DirectChannelView {
+        // Deprecated on 31+, but its frequency is not location-redacted and needs only ACCESS_WIFI_STATE, declared.
+        @Suppress("DEPRECATION")
+        val sta = runCatching { wifi?.connectionInfo?.frequency }.getOrNull()?.takeIf { it > 0 }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE || !hasPermission()) return DirectChannelView(sta = sta)
+        return DirectChannelView(
+            sta = sta,
+            client = usableChannels(WifiAvailableChannel.OP_MODE_WIFI_DIRECT_CLI),
+            go = usableChannels(WifiAvailableChannel.OP_MODE_WIFI_DIRECT_GO),
+        )
+    }
+
+    // Both bands with their DFS channels: the platform refuses 5 GHz without them (IllegalArgumentException, the
+    // WifiAwareTransport finding), and throws SecurityException or UnsupportedOperationException where it will not say.
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    private fun usableChannels(mode: Int): Set<Int>? =
+        runCatching { wifi?.getUsableChannels(BAND_24_5_WITH_DFS, mode)?.mapTo(HashSet()) { it.frequencyMhz } }.getOrNull()
+
     private fun hasPermission(): Boolean {
         val permission =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -283,9 +334,11 @@ class AndroidDirectWifi(
         return ContextCompat.checkSelfPermission(app, permission) == PackageManager.PERMISSION_GRANTED
     }
 
+    // [channel] is the host's (null for a joiner, which finds the group by name). A band and a frequency are exclusive:
+    // the builder throws when given both.
     private fun config(
         credentials: GroupCredentials,
-        band: Boolean,
+        channel: GroupChannel?,
         ipv6: Boolean,
     ): WifiP2pConfig =
         WifiP2pConfig
@@ -293,7 +346,12 @@ class AndroidDirectWifi(
             .setNetworkName(credentials.ssid)
             .setPassphrase(credentials.passphrase)
             .apply {
-                if (band) setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
+                when (channel) {
+                    null -> Unit
+                    GroupChannel.Auto -> setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
+                    GroupChannel.Band24 -> setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_2GHZ)
+                    is GroupChannel.Frequency -> setGroupOperatingFrequency(channel.mhz)
+                }
                 if (ipv6 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     setGroupClientIpProvisioningMode(WifiP2pConfig.GROUP_CLIENT_IP_PROVISIONING_MODE_IPV6_LINK_LOCAL)
                 }
@@ -466,6 +524,9 @@ class AndroidDirectWifi(
     private fun frequencyOf(group: WifiP2pGroup): Int = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) group.frequency else 0
 
     private companion object {
+        /** `WifiScanner.WIFI_BAND_BOTH_WITH_DFS` (2.4 GHz and 5 GHz with DFS), which `getUsableChannels` takes. */
+        private const val BAND_24_5_WITH_DFS = 7
+
         const val TAG = "KnitTransfer"
         const val WAKE_LOCK_TAG = "knit:transfer"
 

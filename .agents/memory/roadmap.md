@@ -337,8 +337,9 @@ doc). **Don't start a deferred item without explicit direction.**
   **Still owed:** its device trial (the ADR's), then `-PpeerUpdate=true` for a shipped artifact; offering an update
   unasked from the newer side; serving from a Play install's merged copy. **Receiver-side content screening**: nothing looks inside the
   file, which the consent sheet states plainly rather than papering over; the moderation pipeline is built
-  for 8 MiB attachments in the blob store, not for a gigabyte in Downloads. **A 2.4 GHz re-host** if a
-  screen-off client's throughput ever collapses (it did not — screen-off costs about 3%). **The API 30-32
+  for 8 MiB attachments in the blob store, not for a gigabyte in Downloads. A 2.4 GHz re-host
+  for screen-off throughput is not needed (screen-off costs about 3%); the channel question it stood for was settled
+  by negotiation instead (ADR 2026-11.8zm5). **The API 30-32
   background `createGroup` gap**, surfaced as `TransferRefusal.Background` and never seen run: the lab has
   no device below 33. Also unbuilt: a progress or completion notification, which needs a seam out of the
   deliberately-pure `TransferManager`, and a chat-list preview for a *pending* offer, which
