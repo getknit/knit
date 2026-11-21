@@ -125,6 +125,11 @@ class AndroidDirectWifi(
                     pick,
                     attempt = { channel -> createGroup(manager, ch, credentials, channel, timeoutMs) },
                     clear = {
+                        // Only after a try that formed nothing in time (DirectChannels.raise): the framework is still
+                        // creating it, and the next createGroup answers BUSY (a Redmi Note 13 on Device Farm,
+                        // 2026-11-21). removeGroup does not stop a creation, cancelConnect does; then remove what it
+                        // may already have raised.
+                        runCatching { withTimeoutOrNull(RELEASE_MS) { act("cancelConnect(pinned)") { manager.cancelConnect(ch, it) } } }
                         runCatching { withTimeoutOrNull(RELEASE_MS) { act("removeGroup(pinned)") { manager.removeGroup(ch, it) } } }
                     },
                     log = { Log.w(TAG, it) },
@@ -147,7 +152,7 @@ class AndroidDirectWifi(
         timeoutMs: Long,
     ): Formation? {
         val config = config(credentials, channel, ipv6 = false)
-        return undoOnCancel(manager, ch, joining = false) {
+        return undoOnCancel(manager, ch) {
             withTimeoutOrNull(timeoutMs) {
                 awaitFormation(manager, ch, credentials.ssid, owner = true) { manager.createGroup(ch, config, it) }
             }
@@ -165,7 +170,7 @@ class AndroidDirectWifi(
             val ipv6 = !ipv4 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && ipv6LinkLocalSupported()
             val config = config(credentials, channel = null, ipv6 = ipv6)
             val formed =
-                undoOnCancel(manager, ch, joining = true) {
+                undoOnCancel(manager, ch) {
                     withTimeoutOrNull(attemptMs) {
                         awaitFormation(manager, ch, credentials.ssid, owner = false) { manager.connect(ch, config, it) }
                     }
@@ -175,7 +180,7 @@ class AndroidDirectWifi(
                 throw DirectWifiException("no group formed within ${attemptMs}ms")
             }
             val name = formed.group.`interface`
-            if (ipv4) undoOnCancel(manager, ch, joining = true) { awaitLease(name) }
+            if (ipv4) undoOnCancel(manager, ch) { awaitLease(name) }
             Log.i(
                 TAG,
                 "joined ${credentials.ssid} (${if (ipv6) "IPv6 link-local" else "IPv4 DHCP"}); " +
@@ -226,21 +231,21 @@ class AndroidDirectWifi(
 
     /**
      * Runs one formation step; a cancellation that lands mid-step (the user hung up, the call ended) takes back
-     * what the step may already have asked the framework for — a `connect` still negotiating, a group already
-     * formed — before it propagates, since [release] can run before the framework answers and close the channel
-     * on a group that then forms with no one to remove it.
+     * what the step may already have asked the framework for — a `connect` still negotiating, a `createGroup` still
+     * creating, a group already formed — before it propagates, since [release] can run before the framework answers
+     * and close the channel on a group that then forms with no one to remove it. `cancelConnect` stops a creation as
+     * well as a negotiation (removeGroup stops neither), so a host's step cancels too.
      */
     private suspend fun <T> undoOnCancel(
         manager: WifiP2pManager,
         ch: WifiP2pManager.Channel,
-        joining: Boolean,
         step: suspend () -> T,
     ): T =
         try {
             step()
         } catch (e: CancellationException) {
             withContext(NonCancellable) {
-                if (joining) runCatching { withTimeoutOrNull(RELEASE_MS) { act("cancelConnect") { manager.cancelConnect(ch, it) } } }
+                runCatching { withTimeoutOrNull(RELEASE_MS) { act("cancelConnect") { manager.cancelConnect(ch, it) } } }
                 runCatching { withTimeoutOrNull(RELEASE_MS) { act("removeGroup(cancelled)") { manager.removeGroup(ch, it) } } }
             }
             throw e
@@ -323,8 +328,12 @@ class AndroidDirectWifi(
     // Both bands with their DFS channels: the platform refuses 5 GHz without them (IllegalArgumentException, the
     // WifiAwareTransport finding), and throws SecurityException or UnsupportedOperationException where it will not say.
     @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    // Two MediaTek phones on Device Farm (a Galaxy A16 on 34, a Redmi Note 13+ on 35) answered nothing on 2026-11-21:
+    // the line says which refusal it was.
     private fun usableChannels(mode: Int): Set<Int>? =
-        runCatching { wifi?.getUsableChannels(BAND_24_5_WITH_DFS, mode)?.mapTo(HashSet()) { it.frequencyMhz } }.getOrNull()
+        runCatching { wifi?.getUsableChannels(BAND_24_5_WITH_DFS, mode)?.mapTo(HashSet()) { it.frequencyMhz } }
+            .onFailure { Log.i(TAG, "getUsableChannels(mode=$mode) refused: ${it.javaClass.simpleName}: ${it.message}") }
+            .getOrNull()
 
     private fun hasPermission(): Boolean {
         val permission =

@@ -118,8 +118,10 @@ object DirectChannels {
     }
 
     /**
-     * A host's group on [pick]: one [attempt] there, and when a pinned frequency is refused or forms nothing in time, a
-     * [clear] of whatever it may still raise and one more [attempt] on 2.4 GHz, which every phone joins. A pinned
+     * A host's group on [pick]: one [attempt] there, and when a pinned frequency is refused or forms nothing in time,
+     * one more [attempt] on 2.4 GHz, which every phone joins. Only a try that formed nothing in time is [clear]ed first:
+     * the framework may still be creating it, and the retry would meet BUSY. A refused one started nothing, and a clear
+     * then could end another app's negotiation, since the P2P state machine is the phone's, not Knit's. A pinned
      * frequency the platform will not use costs one try, never the transfer. Null when no group formed; a refused
      * `Auto` or 2.4 GHz request, and the retry's own refusal, throw as they did. Pure so the retry is JVM-tested
      * (`DirectChannelsTest`): [attempt] is the radio's (`AndroidDirectWifi.createGroup`), null for nothing formed in
@@ -131,18 +133,17 @@ object DirectChannels {
         clear: suspend () -> Unit,
         log: (String) -> Unit = {},
     ): T? {
-        val pinned = pick.channel is GroupChannel.Frequency
-        val first =
+        if (pick.channel !is GroupChannel.Frequency) return attempt(pick.channel)
+        val silent =
             try {
-                attempt(pick.channel)
+                attempt(pick.channel)?.let { return it }
+                true
             } catch (e: DirectWifiException) {
-                if (!pinned) throw e
                 log("a group on ${pick.channel} was refused: ${e.message}")
-                null
+                false
             }
-        if (first != null || !pinned) return first
         log("no group on ${pick.channel}; trying 2.4 GHz")
-        clear()
+        if (silent) clear()
         return attempt(GroupChannel.Band24)
     }
 

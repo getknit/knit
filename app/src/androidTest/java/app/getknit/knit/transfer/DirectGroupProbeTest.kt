@@ -4,12 +4,15 @@ import android.Manifest
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.call.DirectTimings
 import app.getknit.knit.mesh.DemoTransport
+import app.getknit.knit.ui.BackgroundStarts
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -33,12 +36,17 @@ import org.junit.runner.RunWith
  *
  * It runs on Device Farm phones from an unseeded build (`TEST_TARGETS="package app.getknit.knit.transfer"`), never on
  * CI's emulators, which have no Wi-Fi Direct: this package is in no pass of `ci.yml`. A phone needs Wi-Fi on, and
- * location on below API 33, where P2P is gated on it; neither skips, since a skip reads green. It skips in a seeded build
+ * location on below API 33, where P2P is gated on it; neither skips, since a skip reads green. Below API 33 the platform
+ * also admits Wi-Fi Direct only to an app that holds fine location in the foreground (a Galaxy A51 on Android 10 refused
+ * every group with no screen up, 2026-11-21), so there the probe holds an empty `ComponentActivity` on screen, which
+ * Compose's test manifest declares in a debug build. It skips in a seeded build
  * (`BuildConfig.SEED_DEMO`, testing.md's I3): the seeded suites' default filter (`notPackage app.getknit.knit.uiauto`)
  * takes in this package, and their runs hunt UI on phones, not radios. The unseeded passes name their packages, so only
  * the probe's own run reaches it, and that run never skips here. The one probe that skips says why in the report, and
- * only where the phone cannot answer the question. Below API 34 a phone cannot say which frequencies it can own, so
- * there the pin and `Auto` probes log where the group formed without asserting it.
+ * only where the phone cannot answer the question. Below API 34 a phone cannot say which frequencies it can own, and
+ * some 34+ phones will not either (two MediaTek phones on the farm): there the pin and `Auto` probes log where the group
+ * formed without asserting it, and the channel probe logs the silence and skips (`KnitTransfer` says which refusal it
+ * was).
  *
  * The groups are named `DIRECT-pr-…`, which is not ours (`GroupCredentials.isOurs`), so the app's start-up sweep (8 s
  * into this very process, `KnitApplication.SWEEP_DELAY_MS`) never removes one under a probe. [release] removes it.
@@ -60,15 +68,27 @@ class DirectGroupProbeTest {
     // A transport that never touches a radio: no MeshService runs in this process, so there is no Wi-Fi Aware to pause.
     private val radio = AndroidDirectWifi(context, DemoTransport(MutableStateFlow(emptySet())))
 
+    // Below API 33: the screen that puts the app in the foreground, for the location gate.
+    private var screen: ActivityScenario<ComponentActivity>? = null
+
     @Before
     fun thePhoneCanHost() {
         assumeFalse("a seeded build runs the UI suites; the probe runs from an unseeded one", BuildConfig.SEED_DEMO)
         val refusal = radio.refusal()
         assertNull("Wi-Fi Direct is not usable on this phone: $refusal", refusal)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            // A start from the app's own process while another app holds the screen: MIUI and HyperOS refuse it as a
+            // background start and the launch then waits forever (testing.md), so it is allowed first, as the UI suites do.
+            BackgroundStarts.allow()
+            screen = ActivityScenario.launch(ComponentActivity::class.java)
+        }
     }
 
     @After
-    fun release() = runBlocking { radio.release() }
+    fun release() {
+        runBlocking { radio.release() }
+        screen?.close()
+    }
 
     @Test
     fun thePlatformSaysWhereThisPhoneCanJoinAndOwnAGroup() {
@@ -80,9 +100,16 @@ class DirectGroupProbeTest {
             assertNull(view.go)
             return
         }
-        // What a receiver sends as `ch`, and what a host intersects it with. A phone that answers null here sends no `ch`.
-        val client = view.client ?: throw AssertionError("API 34+, and the platform did not list the client frequencies")
-        val go = view.go ?: throw AssertionError("API 34+, and the platform did not list the group-owner frequencies")
+        // What a receiver sends as `ch`, and what a host intersects it with. A phone that answers null here sends no `ch`
+        // and hosts as one below 34 does: a fact about the phone, logged for the table and reported as a skip.
+        val client = view.client
+        val go = view.go
+        if (client == null || go == null) {
+            val silent = "API 34+, and the platform will not list the ${if (client == null) "client" else "group-owner"} frequencies"
+            log(silent)
+            assumeTrue(silent, false)
+            return
+        }
         assertTrue("no 2.4 GHz frequency to join a group on: $client", client.any(::is24))
         assertTrue("no 2.4 GHz frequency to own a group on: $go", go.any(::is24))
         assertNotNull("the table names none of the client frequencies $client", DirectChannels.mask(client))
@@ -163,8 +190,13 @@ class DirectGroupProbeTest {
                 try {
                     radio.hostOn(credentials(), DirectTimings().groupUpMs, peerChannels = null, forced = channel)
                 } catch (e: DirectWifiException) {
-                    // Below API 33 the platform gates Wi-Fi Direct on location being on, and says only ERROR when it is off.
-                    val hint = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) " (below API 33: is location on?)" else ""
+                    // Below API 33 the platform gates Wi-Fi Direct on location and says only ERROR when the gate is shut.
+                    val hint =
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                            " (below API 33 Wi-Fi Direct needs fine location, granted and in the foreground, and location on)"
+                        } else {
+                            ""
+                        }
                     throw AssertionError("no group on $channel: ${e.message}$hint", e)
                 }
             group to (System.nanoTime() - started) / NANOS_PER_MS

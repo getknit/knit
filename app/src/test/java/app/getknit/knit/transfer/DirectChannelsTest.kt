@@ -272,11 +272,12 @@ class DirectChannelsTest {
         }
 
     @Test
-    fun aPinnedFrequencyRefusedOrSilentIsClearedAndRaisedOnceMoreOnTwoPointFour() =
+    fun aPinnedFrequencyRefusedOrSilentIsRaisedOnceMoreOnTwoPointFourAndOnlyASilentOneCleared() =
         runTest {
+            // Refused: nothing of ours was started, and a clear could end another app's negotiation on the phone.
             val refusing = Radio { if (it == pinned) throw refused else "group on $it" }
             assertEquals("group on ${GroupChannel.Band24}", refusing.raise(pinned))
-            assertEquals(listOf("$pinned", "clear", "${GroupChannel.Band24}"), refusing.asked)
+            assertEquals(listOf("$pinned", "${GroupChannel.Band24}"), refusing.asked)
 
             // Nothing formed in time: a group that forms late on the pinned frequency is cleared before the retry.
             val silent = Radio { if (it == pinned) null else "group on $it" }
@@ -305,7 +306,7 @@ class DirectChannelsTest {
             val busy = DirectWifiException("createGroup failed: BUSY", TransferRefusal.Hotspot)
             val refusing = Radio { if (it == pinned) throw refused else throw busy }
             assertSame(busy, refusalOf { refusing.raise(pinned) })
-            assertEquals(listOf("$pinned", "clear", "${GroupChannel.Band24}"), refusing.asked)
+            assertEquals(listOf("$pinned", "${GroupChannel.Band24}"), refusing.asked)
 
             val silent = Radio { null }
             assertNull(silent.raise(pinned))

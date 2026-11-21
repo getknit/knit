@@ -41,7 +41,10 @@ a peer update, the direct leg of a call.
   `Auto`, unless the host's Wi-Fi sits on DFS. Then the host uses its first 5 GHz frequency off DFS, or 2.4 GHz when
   it cannot list its own: a slower group beats one nobody finds.
 - **A pinned frequency costs one try, not the transfer:** a pinned group that does not form within `groupUpMs` is
-  removed and raised once more on 2.4 GHz. The choice and its reason are logged
+  cancelled (`cancelConnect`), removed and raised once more on 2.4 GHz. `removeGroup` alone does not stop a creation
+  still in progress, and the retry then met `BUSY` (a Redmi Note 13 on Device Farm, 2026-11-21). A refused pinned
+  request is raised again on 2.4 GHz with nothing cleared: it started nothing, and a cancel could end another app's
+  negotiation, since the phone has one P2P state machine. The choice and its reason are logged
   (`group channel=… sta=… peerChannels=… (reason)` under `KnitTransfer`).
 
 The cost of the field, against the `wire-fields-byte-efficient` rule:
@@ -72,9 +75,15 @@ The alternatives, and why each falls short:
   trials ran at about 70 MB/s. A pinned group works, but at roughly a sixteenth of the speed, because both radios
   time-share between the access point and the group. That is why `Auto` stays whenever the peer can use the host's
   channel. These numbers are that day's, on one pair and one access point.
-- **API 29–33 receivers cannot say.** For them only the host-on-DFS rule protects them, and they then get a
-  group off DFS whether or not they need it. A host below API 34 cannot list its own channels, so its fallback is
-  2.4 GHz.
+- **API 29–33 receivers cannot say, and nor can some on 34+.** On Device Farm (2026-11-21) `getUsableChannels`
+  answered nothing on two MediaTek phones, a Galaxy A16 on 34 and a Redmi Note 13+ on 35. For all of them only the
+  host-on-DFS rule protects them, and they then get a group off DFS whether or not they need it. A host that cannot
+  list its own channels falls back to 2.4 GHz.
+- **What the farm's phones did** (`DirectGroupProbeTest`, 2026-11-21, eight phones from Android 10 to 17): a pinned
+  5180 formed on 5180 everywhere, beside a station on 5220, 5765 or 5805 too; `Auto` followed the station; a frequency
+  missing from the phone's own list was refused within about 2 s and the group moved to 2.4 GHz, except on the Redmi
+  Note 13, which answered only by the 15 s timeout. The pair this ADR began with is not only Pixels': the Galaxy S25
+  Ultra can host a group on DFS, and the Galaxy S26 cannot join one.
 - **Stale or wrong answers.** The receiver's list is read at accept time. A list that turns out wrong (a regulatory
   domain change, a firmware that lies) costs the one 2.4 GHz retry, never a silent hang.
 - **Untouched.** The joiner still finds the group by name and scans for it, so `READY` is unchanged, and so is the
