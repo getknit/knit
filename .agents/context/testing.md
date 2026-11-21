@@ -190,10 +190,9 @@ device from a known signal and checks what comes out against it:
 - `ui.call.WalkieOpusInstrumentedTest`: the walkie's Opus encoder and decoder, a known tone through `TalkRecorder.nextFrom`
   back out of `TalkPlayer`'s tap at its pitch and length, every packet a 20 ms frame and one size under CBR; then a
   burst from the microphone.
-- `ui.camera.PhotoCaptureInstrumentedTest` and `ui.scan.QrScanInstrumentedTest`: CameraX capture through the photo
-  screen's `jpegBytes`, and analysis frames through the scanner's `scan`, both `internal` for this, with a code drawn
-  into a frame laid out as the camera's are. The emulator's analysis frames carry no row padding, so that case means
-  something only on a phone.
+- `ui.scan.QrScanInstrumentedTest`: CameraX analysis frames through the scanner's `scan`, `internal` for this, with a
+  code drawn into a frame laid out as the camera's are. The emulator's analysis frames carry no row padding, so that
+  case means something only on a phone.
 
 None needs the seed or a clean slate, so they run in whichever pass takes their package: CI's unseeded pass for `data`,
 its seeded pass for `ui`, and every package FTL and Device Farm take (`notPackage app.getknit.knit.uiauto`), which is

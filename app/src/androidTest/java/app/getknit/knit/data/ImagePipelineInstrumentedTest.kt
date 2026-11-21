@@ -228,6 +228,10 @@ class ImagePipelineInstrumentedTest {
 
     private companion object {
         const val SEED = 353L
+
+        // AttachmentStore's private MAX_DIMENSION and JPEG_QUALITY on the 2.12 line (main moved them to ImageEncode).
+        const val PHOTO_MAX_DIMENSION = 1_280
+        const val PHOTO_JPEG_QUALITY = 85
         const val STORED_WIDTH = 2_000
         const val STORED_HEIGHT = 1_500
         const val CAMERA_QUALITY = 95

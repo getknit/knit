@@ -255,10 +255,8 @@ private fun otherLens(lensFacing: Int): CameraSelector =
 /**
  * Copies the JPEG out of a captured frame. Always closes the [ImageProxy] — a leaked frame stalls the
  * capture pipeline — and never throws: this runs on the main thread from a CameraX callback.
- *
- * `internal` rather than private so `PhotoCaptureInstrumentedTest` can hand it a real camera's frames.
  */
-internal fun jpegBytes(image: ImageProxy): ByteArray? =
+private fun jpegBytes(image: ImageProxy): ByteArray? =
     image.use {
         runCatching {
             val buffer = it.planes.firstOrNull()?.buffer ?: return@runCatching null
