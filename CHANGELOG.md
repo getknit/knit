@@ -61,6 +61,8 @@ document:
 - The lock beside a chat's name, which you tap to see that the chat is encrypted, is now easier to hit on a
   narrow phone or with a larger display size. A long name now gets cut short a little sooner to make room
   (#354).
+- On some phones, Knit crashed while downloading the speech model for transcripts and call captions. The
+  download now finishes without Knit closing.
 
 ## [2.12.0](https://github.com/getknit/knit/releases/tag/v2.12.0) — 2026-11-18T23:31:49Z
 
