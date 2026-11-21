@@ -8,7 +8,7 @@
     <string name="mesh_channel_name">Mesh 网络</string>
     <string name="channel_status_desc">在应用处于后台时保持 Mesh 网络运行</string>
     <string name="mesh_notification_title">Knit Mesh 网络正在运行</string>
-    <string name="mesh_notification_searching">Mesh 网络正在运行，正在搜索</string>
+    <string name="mesh_notification_searching">Mesh 网络正在运行并持续搜索中</string>
     <string name="mesh_notification_foreground_only">打开 Knit以继续通过 Wi-Fi 搜索附近的手机</string>
     <plurals name="mesh_notification_connected">
         <item quantity="other">已连接 %d 台附近的设备</item>
