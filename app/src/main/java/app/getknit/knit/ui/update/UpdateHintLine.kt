@@ -30,6 +30,7 @@ import app.getknit.knit.update.UpdateHint
 /**
  * The older phone's line above the composer (ADR 2026-11.29m7), drawn like the translation hint: [peerName] runs a
  * newer Knit that can install here. It offers Ask, then says how the ask stands; the close puts it away for that version.
+ * Once the newer phone has answered, it draws nothing: the incoming transfer's card carries the rest.
  */
 @Composable
 fun UpdateHintLine(
@@ -39,12 +40,13 @@ fun UpdateHintLine(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    if (hint.ask is AskState.Answered) return
     val version = hint.build.versionName
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val (text, action) =
         when (val ask = hint.ask) {
             is AskState.Waiting -> stringResource(R.string.update_hint_waiting, peerName, version) to null
-            is AskState.Answered -> stringResource(R.string.update_hint_answered, peerName, version) to null
+            is AskState.Answered -> return
             is AskState.Declined -> stringResource(declinedText(ask.reason), peerName) to R.string.update_hint_ask_again
             is AskState.Unanswered -> stringResource(R.string.update_hint_unanswered, peerName) to R.string.update_hint_ask_again
             is AskState.Failed -> stringResource(R.string.update_hint_failed, peerName) to R.string.update_hint_ask_again

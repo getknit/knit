@@ -517,7 +517,6 @@
     <string name="update_hint_ask">Demander</string>
     <string name="update_hint_ask_again">Redemander</string>
     <string name="update_hint_waiting">En attente de l’envoi de Knit %2$s par %1$s…</string>
-    <string name="update_hint_answered">%1$s envoie Knit %2$s</string>
     <string name="update_hint_declined">%1$s ne peut pas l’envoyer pour le moment</string>
     <string name="update_hint_declined_busy">%1$s : appel ou autre transfert en cours</string>
     <string name="update_hint_declined_gone">%1$s n’a plus cette version</string>

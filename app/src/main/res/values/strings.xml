@@ -630,7 +630,6 @@
     <string name="update_hint_ask">Ask</string>
     <string name="update_hint_ask_again">Ask again</string>
     <string name="update_hint_waiting">Waiting for %1$s to send Knit %2$s…</string>
-    <string name="update_hint_answered">%1$s is sending Knit %2$s</string>
     <!-- %1$s is the contact's name. They turned the ask down, or were busy, or no longer run that version. -->
     <string name="update_hint_declined">%1$s can\'t send it right now</string>
     <string name="update_hint_declined_busy">%1$s is busy with a call or another transfer</string>

@@ -525,7 +525,6 @@
     <string name="update_hint_ask">Попросити</string>
     <string name="update_hint_ask_again">Попросити ще раз</string>
     <string name="update_hint_waiting">Очікуємо, поки %1$s надішле Knit %2$s…</string>
-    <string name="update_hint_answered">%1$s надсилає Knit %2$s</string>
     <string name="update_hint_declined">%1$s зараз не може це надіслати</string>
     <string name="update_hint_declined_busy">%1$s зараз у дзвінку або передає інший файл</string>
     <string name="update_hint_declined_gone">%1$s: цієї версії вже немає</string>

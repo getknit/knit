@@ -501,7 +501,6 @@
     <string name="update_hint_ask">请求</string>
     <string name="update_hint_ask_again">再次请求</string>
     <string name="update_hint_waiting">正在等待%1$s发送 Knit %2$s…</string>
-    <string name="update_hint_answered">%1$s正在发送 Knit %2$s</string>
     <string name="update_hint_declined">%1$s现在无法发送</string>
     <string name="update_hint_declined_busy">%1$s正在通话或进行其他传输</string>
     <string name="update_hint_declined_gone">%1$s已没有该版本</string>

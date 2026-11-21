@@ -62,6 +62,8 @@ keeps that for every package but one.
   certificate pin, the same track (slim or full), a stable build only when this one is stable (a pre-release user takes
   any newer build), a minSdk this phone meets, the contact still in short range, and that versionCode not dismissed.
   An `au` frame from a contact out of range is dropped on arrival.
+  After Ask, the line says the ask is waiting; once the newer phone answers, the line goes and the incoming transfer's
+  card carries the rest (amended after the 2026-11-20 trial, which showed both saying the same thing).
 - **REQUEST, then the newer phone's answer.** Ask runs the one-time direct-transfer disclosure if it has not been
   given, sends the user to "Install unknown apps" for Knit if that is off, checks free space against the announced
   size, then sends REQUEST with a fresh request id and the announced versionCode. The asking phone keeps the

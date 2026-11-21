@@ -509,7 +509,6 @@
     <string name="update_hint_ask">Fragen</string>
     <string name="update_hint_ask_again">Erneut fragen</string>
     <string name="update_hint_waiting">Warten, bis %1$s Knit %2$s sendet…</string>
-    <string name="update_hint_answered">%1$s sendet Knit %2$s</string>
     <string name="update_hint_declined">%1$s kann es gerade nicht senden</string>
     <string name="update_hint_declined_busy">%1$s telefoniert gerade oder hat eine andere Übertragung</string>
     <string name="update_hint_declined_gone">%1$s hat diese Version nicht mehr</string>

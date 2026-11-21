@@ -319,6 +319,7 @@ import app.getknit.knit.ui.voice.VoiceStopButton
 import app.getknit.knit.ui.voice.formatDuration
 import app.getknit.knit.ui.voice.rememberMicGate
 import app.getknit.knit.ui.voice.voiceTranscriptView
+import app.getknit.knit.update.AskState
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -1850,7 +1851,7 @@ internal fun ChatScreenContent(
                                 formatting = !state.isBridged,
                                 draftTranslate = draftTranslate,
                                 aboveField =
-                                    peerUpdate.hint?.let { hint ->
+                                    peerUpdate.hint?.takeIf { it.ask !is AskState.Answered }?.let { hint ->
                                         { UpdateHintLine(state.title, hint, onAsk = peerUpdate.onAsk, onDismiss = peerUpdate.onDismiss) }
                                     },
                                 onTranslateDraft = onTranslateDraft,

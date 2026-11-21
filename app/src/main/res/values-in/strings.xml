@@ -501,7 +501,6 @@
     <string name="update_hint_ask">Minta</string>
     <string name="update_hint_ask_again">Minta lagi</string>
     <string name="update_hint_waiting">Menunggu %1$s mengirim Knit %2$s…</string>
-    <string name="update_hint_answered">%1$s sedang mengirim Knit %2$s</string>
     <string name="update_hint_declined">%1$s tidak bisa mengirimnya sekarang</string>
     <string name="update_hint_declined_busy">%1$s sedang dalam panggilan atau transfer lain</string>
     <string name="update_hint_declined_gone">%1$s tidak lagi memiliki versi itu</string>
