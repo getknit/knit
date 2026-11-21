@@ -86,5 +86,7 @@ The alternatives, and why each falls short:
     (`theCalleeSaysWhereItCanJoinAndTheCallerHostsThere`) pin the plumbing;
   - `MessageContentTest.aJoinersChannelsCostAtMostTwelveBytesAndNothingWhenUnsaid` pins the cost;
   - golden vectors `messageContentTransferAcceptChannels` and `messageContentCallRingingChannels` pin the bytes.
-  - The 2.4 GHz retry and the platform reads are on-device only: `…debug.XFER` dumps `channels: {sta, client, go}`
-    for the next trial.
+  - `DirectChannelsTest` also sweeps `choose` over every kind of channel against these rules, freezes the table's
+    bit for each frequency, and pins the 2.4 GHz retry (`DirectChannels.raise`);
+  - the platform reads, and where each kind of group forms on a phone, are `DirectGroupProbeTest`'s, on Device Farm
+    phones. `…debug.XFER` dumps `channels: {sta, client, go}` for a two-phone trial.

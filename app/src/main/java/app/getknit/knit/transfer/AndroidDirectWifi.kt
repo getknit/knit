@@ -101,32 +101,34 @@ class AndroidDirectWifi(
         credentials: GroupCredentials,
         timeoutMs: Long,
         peerChannels: Set<Int>?,
+    ): HostedGroup = hostOn(credentials, timeoutMs, peerChannels, forced = null)
+
+    /**
+     * [host], on [forced] when it is set instead of where [DirectChannels.choose] would put the group: the seam
+     * `DirectGroupProbeTest` raises each kind of group through on a phone, with the retry and the platform's answers
+     * exactly as a transfer meets them.
+     */
+    internal suspend fun hostOn(
+        credentials: GroupCredentials,
+        timeoutMs: Long,
+        peerChannels: Set<Int>?,
+        forced: GroupChannel?,
     ): HostedGroup =
         mutex.withLock {
             val manager = ready()
             val ch = prepare(manager)
             val view = channels()
-            val pick = DirectChannels.choose(view.sta, peerChannels, view.go)
+            val pick = forced?.let { ChannelPick(it, "forced") } ?: DirectChannels.choose(view.sta, peerChannels, view.go)
             Log.i(TAG, "group channel=${pick.channel} sta=${view.sta} peerChannels=${peerChannels?.size} (${pick.reason})")
-            // A pinned frequency the platform will not use costs one try, never the transfer: 2.4 GHz is everyone's. That
-            // holds whether it refuses the request outright or forms nothing in time.
-            val pinned = pick.channel is GroupChannel.Frequency
-            val first =
-                try {
-                    createGroup(manager, ch, credentials, pick.channel, timeoutMs)
-                } catch (e: DirectWifiException) {
-                    if (!pinned) throw e
-                    Log.w(TAG, "a group on ${pick.channel} was refused: ${e.message}")
-                    null
-                }
             val formed =
-                first ?: if (pinned) {
-                    Log.w(TAG, "no group on ${pick.channel}; trying 2.4 GHz")
-                    runCatching { withTimeoutOrNull(RELEASE_MS) { act("removeGroup(pinned)") { manager.removeGroup(ch, it) } } }
-                    createGroup(manager, ch, credentials, GroupChannel.Band24, timeoutMs)
-                } else {
-                    null
-                } ?: throw DirectWifiException("group did not form within ${timeoutMs}ms", TransferRefusal.NoWifiDirect)
+                DirectChannels.raise(
+                    pick,
+                    attempt = { channel -> createGroup(manager, ch, credentials, channel, timeoutMs) },
+                    clear = {
+                        runCatching { withTimeoutOrNull(RELEASE_MS) { act("removeGroup(pinned)") { manager.removeGroup(ch, it) } } }
+                    },
+                    log = { Log.w(TAG, it) },
+                ) ?: throw DirectWifiException("group did not form within ${timeoutMs}ms", TransferRefusal.NoWifiDirect)
             val addresses = addressesOf(formed.group, formed.address)
             Log.i(
                 TAG,

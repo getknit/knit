@@ -117,5 +117,34 @@ object DirectChannels {
         }
     }
 
+    /**
+     * A host's group on [pick]: one [attempt] there, and when a pinned frequency is refused or forms nothing in time, a
+     * [clear] of whatever it may still raise and one more [attempt] on 2.4 GHz, which every phone joins. A pinned
+     * frequency the platform will not use costs one try, never the transfer. Null when no group formed; a refused
+     * `Auto` or 2.4 GHz request, and the retry's own refusal, throw as they did. Pure so the retry is JVM-tested
+     * (`DirectChannelsTest`): [attempt] is the radio's (`AndroidDirectWifi.createGroup`), null for nothing formed in
+     * time and a [DirectWifiException] for a refusal.
+     */
+    suspend fun <T : Any> raise(
+        pick: ChannelPick,
+        attempt: suspend (GroupChannel) -> T?,
+        clear: suspend () -> Unit,
+        log: (String) -> Unit = {},
+    ): T? {
+        val pinned = pick.channel is GroupChannel.Frequency
+        val first =
+            try {
+                attempt(pick.channel)
+            } catch (e: DirectWifiException) {
+                if (!pinned) throw e
+                log("a group on ${pick.channel} was refused: ${e.message}")
+                null
+            }
+        if (first != null || !pinned) return first
+        log("no group on ${pick.channel}; trying 2.4 GHz")
+        clear()
+        return attempt(GroupChannel.Band24)
+    }
+
     private fun best(candidates: Set<Int>): Int = PREFERENCE.firstOrNull { it in candidates } ?: candidates.min()
 }

@@ -149,6 +149,9 @@ had happened.
 the five below (I1–I5), which a JVM test never meets. CI runs it on headless aosp-atd emulators (the advisory "Instrumented
 tests" job): one Gradle call per package, `ui` and `uiauto` from a seeded build, `data`, `moderation`, `notifications`
 and `text` from an unseeded one, `a11y` seeded on API 34. `blepair` needs a second phone and never runs there.
+`transfer` (`DirectGroupProbeTest`, ADR 2026-11.8zm5) needs a phone's Wi-Fi Direct, which no emulator has: it runs only
+on Device Farm phones, from an unseeded build, as the package `app.getknit.knit.transfer`, and skips in a seeded one,
+whose default `notPackage app.getknit.knit.uiauto` filter would otherwise take it in.
 
 - **I1. The app runs beside the test.** The instrumentation process is the app's: `KnitApplication.onCreate` starts
   Koin and launches background work (`startCallsIfWired`, the relay seed, the commons rename) that builds the graph,
