@@ -79,6 +79,7 @@ lines.
   A burst stops at `MAX_BURST_MS` (30 s) while a receiver takes `MAX_HEARD_BURST_MS` (60 s, an older sender's), and
   ends with a `TalkCue` on the speaker's phone alone — the call screen's haptic on the step from `Talk.Recording` to
   `Talk.Sending`, and at the limit `CallTone.TALK_CAPPED`, played after the recorder stops (79yb's fourteenth amendment).
+  The platform Opus codec under `TalkRecorder` and `TalkPlayer` is tested on an emulator by `WalkieOpusInstrumentedTest`.
   **Before touching `call/CaptureHealth` (`CaptureProfile`, `CapturePolicy`, `CaptureWatch`), `ui/call/CaptureTap`,
   the audio module in `WebRtcCallMedia`, `call/TalkCapture` or the `call_capture_` keys:** READ ADR 2026-10.kw29 (and
   79yb's thirteenth amendment: the walkie's phone microphone follows the same profile) and `docs/VOICE_CALLS.md`

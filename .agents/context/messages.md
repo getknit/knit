@@ -144,12 +144,13 @@ lines.
   bounded, upright and no sharper than the q85 re-encode goes out as its own bytes with the metadata stripped, so the
   "no GPS leaves the phone" invariant rests on the strip's allow-list: anything it does not fully understand answers
   null (the long way), and a segment is kept only if a decoder needs it. Tests: `ImageStripTest`,
-  `AttachmentStoreIngestTest`.
+  `AttachmentStoreIngestTest`; on an emulator `ImagePipelineInstrumentedTest` (camera JPEG and HEIC, the pass-through).
   **Before touching `ImageStrip.animatedWebp`, `AttachmentStore.animated`, `data/webp/AnimatedFrames` or
   `WebpTranscode.shrinkAnimated`:** READ ADR 2026-10.8hmx — the bytes, not the provider's type, pick the door; an
   animated WebP within 512 px / 200 frames / 1 MiB goes out stripped under the same allow-list rule, anything past
   it and every APNG (Android cannot play one) is composited at the output size into an animated WebP, and
-  `identityFor` prefers an animated row so a send flattened before #133 is not reused. Tests: `AnimatedFramesTest`.
+  `identityFor` prefers an animated row so a send flattened before #133 is not reused. Tests: `AnimatedFramesTest`; on
+  an emulator `WebpTranscodeInstrumentedTest`.
 - **When touching `data/video/` (`VideoEncodePolicy`, `VideoEncoderChoice`, `VideoTranscoder`, `MemoryMp4Muxer`,
   `MemoryMuxerOutput`, `VideoFrames`), `AttachmentStore.ingestVideo`, `VideoInfo` / `ChatContent.attachmentSize`, the
   `messages.video*` columns, `ImageScreeningService.isVideoExplicit` / `screenVideo` / `isPosterExplicit`, or
