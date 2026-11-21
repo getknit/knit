@@ -177,7 +177,40 @@ whose default `notPackage app.getknit.knit.uiauto` filter would otherwise take i
   test the change is about must not be one of them, or the change has no CI coverage: name where it does run (FTL,
   one lab phone by hand under `rules/devices.md`).
 
-There is no stress script for these. The reviewer reads them and names the run the change owes, one class per Gradle
+**Codec and hardware suites.** The platform codecs and hardware the JVM tests replace with Robolectric's have suites of
+their own, for the class of #353 (an HEVC encoder two phones lacked, found only there). Each makes its input on the
+device from a known signal and checks what comes out against it:
+
+- `data.VoiceAudioInstrumentedTest`: a voice note's length, waveform and speech samples on the AAC decoder, from notes
+  the phone's own AAC encoder made (`AudioFixtures`: ADTS as `VoiceRecorder` writes it, and a picked M4A). It found the
+  waveform's empty bars on short notes; `VoiceAudioTest` pins the bucketing on the JVM since.
+- `data.ImagePipelineInstrumentedTest`: `AttachmentStore`'s picker door in the app's own graph (I1): a sideways JPEG and a
+  sideways HEIC with a GPS position come out upright with no metadata, a small upright JPEG passes through with its
+  pixels, a transparent PNG becomes a WebP that keeps its alpha, a GIF a smaller animated WebP. The HEIC is
+  `assets/codec/camera-sideways.heic`, written by `scripts/gen-heic-fixture.py` with the turn in EXIF and no `irot`
+  box, as Samsung and Xiaomi cameras write it.
+- `data.webp.WebpTranscodeInstrumentedTest`: a GIF (`Movie`) and an APNG (`AnimatedFrames`, the compositor) become an
+  animated WebP that `ImageDecoder` plays at its size and play count and whose first frame it draws, and every later
+  frame, decoded out of the app's own demux, shows the source frame's colour (`AnimationFixtures`, which writes the GIF
+  and assembles the APNG itself).
+- `ui.voice.VoiceRecorderInstrumentedTest`: `MediaRecorder` from the microphone into the pipe, and the microphone freed
+  on every exit, by the audio service's count of active recordings (since Android 10 a second capture starts beside a
+  leaked one, so opening it again proves nothing).
+- `ui.call.WalkieOpusInstrumentedTest`: the walkie's Opus encoder and decoder, a known tone through `TalkRecorder.nextFrom`
+  back out of `TalkPlayer`'s tap at its pitch and length, every packet a 20 ms frame and one size under CBR; then a
+  burst from the microphone.
+- `ui.camera.PhotoCaptureInstrumentedTest` and `ui.scan.QrScanInstrumentedTest`: CameraX capture through the photo
+  screen's `jpegBytes`, and analysis frames through the scanner's `scan`, both `internal` for this, with a code drawn
+  into a frame laid out as the camera's are. The emulator's analysis frames carry no row padding, so that case means
+  something only on a phone.
+
+None needs the seed or a clean slate, so they run in whichever pass takes their package: CI's unseeded pass for `data`,
+its seeded pass for `ui`, and every package FTL and Device Farm take (`notPackage app.getknit.knit.uiauto`), which is
+where they meet real phones' codecs. The microphone and camera suites grant their permission with `GrantPermissionRule`
+and fail, never skip, on a device without the hardware (I5): the managed emulators have audio in and an emulated back
+camera. A chat's file bubble draws no preview, so `PdfRenderer` has nothing to test.
+
+There is no stress script for instrumented tests. The reviewer reads them and names the run the change owes, one class per Gradle
 call (under the orchestrator a comma-separated list ran only the first):
 `./gradlew :app:pixel7api33DebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=<fqcn>`, with
 `-PseedDemo=true` for a seeded package. It never runs one on the lab phones.

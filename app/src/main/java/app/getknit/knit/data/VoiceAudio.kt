@@ -110,6 +110,8 @@ object VoiceAudio {
 
     private const val DEQUEUE_TIMEOUT_US = 10_000L
 
+    private const val US_PER_S = 1_000_000L
+
     /** [speechPcm]'s cap past the stated length: the decoder's priming and tail. */
     private const val SPEECH_CAP_SLACK_MS = 1_000L
 
@@ -158,20 +160,50 @@ object VoiceAudio {
             val buckets = LongArray(PEAK_COUNT)
             var any = false
             val ok =
-                decodeChunks(bytes) { pcm, timeUs, _, _ ->
-                    val bucket = ((timeUs * PEAK_COUNT) / totalUs).toInt().coerceIn(0, PEAK_COUNT - 1)
-                    val shorts = pcm.asShortBuffer()
-                    while (shorts.hasRemaining()) {
-                        any = true
-                        val sample = shorts.get()
-                        // Guard against Short.MIN_VALUE, whose negation overflows a Short.
-                        val magnitude = if (sample < 0) -sample.toLong() else sample.toLong()
-                        if (magnitude > buckets[bucket]) buckets[bucket] = magnitude
-                    }
+                decodeChunks(bytes) { pcm, timeUs, rate, channels ->
+                    if (fillBuckets(buckets, pcm, timeUs, rate, channels, totalUs)) any = true
                 }
             if (!ok || !any) return@withContext null
             ByteArray(PEAK_COUNT) { i -> ((buckets[i] * 255 / scaleFor(buckets)).coerceAtMost(255L)).toInt().toByte() }
         }
+
+    /**
+     * Raises [buckets] to the loudest magnitude of each sample in [pcm] (16-bit, [channels] interleaved at [rate] Hz,
+     * starting at [timeUs]) in the bucket of the sample's **own** time, of [PEAK_COUNT] over [totalUs]. Returns whether
+     * [pcm] held any sample.
+     *
+     * Per sample, not per buffer: one AAC frame is 1024 samples, 64 ms at the recorder's 16 kHz, wider than a bucket of
+     * any note under about four seconds, so a buffer filed whole under its start time left every third or fourth bar
+     * of a short note empty (found by `VoiceAudioInstrumentedTest` on the API 33 emulator's decoder).
+     *
+     * `internal` rather than private so `VoiceAudioTest` can pin the bucketing without a decoder.
+     */
+    @Suppress("LongParameterList") // the buffer, its place in time and its layout, and where it goes
+    internal fun fillBuckets(
+        buckets: LongArray,
+        pcm: java.nio.ByteBuffer,
+        timeUs: Long,
+        rate: Int,
+        channels: Int,
+        totalUs: Long,
+    ): Boolean {
+        val shorts = pcm.asShortBuffer()
+        val any = shorts.hasRemaining()
+        val width = channels.coerceAtLeast(1)
+        var frame = 0L
+        while (shorts.hasRemaining()) {
+            val sampleUs = if (rate > 0) timeUs + frame * US_PER_S / rate else timeUs
+            val bucket = ((sampleUs * PEAK_COUNT) / totalUs).toInt().coerceIn(0, PEAK_COUNT - 1)
+            repeat(minOf(width, shorts.remaining())) {
+                val sample = shorts.get()
+                // Guard against Short.MIN_VALUE, whose negation overflows a Short.
+                val magnitude = if (sample < 0) -sample.toLong() else sample.toLong()
+                if (magnitude > buckets[bucket]) buckets[bucket] = magnitude
+            }
+            frame++
+        }
+        return any
+    }
 
     /** What a voice note's bytes say about themselves — the pair stored on the message row. */
     data class Description(

@@ -166,8 +166,10 @@ private fun qrAnalysis(
  * [ImageProxy] — a leaked frame stalls the analyzer for good — and never lets a throwable escape: this
  * runs on CameraX's analysis executor, where an escape would kill the process (which is exactly how the
  * zxing-android-embedded scanner this replaced failed).
+ *
+ * `internal` rather than private so `QrScanInstrumentedTest` can hand it a real camera's frames.
  */
-private fun scan(image: ImageProxy): String? =
+internal fun scan(image: ImageProxy): String? =
     image.use {
         runCatching {
             val plane = it.planes.firstOrNull() ?: return@runCatching null

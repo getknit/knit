@@ -47,6 +47,8 @@ document:
 
 ### Fixed
 
+- The waveform on a voice note under about four seconds long no longer has gaps every few bars. Voice notes
+  already in your chats keep the waveform they were first drawn with.
 - At a busy gathering, a message waiting for other phones to carry it could be lost before it arrived, when
   repeated copies of profiles nobody had changed filled their storage. Knit now sends a new copy of your
   profile only after you edit it (#335).

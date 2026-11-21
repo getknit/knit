@@ -16,8 +16,9 @@ import org.junit.Test
  * walk is exact, which is what the arithmetic cases below pin, and if malformed input degrades quietly
  * rather than throwing, which is what the rest pin (an inbound handler must never throw — `rules/mesh.md`).
  *
- * [VoiceAudio.peaks] is deliberately not tested here: it needs a real platform decoder, and a Robolectric
- * shadow would only assert that a stub was called. Its behaviour is covered on-device.
+ * [VoiceAudio.peaks]'s decode is not tested here: it needs a real platform decoder, and a Robolectric shadow
+ * would only assert that a stub was called (`VoiceAudioInstrumentedTest` runs it on a device). How the decoded
+ * samples are filed into bars ([VoiceAudio.fillBuckets]) is arithmetic, and is pinned below.
  */
 class VoiceAudioTest {
     @Test
@@ -91,6 +92,45 @@ class VoiceAudioTest {
         stream[5] = (((huge and 0x07) shl 5) or 0x1F).toByte()
         assertNull(VoiceAudio.durationMs(stream))
     }
+
+    @Test
+    fun `every bar of a short note gets the samples of its own time, even where a buffer is wider than a bar`() {
+        // A 2,944 ms note at 16 kHz decodes to 46 buffers of 1024 samples, 64 ms each; its 64 bars are 46 ms wide.
+        // Filing each buffer whole under its start time left every third or fourth bar empty (the device found it).
+        val rate = 16_000
+        val frames = 46
+        val totalUs = frames * 1024 * 1_000_000L / rate
+        val buckets = LongArray(VoiceAudio.PEAK_COUNT)
+        repeat(frames) { i ->
+            val pcm = pcm(ShortArray(1024) { 1_000 })
+            assertTrue(VoiceAudio.fillBuckets(buckets, pcm, i * 1024 * 1_000_000L / rate, rate, 1, totalUs))
+        }
+        assertTrue("bars ${buckets.toList()}", buckets.all { it == 1_000L })
+    }
+
+    @Test
+    fun `stereo buckets by frame, and a ragged or hostile buffer files in range without throwing`() {
+        val buckets = LongArray(VoiceAudio.PEAK_COUNT)
+        // Five samples over two channels: two whole frames and a last one cut short.
+        val ragged = pcm(shortArrayOf(1, Short.MIN_VALUE, 3, 4, 5))
+        assertTrue(VoiceAudio.fillBuckets(buckets, ragged, timeUs = 0, rate = 48_000, channels = 2, totalUs = 1_000_000))
+        assertEquals("Short.MIN_VALUE's magnitude, without overflow", 32_768L, buckets[0])
+        // A buffer stamped past the note's end, at 1 Hz and with no channels, lands in the last bar; one stamped
+        // before its start lands in the first. A peer writes these numbers.
+        val late = LongArray(VoiceAudio.PEAK_COUNT)
+        VoiceAudio.fillBuckets(late, pcm(ShortArray(8) { 7 }), timeUs = 10_000_000, rate = 1, channels = 0, totalUs = 1_000_000)
+        assertEquals("late ${late.toList()}", listOf(7L), late.filter { it != 0L })
+        assertEquals(7L, late[VoiceAudio.PEAK_COUNT - 1])
+        val early = LongArray(VoiceAudio.PEAK_COUNT)
+        VoiceAudio.fillBuckets(early, pcm(ShortArray(8) { 9 }), timeUs = -5_000_000, rate = 16_000, channels = 1, totalUs = 1_000_000)
+        assertEquals(9L, early[0])
+        assertFalse("an empty buffer holds no sample", VoiceAudio.fillBuckets(buckets, pcm(ShortArray(0)), 0, 16_000, 1, 1_000_000))
+    }
+
+    private fun pcm(samples: ShortArray): java.nio.ByteBuffer =
+        java.nio.ByteBuffer.allocate(samples.size * 2).order(java.nio.ByteOrder.nativeOrder()).apply {
+            asShortBuffer().put(samples)
+        }
 
     @Test
     fun `one loud transient does not flatten the rest of the waveform`() {
