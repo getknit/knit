@@ -175,7 +175,7 @@ Builds:
 
   - versionName: 2.12.1
     versionCode: 21201900
-    commit: v2.12.1
+    commit: f3cd662ec72fc18b60e08fee99cda9a83982de83
     subdir: app
     gradle:
       - yes
