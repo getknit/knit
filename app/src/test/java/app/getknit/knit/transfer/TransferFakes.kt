@@ -14,8 +14,10 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.BindException
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
@@ -255,9 +257,25 @@ class LossyLink(
     }
 
     private companion object {
-        val JOINER_SIDE: InetAddress = InetAddress.getByName("127.0.0.2")
         const val HOST_TRIES = 100
         const val HOST_RETRY_MS = 50L
+
+        /**
+         * Where the joiner's side listens: a loopback address the host's listener does not hold at its port (it holds
+         * 127.0.0.1 and ::1). Linux and Windows answer for the whole of 127/8, so 127.0.0.2. macOS puts 127.0.0.1 alone
+         * on lo0 ("Can't assign requested address" for .2) but gives lo0 the link-local fe80::1 by default, the kind of
+         * address a Wi-Fi Direct client takes anyway.
+         */
+        val JOINER_SIDE: InetAddress by lazy {
+            val candidates =
+                listOf(
+                    { InetAddress.getByName("127.0.0.2") },
+                    { Inet6Address.getByAddress(null, InetAddress.getByName("fe80::1").address, NetworkInterface.getByName("lo0")) },
+                )
+            candidates.firstNotNullOfOrNull { candidate ->
+                runCatching { candidate().also { address -> ServerSocket().use { it.bind(InetSocketAddress(address, 0)) } } }.getOrNull()
+            } ?: error("no loopback address beside the host's to listen on: neither 127.0.0.2 nor fe80::1%lo0 binds")
+        }
     }
 }
 

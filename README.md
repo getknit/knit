@@ -342,7 +342,8 @@ for Google Play once they do. To try it from source, see [Build](#-build).
 The source lives at **<https://github.com/getknit/knit>**. You need **JDK 21** and the
 Android SDK — Android Studio is optional. When building from the command line without
 Studio, point Gradle at your SDK first: create a git-ignored `local.properties` containing
-`sdk.dir=/path/to/Android/Sdk`, or export `ANDROID_HOME`.
+`sdk.dir=/path/to/Android/Sdk`, or export `ANDROID_HOME`. It builds on Linux, macOS and Windows; on
+Windows, run `gradlew.bat` in place of `./gradlew`.
 
 ```bash
 git clone https://github.com/getknit/knit.git

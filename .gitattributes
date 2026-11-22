@@ -1,3 +1,11 @@
+# Every text file is checked out with LF on every OS. Git for Windows installs with `core.autocrlf=true`, which turns
+# each one CRLF in a Windows working tree: the wire-vector tests then fail their byte-for-byte compare, the tests that
+# read a source file for a `"\n"` fail, and a release's text assets would differ from F-Droid's rebuild. `text=auto`
+# leaves anything Git sees as binary untouched, as before.
+* text=auto eol=lf
+# cmd.exe misreads a batch file with bare LF line ends; gradlew.bat is committed CRLF and stays byte for byte.
+*.bat -text
+
 # No LFS for anything the release build reads — do not re-add `*.tflite filter=lfs`.
 #
 # The two moderation models (app/src/main/assets/moderation/{nsfw,toxicity}.tflite, ~32 MB total) are

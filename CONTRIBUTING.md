@@ -42,7 +42,11 @@ The single source of truth for build/test commands, the (deliberately bleeding-e
 mesh architecture, and the hard-won gotchas is **[`AGENTS.md`](AGENTS.md)** — start there before touching
 build config, the mesh layer, or the DI graph. In short:
 
-- **JDK 21** and the Android SDK (compileSdk 37.1) are required.
+- **JDK 21** and the Android SDK (compileSdk 37.1) are required. The build runs on Linux, macOS and Windows; on
+  Windows, run `gradlew.bat` (or `.\gradlew` in PowerShell) wherever these docs say `./gradlew`.
+- Every text file checks out with LF line endings on every OS, whatever `core.autocrlf` says (`.gitattributes`).
+  A Windows clone made before that rule holds CRLF copies until they are checked out again:
+  `git rm -r --cached -q . && git reset --hard` does it, and discards uncommitted changes.
 - `./gradlew :app:compileDebugKotlin` — fast compile check of main sources.
 - `./gradlew :app:testDebugUnitTest` — JVM unit tests (mesh/protocol/data, Robolectric Room).
 - `./gradlew detekt ktlintCheck` — static analysis and style (`ktlintFormat` autocorrects).

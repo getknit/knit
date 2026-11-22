@@ -130,8 +130,12 @@ and the launcher PNGs stay beside the adaptive icon for F-Droid's icon extractio
 runs only fatal checks, so the release build is untouched. Both CIs enforce it: GitLab's `verify:lint` and GitHub's
 `lint` run `./gradlew lint` with a 6 GB daemon heap, because lint keeps ~3.6 GB live (a 3 GB heap stalls it for
 minutes in `lintAnalyzeDebug`). Every other GitHub job gets a 4 GB daemon from `ci.yml`'s workflow `GRADLE_OPTS`:
-the cold `:app` plus unit-test compile, with Kotlin in-process, outgrew the project's 2 GB on 2026-11-19 (~2 GB live
-after a full GC). GitLab sets its own heap per job (`GRADLE_HEAP` in `.gitlab-ci.yml`).
+the cold `:app` plus unit-test compile, with Kotlin in-process, outgrew the project's old 2 GB on 2026-11-19 (~2 GB live
+after a full GC). GitLab sets its own heap per job (`GRADLE_HEAP` in `.gitlab-ci.yml`). The project's own
+`gradle.properties` is 4 GB since 2026-11-22: a fresh clone on a machine with no `~/.gradle/gradle.properties` (a new
+contributor's Mac in the cross-platform check) had its 2 GB daemon stopped for GC thrashing in
+`compileDebugUnitTestKotlin`. The workstation's user-home file sets 6 GB and overrides it, so a heap regression never
+shows here; check one on a clean `GRADLE_USER_HOME`.
 
 ## Static analysis: detekt / ktlint Gradle plugins
 
