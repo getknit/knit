@@ -7,9 +7,9 @@ import org.junit.runner.RunWith
 
 /**
  * Black-box coverage of the chat-list **overflow menu** and the screens behind it. The menu is a real
- * `DropdownMenu` popup window, and its destinations (Add contact / Diagnostics / Donate, and Blocked users behind
- * Settings' own overflow) have no in-process Compose test today — this is their only black-box coverage. Each is opened through the menu
- * and asserted by its own stable screen `testTag`; Back returns to the seeded chat list.
+ * `DropdownMenu` popup window, and its destinations (Add contact / Diagnostics / Donate) have no in-process Compose
+ * test today — this is their only black-box coverage. Each is opened through the menu and asserted by its own stable
+ * screen `testTag`; Back returns to the seeded chat list. Blocked users, reached through Settings, rides along.
  *
  * "Install offline" (`share_app_menu`) opens a system share chooser rather than navigating in-app
  * (`ChatListScreen.onShareApp` → APK-merge chooser), so it's only asserted present in the menu, not driven.
@@ -37,15 +37,17 @@ class OverflowNavigationUiAutomatorTest : SeededUiAutomatorTest() {
     @Test
     fun overflow_opensDiagnostics() = openThenBack(R.string.diagnostics_title, destTag = "screen_diagnostics")
 
-    /** Blocked users lives in Settings' overflow: chat list → Settings → its menu → the list, and Back to Settings. */
+    /**
+     * Blocked users is a row under Settings' Privacy section, not a menu item: chat list → Settings → the row (scrolled
+     * to, since the sections above it push it below a short emulator's fold) → the list, and Back to Settings.
+     */
     @Test
-    fun settingsOverflow_opensBlockedUsers() {
+    fun settings_opensBlockedUsers() {
         launch()
         openOverflow()
         requireText(str(R.string.settings_title)).click()
         assertTag("screen_settings")
-        openOverflow()
-        requireText(str(R.string.blocked_users_title)).click()
+        scrollToTag("settings_blocked").click()
         assertTag("screen_blocked_users")
         device.pressBack()
         assertTag("screen_settings")
@@ -70,7 +72,7 @@ class OverflowNavigationUiAutomatorTest : SeededUiAutomatorTest() {
         assertTag("chat_row_nearby")
     }
 
-    /** Opens the top-bar overflow (the MoreVert icon, addressed by its contentDescription; chat list and Settings share it). */
+    /** Opens the chat list's top-bar overflow (the MoreVert icon, addressed by its contentDescription). */
     private fun openOverflow() {
         requireDesc(str(R.string.chat_more_options)).click()
     }
