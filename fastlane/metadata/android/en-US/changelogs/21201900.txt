@@ -1,0 +1,12 @@
+Videos that send on more phones, and phones no longer stuck at secure storage
+
+On some phones, such as the Galaxy A51 and the Redmi Note 13 Pro+, every video you picked failed with
+"Couldn't read that video". Those videos now send, at the same small size as on other phones.
+
+On a phone whose security chip refuses to make keys, Knit stopped at "Waiting for secure storage" the first
+time you opened it, and Try again never got past it. Knit now uses the phone's regular secure storage there
+and opens as usual.
+
+Also fixed: a crash while downloading the speech model for transcripts and call captions, gaps in the
+waveform of a voice note under about four seconds long, a lock beside a chat's name that was hard to tap on
+a narrow phone, and a relay invite that could name one relay while Knit connected to another.

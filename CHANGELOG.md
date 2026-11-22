@@ -9,7 +9,7 @@ product:
   platforms: [android]
   category: Communication
 document:
-  updated: 2026-11-18T23:31:49Z
+  updated: 2026-11-21T23:44:00Z
   coverage: partial
   canonical: https://whatsnew.fyi/product/knit
   locale: en
@@ -47,14 +47,21 @@ document:
 
 ### Fixed
 
-- The waveform on a voice note under about four seconds long no longer has gaps every few bars. Voice notes
-  already in your chats keep the waveform they were first drawn with.
 - At a busy gathering, a message waiting for other phones to carry it could be lost before it arrived, when
   repeated copies of profiles nobody had changed filled their storage. Knit now sends a new copy of your
   profile only after you edit it (#335).
 - After you restore Knit or a chat's encryption resets, a message sent to you around then could go missing
   for good if another phone passed you an old copy of it first. It now arrives, and the sender sees two ticks
   (#347).
+
+## [2.12.1](https://github.com/getknit/knit/releases/tag/v2.12.1) — 2026-11-21T23:44:00Z
+
+> Videos that send on more phones, and phones no longer stuck at secure storage
+
+### Fixed
+
+- The waveform on a voice note under about four seconds long no longer has gaps every few bars. Voice notes
+  already in your chats keep the waveform they were first drawn with.
 - On a phone whose security chip refuses to make keys, Knit stopped at "Waiting for secure storage" the first
   time you opened it, and Try again never got past it. Knit now uses the phone's regular secure storage there
   and opens as usual (#351).
@@ -63,6 +70,8 @@ document:
 - The lock beside a chat's name, which you tap to see that the chat is encrypted, is now easier to hit on a
   narrow phone or with a larger display size. A long name now gets cut short a little sooner to make room
   (#354).
+- A relay invite could name one relay on screen while Knit connected to another server. Knit now refuses a
+  relay address unless the name it shows is the server it connects to (#340).
 - On some phones, Knit crashed while downloading the speech model for transcripts and call captions. The
   download now finishes without Knit closing.
 
