@@ -172,12 +172,14 @@ class ForwardSync(
      * A round's releases to [peer] over [carrier]'s link, awaiting its credit (§3): at the first look after the round that
      * finds that link under one round unwritten, if it still carries the peer, its [stamps] are written, and, when [memo],
      * the peer is told pending and credited as a holder. Dropped uncredited when the link ends, or [ANSWER_MAX_AGE_MS]
-     * after [cutAt]. Outlives its answer: the last round's credit settles after the answer ended.
+     * after [cutAt]. Outlives its answer: the last round's credit settles after the answer ended, in the peer's next answer
+     * when one starts first ([inherit]).
      */
     private class Handoff(
         val peer: String,
-        // The answer the round was cut for: a drop owes its releases again there ([settleHandoffs]).
-        val answer: Answer,
+        // The answer that holds the round's releases: the one it was cut for, until that one ends and the peer's next
+        // answer starts with them ([inherit]). A credit or a drop settles them there ([settleHandoffs]).
+        var answer: Answer,
         val frames: List<RelayEnvelope>,
         val stamps: List<Released>,
         val carrier: LinkCarrier,
@@ -537,9 +539,10 @@ class ForwardSync(
 
     /**
      * [peer]'s digest listing [listed] (of what we hold) becomes its answer's word, under [lock]: a new answer when none is
-     * live; merged into a radio answer when it crossed a contact's direct link, whose digest lists only the pair's view
-     * and so forgets nothing; else it replaces the answer's digest, restarts its age and forgets every release old enough
-     * for this digest to speak to (revision 7). Returns the answer and whether it is new.
+     * live, holding the peer's uncredited releases ([inherit]); merged into a radio answer when it crossed a contact's
+     * direct link, whose digest lists only the pair's view and so forgets nothing; else it replaces the answer's digest,
+     * restarts its age and forgets every release old enough for this digest to speak to (revision 7). Returns the answer
+     * and whether it is new.
      */
     @Suppress("LongParameterList") // one digest's facts
     private fun adopt(
@@ -557,6 +560,7 @@ class ForwardSync(
             val created = Answer(link = isLink, proven = memo, digestAt = now)
             created.awareCutSeen = carry.awareCutMark(peer)
             created.digest += listed
+            inherit(peer, created)
             answers[peer] = created
             // The plane holding the peer as its digest came: the first round's carrier, until a round says otherwise.
             carry.answering(peer, transport.carrier(peer)?.kind ?: TransportKind.Other)
@@ -579,6 +583,32 @@ class ForwardSync(
         live.heldForFile = false
         live.lookAt = now
         return live to false
+    }
+
+    /**
+     * A new answer [created] for [peer] starts with the peer's uncredited releases, under [lock] (the custody-carry-policy
+     * contract's §6, revision 22): a round still below its link when its answer ended, aged with the link full or ended with
+     * nothing left, is not cut again by the next digest's first round. Each such hand-off moves to [created], so its credit
+     * or drop settles there: credited or dropped by age, its stamps are written in [created] and judged from then; its link
+     * gone, they leave [created] and are owed again. The link they went over becomes [created]'s last carrier, so a first
+     * round over another link on a plane that relinks owes them again at once ([forgetLostLinks]). Not inherited: a round
+     * over a Wi-Fi Aware path cut since (its mark moved: owed again), nor a round that left no memo into a proven answer (a
+     * claim must not hold back what the real peer is owed).
+     */
+    private fun inherit(
+        peer: String,
+        created: Answer,
+    ) {
+        val mark = created.awareCutSeen
+        handoffs
+            .filter { it.peer == peer && it.answer !== created }
+            .filterNot { it.carrier.kind == TransportKind.WifiAware && it.cutMark != mark }
+            .filter { it.memo || !created.proven }
+            .forEach { h ->
+                h.answer = created
+                h.frames.zip(h.stamps).forEach { (e, stamp) -> created.released[e.id] = stamp }
+                if (h.carrier.kind != TransportKind.WifiAware && h.carrier.link != null) created.carrierLink = h.carrier.link
+            }
     }
 
     /**

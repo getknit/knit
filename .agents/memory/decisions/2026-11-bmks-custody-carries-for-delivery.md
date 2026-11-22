@@ -108,10 +108,13 @@ ADR 2026-10.hr9f holds: an answer still owes the peer every live frame its diges
   digest crossing it would mark a frame not kept that was still below the link. A release not yet written is never
   forgotten by a digest. A credit that is dropped settles its releases too: when its Bluetooth or direct link stopped
   carrying the peer they are owed again at once, whatever plane still holds it (§6); when it aged out on a link still
-  full, or its Wi-Fi Aware path closed, they are stamped written at the drop, pending for a proven answer, and the first
-  digest past the judging delay judges them. Over a link that can't say, a release is written and pending from its cut
-  and never credited, and the answer's later looks judge only its endings, with no store read. A failed round (a key
-  read, a load, a send) keeps a per-answer retry-after of `CUSTODY_RETRY_MS` = 1,000, not a pace; its endings still run.
+  full they are stamped written at the drop, with nothing pending; when its Wi-Fi Aware path closed at quiescence they
+  are stamped written at the drop and pending for a proven answer; either way the first digest past the judging delay
+  judges them. A new answer starts with the peer's uncredited releases (revision 22): a round still below its link when
+  its answer ended moves to the next answer, whose first round does not cut it again, and its credit or drop settles
+  there. Over a link that can't say, a release is written and pending from its cut and never credited, and the answer's
+  later looks judge only its endings, with no store read. A failed round (a key read, a load, a send) keeps a per-answer
+  retry-after of `CUSTODY_RETRY_MS` = 1,000, not a pace; its endings still run.
 - **The carry ledger** (`CarryLedger`, contract §3). Per held frame id, up to `SPREAD_MAX` = 8 distinct peers believed
   to hold it: seen in their digest, the frame's source (counted in the frame's own write, recorded only if the row is
   held after it), or a hand-off credited at the first look after its round that finds the link that carried it still up

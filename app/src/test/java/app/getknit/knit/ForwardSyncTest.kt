@@ -2029,6 +2029,182 @@ class ForwardSyncTest {
             }
         }
 
+    // --- a new answer starts with the peer's uncredited releases (the custody-carry-policy contract's §6, revision 22) ---
+
+    /**
+     * An answer to "z" over [plane] ages out at 120 s with its last round (r2, cut at 110 s) still below a full link, its
+     * credit waiting. [fillers] 20 KB frames, received before r2 so they order after it, keep the next answer live for as
+     * many Bluetooth rounds; [proven] is whether the first answer's digest proved the peer.
+     */
+    private suspend fun Rounds.agedOutWithARoundBelow(
+        fillers: Int = 0,
+        plane: TransportKind = TransportKind.Bluetooth,
+        proven: Boolean = true,
+    ) {
+        transport.carriers["z"] = LinkCarrier(plane, link, proven = true)
+        carry(chat("r1", "a", sentAt = 1))
+        sync.onDigest("z", emptyList(), plane, proven = proven, link = link)
+        out.unwritten = FULL_LINK
+        now = 105_000L
+        (1..fillers).forEach { carry(chat("f$it", "b", sentAt = it.toLong(), bytes = 20_000)) }
+        now = 110_000L
+        carry(chat("r2", "a", sentAt = 110_000L))
+        drain()
+        look()
+        assertEquals("r2 cut", "r2", sent().last())
+        out.unwritten = FULL_LINK
+        look(ForwardSync.ANSWER_MAX_AGE_MS)
+        assertEquals("aged out", null, sync.answerSizes("z"))
+        assertEquals("r2's credit waits", 1, sync.creditsWaiting())
+    }
+
+    // A proven digest from "z" at [at] that lacks everything; returns how many frames had been sent before it.
+    private suspend fun Rounds.digestAt(at: Long): Int {
+        now = at
+        val before = sent().size
+        sync.onDigest("z", emptyList(), TransportKind.Bluetooth, proven = true, link = link)
+        return before
+    }
+
+    // A digest at [at] on a link full with the last round, then the round the drain lets go: what it sent.
+    private suspend fun Rounds.digestAndRound(at: Long): List<String> {
+        assertTrue("the answer live at $at", sync.answerSizes("z") != null)
+        val before = digestAt(at)
+        drain()
+        look()
+        return sent().drop(before)
+    }
+
+    /**
+     * A new digest before the round still below the link is credited or dropped cuts nothing twice (§6, revision 22). Its
+     * link gone, the round is owed again: by the next answer when the new one ended with nothing left, by the new answer
+     * itself when it is still live.
+     */
+    @Test
+    fun aNewAnswerCutsNothingTwiceAndOwesAGoneLinksRoundAgain() =
+        runTest {
+            val ended = Rounds()
+            ended.agedOutWithARoundBelow()
+            ended.digestAt(130_000L)
+            assertEquals("the new answer's first round cuts nothing twice", listOf("r1", "r2"), ended.sent())
+            assertEquals("nothing else left: the answer ended", null, ended.sync.answerSizes("z"))
+            ended.transport.carriers["z"] = LinkCarrier(TransportKind.Bluetooth, Any(), proven = true)
+            ended.drain()
+            ended.look(140_000L)
+            assertEquals("its link gone: dropped", 0, ended.sync.creditsWaiting())
+            ended.digestAt(140_000L)
+            assertEquals("owed again over the new link", 2, ended.sent().count { it == "r2" })
+
+            val live = Rounds()
+            live.agedOutWithARoundBelow(fillers = 6)
+            val before = live.digestAt(130_000L)
+            assertEquals(
+                "one round, a filler",
+                "f",
+                live
+                    .sent()
+                    .drop(before)
+                    .single()
+                    .take(1),
+            )
+            assertEquals("the new answer holds r2's release and its round's", 2, live.sync.answerSizes("z")?.get(1))
+            live.transport.carriers["z"] = LinkCarrier(TransportKind.Bluetooth, Any(), proven = true)
+            live.drain()
+            live.look(140_000L)
+            assertEquals("its link gone: owed again by the live answer", 2, live.sent().count { it == "r2" })
+        }
+
+    /**
+     * An inherited round credited in the live new answer is written there at its credit: a digest under the judging
+     * delay from then keeps it released, and one past it forgets it into the memo, which holds it back as not kept.
+     */
+    @Test
+    fun anInheritedRoundIsCreditedInTheLiveNewAnswer() =
+        runTest {
+            val r = Rounds()
+            r.agedOutWithARoundBelow(fillers = 6)
+            r.digestAt(130_000L)
+            r.drain()
+            r.look(140_000L)
+            assertEquals("credited", 1, r.ledger.spread("r2"))
+            val credit = 140_000L
+            assertFalse("under the judging delay", "r2" in r.digestAndRound(credit + CarryLedger.JUDGE_AFTER_BLUETOOTH_MS - 1))
+            assertFalse("past it: pending in the memo", "r2" in r.digestAndRound(credit + CarryLedger.JUDGE_AFTER_BLUETOOTH_MS))
+            assertEquals(1, r.sent().count { it == "r2" })
+        }
+
+    /**
+     * An inherited round aged on a link still full is written in the live new answer at its drop, 120 s after its cut, and
+     * judged from there: a digest under the judging delay from the drop sends it no more, one at it owes it again.
+     */
+    @Test
+    fun anInheritedRoundAgedOnAFullLinkIsJudgedFromItsDropInTheNewAnswer() =
+        runTest {
+            val r = Rounds()
+            r.agedOutWithARoundBelow(fillers = 6)
+            r.digestAt(130_000L)
+            val drop = 110_000L + ForwardSync.ANSWER_MAX_AGE_MS
+            r.look(drop)
+            assertEquals("r2 dropped, the new answer's round waits", 1, r.sync.creditsWaiting())
+            assertFalse("under the judging delay", "r2" in r.digestAndRound(drop + CarryLedger.JUDGE_AFTER_BLUETOOTH_MS - 1))
+            assertEquals("at it: owed again", "r2", r.digestAndRound(drop + CarryLedger.JUDGE_AFTER_BLUETOOTH_MS).first())
+        }
+
+    /**
+     * The peer stays linked only over Wi-Fi Aware once the Bluetooth link an inherited round went over is gone: the round
+     * is dropped and owed again by the live new answer, whose own last link never changed on a plane that relinks.
+     */
+    @Test
+    fun anInheritedRoundWhoseLinkWentWhileThePeerStaysOnAwareIsOwedAgain() =
+        runTest {
+            val r = Rounds()
+            r.agedOutWithARoundBelow(fillers = 6)
+            r.digestAt(130_000L)
+            r.transport.carriers["z"] = LinkCarrier(TransportKind.WifiAware, Any(), proven = true)
+            r.out.unwritten = FULL_LINK
+            r.look(140_000L)
+            assertEquals("both Bluetooth rounds dropped", 0, r.sync.creditsWaiting())
+            assertTrue("the answer live", r.sync.answerSizes("z") != null)
+            r.drain()
+            r.look()
+            assertEquals("owed again over Aware", 2, r.sent().count { it == "r2" })
+        }
+
+    /** A new answer's first round over a new Bluetooth link owes an inherited round again in that same round. */
+    @Test
+    fun aFirstRoundOverANewLinkOwesTheInheritedRoundAgain() =
+        runTest {
+            val r = Rounds()
+            r.agedOutWithARoundBelow(fillers = 6)
+            r.transport.carriers["z"] = LinkCarrier(TransportKind.Bluetooth, Any(), proven = true)
+            r.drain()
+            val before = r.digestAt(130_000L)
+            assertEquals(listOf("r2"), r.sent().drop(before))
+        }
+
+    /** A round over a Wi-Fi Aware path cut since is not inherited: the new answer's first round owes it again. */
+    @Test
+    fun aRoundOverAnAwarePathCutSinceIsNotInherited() =
+        runTest {
+            val r = Rounds()
+            r.agedOutWithARoundBelow(plane = TransportKind.WifiAware)
+            r.ledger.answerCut("z", TransportKind.WifiAware)
+            r.drain()
+            r.digestAt(130_000L)
+            assertEquals(2, r.sent().count { it == "r2" })
+        }
+
+    /** A round that left no memo is not inherited by a proven answer: a claim does not hold back what the peer is owed. */
+    @Test
+    fun anUnprovenRoundIsNotInheritedByAProvenAnswer() =
+        runTest {
+            val r = Rounds()
+            r.agedOutWithARoundBelow(proven = false)
+            r.drain()
+            r.digestAt(130_000L)
+            assertEquals(2, r.sent().count { it == "r2" })
+        }
+
     // --- the estimate (§2, revision 14) ---
 
     /**
@@ -2891,5 +3067,8 @@ class ForwardSyncTest {
     private companion object {
         // A custody TTL no case here outlives.
         const val DAY_MS = 24 * 60 * 60_000L
+
+        // What a link holds unwritten when it is full: over a round on every plane.
+        const val FULL_LINK = 1_000_000L
     }
 }
