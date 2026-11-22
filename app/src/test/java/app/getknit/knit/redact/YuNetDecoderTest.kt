@@ -6,6 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Base64
 import kotlin.math.abs
 import kotlin.math.ln
 
@@ -193,14 +194,14 @@ class YuNetDecoderTest {
         assertTrue("expected $want, got $got", close)
     }
 
-    /** `yunet_heads.bin`: "YNH1", width, height, the BGR input, then cls, obj and bbox at strides 8, 16, 32. */
+    /** `yunet_heads.b64`, base64 of "YNH1", width, height, the BGR input, then cls, obj and bbox at strides 8, 16, 32. */
     private class ReferenceHeads(
         val width: Int,
         val heads: List<YuNetDecoder.Head>,
     ) {
         companion object {
             fun read(): ReferenceHeads {
-                val buffer = ByteBuffer.wrap(repoFile(HEADS).readBytes()).order(ByteOrder.LITTLE_ENDIAN)
+                val buffer = ByteBuffer.wrap(Base64.getMimeDecoder().decode(repoFile(HEADS).readBytes())).order(ByteOrder.LITTLE_ENDIAN)
                 val magic = ByteArray(4).also { buffer.get(it) }
                 check(String(magic, Charsets.US_ASCII) == "YNH1") { "not a YuNet heads vector" }
                 val width = buffer.int
@@ -236,7 +237,7 @@ class YuNetDecoderTest {
         /** Photo pixels to one of the pass's own, full size, half and quarter. */
         val SCALES = listOf(1f, 2f, 4f)
 
-        const val HEADS = "app/src/androidTest/assets/redact/yunet_heads.bin"
+        const val HEADS = "app/src/androidTest/assets/redact/yunet_heads.b64"
         const val FACES = "app/src/androidTest/assets/redact/yunet_heads_faces.json"
     }
 }

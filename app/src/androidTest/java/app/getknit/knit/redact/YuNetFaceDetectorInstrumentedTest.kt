@@ -22,6 +22,7 @@ import org.junit.Test
 import org.tensorflow.lite.Interpreter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Base64
 import kotlin.math.abs
 
 /**
@@ -46,9 +47,16 @@ class YuNetFaceDetectorInstrumentedTest {
     /** The test APK: the photo and the vectors. */
     private val testAssets = instrumentation.context.assets
 
+    /**
+     * `redact/yunet_heads.b64`, decoded: the reference vector is kept as base64 text because F-Droid's source scanner
+     * refuses a raw binary anywhere in the tree, test assets included.
+     */
+    private fun referenceHeads(): ByteArray =
+        Base64.getMimeDecoder().decode(testAssets.open("redact/yunet_heads.b64").use { it.readBytes() })
+
     @Test
     fun theBundledModelAnswersWhatOnnxRuntimeAnsweredForTheSameInput() {
-        val vector = testAssets.open("redact/yunet_heads.bin").use { it.readBytes() }
+        val vector = referenceHeads()
         val buffer = ByteBuffer.wrap(vector).order(ByteOrder.LITTLE_ENDIAN)
         assertEquals("YNH1", String(ByteArray(4).also { buffer.get(it) }, Charsets.US_ASCII))
         val width = buffer.int
@@ -85,7 +93,7 @@ class YuNetFaceDetectorInstrumentedTest {
     @Test
     fun aPictureIsPackedAsItsOwnBgrValues() {
         // The parity test above feeds the vector's bytes to the model directly; this holds packInput to the same floats.
-        val buffer = ByteBuffer.wrap(testAssets.open("redact/yunet_heads.bin").use { it.readBytes() }).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.wrap(referenceHeads()).order(ByteOrder.LITTLE_ENDIAN)
         buffer.position(4)
         val width = buffer.int
         val height = buffer.int

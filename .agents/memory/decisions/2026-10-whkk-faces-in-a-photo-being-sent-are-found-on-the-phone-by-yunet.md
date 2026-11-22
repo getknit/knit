@@ -121,7 +121,7 @@ warm one: under half a second for a full-size photo on a budget-class phone, onc
 20 MB of direct buffer, which ART puts on the Java heap, plus the interpreter's native arena, for the length of one
 detection and then the lease's minute. YuNet itself was trained on WIDER FACE, as most open face detectors were. The
 guards: `YuNetDecoderTest` holds the decoder to OpenCV's own faces for a recorded inference
-(`app/src/androidTest/assets/redact/yunet_heads.bin`), and `YuNetFaceDetectorInstrumentedTest` holds the bundled model
+(`app/src/androidTest/assets/redact/yunet_heads.b64`), and `YuNetFaceDetectorInstrumentedTest` holds the bundled model
 on ART to ONNX Runtime's outputs and the whole detector to the reference pipeline's faces in NASA's public-domain
 Expedition 75 crew portrait. `RedactionTest`, `ViewTransformTest`, `FaceRedactionTest` (Robolectric's native graphics: under every cover the average of what it hides,
 every pixel outside unchanged, the source untouched) and `RedactReviewScreenContentTest` (taps and drags reach the
