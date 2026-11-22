@@ -9,7 +9,7 @@ product:
   platforms: [android]
   category: Communication
 document:
-  updated: 2026-11-18T23:31:49Z
+  updated: 2026-11-21T23:44:00Z
   coverage: partial
   canonical: https://whatsnew.fyi/product/knit
   locale: en
@@ -18,7 +18,9 @@ document:
 
 # Knit changelog
 
-## Unreleased
+## [2.12.1](https://github.com/getknit/knit/releases/tag/v2.12.1) — 2026-11-21T23:44:00Z
+
+> Videos that send on more phones, and phones no longer stuck at secure storage
 
 ### Fixed
 
@@ -32,6 +34,8 @@ document:
 - The lock beside a chat's name, which you tap to see that the chat is encrypted, is now easier to hit on a
   narrow phone or with a larger display size. A long name now gets cut short a little sooner to make room
   (#354).
+- A relay invite could name one relay on screen while Knit connected to another server. Knit now refuses a
+  relay address unless the name it shows is the server it connects to (#340).
 - On some phones, Knit crashed while downloading the speech model for transcripts and call captions. The
   download now finishes without Knit closing.
 
