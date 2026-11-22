@@ -734,6 +734,14 @@ doc). **Don't start a deferred item without explicit direction.**
   peer update (ADR 2026-11.29m7) is no exception to this: it installs from private staging through a session and
   never goes through a provider.
 
+- **"Media, links and files": what the first cut left out** — the screen (ADR 2026-11.dgvf) lists a thread's
+  mesh attachments and links, one tab's read at a time. Not built: **Direct Send transfers** in the Files tab (they
+  are `KIND_FILE_TRANSFER` rows whose bytes sit in Downloads, opened from their card; a received Done record could
+  list beside the files and open its `savedUri`); **shared locations** (a `geo:` line in the body, which no column
+  marks, so a Locations tab needs a body prefilter like the Links tab's); **swiping between pictures** in the viewer
+  (a pager over the Media tab's window); and **selecting several** to delete for this phone or share. A row past
+  `ChatWindow.MAX` of its kind is not listed, as the chat's window does not reach it either.
+
 - **BLE promotion gate on A2DP audio** — the adaptive scan throttle now drops the **scan** to its floor
   while streaming (`ScanDemandPolicy` / the demand-gated `scanLoop`), but **connects** are still not gated
   on `contended` (it remains diagnostic-only for the connect path). **Note before building it:** since

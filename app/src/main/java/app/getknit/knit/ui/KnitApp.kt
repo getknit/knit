@@ -75,6 +75,7 @@ import app.getknit.knit.ui.diagnostics.FieldLogScreen
 import app.getknit.knit.ui.donate.DonateScreen
 import app.getknit.knit.ui.group.GroupDetailsScreen
 import app.getknit.knit.ui.lora.LoraRadioScreen
+import app.getknit.knit.ui.media.ChatMediaScreen
 import app.getknit.knit.ui.onboarding.OnboardingScreen
 import app.getknit.knit.ui.preset.StartingPointScreen
 import app.getknit.knit.ui.profile.ProfileDetailsScreen
@@ -144,8 +145,17 @@ private object Routes {
 
     fun search(inConversation: String? = null) = if (inConversation == null) "search" else "search?in=${Uri.encode(inConversation)}"
 
-    /** The saved-state key a scoped search hands its hit's message id back to the open chat under. */
+    /**
+     * The saved-state key a scoped search hands its hit's message id back to the open chat under — and "Media, links
+     * and files" its Show in chat (ADR 2026-11.dgvf), which is the same hand-back.
+     */
     const val SEARCH_HIT = "searchHit"
+
+    // "Media, links and files" for one thread (ADR 2026-11.dgvf), from a chat's overflow. Encoded like `search?in=`.
+    const val CHAT_MEDIA = "chatMedia/{conversationId}"
+
+    fun chatMedia(conversationId: String) = "chatMedia/${Uri.encode(conversationId)}"
+
     const val ABOUT = "about"
     const val LICENSES = "licenses"
     const val WHATS_NEW = "whatsNew"
@@ -548,11 +558,30 @@ fun KnitApp(startRoute: String? = null) {
                     handedJumpId = handedJump,
                     onHandedJumpConsumed = { backStackEntry.savedStateHandle.remove<String>(Routes.SEARCH_HIT) },
                     onSearch = { navController.navigate(Routes.search(conversationId)) },
+                    onOpenMedia = { navController.navigate(Routes.chatMedia(conversationId)) },
                     onBack = { navController.popFrom(backStackEntry) },
                     onOpenProfile = { id -> navController.navigate(Routes.profileDetails(id)) },
                     onOpenGroupDetails = { id -> navController.navigate(Routes.groupDetails(id)) },
                     onOpenMessageDetails = { id -> navController.navigate(Routes.messageDetails(id)) },
                     onOpenCommonsDetails = { id -> navController.navigate(Routes.commonsDetails(id)) },
+                )
+            }
+            composable(
+                route = Routes.CHAT_MEDIA,
+                arguments = listOf(navArgument("conversationId") { type = NavType.StringType }),
+            ) { entry ->
+                val conversationId = entry.arguments?.getString("conversationId") ?: return@composable
+                ChatMediaScreen(
+                    conversationId = conversationId,
+                    onBack = { navController.popFrom(entry) },
+                    // Show in chat hands the message back to the thread underneath and pops, never navigates: the
+                    // scoped search's hand-back (ADR 2026-10.4cyt), so the thread is never opened twice.
+                    onShowInChat = { messageId ->
+                        navController.ifOnTop(entry) {
+                            previousBackStackEntry?.savedStateHandle?.set(Routes.SEARCH_HIT, messageId)
+                            popBackStack()
+                        }
+                    },
                 )
             }
             composable(

@@ -107,6 +107,7 @@ class ChatScreenContentTest {
     private var clearedLocations = 0
     private var locationClicks = 0
     private var searches = 0
+    private var mediaOpens = 0
     private var accepts = 0
     private var consentsAccepted = 0
     private var longVideoSends = 0
@@ -184,6 +185,7 @@ class ChatScreenContentTest {
                     handedJumpId = handedJumpId?.invoke(),
                     onHandedJumpConsumed = onHandedJumpConsumed,
                     onSearch = { searches++ },
+                    onOpenMedia = { mediaOpens++ },
                 )
             }
         }
@@ -1205,10 +1207,33 @@ class ChatScreenContentTest {
     }
 
     @Test
+    fun mediaLinksAndFilesFollowsSearchInADmsOverflowAndOpensTheScreen() {
+        compose.setContent(content(input = "", state = ChatUiState(isRoom = false, myNodeId = "me")))
+        compose.onNodeWithContentDescription("More options").performClick()
+        val search = compose.onNodeWithTag("chat_search").getUnclippedBoundsInRoot()
+        val media = compose.onNodeWithTag("chat_media").getUnclippedBoundsInRoot()
+        val location = compose.onNodeWithTag("chat_send_location").getUnclippedBoundsInRoot()
+        // Right after Search, with nothing between: the items stack edge to edge.
+        assertEquals(search.bottom.value, media.top.value, 0.5f)
+        assertTrue("and ahead of Send location", media.top < location.top)
+        compose.onNodeWithTag("chat_media").performClick()
+        assertEquals(1, mediaOpens)
+    }
+
+    @Test
+    fun theNearbyRoomsOverflowOffersMediaLinksAndFiles() {
+        compose.setContent(content(input = "", state = ChatUiState(isRoom = true, myNodeId = "me")))
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithTag("chat_media").assertIsDisplayed()
+    }
+
+    @Test
     fun theBridgedRoomsOverflowIsSearchAlone() {
         compose.setContent(content(input = "", state = ChatUiState(isRoom = false, isBridged = true, myNodeId = "me")))
         compose.onNodeWithContentDescription("More options").performClick()
         compose.onNodeWithTag("chat_search").assertIsDisplayed()
+        // A bridged LoRa room carries text alone: no media to list (ADR 2026-11.dgvf).
+        compose.onNodeWithTag("chat_media").assertDoesNotExist()
         compose.onNodeWithTag("chat_send_location").assertDoesNotExist()
         compose.onNodeWithTag("chat_send_large_file").assertDoesNotExist()
         compose.onNodeWithText("Block").assertDoesNotExist()

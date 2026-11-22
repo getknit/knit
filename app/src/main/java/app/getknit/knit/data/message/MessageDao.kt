@@ -10,7 +10,9 @@ import kotlinx.coroutines.flow.Flow
 // A data-access interface: one method per query, so the count naturally exceeds detekt's interface limit.
 @Suppress("TooManyFunctions")
 @Dao
-interface MessageDao : BridgedRoomQueries {
+interface MessageDao :
+    BridgedRoomQueries,
+    ThreadMediaQueries {
     // There is deliberately no `SELECT * FROM messages` and no whole-thread read here: an accepted thread
     // has no retention cap, so any such query would grow without bound. The chat screen reads a window
     // (below), the list screens read per-thread summaries (further down), and search reads through the

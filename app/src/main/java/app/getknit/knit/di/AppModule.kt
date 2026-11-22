@@ -36,6 +36,7 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.QuoteVerifier
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.ThreadMediaRepository
 import app.getknit.knit.data.backup.BackupWriter
 import app.getknit.knit.data.backup.RestoreStager
 import app.getknit.knit.data.changes.DataChangeSink
@@ -102,6 +103,7 @@ import app.getknit.knit.review.ReviewPrompter
 import app.getknit.knit.ui.OfferedConversations
 import app.getknit.knit.ui.RouteInbox
 import app.getknit.knit.ui.addcontact.ContactCardInbox
+import app.getknit.knit.ui.chat.AttachmentExport
 import app.getknit.knit.ui.chat.quoteLabels
 import app.getknit.knit.ui.relay.RelayInviteInbox
 import app.getknit.knit.ui.review.ReviewPromptInbox
@@ -211,6 +213,8 @@ val appModule =
         // behind a seam so the ViewModel is tested against a fake. Nothing collects it but the staged tile.
         single<LocationSource> { AndroidLocationSource(androidContext()) }
         single { GallerySaver(androidContext()) }
+        // Every door a held attachment's bytes leave by, for the chat and "Media, links and files" (ADR 2026-11.dgvf).
+        single { AttachmentExport(get(), get(), get(), androidContext()) }
         // One voice player for the whole app: any number of voice-note bubbles can be on screen, and
         // starting one note has to stop whichever was playing. Owns its own scope (see VoicePlayer).
         single { VoicePlayer(androidContext(), get()) }
@@ -339,6 +343,7 @@ val appModule =
         // nothing in release (di/DataChangeWiring in each variant).
         single<DataChangeSink> { dataChangeSink(androidContext()) }
         single { MessageRepository(get(), changes = get()) }
+        single { ThreadMediaRepository(get()) }
         // Judges an inbound reply's quote against the original it names (ADR 2026-10.gpa3), labelling a rebuilt
         // quote in the reader's own strings; one backlog batch is one write transaction.
         single {

@@ -149,7 +149,8 @@ lines.
   blocking a sender unpins what they sent; `MeshManager` sweeps orphans at startup. Carried in a backup. Shared pins
   are deferred — CHECK `.agents/memory/roadmap.md`. Tests: `PinDaoTest`, `PinRepositoryTest`, `ChatPinnedBarTest`.
 - **When touching `saved_files` / `data/blob/SavedFileEntity`, `ChatViewModel.openAttachment` /
-  `saveAttachmentTo`, or what a file bubble's tap does:** READ ADR 2026-09.7ad3. A received file opens from the
+  `saveAttachmentTo`, `AttachmentExport.savedCopy` / `writeTo`, `FileOpener`, or what a file bubble's tap does:** READ
+  ADR 2026-09.7ad3 (and ADR 2026-11.dgvf for the shared opener). A received file opens from the
   copy the user saved it to (a persisted read grant on the picker's document, recorded by blob hash) and never
   from the blob store (ADR 029); a copy that is gone is forgotten and the picker comes back. A risky file is
   only ever saved. The table is device-local — never in a backup — and goes with its blob in the GC.
@@ -160,11 +161,23 @@ lines.
   membership, titles, speaker and contacts rules live in those two shared files so search cannot drift
   from the list; a hit opens the thread through `chat/{id}?messageId=` and the quote-jump machinery,
   never a second thread view).
-  **When touching the `search?in=` route, `Routes.SEARCH_HIT`, `SearchViewModel.inConversation`, ChatScreen's
-  `handedJumpId` or the overflow's Search item:** READ ADR 2026-10.4cyt — "Search in this chat" is the same screen
+  **When touching the `search?in=` route, `Routes.SEARCH_HIT` (which "Media, links and files" hands its Show in chat
+  through too, ADR 2026-11.dgvf), `SearchViewModel.inConversation`, ChatScreen's `handedJumpId` or the overflow's
+  Search item:** READ ADR 2026-10.4cyt — "Search in this chat" is the same screen
   scoped to one thread (Messages only, still inside the list's universe); a hit is handed back through the previous
   entry's `savedStateHandle` and popped, never `navigate(chat(id, messageId))`, and the hand-back is cleared as it is
   taken rather than guarded by `consumedJump`, so the same message found twice jumps twice.
+- **When touching "Media, links and files" — `ui/media/` (`ChatMediaScreen`, `ChatMediaViewModel`, `MediaTab`,
+  `MonthSection`, `displayUrl`), `ThreadMediaQueries` (`observeMediaIn` / `observeFilesIn` / `observeLinkRowsIn`, its
+  `MEDIA_ROW` / `LINK_CARD_ROW`), `ThreadMediaRepository`, `Routes.CHAT_MEDIA`, the overflow's `chat_media` item, or
+  the pieces it shares with the chat — `AttachmentExport`, `FileOpener` / `rememberFileOpener` / `FileOpenerDialog`,
+  `FullscreenImageViewer`'s and `FullscreenVideoPlayer`'s `onShowInChat`, `linkCardFor`:** READ ADR 2026-11.dgvf. One
+  read per tab, only the open tab's running, each its own window up to `ChatWindow.MAX`, the blobs table asked only
+  for the open tab's hashes (ADR 2026-09.fjcw); the SQL kinds are `attachmentKindOf`'s and must change with it
+  (`MessageMediaDaoTest`). Screened as the chat screens: pictures by their own verdict, links by the text's. Show in
+  chat is ADR 2026-10.4cyt's `SEARCH_HIT` hand-back. A held attachment leaves only through `AttachmentExport` (ADR 029,
+  ADR 2026-09.7ad3), whichever screen asked. Tests: `ChatMediaViewModelTest`, `ChatMediaScreenContentTest`,
+  `MessageMediaDaoTest`, `MonthSectionTest`, `ChatScreenContentTest`'s menu cases.
 - **Before touching `OutsideUris`, `ChatViewModel.attach` / `attachShared` / `attachFile` / `offerTransfer`, or adding
   anything that takes a URI from another app (an intent filter, a content receiver, a picker):** READ ADR
   2026-11.vdx4 — a URI from outside is read only when it is `content://` on someone else's provider (the authority

@@ -4,7 +4,6 @@ import android.content.ClipData
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
-import android.text.format.DateUtils
 import android.text.format.Formatter
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
@@ -31,8 +30,6 @@ import androidx.compose.foundation.content.consume
 import androidx.compose.foundation.content.contentReceiver
 import androidx.compose.foundation.content.hasMediaType
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -54,7 +51,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -86,7 +82,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LinkOff
@@ -104,6 +99,7 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.WifiCalling3
 import androidx.compose.material.icons.outlined.AddReaction
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Sensors
@@ -134,7 +130,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -149,7 +144,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -209,8 +203,6 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
@@ -224,7 +216,6 @@ import app.getknit.knit.R
 import app.getknit.knit.TextLimits
 import app.getknit.knit.call.SttModelState
 import app.getknit.knit.data.AttachmentStore
-import app.getknit.knit.data.FileTypes
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.draft.Draft
 import app.getknit.knit.data.emoji.EmojiCatalogLoader
@@ -372,6 +363,8 @@ fun ChatScreen(
     onHandedJumpConsumed: () -> Unit = {},
     // "Search" in the overflow: the search screen scoped to this thread.
     onSearch: () -> Unit = {},
+    // "Media, links and files" in the overflow (ADR 2026-11.dgvf): this thread's attachments and links.
+    onOpenMedia: () -> Unit = {},
     viewModel: ChatViewModel = koinViewModel { parametersOf(conversationId) },
     // A DM's peer update (ADR 2026-11.29m7), kept out of ChatViewModel; inert in a build without peer updates.
     updates: PeerUpdateViewModel = koinViewModel { parametersOf(conversationId) },
@@ -502,23 +495,15 @@ fun ChatScreen(
         viewModel.transferPickerNeeded.collect { largeFilePicker.launchOrSay(context, arrayOf(ANY_MIME)) }
     }
 
-    // Where a received file goes: the user names the destination and Knit streams the decrypted bytes into
-    // it, then opens that copy, now and on every later tap (ADR 2026-09.7ad3). Nothing is opened straight from the blob store — that
-    // would mean a plaintext staging file or a provider serving decrypted bytes, against ADR 029's invariant
-    // (an attachment's plaintext lives in the encrypted blob store and nowhere else). Saving keeps the user
-    // in charge of the one copy that leaves, and the viewer reads the copy they chose.
-    var savingFile by remember { mutableStateOf<PendingSave?>(null) }
-    var riskyFile by remember { mutableStateOf<PendingSave?>(null) }
-    val fileSaver =
-        rememberLauncherForActivityResult(CreateNamedDocument()) { uri ->
-            val pending = savingFile
-            savingFile = null
-            if (uri != null && pending != null) viewModel.saveAttachmentTo(pending, uri)
-        }
-    val startSave: (PendingSave) -> Unit = { pending ->
-        savingFile = pending
-        if (!fileSaver.launchOrSay(context, pending)) savingFile = null
-    }
+    // Where a received file goes (ADR 2026-09.7ad3): the shared opener asks before a risky file is saved, and
+    // opens anything else from the copy the user saved it to, through the picker the first time.
+    val fileOpener =
+        rememberFileOpener(
+            saveNeeded = viewModel.saveNeeded,
+            savedFiles = viewModel.savedFiles,
+            onOpen = viewModel::openAttachment,
+            onWriteTo = viewModel::saveAttachmentTo,
+        )
 
     // Suppress message notifications while the chat is on screen, and clear any active one. The NavHost
     // back-stack entry is this composable's LifecycleOwner, so navigating away pauses (and popping
@@ -556,16 +541,6 @@ fun ChatScreen(
             when (event) {
                 is UpdateEvent.Message -> Toast.makeText(context, event.text, Toast.LENGTH_SHORT).show()
                 UpdateEvent.OpenInstallGrant -> showUpdateGrant = true
-            }
-        }
-    }
-    LaunchedEffect(Unit) {
-        viewModel.saveNeeded.collect(startSave)
-    }
-    LaunchedEffect(Unit) {
-        viewModel.savedFiles.collect { saved ->
-            if (!openSavedFile(context, saved.uri.toString(), saved.mime)) {
-                Toast.makeText(context, R.string.chat_transfer_no_app, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -750,13 +725,7 @@ fun ChatScreen(
         },
         onCameraClick = { capturing = true },
         onFileClick = { filePicker.launchOrSay(context, arrayOf(ANY_MIME)) },
-        onSaveFile = { hash, key, name, mime ->
-            val pending = PendingSave(hash, key, name, mime)
-            // Nothing on the device can look inside an archive or an executable, so the recipient is told
-            // that before they save one rather than after, and it is never opened. Everything else opens: from
-            // the copy saved last time, or through the picker first (ADR 2026-09.7ad3).
-            if (FileTypes.isRisky(mime, name)) riskyFile = pending else viewModel.openAttachment(pending)
-        },
+        onSaveFile = { hash, key, name, mime -> fileOpener.open(PendingSave(hash, key, name, mime)) },
         onDownloadAttachment = viewModel::downloadAttachment,
         onSendFileDirectly = viewModel::sendFileDirectly,
         onStartCall = viewModel::startCall,
@@ -889,6 +858,7 @@ fun ChatScreen(
         handedJumpId = handedJumpId,
         onHandedJumpConsumed = onHandedJumpConsumed,
         onSearch = onSearch,
+        onOpenMedia = onOpenMedia,
         onDismissRelayNotice = viewModel::dismissRelayNotice,
         voiceRecording = voiceRecording,
         voicePlayback = voicePlayback,
@@ -1007,35 +977,7 @@ fun ChatScreen(
         )
     }
 
-    riskyFile?.let { pending ->
-        AlertDialog(
-            onDismissRequest = { riskyFile = null },
-            title = { Text(stringResource(R.string.chat_file_risky_title)) },
-            text = {
-                Text(
-                    stringResource(
-                        R.string.chat_file_risky_body,
-                        pending.name ?: stringResource(R.string.chat_file_unnamed),
-                    ),
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        riskyFile = null
-                        startSave(pending)
-                    },
-                ) {
-                    Text(stringResource(R.string.chat_file_risky_confirm))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { riskyFile = null }) {
-                    Text(stringResource(android.R.string.cancel))
-                }
-            },
-        )
-    }
+    FileOpenerDialog(fileOpener)
 
     // The free-tickets notice (docs/VOICE_CALLS.md C-7.6-34): once, when this phone first sends through a relay with a
     // free issuer. Free tickets are on by default, so it informs: OK and Turn off are answers and end it; a tap outside
@@ -1233,6 +1175,8 @@ internal fun ChatScreenContent(
     // The overflow's "Search": this thread's scoped search. Defaulted so previews and the content-level tests need not
     // name it.
     onSearch: () -> Unit = {},
+    // The overflow's "Media, links and files" (ADR 2026-11.dgvf); defaulted like [onSearch].
+    onOpenMedia: () -> Unit = {},
     // This thread's pinned messages, newest pin first, and the long-press Pin / Unpin and the bar's unpin (#42), each
     // passing the state it wants so a repeated tap is a no-op. Null offers no Pin; both defaulted so previews and the
     // content-level tests need not name them.
@@ -1672,6 +1616,18 @@ internal fun ChatScreenContent(
                                         onSearch()
                                     },
                                 )
+                                // Everything but a bridged LoRa room, which carries text alone (ADR 2026-11.dgvf).
+                                if (!state.isBridged) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.media_title)) },
+                                        leadingIcon = { Icon(Icons.Outlined.PhotoLibrary, contentDescription = null) },
+                                        modifier = Modifier.testTag("chat_media"),
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            onOpenMedia()
+                                        },
+                                    )
+                                }
                                 // Gone while a position is staged: the tile above the field already carries
                                 // Refresh, and a second entry that restarted the same fix would only look like
                                 // it did something else.
@@ -4511,136 +4467,6 @@ private fun AttachmentImage(
             }
         }
     }
-}
-
-/** A tapped attachment plus the bubble metadata the fullscreen viewer shows in its top bar. */
-internal data class FullscreenImage(
-    val image: BlobImage,
-    val mine: Boolean,
-    val senderName: String,
-    val sentAt: Long,
-)
-
-/**
- * Fullscreen, pinch-to-zoom/pan viewer for a tapped image. The top bar floats white over the black
- * backdrop, Signal-style: a back arrow (left) dismisses it, the sender ("You"/peer) and relative send
- * time sit in the middle, and an overflow menu (right) offers Save; back press / outside tap also dismiss.
- */
-@Composable
-private fun FullscreenImageViewer(
-    fullscreen: FullscreenImage,
-    now: Long,
-    onDismiss: () -> Unit,
-    onSave: () -> Unit,
-) {
-    val image = fullscreen.image
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        var scale by remember { mutableFloatStateOf(1f) }
-        var offset by remember { mutableStateOf(Offset.Zero) }
-        var menuOpen by remember { mutableStateOf(false) }
-        val transformState =
-            rememberTransformableState { _, zoomChange, panChange, _ ->
-                scale = (scale * zoomChange).coerceIn(1f, 5f)
-                offset += panChange
-            }
-        Box(
-            modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.96f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            AsyncImage(
-                model = image,
-                contentDescription = stringResource(R.string.chat_image_viewer_desc),
-                contentScale = ContentScale.Fit,
-                modifier =
-                    Modifier
-                        .fillMaxSize()
-                        .transformable(transformState)
-                        .graphicsLayer(
-                            scaleX = scale,
-                            scaleY = scale,
-                            translationX = offset.x,
-                            translationY = offset.y,
-                        ),
-            )
-            Row(
-                modifier =
-                    Modifier
-                        .align(Alignment.TopCenter)
-                        .fillMaxWidth()
-                        .statusBarsPadding()
-                        .padding(horizontal = 4.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = stringResource(R.string.action_back),
-                        tint = Color.White,
-                    )
-                }
-                Column(modifier = Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                    Text(
-                        text =
-                            if (fullscreen.mine) {
-                                stringResource(R.string.chat_self_name)
-                            } else {
-                                fullscreen.senderName
-                            },
-                        style = MaterialTheme.typography.titleSmall,
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text =
-                            relativeTime(
-                                fullscreen.sentAt,
-                                now,
-                                stringResource(R.string.chat_time_just_now),
-                            ),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White.copy(alpha = 0.7f),
-                        maxLines = 1,
-                    )
-                }
-                Box {
-                    IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(48.dp)) {
-                        Icon(
-                            Icons.Filled.MoreVert,
-                            contentDescription = stringResource(R.string.chat_more_options),
-                            tint = Color.White,
-                        )
-                    }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.action_save)) },
-                            leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
-                            onClick = {
-                                menuOpen = false
-                                onSave()
-                            },
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun relativeTime(
-    sentAt: Long,
-    now: Long,
-    justNow: String,
-): String {
-    // DateUtils renders anything under a minute (and any slight clock skew into the future) as
-    // "0 minutes ago"; show a friendlier "Just now" instead.
-    if (now - sentAt < DateUtils.MINUTE_IN_MILLIS) return justNow
-    return DateUtils
-        .getRelativeTimeSpanString(
-            sentAt,
-            now,
-            DateUtils.MINUTE_IN_MILLIS,
-        ).toString()
 }
 
 /**

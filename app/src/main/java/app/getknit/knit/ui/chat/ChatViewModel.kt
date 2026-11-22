@@ -2,10 +2,8 @@ package app.getknit.knit.ui.chat
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
-import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.R
@@ -103,8 +101,6 @@ import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
-import app.getknit.knit.mesh.crypto.AttachmentCrypto
-import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraDirectBudget
 import app.getknit.knit.mesh.lora.LoraFacts
@@ -755,7 +751,7 @@ class ChatViewModel(
     private val attachments: AttachmentStore,
     private val blobs: BlobRepository,
     imageScreening: ImageScreeningService,
-    private val gallerySaver: GallerySaver,
+    gallerySaver: GallerySaver,
     // App-scoped on purpose: any number of voice-note bubbles can be on screen and only one may sound, so
     // arbitration can't live in a per-screen ViewModel.
     private val voicePlayer: VoicePlayer,
@@ -785,7 +781,7 @@ class ChatViewModel(
     commons: CommonsRepository? = null,
     // A save opens a sealed attachment, which is when an older one learns its plaintext name, so a forward of the
     // saved copy reuses the identity it came under (ADR 2026-10.mptm). Stateless; defaulted for every test rig.
-    private val identities: AttachmentIdentities = AttachmentIdentities(messages, blobs),
+    identities: AttachmentIdentities = AttachmentIdentities(messages, blobs),
     // Voice calls (experimental, di/CallWiring): null in a build that wires none, which hides the call button.
     private val calls: CallManager? = null,
     // Free accounts' notice (docs/VOICE_CALLS.md C-7.6-34): null where tickets are not wired, which shows none.
@@ -1218,6 +1214,9 @@ class ChatViewModel(
     /** A tapped file that has no saved copy to open, for the screen to send through the storage picker. */
     private val _saveNeeded = MutableSharedFlow<PendingSave>(extraBufferCapacity = 1)
     val saveNeeded: SharedFlow<PendingSave> = _saveNeeded.asSharedFlow()
+
+    // Every door a held attachment leaves by — the player, the gallery, a picked document (ADR 2026-11.dgvf).
+    private val export = AttachmentExport(blobs, identities, gallerySaver, context)
 
     /** Emitted once the DM's peer is blocked, so the screen can close (the thread is now hidden). */
     private val _closeChat = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -2274,20 +2273,6 @@ class ChatViewModel(
     ) {
         val uploads = freeUploads ?: return
         viewModelScope.launch { withContext(NonCancellable) { uploads.answer(offer.relayHost, allowed) } }
-    }
-
-    /**
-     * The card for [m] when it carries one that has been decoded ([cards]) **and** whose link the body
-     * actually contains — a sender cannot attach one page's card to another page's link. The compare is on
-     * normalized links, so a typed `http://` and the card's `https://` form still match.
-     */
-    private fun linkCardFor(
-        m: MessageEntity,
-        cards: Map<String, LinkCard>,
-    ): LinkCard? {
-        if (m.attachmentMime != LinkPreviewBlob.MIME) return null
-        val card = m.attachmentHash?.let { cards[it] } ?: return null
-        return card.takeIf { c -> findUrls(m.body).any { LinkPreviewPolicy.sameUrl(it.url, c.url) } }
     }
 
     /**
@@ -4303,18 +4288,11 @@ class ChatViewModel(
         viewModelScope.launch { blobs.deleteIfUnreferenced(pending.hash) }
     }
 
-    /**
-     * A held video's plaintext, for the player (ADR 2026-10.hmfe): read and decrypted into memory like a voice
-     * note's, never staged as a file. Null when the blob is gone or does not open.
-     */
+    /** A held video's plaintext, for the player: [AttachmentExport.plaintext]. */
     suspend fun videoBytes(
         hash: String,
         key: String?,
-    ): ByteArray? {
-        val raw = blobs.bytes(hash) ?: return null
-        if (key == null) return raw
-        return withContext(Dispatchers.Default) { AttachmentCrypto.open(raw, b64d(key)) }
-    }
+    ): ByteArray? = export.plaintext(hash, key)
 
     /** Saves a held video to `Movies/Knit` (ADR 2026-10.hmfe), the video half of [saveAttachment]. */
     fun saveVideo(
@@ -4322,40 +4300,19 @@ class ChatViewModel(
         key: String?,
         mime: String?,
     ) {
-        viewModelScope.launch {
-            val bytes = videoBytes(hash, key)
-            val ok = bytes != null && gallerySaver.saveToMovies(bytes, hash, mime ?: "video/mp4")
-            _events.tryEmit(if (ok) R.string.chat_video_saved else R.string.chat_video_save_failed)
-        }
+        viewModelScope.launch { _events.tryEmit(export.saveVideo(hash, key, mime)) }
     }
 
     /**
-     * Exports the attachment blob [hash] to the public `Pictures/Knit` folder and toasts the result.
-     *
-     * [key] and [mime] come from the message row the user tapped, which is exactly what
-     * [app.getknit.knit.ui.image.BlobFetcher] takes to render that bubble — so what gets saved is what is
-     * on screen, by construction. Both matter:
-     *
-     * - A DM/group attachment's stored blob is `iv || ciphertext` ([AttachmentCrypto]), content-addressed
-     *   by the *ciphertext* hash, so it has to be opened before it leaves the app. Without [key] this
-     *   wrote 300 KB of ciphertext into the gallery under an image mime and reported success.
-     * - `blobs.mime` describes those stored (ciphertext) bytes and is only ever as good as whatever named
-     *   the blob when it landed — since ADR 035 a fetcher default on the spool path rather than the frame.
-     *   The row's mime is the plaintext's own type; the blob row is just the fallback.
+     * Exports the attachment blob [hash] to the public `Pictures/Knit` folder and toasts the result:
+     * [AttachmentExport.savePicture], which says why [key] and [mime] are the tapped row's.
      */
     fun saveAttachment(
         hash: String,
         key: String?,
         mime: String?,
     ) {
-        viewModelScope.launch {
-            val raw = blobs.bytes(hash)
-            val bytes = if (key != null && raw != null) AttachmentCrypto.open(raw, b64d(key)) else raw
-            if (key != null && bytes != null) identities.notePlain(hash, bytes)
-            val type = mime ?: blobs.mimeFor(hash)
-            val ok = bytes != null && type != null && gallerySaver.saveToPictures(bytes, hash, type)
-            _events.tryEmit(if (ok) R.string.chat_image_saved else R.string.chat_image_save_failed)
-        }
+        viewModelScope.launch { _events.tryEmit(export.savePicture(hash, key, mime)) }
     }
 
     /**
@@ -4370,62 +4327,28 @@ class ChatViewModel(
     /**
      * A tap on a received file's bubble. A file saved before opens straight from that copy; one never saved,
      * or whose copy has since been moved or deleted, goes to the storage picker through [saveNeeded], and
-     * [saveAttachmentTo] opens it once written (ADR 2026-09.7ad3). A risky file ([FileTypes.isRisky]) never
-     * comes here — the screen asks first and saves it, and nothing opens it.
+     * [saveAttachmentTo] opens it once written (ADR 2026-09.7ad3, [AttachmentExport.savedCopy]). A risky file
+     * ([FileTypes.isRisky]) never comes here — the screen asks first and saves it, and nothing opens it.
      */
     fun openAttachment(pending: PendingSave) {
         viewModelScope.launch {
-            val copy = blobs.savedCopy(pending.hash)?.toUri()
-            if (copy != null) {
-                if (withContext(Dispatchers.IO) { context.contentResolver.documentExists(copy) }) {
-                    _savedFiles.tryEmit(
-                        SavedFile(copy, pending.mime ?: withContext(Dispatchers.IO) { context.contentResolver.typeOf(copy) }),
-                    )
-                    return@launch
-                }
-                blobs.forgetSavedCopy(pending.hash)
-            }
-            _saveNeeded.tryEmit(pending)
+            val copy = export.savedCopy(pending)
+            if (copy != null) _savedFiles.tryEmit(copy) else _saveNeeded.tryEmit(pending)
         }
     }
 
     /**
-     * Writes a received **file** attachment to the document [dest] the user just picked, decrypting it on the
-     * way exactly as [saveAttachment] does, then remembers the copy and asks the screen to open it (ADR
-     * 2026-09.7ad3).
-     *
-     * Knit never hands another app a file *from the blob store*: that would need a content provider serving
-     * decrypted bytes, and ADR 029's invariant — attachment plaintext lives in the encrypted blob store and
-     * nowhere else — is worth more than the convenience. Through the storage picker the bytes go straight from
-     * the blob into the stream the user chose, still never landing in our own storage. What gets opened, now
-     * and on every later tap, is that copy, the user's own, served by the provider that holds it under a read
-     * grant Knit persists — the same hand-off the direct-transfer card makes. A risky file
-     * ([FileTypes.isRisky]) is saved and left there: nothing on the device can look inside it, and an app
-     * package must never reach an installer through us.
+     * Writes a received **file** attachment to the document [dest] the user just picked and opens it unless it is
+     * risky: [AttachmentExport.writeTo], which says why a file only ever opens from the user's own copy.
      */
     fun saveAttachmentTo(
         pending: PendingSave,
         dest: Uri,
     ) {
         viewModelScope.launch {
-            val ok =
-                withContext(Dispatchers.IO) {
-                    val raw = blobs.bytes(pending.hash)
-                    val bytes =
-                        if (pending.key != null && raw != null) AttachmentCrypto.open(raw, b64d(pending.key)) else raw
-                    if (pending.key != null && bytes != null) identities.notePlain(pending.hash, bytes)
-                    bytes != null &&
-                        runCatching {
-                            context.contentResolver.openOutputStream(dest)?.use { it.write(bytes) } != null
-                        }.getOrDefault(false)
-                }
-            _events.tryEmit(if (ok) R.string.chat_file_saved else R.string.chat_file_save_failed)
-            if (!ok || FileTypes.isRisky(pending.mime, pending.name)) return@launch
-            // Without the persisted grant the URI works until this process dies; the next tap then finds it
-            // unreadable, forgets it and asks again, so a refused take costs one prompt and nothing else.
-            runCatching { context.contentResolver.takePersistableUriPermission(dest, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            blobs.rememberSavedCopy(pending.hash, dest.toString(), System.currentTimeMillis())
-            _savedFiles.tryEmit(SavedFile(dest, pending.mime ?: withContext(Dispatchers.IO) { context.contentResolver.typeOf(dest) }))
+            val written = export.writeTo(pending, dest)
+            _events.tryEmit(written.message)
+            written.opened?.let { _savedFiles.tryEmit(it) }
         }
     }
 

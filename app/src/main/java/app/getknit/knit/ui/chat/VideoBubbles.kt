@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.graphics.SurfaceTexture
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.os.Build
 import android.text.format.Formatter
 import android.util.Log
 import android.view.Surface
@@ -112,9 +113,12 @@ private fun Modifier.videoSize(aspect: Float): Modifier {
     return size(width = height * aspect, height = height)
 }
 
+/** Whether `Modifier.blur` draws here: it is ignored before Android 12, so a flagged picture it should hide shows. */
+private val BLUR_COVERS = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+
 /** Decoded once per poster string: the row keeps it base64 so its data class compares by value. */
 @Composable
-private fun rememberPoster(poster: String?): ByteArray? =
+internal fun rememberPoster(poster: String?): ByteArray? =
     remember(poster) { poster?.let { runCatching { Base64.getDecoder().decode(it) }.getOrNull() }?.takeIf { it.isNotEmpty() } }
 
 /** While a picked video is re-encoded: how far along, and a way out. */
@@ -204,6 +208,8 @@ internal fun VideoBubble(
     onPlay: () -> Unit,
     onDownload: () -> Unit,
     onLongClick: () -> Unit,
+    // Whether a blur hides a flagged poster here; a seam for the tests, which run on one Android version.
+    blurCovers: Boolean = BLUR_COVERS,
 ) {
     val context = LocalContext.current
     val posterBytes = rememberPoster(poster)
@@ -233,12 +239,18 @@ internal fun VideoBubble(
                 ).testTag("chat_video_bubble"),
         contentAlignment = Alignment.Center,
     ) {
-        if (posterBytes != null) {
+        // A hidden poster is drawn only where the blur hides it: `Modifier.blur` is ignored before Android 12, and
+        // there the flagged frame would show in the clear behind the notice (ADR 2026-11.dgvf).
+        if (posterBytes != null && (!hidden || blurCovers)) {
             AsyncImage(
                 model = posterBytes,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().then(if (hidden) Modifier.blur(24.dp) else Modifier),
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .then(if (hidden) Modifier.blur(24.dp) else Modifier)
+                        .testTag("chat_video_poster"),
             )
         }
         when {
@@ -316,7 +328,7 @@ internal fun VideoBubble(
 }
 
 @Composable
-private fun DurationBadge(
+internal fun DurationBadge(
     durationMs: Long,
     modifier: Modifier = Modifier,
 ) {
@@ -340,7 +352,8 @@ private fun DurationBadge(
 /**
  * Plays a held video fullscreen (ADR 2026-10.hmfe): its plaintext read into memory by [load] and handed to the
  * platform `MediaPlayer` through [ByteArrayMediaSource] — the voice note's path, so a decrypted video is never a file.
- * A tap on the picture pauses and resumes; the slider seeks; Save files it under `Movies/Knit`.
+ * A tap on the picture pauses and resumes; the slider seeks; Save files it under `Movies/Knit`. [onShowInChat], when
+ * given, is the way back to the message from outside the thread ("Media, links and files", ADR 2026-11.dgvf).
  */
 @Composable
 internal fun FullscreenVideoPlayer(
@@ -349,6 +362,7 @@ internal fun FullscreenVideoPlayer(
     height: Int?,
     onDismiss: () -> Unit,
     onSave: () -> Unit,
+    onShowInChat: (() -> Unit)? = null,
 ) {
     var bytes by remember { mutableStateOf<ByteArray?>(null) }
     var failed by remember { mutableStateOf(false) }
@@ -475,6 +489,11 @@ internal fun FullscreenVideoPlayer(
                     )
                 }
                 Spacer(Modifier.weight(1f))
+                onShowInChat?.let { show ->
+                    TextButton(onClick = show, modifier = Modifier.testTag("viewer_show_in_chat")) {
+                        Text(stringResource(R.string.media_show_in_chat), color = Color.White)
+                    }
+                }
                 TextButton(onClick = onSave, enabled = bytes != null) {
                     Text(stringResource(R.string.chat_video_save), color = Color.White)
                 }

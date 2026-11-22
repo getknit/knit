@@ -30,6 +30,7 @@ import app.getknit.knit.data.settings.MeshcoreClaimStore
 import app.getknit.knit.data.settings.OwnIceStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.settings.TicketKeyStore
+import app.getknit.knit.identity.Identity
 import app.getknit.knit.linkpreview.LinkPreviewService
 import app.getknit.knit.location.LocationSource
 import app.getknit.knit.mesh.MeshController
@@ -39,6 +40,7 @@ import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.LoraStatusRepository
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreForget
 import app.getknit.knit.mesh.power.LowPowerSource
+import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.redact.FaceDetector
 import app.getknit.knit.transfer.TransferManager
 import app.getknit.knit.translate.ChatTranslation
@@ -58,6 +60,7 @@ import app.getknit.knit.ui.diagnostics.DiagnosticsViewModel
 import app.getknit.knit.ui.diagnostics.FieldLogViewModel
 import app.getknit.knit.ui.group.GroupDetailsViewModel
 import app.getknit.knit.ui.lora.LoraRadioViewModel
+import app.getknit.knit.ui.media.ChatMediaViewModel
 import app.getknit.knit.ui.onboarding.OnboardingViewModel
 import app.getknit.knit.ui.preset.StartingPointViewModel
 import app.getknit.knit.ui.profile.ProfileDetailsViewModel
@@ -304,6 +307,21 @@ val uiModule =
                 get(),
                 get<MeshController>().loraRadioReached,
                 blobs = get(),
+                context = androidContext(),
+            )
+        }
+        // ChatMediaViewModel takes the thread's conversation id as a runtime param (ADR 2026-11.dgvf).
+        viewModel { params ->
+            ChatMediaViewModel(
+                conversationId = params.get(),
+                media = get(),
+                blobs = get(),
+                peers = get(),
+                settings = get(),
+                identity = get<Identity>(),
+                flaggedHashes = get<ImageScreeningService>().observeFlaggedHashes(),
+                linkCards = get<LinkCardStore>(),
+                export = get(),
                 context = androidContext(),
             )
         }

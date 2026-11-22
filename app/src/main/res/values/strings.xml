@@ -307,6 +307,29 @@
     <string name="chat_share_needs_chat">Open a direct message or group chat to send a file</string>
     <string name="chat_file_peer_too_old">Their version of Knit can\'t receive files</string>
 
+    <!-- Media, links and files (ADR 2026-11.dgvf): one chat's photos, videos, files, voice messages and links, opened from the chat's ⋮ menu -->
+    <string name="media_title">Media, links and files</string>
+    <string name="media_tab_media">Media</string>
+    <string name="media_tab_files">Files</string>
+    <string name="media_tab_links">Links</string>
+    <string name="media_empty_media">Photos and videos sent in this chat appear here</string>
+    <string name="media_empty_files">Files and voice messages sent in this chat appear here</string>
+    <string name="media_empty_links">Links sent in this chat appear here</string>
+    <!-- Closes the screen and scrolls the chat to the message: a viewer's action, a list row's button, and a tap on a tile not downloaded yet -->
+    <string name="media_show_in_chat">Show in chat</string>
+    <!-- A grid tile read aloud: who sent it (a name, or "You" from chat_self_name, so nothing may agree with it), then the date and time -->
+    <string name="media_photo_desc">%1$s: photo, %2$s</string>
+    <!-- A grid tile read aloud: who sent it, the date and time, then the video's length -->
+    <string name="media_video_desc">%1$s: video, %2$s, %3$s</string>
+    <!-- A grid tile hidden because the phone's filter flagged it; a tap shows it. Who sent it, then the date and time -->
+    <string name="media_hidden_desc">%1$s: hidden, may contain sensitive content, %2$s</string>
+    <!-- What a tap on a hidden tile does, read aloud -->
+    <string name="media_reveal">Show</string>
+    <!-- A grid tile whose photo or video hasn't reached this phone yet; a tap opens it in the chat, where it can be fetched. Who sent it, then the date and time -->
+    <string name="media_not_here_desc">%1$s: not on this phone yet, %2$s</string>
+    <!-- A voice message's name in the Files list -->
+    <string name="media_voice_message">Voice message</string>
+
     <!-- A received attachment over the user's "Ask before large Bluetooth downloads" limit that only Bluetooth could
          bring (ADR 2026-10.js2p): the bubble waits for a tap. Over Wi-Fi Aware it downloads with no tap, so the card
          turns into the progress ring by itself. -->
