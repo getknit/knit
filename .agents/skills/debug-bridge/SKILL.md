@@ -116,7 +116,7 @@ Extras and reply fields: the action's bullet in `.agents/context/debug-bridge.md
 - **Identity, crypto, data:** `INTRO` (contact cards), `RATCHET`, `BACKUP`.
 - **Fault injection and trials:** `NANFAIL`, `NANSTORM`, `NANREFUSE`, `NANICM`, `NANDIAL`, `NANINIT`,
   `NANMSG`, `NANDORM` (Wi-Fi Aware dormancy: hold awake, force dormant, the duty interval), `MODEL`. Each has a negative control in its bullet; run it too.
-- **UI-test fixtures:** `FLAGMSG`, `MSGNOTIF`, `REQNOTIF`, `REVIEW`.
+- **UI-test fixtures:** `FLAGMSG`, `FLAGBLOB` (a flagged verdict on a message's attachment or poster), `MSGNOTIF`, `REQNOTIF`, `REVIEW`.
 - **Demo builds only** (`-PseedDemo` / `-PdemoDirector`): `DEMOCALL` (the scripted peer of the demo's calls),
   `DEMOGO` (cue a director scene that holds for it).
 - **Media and packaging probes:** `WEBPPROBE`, `WEBPCONV`, `WEBPCHECK`, `SHAREAPK`.

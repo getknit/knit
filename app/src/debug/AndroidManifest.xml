@@ -84,6 +84,7 @@
                 <action android:name="app.getknit.knit.debug.REQNOTIF" />
                 <action android:name="app.getknit.knit.debug.MSGNOTIF" />
                 <action android:name="app.getknit.knit.debug.FLAGMSG" />
+                <action android:name="app.getknit.knit.debug.FLAGBLOB" />
                 <action android:name="app.getknit.knit.debug.MKGROUP" />
                 <action android:name="app.getknit.knit.debug.LEAVE" />
                 <action android:name="app.getknit.knit.debug.REVIEW" />

@@ -55,6 +55,7 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
+import app.getknit.knit.data.blob.BlobVerdictEntity
 import app.getknit.knit.data.decodeBoundedFromBytes
 import app.getknit.knit.data.downscale
 import app.getknit.knit.data.forward.ForwardDao
@@ -280,6 +281,11 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   from `--es from <peerNodeId>` (default a synthetic sender, named on upsert) with body `--es text <body>`:
  *   the seam the UIAutomator moderation-reveal test drives, since the radio-less build never receives a real
  *   flagged message and the marketing seed deliberately carries none (a hidden bubble would spoil a screenshot).
+ * - [ACTION_FLAGBLOB] — marks the attachment of message `--es id <messageId>` as the on-device **image screen flagged**
+ *   it: a flagged verdict on its hash, and with `--ez poster true` its video's inline poster too (`--ez attachment
+ *   false` leaves the hash alone, for a poster-only verdict). The radio-less build and the lab never receive a picture the
+ *   classifier flags, and nothing should be sourced to make one, so this is how the covered tile and bubble are checked
+ *   on a device ("Media, links and files", ADR 2026-11.dgvf). `--ez clear true` removes the hash's verdict again.
  * - [ACTION_SPOOL] — configures and inspects the Internet (spool) plane, which has no UI beyond a
  *   debug-only on/off switch: `--es url <ws(s)://…/spool/v1>` adds a spool, `--es drop <url>` removes one,
  *   `--ez on <bool>` flips the global opt-in, `--es url <url> --es ticket <knit-ticket:v1:…|clear>` holds or clears
@@ -617,6 +623,10 @@ class DebugBridgeReceiver :
 
                         ACTION_FLAGMSG -> {
                             handleFlagMsg(intent)
+                        }
+
+                        ACTION_FLAGBLOB -> {
+                            handleFlagBlob(intent)
                         }
 
                         ACTION_MKGROUP -> {
@@ -1726,6 +1736,24 @@ class DebugBridgeReceiver :
             ),
         )
         return reply("ok", "flagged inbound message injected into $conv").put("conversation", conv).put("id", id)
+    }
+
+    private suspend fun handleFlagBlob(intent: Intent): JSONObject {
+        val id = intent.getStringExtra(EXTRA_ID) ?: return reply("error", "missing 'id' extra")
+        val row = messages.find(id) ?: return reply("error", "no message $id")
+        val hash = row.attachmentHash ?: return reply("error", "message $id carries no attachment")
+        if (intent.getBooleanExtra(EXTRA_CLEAR, false)) {
+            verdicts.delete(hash)
+            return reply("ok", "verdict on $hash cleared").put("hash", hash)
+        }
+        val attachment = intent.getBooleanExtra(EXTRA_ATTACHMENT, true)
+        val poster = intent.getBooleanExtra(EXTRA_POSTER, false)
+        if (attachment) verdicts.upsert(BlobVerdictEntity(hash = hash, flagged = true, score = 1f))
+        if (poster) database.messageDao().markPosterFlagged(id)
+        return reply("ok", "attachment of $id marked flagged")
+            .put("hash", hash)
+            .put("attachment", attachment)
+            .put("poster", poster)
     }
 
     private fun metricsJson(snap: MeshMetrics.Snapshot): JSONObject =
@@ -5245,6 +5273,7 @@ class DebugBridgeReceiver :
         const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
         const val ACTION_MSGNOTIF = "app.getknit.knit.debug.MSGNOTIF"
         const val ACTION_FLAGMSG = "app.getknit.knit.debug.FLAGMSG"
+        const val ACTION_FLAGBLOB = "app.getknit.knit.debug.FLAGBLOB"
         const val ACTION_MKGROUP = "app.getknit.knit.debug.MKGROUP"
         const val ACTION_LEAVE = "app.getknit.knit.debug.LEAVE"
         const val ACTION_REVIEW = "app.getknit.knit.debug.REVIEW"
@@ -5286,6 +5315,11 @@ class DebugBridgeReceiver :
         const val EXTRA_INTO = "into"
         const val EXTRA_TYPED = "typed"
         const val EXTRA_ID = "id"
+
+        // FLAGBLOB's switches: a poster verdict, the attachment's own (on unless false), and removing it again.
+        const val EXTRA_POSTER = "poster"
+        const val EXTRA_ATTACHMENT = "attachment"
+        const val EXTRA_CLEAR = "clear"
         const val EXTRA_EMOJI = "emoji"
         const val EXTRA_LIMIT = "limit"
         const val EXTRA_PATH = "path"

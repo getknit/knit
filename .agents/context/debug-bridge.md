@@ -1062,6 +1062,12 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   (default a synthetic sender) with body `--es text <body>`. The radio-less build never receives a real
   flagged message and the marketing seed carries none, so this is the only way to drive the
   `moderation_text_hidden` reveal path (used by `uiauto/ModerationRevealUiAutomatorTest`).
+- `…debug.FLAGBLOB --es id <messageId>` — marks that message's attachment as the on-device **image screen flagged**
+  it: a flagged verdict on its hash (`blob_verdicts`, score 1), and with `--ez poster true` its video's inline poster
+  too (`--ez attachment false` for a poster-only verdict); `--ez clear true` removes the hash's verdict. Replies `hash`,
+  `attachment`, `poster`. The radio-less build and the lab never receive a picture the classifier flags, and nothing
+  should be sourced to make one, so this is the seam for checking a covered picture or video on a device: the chat's
+  bubble, and the Media grid of "Media, links and files" (ADR 2026-11.dgvf). Content filtering must be on to see it.
 - `…debug.MSGNOTIF` — posts one **real incoming-message notification** for `--es conv <id>` (a `g-…` group or
   a DM peer id) from `--es from <peerNodeId>` (default the roster's first other member) with `--es text <body>`,
   resolving the conversation the way `InboundPipeline` would — title, photo, and for a photo-less group its
