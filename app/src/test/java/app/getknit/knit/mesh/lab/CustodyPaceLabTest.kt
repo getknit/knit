@@ -340,7 +340,11 @@ class CustodyPaceLabTest {
      * and evicted in its own write is marked not kept by the other's memo, and a release is pending until judged, so:
      *
      * - **(a)** no frame is released to the same peer twice inside one [CarryLedger.NOT_KEPT_LAPSE_MS], either way (a
-     *   write the link's own memo skipped as a repeat counts as a release, since that is what custody's memo bounds);
+     *   write the link's own memo skipped as a repeat counts as a release, since that is what custody's memo bounds),
+     *   unless the releaser kept that frame as a new row between the two: §3's "entries die with their row", so a row its
+     *   holder's own write evicted at the cap and the peer then re-served is new to the memo, and pending nothing (the
+     *   chaos sweep's seeds 639592878 and 639593000). "Between" is the node's own order of events (`LabTransport.order`,
+     *   shared with its custody gate): a write numbered when it was sent, a keep when the store took the row;
      * - **(b)** no later lapse sets more not-kept marks than the first: a lapse re-releases at most what was found not
      *   kept, once (§6; §9's "a frame the peer would evict on arrival still crosses once per lapse");
      * - **(c)** each side's offer gaps follow §7: back to 60 s only once custody kept a frame from that neighbour, and with
@@ -366,14 +370,16 @@ class CustodyPaceLabTest {
             val peerOf = mapOf(alice to bob, bob to alice)
 
             // Per node: its offers' lab times (the link-up digest first), the lab times of the steps in which it kept a frame
-            // from its peer (each step's keeps come after its tick's offers), and per frame the windows (from, to] in which
-            // it released that frame to its peer.
+            // from its peer (each step's keeps come after its tick's offers), per frame the windows (from, to] in which it
+            // released that frame to its peer with the write's number in the node's order, and per frame the numbers of the
+            // writes that kept it as a new row.
             val offers = two.associateWith { mutableListOf<Long>() }
             val keeps = two.associateWith { mutableListOf<Long>() }
             val releases = two.associateWith { HashMap<String, MutableList<LongArray>>() }
+            val keptAt = two.associateWith { HashMap<String, MutableList<Long>>() }
             val keptSeen = two.associateWith { it.custodyGate.keptFrom.size }.toMutableMap()
-            val sentSeen = two.associateWith { it.transport.sent.size }.toMutableMap()
-            val skippedSeen = two.associateWith { it.transport.dupSkipped.size }.toMutableMap()
+            val writesSeen = two.associateWith { it.transport.writes.size }.toMutableMap()
+            val carried = carriedKeys.values.toSet()
 
             // What a step [from, to] at tick [tickAt] released and kept, read off each node's logs since the last step.
             fun record(
@@ -383,22 +389,16 @@ class CustodyPaceLabTest {
             ) {
                 for (n in two) {
                     val peer = peerOf.getValue(n)
-                    val kept =
-                        n.custodyGate.keptFrom
-                            .drop(keptSeen.getValue(n))
-                            .count { it.source == peer.nodeId }
-                    if (kept > 0) keeps.getValue(n) += tickAt
-                    val written =
-                        n.transport.sent
-                            .drop(sentSeen.getValue(n))
-                            .servedTo(peer) +
-                            n.transport.dupSkipped
-                                .drop(skippedSeen.getValue(n))
-                                .carriedTo(peer)
-                    written.forEach { id -> releases.getValue(n).getOrPut(id) { mutableListOf() } += longArrayOf(from, to) }
+                    val kept = n.custodyGate.keptFrom.drop(keptSeen.getValue(n))
+                    kept.forEach { w -> keptAt.getValue(n).getOrPut(w.id) { mutableListOf() } += w.seq }
+                    if (kept.any { it.source == peer.nodeId }) keeps.getValue(n) += tickAt
+                    // What crossed to the peer, and the carried frames the link's memo skipped as repeats.
+                    n.transport.writes
+                        .drop(writesSeen.getValue(n))
+                        .filter { w -> peer.nodeId.startsWith(w.to) && (!w.skipped || w.id in carried) }
+                        .forEach { w -> releases.getValue(n).getOrPut(w.id) { mutableListOf() } += longArrayOf(from, to, w.seq) }
                     keptSeen[n] = n.custodyGate.keptFrom.size
-                    sentSeen[n] = n.transport.sent.size
-                    skippedSeen[n] = n.transport.dupSkipped.size
+                    writesSeen[n] = n.transport.writes.size
                 }
             }
 
@@ -428,13 +428,24 @@ class CustodyPaceLabTest {
                 notKept += lab.clock.now() to two.sumOf { it.metrics.frames().custodyNotKept }
             }
 
-            // (a)
+            // (a) A pair of releases [a] then [b] inside a lapse, unless custody kept the frame as a new row between them.
             for ((n, byId) in releases) {
-                val repeats = byId.filterValues { w -> w.zipWithNext().any { (a, b) -> b[1] - a[0] < CarryLedger.NOT_KEPT_LAPSE_MS } }
-                assertTrue(
-                    "${n.name} released frames to ${peerOf.getValue(n).name} twice inside a lapse: ${repeats.keys}",
-                    repeats.isEmpty(),
-                )
+                val keptBy = keptAt.getValue(n)
+                val repeats =
+                    byId.filter { (id, w) ->
+                        // In the node's order: a write is logged after its send's lag, so the log's order can differ.
+                        w.sortedBy { it[2] }.zipWithNext().any { (a, b) ->
+                            b[1] - a[0] < CarryLedger.NOT_KEPT_LAPSE_MS && keptBy[id].orEmpty().none { it > a[2] && it < b[2] }
+                        }
+                    }
+                val story =
+                    repeats.map { (id, w) ->
+                        "$id released at ${w.sortedBy {
+                            it[2]
+                        }.map { "#${it[2]} in ${(it[0] - linkedAt) / 1_000}-${(it[1] - linkedAt) / 1_000} s" }}, " +
+                            "kept at ${keptBy[id].orEmpty().map { "#$it" }}"
+                    }
+                assertTrue("${n.name} released frames to ${peerOf.getValue(n).name} twice inside a lapse: $story", repeats.isEmpty())
             }
             // (b)
             val firstMark = notKept.firstOrNull { it.second > 0 }?.first ?: start
@@ -624,13 +635,6 @@ class CustodyPaceLabTest {
         mapNotNull { line ->
             val cols = line.split(' ')
             cols.getOrNull(3)?.takeIf { to.nodeId.startsWith(cols[1]) }
-        }
-
-    /** The ids of the carried frames in these `dupSkipped` lines whose writes toward [to] the link memo skipped as repeats. */
-    private fun List<String>.carriedTo(to: LabNode): List<String> =
-        mapNotNull { line ->
-            val (peer, key) = line.split(' ')
-            carriedKeys[key]?.takeIf { to.nodeId.startsWith(peer) }
         }
 
     /** The ids of the profile frames from [sender] this node holds in custody. */

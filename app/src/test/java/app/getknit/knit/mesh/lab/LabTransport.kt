@@ -652,6 +652,29 @@ class LabTransport(
     val dupSkipped = CopyOnWriteArrayList<String>()
 
     /**
+     * This node's order of events, shared with its [LabCustodyGate.order] (`LabNode.boot` hands it the gate's): a
+     * signed frame's write takes its number when [send] is called, before any lag, as the sender decided it, and a
+     * custody keep when the store took the row. So a scenario can tell a keep between two writes of one frame from one
+     * inside the same tick, which a step's slice of the logs cannot.
+     */
+    @Volatile
+    var order: AtomicLong = AtomicLong()
+
+    /** Every signed frame's write the link judged (crossed or skipped as a repeat, [dupSkipped]), numbered by [order]. */
+    val writes = CopyOnWriteArrayList<LabWrite>()
+
+    /**
+     * One judged write: frame [id] toward the node whose id starts [to], numbered [seq] by [order], [skipped] when the link's
+     * memo skipped it as a repeat. A lost or parked write is not one until it is judged; a held one is judged at its release.
+     */
+    class LabWrite(
+        val seq: Long,
+        val to: String,
+        val id: String,
+        val skipped: Boolean,
+    )
+
+    /**
      * How many writes of [key] (`FrameKey`) toward [nodeId] [crossings] has skipped, by either path, from the [since]th
      * entry of [dupSkipped] on (its size when a scenario took the mark).
      */
@@ -1001,7 +1024,14 @@ class LabTransport(
      * ended (rounds go on the link's drain, the custody-carry-policy contract's §2, so the collector's return is only the
      * first): each reply's frames are sent, and a send returns once the far end holds the frame, so the far end's
      * [awaitInboundDrained] after this
-     * means the exchange has landed. On an air link a digest still on the air is not counted yet, nor is a reply's frame
+     * means the exchange has landed, and custody has settled what it released: every round's credit (its hand-off and its
+     * `written` stamp) is taken at the look after the link drains, not at the write, so a link event (a frame crossing, a
+     * repeat skipped) is no proof custody is done with it, and a clock jumped before that look ages the hand-off out at the
+     * jumped time. The memo's pending is written just after the hand-off leaves, outside custody's lock, so a read of the
+     * ledger right after this can still race it. Not waited for while one of this node's pipes is held or counts stuck
+     * bytes: a scenario's own stall, whose credits settle only once it lifts. The skip is node-wide: a scenario holding one
+     * pipe settles its other links' credits itself, after the release. On an air link a digest still on the air is not
+     * counted yet, nor is a reply's frame
      * delivered when it is sent: [MeshLab.awaitAcquainted]'s loop through [awaitInboundDrained] closes both. A digest
      * handed to a node whose manager is not collecting is never answered, and this fails on it rather than waits forever:
      * not for a node stopped or restarted since it booted.
@@ -1017,7 +1047,17 @@ class LabTransport(
             "$nodeId: a custody answer it opened never ended within ${MeshLab.AWAIT_MS} ms: ${answersOpen()} " +
                 "(a held pipe or a stalled link holding its rounds?)"
         }
+        // A round's hand-off is appended before its release returns, so once the answers ended none is still to come.
+        if (pipes.values.any { stalled(it) }) return
+        val settled = withTimeoutOrNull(MeshLab.AWAIT_MS) { while (creditsWaiting() > 0) delay(1) } != null
+        check(settled) {
+            "$nodeId: ${creditsWaiting()} custody hand-offs still wait for their credit after ${MeshLab.AWAIT_MS} ms " +
+                "(links: ${pipes.keys.joinToString { "${it.take(NODE_ID_CHARS)} ${outboundOf(pipes.getValue(it), it)}" }})"
+        }
     }
+
+    // A pipe the scenario stalled on purpose: held, or counting bytes that never drain.
+    private fun stalled(pipe: Pipe): Boolean = synchronized(pipe.held) { pipe.holding } || pipe.stuckBytes > 0
 
     /**
      * Whether this node's custody still has an answer open to any lab node: set by [MeshLab.node] over the node's carry
@@ -1029,6 +1069,13 @@ class LabTransport(
     /** The answers still open, each `peer: plane` with what its link reads now: [awaitDigestsAnswered]'s failure says them. */
     @Volatile
     internal var answersOpen: () -> String = { "" }
+
+    /**
+     * How many of this node's custody rounds still wait for their credit (`ForwardSync.creditsWaiting`): set by
+     * [MeshLab.node], read by [awaitDigestsAnswered]. None until set.
+     */
+    @Volatile
+    internal var creditsWaiting: () -> Int = { 0 }
 
     /** From now on, frames this node sends [to] are parked instead of delivered — until [release]. */
     fun hold(to: LabTransport) {
@@ -1436,7 +1483,7 @@ class LabTransport(
                     enqueueAir(pipe, held, FrameKey.ofSigned(held), VIA_LINK)
                 }
 
-                !doorGone(pipe) && crosses(pipe, FrameKey.ofSigned(held), VIA_LINK) -> {
+                !doorGone(pipe) && crosses(pipe, FrameKey.ofSigned(held), VIA_LINK, held) -> {
                     throughDoor(pipe, held)?.let { pipe.target.deliver(pipe, this, it, VIA_LINK) }
                 }
             }
@@ -1510,11 +1557,12 @@ class LabTransport(
     ) {
         // One lag before the pipes are read, none between them: a phone's `send` never suspends mid-flood, so a
         // cancelled caller cannot leave half the links served, and a pipe torn down during the lag is not written.
+        val at = order.incrementAndGet()
         chaos?.jitter()
         val out = claimsHeldBytes?.let { misstated(wire, it) } ?: wire
         val targets = if (to == null) pipes.values.toList() else listOfNotNull(pipes[to.nodeId])
         val key = FrameKey.ofSigned(out)
-        targets.forEach { pipe -> write(pipe, out, key) }
+        targets.forEach { pipe -> write(pipe, out, key, at) }
         // The far end has the frame (an air link has queued it); the sender's own bookkeeping after `send` returns may come
         // late.
         chaos?.jitter()
@@ -1544,6 +1592,7 @@ class LabTransport(
         pipe: Pipe,
         out: WireEnvelope,
         key: String?,
+        at: Long = order.incrementAndGet(),
     ) {
         when {
             pipe.lossy(out) -> {
@@ -1554,12 +1603,12 @@ class LabTransport(
             pipe.park(out) -> {}
 
             pipe.air != null -> {
-                enqueueAir(pipe, out, key, VIA_LINK)
+                enqueueAir(pipe, out, key, VIA_LINK, at)
             }
 
             doorGone(pipe) -> {}
 
-            !crosses(pipe, key, VIA_LINK) -> {}
+            !crosses(pipe, key, VIA_LINK, out, at) -> {}
 
             else -> {
                 throughDoor(pipe, out)?.let { pipe.target.deliver(pipe, this, it, VIA_LINK) }
@@ -1606,8 +1655,13 @@ class LabTransport(
         pipe: Pipe,
         key: String?,
         via: String,
+        wire: WireEnvelope,
+        at: Long = order.incrementAndGet(),
     ): Boolean {
-        if (key == null || crossings.firstCrossing(pipe.target.nodeId, key)) return true
+        if (key == null) return true
+        val first = crossings.firstCrossing(pipe.target.nodeId, key)
+        WireCodec.decodeEnvelope(wire.signed)?.let { e -> writes += LabWrite(at, pipe.target.nodeId.take(NODE_ID_CHARS), e.id, !first) }
+        if (first) return true
         dupSkipped += "${pipe.target.nodeId.take(NODE_ID_CHARS)} $key via=$via"
         return false
     }
@@ -1654,7 +1708,7 @@ class LabTransport(
 
             doorGone(pipe) -> Unit
 
-            !crosses(pipe, key, VIA_FAST) -> Unit
+            !crosses(pipe, key, VIA_FAST, wire) -> Unit
 
             else -> throughDoor(pipe, wire)?.let { pipe.target.deliverNow(pipe, this, it, VIA_FAST) }
         }
@@ -2033,6 +2087,7 @@ class LabTransport(
         out: WireEnvelope,
         key: String?,
         via: String,
+        at: Long = order.incrementAndGet(),
     ) {
         val air = checkNotNull(pipe.air)
         val bytes = WireCodec.encodeWire(out).size.toLong() + air.recordOverheadBytes
@@ -2041,7 +2096,7 @@ class LabTransport(
                 aired.refused.incrementAndGet()
                 return
             }
-            if (!crosses(pipe, key, via)) return
+            if (!crosses(pipe, key, via, out, at)) return
             pipe.airQueue.addLast(AirRecord(out, via, ++pipe.enqueuedSeq, System.nanoTime(), bytes))
             noteQueued(pipe, bytes)
         }

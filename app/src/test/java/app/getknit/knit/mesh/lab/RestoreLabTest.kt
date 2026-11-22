@@ -216,6 +216,9 @@ class RestoreLabTest {
 
             // The routers' window runs out; the 60 s tick (driven here, the lab clock moves no scheduler) re-seals the
             // three once more, and Carol now relays them.
+            // A crossing is no proof custody settled what it served: its credit is taken at the next look, which a jump
+            // would age out at the jumped time.
+            settleCustody(alice, bob, carol)
             lab.clock.advance(ResetReseal.SECOND_PASS_MS)
             alice.reoffer()
             lab.assertConverged(listOf(alice, bob), atLeast = 5, carriers = listOf(carol)) { it.dmWith(if (it === alice) bob else alice) }
@@ -248,6 +251,9 @@ class RestoreLabTest {
 
             // Bob's custody loses the three, and his link to Carol drops and comes back three minutes on: Carol's
             // answer to his digest carries each original again, a second copy of each on that pipe.
+            // A crossing is no proof custody settled what it served: its credit is taken at the next look, which a jump
+            // would age out at the jumped time.
+            settleCustody(alice, bob, carol)
             bob.forgetCustody { it in sent }
             lab.clock.advance(RELINK_AFTER_FIRST_PASS_MS)
             lab.unlink(carol, bob)
@@ -260,6 +266,7 @@ class RestoreLabTest {
             assertTrue("bob's router delivered $guarded copies under a guard, not one per original", guarded >= sent.size)
 
             // Alice's second pass is due; Carol's window has run out, Bob's must not have restarted at the relink.
+            settleCustody(alice, bob, carol)
             lab.clock.advance(firstPass + ResetReseal.SECOND_PASS_MS - lab.clock.now())
             alice.reoffer()
             lab.assertConverged(listOf(alice, bob), atLeast = 5, carriers = listOf(carol), conversation = thread)
@@ -284,6 +291,7 @@ class RestoreLabTest {
             carol.transport.awaitInboundDrained()
             lab.await(sent.size) { sent.count { id -> carol.copiesTo(bob, id) >= 1 } }
             bob.transport.awaitInboundDrained()
+            settleCustody(alice, bob, carol)
             bob.forgetCustody { it in sent }
 
             lab.clock.advance(firstPass + ResetReseal.SECOND_PASS_MS - lab.clock.now())
@@ -304,6 +312,7 @@ class RestoreLabTest {
 
             // Bob's window on the three runs out (the link cut first, so no copy lands across the jump); a relink's
             // exchange carries them back into his custody.
+            settleCustody(alice, bob, carol)
             lab.unlink(carol, bob)
             lab.clock.advance(SeenSet.DEFAULT_TTL_MS)
             lab.link(carol, bob)
@@ -739,6 +748,9 @@ class RestoreLabTest {
             assertTrue(bob.sendGroup(group, "still here"))
             lab.assertConverged(listOf(alice, bob, carol), atLeast = 3) { group }
         }
+
+    /** Every custody answer of [nodes] ended and every round it released credited: what a clock jump may follow. */
+    private suspend fun settleCustody(vararg nodes: LabNode) = nodes.forEach { it.transport.awaitDigestsAnswered() }
 
     private companion object {
         /** When Bob's link to Carol comes back after Alice's first pass: well inside the ten minutes before her second. */

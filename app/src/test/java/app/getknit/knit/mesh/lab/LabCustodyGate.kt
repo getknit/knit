@@ -7,6 +7,7 @@ import kotlinx.coroutines.CompletableDeferred
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * A node's custody writes, holdable: from [hold] on, every `store` of a frame [hold]'s predicate matches waits until
@@ -43,16 +44,27 @@ class LabCustodyGate {
     val parked: Int get() = waiting.get()
 
     /**
-     * Every write the stack's custody kept with a proven neighbour as its source, in the order they returned: the event
-     * custody's re-offer back-off reads as an offer that drew (the custody-carry-policy contract's §7), seen at the write,
-     * so a row kept and evicted again by a later write still counts.
+     * Every write the stack's custody kept as a new row with a proven neighbour as its source, in the order they
+     * returned: the event custody's re-offer back-off reads as an offer that drew (the custody-carry-policy contract's
+     * §7), seen at the write, so a row kept and evicted again by a later write still counts. A new row only: the gate
+     * asks the store whether it held the id before the write, since `ForwardStore.store` answers true for an id it holds
+     * (`ForwardRepository`'s insert ignores the duplicate) and only `ForwardSync.onSeen`'s own `has` check keeps the
+     * stack from writing one.
      */
     val keptFrom = CopyOnWriteArrayList<KeptWrite>()
 
-    /** One kept write: the frame [id] custody kept, from the neighbour [source]. */
+    /**
+     * The node's order of events, shared with its transport's `LabTransport.order`: each [KeptWrite] takes its [KeptWrite.seq]
+     * here once the store has the row. Kept across restarts with the gate, so it never runs back. Taken after `store`
+     * resumes, so a write numbered while the row was being stored reads as before the keep, though the row was there.
+     */
+    val order = AtomicLong()
+
+    /** One kept write: the frame [id] custody kept as a new row, from the neighbour [source], [seq]th in the node's order. */
     class KeptWrite(
         val source: String,
         val id: String,
+        val seq: Long = 0,
     )
 
     /** From now on, a custody write of a frame [which] answers true for waits for [release]. */
@@ -96,8 +108,9 @@ class LabCustodyGate {
                         waiting.decrementAndGet()
                     }
                 }
+                val had = source != null && store.has(frame.envelope.id)
                 return store.store(frame, origin, now, source).also { kept ->
-                    if (kept && source != null) keptFrom += KeptWrite(source, frame.envelope.id)
+                    if (kept && source != null && !had) keptFrom += KeptWrite(source, frame.envelope.id, order.incrementAndGet())
                 }
             }
 

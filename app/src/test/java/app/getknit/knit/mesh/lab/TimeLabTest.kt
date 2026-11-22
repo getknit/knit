@@ -101,6 +101,10 @@ class TimeLabTest {
                 lab.tryAwait(skipsBefore + 1) { bob.transport.skipsToward(alice.nodeId, key) },
             )
             assertFalse("inside the window the post stays out of alice's store", post in alice.custodyIds())
+            // The skip is the pipe's, at the write: Bob's custody credits that release at its next look after the link
+            // drains. Jumped before it, the hand-off ages out at the jumped time and its unwritten release keeps the post
+            // out of the answer the post-jump digest reuses, so no later digest ever brings it.
+            listOf(alice, bob).forEach { it.transport.awaitDigestsAnswered() }
 
             lab.clock.advance(SEEN_WINDOW_LAPSED_MS)
             alice.reoffer()

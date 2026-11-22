@@ -95,6 +95,7 @@ import app.getknit.knit.mesh.CustodyPace
 import app.getknit.knit.mesh.DmAckCoalescer
 import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.ForwardStore
+import app.getknit.knit.mesh.ForwardSync
 import app.getknit.knit.mesh.IngressBudget
 import app.getknit.knit.mesh.IntroState
 import app.getknit.knit.mesh.MeshManager
@@ -2214,6 +2215,7 @@ class LabNode internal constructor(
         partials = PartialBlobs(File(dir, "blob-partials"), now = now)
         transport =
             LabTransport(nodeId, File(dir, "rx"), partials, pages, chaos).apply {
+                order = custodyGate.order
                 advertises = helloCapabilities()
                 clock = now
                 feedStallMs = limits.feedStallMs
@@ -2223,6 +2225,7 @@ class LabNode internal constructor(
                 // lab node, has ended (the custody-carry-policy contract's §2), not only the first round its collector cut.
                 answersLive = { answerPeers().any { answering(it) } }
                 answersOpen = { answersOpenNow() }
+                creditsWaiting = { custodyCreditsWaiting() }
             }
         metrics = MeshMetrics()
         // The Internet plane is opted into through the same two settings the relay editor writes; the
@@ -4071,6 +4074,9 @@ class LabNode internal constructor(
      */
     fun answering(peer: String): Boolean = custodyCarry.answerCarrier(peer) != null
 
+    /** How many of custody's rounds wait for their credit, read off the manager's [ForwardSync] (the lab's only view of it). */
+    fun custodyCreditsWaiting(): Int = (FORWARD_SYNC_FIELD.get(manager) as ForwardSync).creditsWaiting()
+
     // Each open answer as `peer6: plane` and the carrying link's read now (unwritten, rate, file moving), for a failure.
     private fun answersOpenNow(): String =
         answerPeers()
@@ -4705,6 +4711,13 @@ class LabNode internal constructor(
         const val VIDEO_MIME = "video/mp4"
         const val LORA_LOG_LINES = 24
         const val SCOPE_JOIN_MS = 5_000L
+
+        /**
+         * The manager's private [ForwardSync], whose waiting credits the lab reads. Reflection because the change that added
+         * it was held to test code; a one-line `internal` read on `MeshManager` would replace it.
+         */
+        val FORWARD_SYNC_FIELD: java.lang.reflect.Field =
+            MeshManager::class.java.getDeclaredField("forwardSync").apply { isAccessible = true }
 
         /** The text classifier's answer to words it minds, under [flaggedText]. */
         val FLAGGED_TEXT = TextVerdict(allowed = false, category = TextVerdict.Category.TOXICITY, score = 0.99f)
