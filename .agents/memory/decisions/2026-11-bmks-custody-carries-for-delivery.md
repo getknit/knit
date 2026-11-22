@@ -23,6 +23,13 @@ so two full stores never match, and the rules that push them toward matching spe
 48-walker park outing every store reached the cap within three minutes. Baseline reports:
 `/media/walter/data/knit-sim/baseline-ccp/` on the workstation (point-in-time numbers).
 
+**Measured after** (the same nine runs on `9177f0865`, 2026-11-21; `/media/walter/data/knit-sim/after-drain/`). On
+`ble1m` every linked pair lands 20 of 20 DMs, and a cut loses about 100 records a pair against 1,600 to 1,900. On
+`ble1m+nan` the answer moves the whole difference again, as fast as Aware takes it, and the frames a full store evicts
+on arrival are back at 3,900 to 4,900 a run, each once a lapse. In the park outing frames reaching their addressee rise
+28%, the direct-DM p90 falls from 112 to 180 s to 17 to 36 s, frames not kept fall 27 to 37%, and custody's own re-sends
+barely move (the flood's relays are 82 to 87% of all re-sends); digests rise 18 to 34% (below).
+
 **The decision.** Custody stops aiming for identical stores. What counts is that frames reach their recipients. Below
 the row cap nothing changes: admission, the TTLs, the sender, group and room trims and the digest fold stay functions of
 the frame and the held set, and two stores under `maxRows` that hold the same frames keep the same frames (ADR 006). At
@@ -259,18 +266,25 @@ The rounds, the looks, the lapse and the back-off are local policy pinned by uni
   though no one else holds it. The peer's own order had ranked the frame last, so the rule stands; crediting a
   hand-off to a full peer only once its digest lists the frame is left for later. Two carriers serve one newcomer the same first
   rounds, about a round of overlap per extra carrier.
-- A full pair's offers often don't reach the longest gap. After an exchange a node's offers to its peer come 60, 180,
-  420 and 900 s later. The peer's marks from that exchange lapse inside the 480 s gap, so its answer to the offer at
-  900 s carries those frames once more, and the node's cap keeps some or none as its store then stands. A kept frame
-  returns the interval to 60 s, and it climbs again. Android's lab saw that in about a third of its chaos schedules
-  (`CustodyPaceLabTest`; seeds 543869138, 296711625, 296711629, 296711630, 296711636), about every 15 minutes, with 1 to 3 frames kept each time and no frame crossing twice inside a lapse. Even when it
-  settles, a full pair's gaps reach 600 s only about 41 lab minutes in. An offer that draws a kept frame was worth
-  making, so the back-off doesn't change; the cost is a few more digests than a settled pair sends, never more than the
-  one a minute every pair sent before. And one keep at a lapse can bring another at the next offer: the keep evicts
-  a row the two shared, the next digest lacks that row, and the peer serves it for the first time, so no memo holds
-  it; it is kept in turn when a credit has meanwhile raised an older row's spread, holding the interval at 60 s for an
-  offer or two. The memo still holds each row to one
-  crossing a lapse.
+- A full pair's offers often don't reach the longest gap. After an exchange a node's offers to its peer come about 60,
+  120, 240, 480 and 960 s later. The peer's marks from that exchange lapse inside the 480 s gap, so its answer to the
+  offer at 960 s carries those frames once more, and the node's cap keeps some or none as its store then stands. A kept
+  frame returns the interval to 60 s, and it climbs again. On drain Android's lab saw that in 42 of 60 runs (60 of 120
+  node-schedules; `CustodyPaceLabTest`, seeds 639592878 to 639592937), mostly once a 46-minute schedule at that first
+  offer after the first lapse (50 of 65 resets at 960 to 963 s, the rest after the gap had reached 600 s), with 1 to 4
+  frames kept each time, mostly 1; 105 of 120 node-schedules ended at 600 s and stayed. When nothing is kept the gap
+  reaches 600 s after the offer at about 960 s. An offer that draws a kept frame was worth making, so the back-off
+  doesn't change; the cost is a few more digests than a settled pair sends, never more than the one a minute every pair
+  sent before. And one keep at a lapse can bring another at the next offer: the keep evicts a row the two shared, the
+  next digest lacks that row, and the peer serves it for the first time, so no memo holds it; it is kept in turn when a
+  credit has meanwhile raised an older row's spread, holding the interval at 60 s for an offer or two. The memo still
+  holds each row to one crossing a lapse while the row stays: a row its holder's own write evicts at the cap and the
+  peer serves back is new to the memo (§3, entries die with their row), so it can cross again inside the lapse, which
+  the lab sees in about one run in a hundred.
+- In the simulator's park outing digests rose 18 to 34% against before, and exchanges that moved nothing 19 to 84%,
+  where the clock-paced rounds had added 1 to 6%. The cause is not traced: a frame kept from a neighbour resets its
+  re-offer to 60 s at once, and more frames are kept on drain; faster answers may also change who links when, and each
+  link-up has its own digest.
 - A frame the peer would evict on arrival still crosses once per lapse or link. A frame released without its sender's
   key can arrive late: the peer parks it, its next digest lacks it, and it waits out a mark unless addressed to the peer.
   A frame addressed to the peer that its digest keeps lacking is released again at each digest past the judging delay;

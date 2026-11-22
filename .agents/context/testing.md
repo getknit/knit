@@ -1373,10 +1373,11 @@ delivers, and how fast, while contacts come and go the way people's do. It is a 
   - The simulator runs production's rounds and back-off. `knit.meshSimZeroSpread=true` sets `custodyZeroSpread`; its
     summary key (`custody_zero_spread`) appears only when a run turns it on.
   - Two linked full stores trade a few frames once per not-kept lapse: a lapse's re-release can be kept, which is a
-    re-offer draw, so their digest gaps need about 41 lab minutes to reach 600 s and may cycle back (in about a third of
-    chaos schedules on the clock-paced rounds). `CustodyPaceLabTest` asserts what holds in every schedule: no frame released to the same peer twice
-    inside a lapse, no later lapse marking more than the first, and each gap judged against what custody kept from that
-    neighbour, read at the write through `LabCustodyGate.keptFrom`.
+    re-offer draw, so their digest gaps reach 600 s after the offer at about 960 s and may cycle back (in 42 of 60 chaos
+    runs on drain, mostly once a schedule at that offer). `CustodyPaceLabTest` asserts what holds in every schedule: no
+    frame released to the same peer twice inside a lapse unless its row left the releaser's store and came back between
+    (§3: entries die with their row), no later lapse marking more than the first, and each gap judged against what
+    custody kept from that neighbour, read at the write through `LabCustodyGate.keptFrom`.
   - A scenario on the contract's back-off boots with a 24 h background re-offer interval, so `LabNode.tick()` and
     `reoffer()` are its only ticks: the wall-clock loop would otherwise fire between a clock jump and the scenario's own
     tick.
