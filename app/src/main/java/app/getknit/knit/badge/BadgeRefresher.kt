@@ -30,12 +30,13 @@ import java.security.SecureRandom
  *
  * - Nothing is asked while "Show my supporter badge" is off.
  * - With it on, an ask is due when no held badge verifies, or the one that does expires within [RENEW_MARGIN_MS].
- * - Never before [BadgeAskState.notBefore]: [FLOOR_MS] after any ask, [ENDED_RETRY_MS] after `ended`.
+ * - Never before [BadgeAskState.notBefore]: [FLOOR_MS] after any ask. An `ended`'s day-long wait is the key's own, not
+ *   the refresher's (C-5-5, C-5-7): the answer marks that key as the ticket swap's would, so the next ask goes to the
+ *   next live key and a dead one never holds it up (#358).
  */
 object BadgeRefreshPolicy {
     const val RENEW_MARGIN_MS = 7 * 24 * 60 * 60 * 1_000L
     const val FLOOR_MS = 60 * 60 * 1_000L
-    const val ENDED_RETRY_MS = 24 * 60 * 60 * 1_000L
     private const val MS_PER_S = 1_000L
 
     /** Epoch millis at which to ask next. [validExp] is the latest `exp` (Unix seconds) among the held badges that verify. */
@@ -58,7 +59,7 @@ object BadgeRefreshPolicy {
             }
 
             is BadgeAnswer.Ended -> {
-                emptyList<HeldBadge>() to BadgeAskState(now + ENDED_RETRY_MS, 0)
+                emptyList<HeldBadge>() to BadgeAskState(now + FLOOR_MS, 0)
             }
 
             // A 401, a 503, a 409 (C-5-8: the account is another phone's), a 426, a `bad-proof` and no answer all keep what
@@ -158,14 +159,15 @@ class BadgeRefresher(
             } else {
                 issuer.issueBadge(key.issuer, key.key, Badges.subject(NodeId.toBytes(me), r), signer)
             }
-        // C-5-8 reads a 409 as the ticket swap does: the key is parked for the ticket refresher too, until a move.
-        if (answer is BadgeAnswer.BoundElsewhere) {
+        // A verdict on the key itself is recorded as the ticket swap records it (C-5-7, C-5-8): a 409 parks the key until a
+        // move, and a 403 `ended` or 401 `unknown-key` takes it out of [issuerKey] until a ticket answer says otherwise, so
+        // the next ask goes to the next live key (#358).
+        verdictOnKey(answer)?.let { verdict ->
             val state = keys.keyStates.first()[host] ?: KeyState.FRESH
-            val parked = IssuerAnswer.BoundElsewhere(answer.movableAt)
             keys.putKeyState(
                 host,
                 key,
-                TicketRefreshPolicy.afterAnswer(state, parked, held = false, now = clock(), signedBy = ready?.id),
+                TicketRefreshPolicy.afterAnswer(state, verdict, held = false, now = clock(), signedBy = ready?.id),
             )
         }
         // A 200 to a proof says the issuer bound that pair (ADR 2026-10.wk3m).
@@ -188,24 +190,45 @@ class BadgeRefresher(
     }
 
     /**
-     * The key to ask with and its relay host: the first held customer key, by relay host name, whose issuer passes
-     * [IssuerOrigin] and whose last ticket answer is none of `ended`, `unknown-key` and `bound-elsewhere`. Null when none,
-     * so a phone with no live account here never asks. A free key (C-7.6-37) never does: a badge says its holder supports
-     * Knit, and a free account pays nothing.
+     * The key to ask with and its relay host (C-5-3): among the held customer keys whose issuer passes [IssuerOrigin] and
+     * whose last answer, the ticket swap's or the badge's, is none of `ended`, `unknown-key` and `bound-elsewhere`, the
+     * first by relay host name, except that a key whose recorded end has passed comes after every key whose end has not
+     * (or is unknown). It is put back, not left out: an account extended while no ticket was asked for still gets its
+     * ask when it is the only one, and an early end is caught by the `ended` it then gets. Null when none, so a phone with
+     * no live account here never asks. A free key (C-7.6-37) never does: a badge says its holder supports Knit, and a free
+     * account pays nothing.
      */
     private suspend fun issuerKey(): Pair<String, HeldKey>? {
         val states = keys.keyStates.first()
+        val now = clock()
         return keys.keys
             .first()
-            .toSortedMap()
             .entries
-            .firstOrNull { (host, key) ->
+            .filter { (host, key) ->
                 !key.free &&
                     IssuerOrigin.isAcceptable(key.issuer, allowCleartext) &&
                     CustomerKey.isWellFormed(key.key) &&
                     states[host]?.answer.let { it != KeyAnswer.ENDED && it != KeyAnswer.UNKNOWN_KEY && it != KeyAnswer.BOUND_ELSEWHERE }
-            }?.toPair()
+            }.minWithOrNull(compareBy({ states[it.key]?.endsAt?.let { end -> end <= now } == true }, { it.key }))
+            ?.toPair()
     }
+
+    /** The ticket swap's answer that [answer] is the same verdict on the key as, or null when it says nothing of the key. */
+    private fun verdictOnKey(answer: BadgeAnswer): IssuerAnswer? =
+        when (answer) {
+            is BadgeAnswer.Ended -> IssuerAnswer.Ended(answer.endsAt)
+
+            BadgeAnswer.UnknownKey -> IssuerAnswer.UnknownKey
+
+            is BadgeAnswer.BoundElsewhere -> IssuerAnswer.BoundElsewhere(answer.movableAt)
+
+            is BadgeAnswer.Issued,
+            BadgeAnswer.Unavailable,
+            is BadgeAnswer.NoVerdict,
+            BadgeAnswer.UpgradeRequired,
+            BadgeAnswer.BadProof,
+            -> null
+        }
 
     private fun validExp(
         held: List<HeldBadge>,

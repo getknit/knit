@@ -74,18 +74,24 @@ not a wire change.
   issuer, and the profile carries no badge.
 - **C-5-2** With it on, the app asks when no held badge verifies, or the one that does expires within 7 days.
 - **C-5-3** It asks the issuer of the first held customer key (by relay host name) whose origin passes `IssuerOrigin`
-  and whose last ticket answer is neither `ended` nor `unknown-key`: `POST <issuer>/api/v1/badge`,
-  `Authorization: Bearer kak1_…`, body `{"sub": "<unpadded base64url of 32 bytes>"}`. No redirect is followed; the
-  socket is bound to the validated Internet network (the ticket swap's rules, ADR 2026-10.3sk7). It carries the
-  customer key's device proof, signed for `/api/v1/badge` (`docs/VOICE_CALLS.md` C-7.6-40, C-7.6-41).
+  and whose last answer, the ticket swap's or the badge's (C-5-7), is none of `ended`, `unknown-key` and
+  `bound-elsewhere`; a key whose recorded end has passed comes after every key whose end has not, or is unknown.
+  The request is `POST <issuer>/api/v1/badge`, `Authorization: Bearer kak1_…`, body
+  `{"sub": "<unpadded base64url of 32 bytes>"}`. No redirect is followed; the socket is bound to the validated Internet
+  network (the ticket swap's rules, ADR 2026-10.3sk7). It carries the customer key's device proof, signed for
+  `/api/v1/badge` (`docs/VOICE_CALLS.md` C-7.6-40, C-7.6-41).
 - **C-5-4** Each ask draws a fresh 16-byte `r` and sends `sub = SHA-256("knit/badge/v1/sub" ‖ id ‖ r)`. The issuer never
   sees `id` or `r`.
-- **C-5-5** It runs on the ticket refresher's session and never asks more than once an hour; after `ended`, once a day.
+- **C-5-5** It runs on the ticket refresher's session and never asks more than once an hour. The day's wait after
+  `ended` belongs to the key, not to the refresher: it is the ticket swap's daily retry, so a dead key never holds up
+  a live one.
 - **C-5-6** The app keeps `{wrapper, r}` per badge (`badge_held`), out of every backup (`SettingsKeys.TRANSIENT_PREFIXES`).
   The switch itself rides a backup.
 - **C-5-7** A 200 keeps only the entries this build knows and that verify for this phone (C-3-1 with our own id), at
   most 4; an empty list holds nothing. 403 `ended` drops what is held. 401, 503, 400 and no answer keep what is held
-  until it lapses.
+  until it lapses. A 403 `ended` or 401 `unknown-key` is also recorded on the key as the ticket swap's would be (as
+  C-5-8's 409 is), so the next ask goes to the next live key. The dead key is not asked again until a ticket answer
+  says its account is live, or a different key replaces it.
 - **C-5-8** The route's answers, in the issuer's order: 503 `unavailable`, 401 `unknown-key`, 403 `ended` (with
   `endsAt`), 400 `bad-sub`, 200 `{badges: [{badge, b, nbf, exp}]}`; with a device proof, also 400 `bad-proof`, 409
   `bound-elsewhere` and 426 `upgrade-required`, read as `docs/VOICE_CALLS.md` C-7.6-42 and C-7.6-43 read them. A 401/403/503 counts only with its own `error`

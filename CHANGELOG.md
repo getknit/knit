@@ -55,6 +55,8 @@ document:
 - After you restore Knit or a chat's encryption resets, a message sent to you around then could go missing
   for good if another phone passed you an old copy of it first. It now arrives, and the sender sees two ticks
   (#347).
+- If you use two relays and your account on one of them had ended, your supporter badge could disappear and
+  not come back. Knit now gets the badge from the account that is still active (#358).
 
 ## [2.12.1](https://github.com/getknit/knit/releases/tag/v2.12.1) — 2026-11-21T23:44:00Z
 

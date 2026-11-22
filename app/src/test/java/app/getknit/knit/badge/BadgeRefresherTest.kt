@@ -61,9 +61,13 @@ class BadgeRefresherTest {
         }
     }
 
-    /** Answers from [script]; a [Signed] answer signs each listed badge id over the `sub` it was sent. */
+    /**
+     * Answers from [script], or from [byOrigin]'s entry for the issuer asked; a [Signed] answer signs each listed badge id
+     * over the `sub` it was sent.
+     */
     class FakeIssuer(
         var script: Script = Signed(listOf("supporter")),
+        val byOrigin: MutableMap<String, Script> = mutableMapOf(),
     ) : BadgeIssuer {
         sealed interface Script
 
@@ -90,7 +94,7 @@ class BadgeRefresherTest {
             subs += sub
             signers += device
             asks += origin to key
-            return when (val s = script) {
+            return when (val s = byOrigin[origin] ?: script) {
                 is Fixed -> {
                     s.answer
                 }
@@ -130,11 +134,15 @@ class BadgeRefresherTest {
     private suspend fun holdKey(
         host: String = "relay.example",
         answer: KeyAnswer? = null,
+        issuer: String = "https://anywhere.example",
+        endsAt: Long? = null,
     ) {
-        val key = HeldKey("https://anywhere.example", "kak1_" + "A".repeat(43))
+        val key = HeldKey(issuer, "kak1_" + "A".repeat(43))
         keys.putKey(host, key)
-        if (answer != null) keys.putKeyState(host, key, KeyState(answer))
+        if (answer != null || endsAt != null) keys.putKeyState(host, key, KeyState(answer, endsAt))
     }
+
+    private fun answerAt(host: String): KeyAnswer? = keys.states.value[host]?.answer
 
     private fun shown(): List<VerifiedBadge> =
         journal.badges.value.mapNotNull { Badges.verify(it.wrapper, it.r, HOLDER, now / 1_000, listOf(BadgeKeys.RFC8032_TEST1)) }
@@ -221,16 +229,29 @@ class BadgeRefresherTest {
         }
 
     @Test
-    fun `ended drops the held badges and waits a day`() =
+    fun `ended drops the held badges and takes the key out until a ticket answer brings it back`() =
         runTest {
             journal.on.value = true
             holdKey()
-            refresher().runOnce()
+            val refresher = refresher()
+            refresher.runOnce()
             now += 24 * DAY_S * 1_000
-            issuer.script = FakeIssuer.Fixed(BadgeAnswer.Ended(null))
-            val next = refresher().runOnce()
+            issuer.script = FakeIssuer.Fixed(BadgeAnswer.Ended(now - DAY_S * 1_000))
+            assertEquals(now + BadgeRefreshPolicy.FLOOR_MS, refresher.runOnce())
             assertTrue(journal.badges.value.isEmpty())
-            assertEquals(now + BadgeRefreshPolicy.ENDED_RETRY_MS, next)
+            // Recorded as the ticket swap's 403 is (C-5-7): the ticket refresher's daily retry is the key's own now.
+            val state = keys.states.value.getValue("relay.example")
+            assertEquals(KeyAnswer.ENDED, state.answer)
+            assertEquals(now - DAY_S * 1_000, state.endsAt)
+            now += 7 * DAY_S * 1_000
+            assertNull(refresher.runOnce())
+            assertEquals(2, issuer.asks.size)
+            // `account extend`: the ticket swap's 200 says the account is live again, and the badge is asked for.
+            keys.putKeyState("relay.example", keys.held.value.getValue("relay.example"), KeyState(KeyAnswer.OK, now + 30 * DAY_S * 1_000))
+            issuer.script = FakeIssuer.Signed(listOf("supporter"), nbf = now / 1_000, exp = now / 1_000 + 30 * DAY_S)
+            refresher.runOnce()
+            assertEquals(3, issuer.asks.size)
+            assertEquals(listOf("supporter"), shown().map { it.b })
         }
 
     @Test
@@ -240,12 +261,74 @@ class BadgeRefresherTest {
             holdKey()
             refresher().runOnce()
             val held = journal.badges.value
-            for (answer in listOf(BadgeAnswer.UnknownKey, BadgeAnswer.Unavailable, BadgeAnswer.NoVerdict("offline"))) {
-                now += 24 * DAY_S * 1_000 / 3
+            now += 24 * DAY_S * 1_000 // inside the seven-day margin, so every row below is due
+            // The 401 last: it takes the key out (C-5-7), so nothing after it would be asked.
+            for ((i, answer) in listOf(BadgeAnswer.Unavailable, BadgeAnswer.NoVerdict("offline"), BadgeAnswer.UnknownKey).withIndex()) {
+                now += BadgeRefreshPolicy.FLOOR_MS
                 issuer.script = FakeIssuer.Fixed(answer)
                 refresher().runOnce()
+                assertEquals(i + 2, issuer.asks.size)
                 assertEquals(held, journal.badges.value)
             }
+            assertEquals(KeyAnswer.UNKNOWN_KEY, answerAt("relay.example"))
+        }
+
+    // ── a dead key never holds up a live one (#358) ──────────────────────────────────────────────────────────────
+
+    @Test
+    fun `an ended key that sorts first is marked, and the next live key is asked after the hour floor`() =
+        runTest {
+            journal.on.value = true
+            holdKey("a.relay.example", issuer = A)
+            holdKey("b.relay.example", issuer = B)
+            issuer.byOrigin[A] = FakeIssuer.Fixed(BadgeAnswer.Ended(null))
+            val refresher = refresher()
+            assertEquals(now + BadgeRefreshPolicy.FLOOR_MS, refresher.runOnce())
+            assertEquals(listOf(A), issuer.asks.map { it.first })
+            assertEquals(KeyAnswer.ENDED, answerAt("a.relay.example"))
+            assertTrue(journal.badges.value.isEmpty())
+            now += BadgeRefreshPolicy.FLOOR_MS
+            refresher.runOnce()
+            assertEquals(listOf(A, B), issuer.asks.map { it.first })
+            assertEquals(listOf("supporter"), shown().map { it.b })
+            assertNull(answerAt("b.relay.example"))
+        }
+
+    @Test
+    fun `an unknown key that sorts first is marked and keeps what is held, and the next live key is asked`() =
+        runTest {
+            journal.on.value = true
+            holdKey("a.relay.example", issuer = A)
+            holdKey("b.relay.example", issuer = B)
+            val refresher = refresher()
+            refresher.runOnce()
+            val held = journal.badges.value
+            assertEquals(1, held.size)
+            now += 24 * DAY_S * 1_000 // inside the seven-day margin
+            issuer.byOrigin[A] = FakeIssuer.Fixed(BadgeAnswer.UnknownKey)
+            assertEquals(now + BadgeRefreshPolicy.FLOOR_MS, refresher.runOnce())
+            assertEquals(KeyAnswer.UNKNOWN_KEY, answerAt("a.relay.example"))
+            assertEquals(held, journal.badges.value)
+            now += BadgeRefreshPolicy.FLOOR_MS
+            refresher.runOnce()
+            assertEquals(listOf(A, A, B), issuer.asks.map { it.first })
+            assertTrue(journal.badges.value != held)
+            assertEquals(listOf("supporter"), shown().map { it.b })
+        }
+
+    @Test
+    fun `a key whose recorded end has passed is asked after a live one, and still asked when it is the only one`() =
+        runTest {
+            journal.on.value = true
+            holdKey("a.relay.example", answer = KeyAnswer.OK, issuer = A, endsAt = now - DAY_S * 1_000)
+            holdKey("b.relay.example", issuer = B)
+            refresher().runOnce()
+            assertEquals(listOf(B), issuer.asks.map { it.first })
+            keys.forgetHost("b.relay.example")
+            journal.state.value = BadgeAskState()
+            journal.badges.value = emptyList()
+            refresher().runOnce()
+            assertEquals(listOf(B, A), issuer.asks.map { it.first })
         }
 
     @Test
@@ -361,5 +444,7 @@ class BadgeRefresherTest {
 
     private companion object {
         const val DAY_S = 86_400L
+        const val A = "https://a.anywhere.example"
+        const val B = "https://b.anywhere.example"
     }
 }
