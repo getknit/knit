@@ -140,18 +140,18 @@ class QrScanInstrumentedTest {
 
     /** A frame with [layout]'s geometry and [luma] for its Y plane; only what [scan] reads is there. */
     private class FrameOf(
-        private val layout: Layout,
+        layout: Layout,
         luma: ByteArray,
     ) : ImageProxy {
         private val plane =
+            // CameraX 1.7 moved the plane's and the frame's geometry onto camera-common's Kotlin ImagePlane and
+            // ImageWrapper, so those are properties now; getPlanes, getImageInfo and getImage stay ImageProxy's own.
             object : ImageProxy.PlaneProxy {
-                private val buffer = ByteBuffer.wrap(luma)
+                override val rowStride = layout.rowStride
 
-                override fun getRowStride() = layout.rowStride
+                override val pixelStride = layout.pixelStride
 
-                override fun getPixelStride() = layout.pixelStride
-
-                override fun getBuffer(): ByteBuffer = buffer
+                override val buffer: ByteBuffer = ByteBuffer.wrap(luma)
             }
 
         @Volatile
@@ -162,15 +162,15 @@ class QrScanInstrumentedTest {
             closed = true
         }
 
-        override fun getCropRect() = Rect(0, 0, layout.width, layout.height)
+        override val cropRect = Rect(0, 0, layout.width, layout.height)
 
         override fun setCropRect(rect: Rect?) = Unit
 
-        override fun getFormat() = android.graphics.ImageFormat.YUV_420_888
+        override val format = android.graphics.ImageFormat.YUV_420_888
 
-        override fun getHeight() = layout.height
+        override val height = layout.height
 
-        override fun getWidth() = layout.width
+        override val width = layout.width
 
         override fun getPlanes(): Array<ImageProxy.PlaneProxy> = arrayOf(plane)
 

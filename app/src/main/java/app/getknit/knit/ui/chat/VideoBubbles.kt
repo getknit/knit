@@ -38,6 +38,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -506,9 +507,12 @@ internal fun FullscreenVideoPlayer(
                         )
                     }
                     Text(formatVideoDuration(position.toLong()), color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    val trackRange = 0f..duration.coerceAtLeast(1f)
+                    val sliderState = remember(trackRange) { SliderState(position, trackRange = trackRange) }
+                    // Playback moves `position` on its tick; the thumb follows it, as the value-taking overload did.
+                    sliderState.value = position
                     Slider(
-                        value = position,
-                        valueRange = 0f..duration.coerceAtLeast(1f),
+                        state = sliderState,
                         onValueChange = {
                             position = it
                             player.seekTo(it.toInt())

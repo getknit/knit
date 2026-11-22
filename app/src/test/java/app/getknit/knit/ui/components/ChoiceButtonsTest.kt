@@ -11,6 +11,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.createFontFamilyResolver
+import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
@@ -156,6 +157,8 @@ class ChoiceButtonsTest {
     private val measurer =
         TextMeasurer(
             defaultFontFamilyResolver = createFontFamilyResolver(ApplicationProvider.getApplicationContext()),
+            // The JVM default the deprecated constructor read (Robolectric runs en-US), pinned: the widths are English words.
+            defaultLocaleList = LocaleList("en-US"),
             defaultDensity = Density(1f),
             defaultLayoutDirection = LayoutDirection.Ltr,
         )

@@ -1,7 +1,7 @@
 # Toolchain (bleeding-edge — do not "fix" these without reading why)
 
-This project intentionally runs on very new tooling (AGP 9.5.1, Gradle 9.9.0, Kotlin 2.4.21,
-Compose BOM 2026.09.00, compileSdk 37.1). That forces several non-obvious choices. **Read this before
+This project intentionally runs on very new tooling (AGP 9.5.2, Gradle 9.9.0, Kotlin 2.4.21,
+Compose BOM 2026.11.01, compileSdk 37.1). That forces several non-obvious choices. **Read this before
 changing build config, dependencies, or the DI graph.**
 
 ## compileSdk is what gates AAR upgrades — check `minCompileSdk`, not the version number
@@ -35,7 +35,7 @@ Bumping `compileSdk` means installing that exact platform everywhere the build r
 of the package name (`platforms;android-37.1` ≠ `platforms;android-37`), and three files name it
 literally: `.gitlab-ci.yml`'s `ANDROID_COMPILE_SDK`, `qodana.yaml`'s bootstrap `sdkmanager` line, and the
 F-Droid-image reproducibility job in `.github/workflows/release.yml`. Build-tools is pinned next to it
-(`buildToolsVersion = "37.0.0"` in `app/build.gradle.kts`, above AGP 9.5.1's 36.0.0 default — it decides
+(`buildToolsVersion = "37.0.0"` in `app/build.gradle.kts`, above AGP 9.5.2's 36.0.0 default — it decides
 no packaged byte, it is pinned so every builder installs the package the build uses) and the same three
 files carry that pin. Both packages must resolve in F-Droid's buildserver image before either moves;
 `context/distribution.md` has the check.
@@ -50,7 +50,7 @@ notes, the two linter/CI pins and the READMEs are the places to re-grep after an
   (dagger#5083 / #5099). Koin is pure-Kotlin runtime DI with no Gradle plugin / no annotation
   processor, so it can't be broken by AGP. Koin is started in `KnitApplication`; modules live in
   `app/src/main/java/app/getknit/knit/di/`.
-- **Built-in Kotlin is overridden to 2.4.21, not AGP's bundled 2.2.10.** AGP 9.5.1 ships KGP 2.2.10,
+- **Built-in Kotlin is overridden to 2.4.21, not AGP's bundled 2.2.10.** AGP 9.5.2 ships KGP 2.2.10,
   whose Kotlin-2.2 compiler cannot read class metadata produced by Kotlin 2.4 (this is what used to
   pin Coil to 3.3.0). The root `build.gradle.kts` puts KGP 2.4.21 on the buildscript classpath
   (`classpath(libs.kotlin.gradle.plugin)`) so built-in Kotlin compiles with 2.4.21 — a supported combo
@@ -81,10 +81,9 @@ notes, the two linter/CI pins and the READMEs are the places to re-grep after an
   Testing plugin (`com.android.compose.screenshot` + `screenshot-validation-api`, `composeScreenshot` in the
   catalog), which has never shipped a stable release: it is test-only (the `screenshotTest*` configurations —
   `releaseRuntimeClasspath` and the debug runtime are untouched) and the release APK is byte-identical with it
-  applied (ADR 2026-10.gtmm). Take its newest alpha. So `cameraX` stays on 1.6.2 (1.7.0 is
-  alpha), `lifecycle` on 2.11.0 (2.12.0 is alpha) and `activity-compose` on 1.13.0
-  (1.14.0 is alpha). `navigation-compose` was held at 2.9.8 by this rule until 2.10.0 went stable, AGP at
-  9.4.1 until 9.5.0 did, `robolectric` at 4.16.1 until 4.17 did, and `benchmark` at 1.5.0-rc02 until 1.5.0 did.
+  applied (ADR 2026-10.gtmm). Take its newest alpha. So `lifecycle` stays on 2.11.x (2.12.0 is
+  alpha) and `activity-compose` on 1.13.0 (1.14.0 is alpha). `navigation-compose` was held at 2.9.8 by this rule
+  until 2.10.0 went stable, `cameraX` at 1.6.2 until 1.7.0 did, AGP at 9.4.1 until 9.5.0 did, `robolectric` at 4.16.1 until 4.17 did, and `benchmark` at 1.5.0-rc02 until 1.5.0 did.
   `core-telecom` (`coreTelecom`) was an exception at 1.1.0-rc01 until 1.1.0 went stable (2026-11): it owns the calls'
   audio route (`docs/VOICE_CALLS.md` §3.13) and ships in release, and 1.0.1, the stable before it, reverts a call
   switched to speaker during setup (where a walkie starts) and can start an audio call on speaker on Android 14-16, so

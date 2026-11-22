@@ -22,8 +22,9 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -123,7 +124,10 @@ private fun RouteSheet(
     onPick: (CallAudioRoute) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberBottomSheetState(SheetValue.Hidden, setOf(SheetValue.Hidden, SheetValue.Expanded)),
+    ) {
         Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
             Text(
                 stringResource(R.string.call_audio),
@@ -134,11 +138,10 @@ private fun RouteSheet(
             for (route in routing.available) {
                 val selected = route.key == routing.current?.key
                 ListItem(
-                    headlineContent = { Text(route.name.ifBlank { routeLabel(LocalContext.current, route) }) },
                     leadingContent = { Icon(routeIcon(route.kind), contentDescription = null) },
                     trailingContent = { if (selected) Icon(Icons.Filled.Check, contentDescription = null) },
                     modifier = Modifier.selectable(selected = selected, role = Role.RadioButton) { onPick(route) },
-                )
+                ) { Text(route.name.ifBlank { routeLabel(LocalContext.current, route) }) }
             }
         }
     }

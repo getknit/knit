@@ -56,18 +56,16 @@ internal fun DirectSendChooserBody(
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
         ListItem(
-            headlineContent = { Text(stringResource(R.string.chat_transfer_choose_file)) },
             leadingContent = { Icon(KnitIcons.DirectTransfer, contentDescription = null) },
             colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
             modifier = Modifier.toggleable(value = false, role = Role.Button, onValueChange = { onFile() }).testTag("direct_send_file"),
-        )
+        ) { Text(stringResource(R.string.chat_transfer_choose_file)) }
         ListItem(
-            headlineContent = { Text(stringResource(R.string.chat_transfer_choose_models)) },
             supportingContent = { Text(stringResource(R.string.chat_transfer_choose_models_body)) },
             leadingContent = { Icon(Icons.Filled.Translate, contentDescription = null) },
             colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
             modifier = Modifier.toggleable(value = false, role = Role.Button, onValueChange = { onModels() }).testTag("direct_send_models"),
-        )
+        ) { Text(stringResource(R.string.chat_transfer_choose_models)) }
     }
 }
 
@@ -103,7 +101,6 @@ internal fun TranslationModelsBody(
         )
         val all = picked.size == models.size
         ListItem(
-            headlineContent = { Text(stringResource(R.string.translate_models_select_all)) },
             leadingContent = { Checkbox(checked = all, onCheckedChange = null) },
             colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
             modifier =
@@ -112,19 +109,10 @@ internal fun TranslationModelsBody(
                         checked.value = if (on) models.map { it.pin }.toSet() else emptySet()
                     })
                     .testTag("models_select_all"),
-        )
+        ) { Text(stringResource(R.string.translate_models_select_all)) }
         models.forEach { model ->
             val on = model.pin in checked.value
             ListItem(
-                headlineContent = {
-                    Text(
-                        stringResource(
-                            R.string.translate_models_direction,
-                            LanguageNames.title(model.from, locale),
-                            LanguageNames.title(model.to, locale),
-                        ),
-                    )
-                },
                 supportingContent = { Text(Formatter.formatShortFileSize(context, model.bytes)) },
                 leadingContent = { Checkbox(checked = on, onCheckedChange = null) },
                 colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -134,7 +122,15 @@ internal fun TranslationModelsBody(
                             checked.value = if (now) checked.value + model.pin else checked.value - model.pin
                         })
                         .testTag("models_row_${model.from}_${model.to}"),
-            )
+            ) {
+                Text(
+                    stringResource(
+                        R.string.translate_models_direction,
+                        LanguageNames.title(model.from, locale),
+                        LanguageNames.title(model.to, locale),
+                    ),
+                )
+            }
         }
         if (picked.isNotEmpty()) {
             Text(

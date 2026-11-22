@@ -120,13 +120,14 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.minimumInteractiveComponentSize
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -2301,7 +2302,7 @@ internal fun ChatScreenContent(
         if (showPublicConsent) {
             ModalBottomSheet(
                 onDismissRequest = onDismissPublicConsent,
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                sheetState = rememberBottomSheetState(SheetValue.Hidden, setOf(SheetValue.Hidden, SheetValue.Expanded)),
             ) {
                 if (state.isMeshcoreRoom) {
                     MeshcorePostConsentBody(
@@ -2320,7 +2321,7 @@ internal fun ChatScreenContent(
         if (showLocationConsent) {
             ModalBottomSheet(
                 onDismissRequest = onDismissLocationConsent,
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                sheetState = rememberBottomSheetState(SheetValue.Hidden, setOf(SheetValue.Hidden, SheetValue.Expanded)),
             ) {
                 LocationConsentBody(isRoom = state.isRoom, onAccept = onAcceptLocationConsent, onDecline = onDismissLocationConsent)
             }
@@ -2329,7 +2330,7 @@ internal fun ChatScreenContent(
         directSend?.let { sheet ->
             ModalBottomSheet(
                 onDismissRequest = onDismissDirectSend,
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                sheetState = rememberBottomSheetState(SheetValue.Hidden, setOf(SheetValue.Hidden, SheetValue.Expanded)),
             ) {
                 when (sheet) {
                     is DirectSendSheet.Choose -> {
@@ -2350,7 +2351,7 @@ internal fun ChatScreenContent(
         showTransferConsent?.let { request ->
             ModalBottomSheet(
                 onDismissRequest = onDismissTransferConsent,
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                sheetState = rememberBottomSheetState(SheetValue.Hidden, setOf(SheetValue.Hidden, SheetValue.Expanded)),
             ) {
                 DirectTransferConsentBody(
                     incoming = request.incoming,

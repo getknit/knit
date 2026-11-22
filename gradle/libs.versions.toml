@@ -1,5 +1,5 @@
 [versions]
-agp = "9.5.1"
+agp = "9.5.2"
 coreKtx = "1.19.1"
 junit = "4.13.2"
 junitVersion = "1.3.0"
@@ -10,16 +10,17 @@ espressoCore = "3.7.0"
 # 2.11.0's lifecycle-viewmodel-compose AAR requires minCompileSdk=37 (lifecycle-runtime itself is only 34 —
 # when re-testing this group, check the *compose* artifacts, not the base one). compileSdk is 37.1, so it
 # fits; 2.12.0 is alpha.
-lifecycle = "2.11.0"
+lifecycle = "2.11.1"
 activityCompose = "1.13.0"
 # The 2.10.x line is stable (2.9.8 was the hold-point before it). Its Android artifact is the KMP
 # `navigation-compose-android` AAR, minCompileSdk=37 / minAGP 9.1.0 — cleared by compileSdk 37.1 and
 # AGP 9.4.0. It declares androidx.compose.* 1.10.5 floors, well under the Compose BOM's 1.12.1.
 navigationCompose = "2.10.2"
 kotlin = "2.4.21"
-# Compose UI 1.12.1 / Material3 1.4.0. UI 1.12.1's AAR sets minCompileSdk=37, which compileSdk 37.1 clears.
-# 2026.09.00 is a pure Compose 1.12.0 → 1.12.1 patch — material3 and material-icons-extended are unmoved.
-composeBom = "2026.09.00"
+# Compose UI 1.13.0 / Material3 1.5.0. UI, foundation, animation and ui-test 1.13.0 set minCompileSdk=37 with
+# minCompileMinorSdk=1 — exactly compileSdk 37.1, so a Compose release asking for 37.2 needs compileSdk moved first
+# (Wear Compose 1.8.0-alpha04 already does). material-icons-extended stays 1.7.8.
+composeBom = "2026.11.01"
 # KSP adopted independent (KSP2) versioning at 2.3.0 — no longer the old <kotlin>-<ksp> scheme. It is
 # decoupled from the compiler and supports Kotlin 2.2+, so this single version tracks Kotlin 2.4.x.
 ksp = "2.3.12"
@@ -43,7 +44,9 @@ room3 = "3.0.3"
 # 0x4000 alignment (RELRO filling its first RW LOAD) on all four ABIs.
 sqlcipher = "4.20.0"
 coroutines = "1.11.0"
-kotlinxSerializationJson = "1.12.0"
+# 1.13.0 reverts 1.12.0's wrapping of serializer exceptions in JsonException (nothing here catches JsonException) and
+# is built on Kotlin 2.4.10, under our 2.4.21.
+kotlinxSerializationJson = "1.13.0"
 # 1.3.0 is the first stable line with the fix for the dropped update a `data` collector that subscribes mid-write
 # never sees (b/431787506, work item #97; 1.2.1 still has the race), which is why this sat on the 1.3.0 alphas.
 # Never alpha03-05: their libdatastore_shared_counter.so ends RELRO mid-page inside its writable segment, so a 16
@@ -96,7 +99,7 @@ tink = "1.24.0"
 # 2.10.0-beta.0; `-PliveCalls`, app/build.gradle.kts), so the release APK carries its ~10 MB per ABI and F-Droid's
 # rebuild fetches it. The community build of Google's retired AAR (BSD-3, no transitive deps, no
 # aar-metadata, 16 KB-aligned .so, and no consumer keep rules: `app/src/calls/keepRules` pins it).
-webrtc = "150.7871.04"
+webrtc = "150.7871.08"
 # Jetpack core-telecom: each call (live or walkie) is a self-managed Telecom call, which owns its audio
 # route — earpiece, speaker, wired, Bluetooth HFP/LE Audio — and lets a headset, watch or car answer and hang up
 # (docs/VOICE_CALLS.md §3.13). Packaged only where calls are, like webrtc (its manifest brings an exported
@@ -129,9 +132,9 @@ translateNative = "0.1.0"
 # HandlerThread with no try/catch — a device whose camera HAL delivers a preview size/stride other than
 # the one it reported makes RawImageData.cropAndScale throw ArrayIndexOutOfBoundsException off the main
 # thread and kills the process. It has no seam to patch (BarcodeView.startDecoderThread is private).
-# See ADR 015. Constraints that pin CameraX to the 1.6.x line — check ALL of these before bumping:
-#   - minCompileSdk=36 (1.5.x is 35), comfortably under our compileSdk 37.1. 1.6.2 is the newest stable —
-#     1.7.x is alpha, which is what holds it here, not the SDK gate.
+# See ADR 015. Constraints on CameraX — check ALL of these before bumping:
+#   - minCompileSdk=36 (1.7.0 as 1.6.x; 1.5.x is 35), comfortably under our compileSdk 37.1. 1.7.0 deprecates the
+#     Camera2Interop V1 classes (Extender, Camera2CameraControl/Info, CaptureRequestOptions), none of which we call.
 #   - Its transitive floors are far below ours (lifecycle-livedata 2.3.1, core 1.3.2), so it applies no
 #     upgrade pressure to the pinned androidx graph.
 #   - camera-core ships prebuilt .so (libimage_processing_util_jni, libsurface_util_jni) for all four
@@ -139,7 +142,7 @@ translateNative = "0.1.0"
 #     Re-check with `readelf -lW` after any bump; a 4 KB-aligned .so won't load on 16 KB-page devices.
 #   - It ships its own consumer R8 rules, so keepRules/knit-r8.keep needs nothing for it.
 # NEVER add camera-mlkit-vision — it pulls GMS, which this app does not ship.
-cameraX = "1.6.2"
+cameraX = "1.7.0"
 zxingCore = "3.5.4"
 # On-device APK merge + re-sign for the offline "Share Knit app" flow when Knit was installed from Play
 # as an App Bundle (split APKs). ARSCLib merges the on-disk splits into one universal APK; apksig re-signs
@@ -150,7 +153,7 @@ zxingCore = "3.5.4"
 # its default signer 16 KB-page-aligns uncompressed lib/*.so, matching the app's own 16 KB alignment
 # requirement (see litert).
 arsclib = "1.4.0"
-apksig = "9.5.1"
+apksig = "9.5.2"
 # detekt static analysis, applied as the `dev.detekt` Gradle plugin (see [plugins] below). 2.0.0-alpha.x
 # is the first detekt line that supports Gradle 9 — 1.23.x caps at Gradle 8.12.1, and this build is on
 # 9.7.0 — and it ships the new `dev.detekt` plugin/group id (was io.gitlab.arturbosch.detekt). Runs in its
@@ -180,10 +183,10 @@ kover = "0.9.11"
 # exported schema via androidx.sqlite's AndroidSQLiteDriver on that same shadowed SQLite (BundledSQLiteDriver
 # can't load its Android native lib on the host JVM). androidx.test:core provides ApplicationProvider.
 # Robolectric 4.17 is the first release supporting SDK 37 (4.16 was the first with SDK 36) and requires
-# JDK 21 (this repo's toolchain). Its breaking changes — `AndroidVersions` removed in favour of the
-# android.os.Build constants, and ShadowCameraCharacteristics.set(Key, Object) → set(Key, T) — touch
-# nothing here; neither symbol appears in app/src.
-robolectric = "4.17"
+# JDK 21 (this repo's toolchain). 4.18's breaking changes — SDK 23 dropped (min 24), shadows-httpclient,
+# @TextLayoutMode and ShadowRemoteCallbackList removed, HttpResponseCache.install() setting the default
+# ResponseCache — touch nothing here (minSdk 29; none of those symbols appears in app/src or wear/src).
+robolectric = "4.18.1"
 # Compose Preview Screenshot Testing (`com.android.compose.screenshot`): renders `@PreviewTest` previews from
 # `app/src/screenshotTest/` through layoutlib on the host JVM and diffs them against committed reference PNGs.
 # A standing exception to the stable-only rule (context/toolchain.md): the plugin has never shipped a stable
@@ -226,10 +229,10 @@ exifinterface = "1.4.2"
 media3 = "1.11.1"
 # Wear OS — used ONLY by the opt-in :wear module (the watch app for the mesh-status prototype), which is in
 # the build only under `-Pknit.wear=true`: never in :app's graph, app/gradle.lockfile or a shipped artifact.
-# Complications 1.3.0 AARs are minCompileSdk 34; Wear Compose 1.7.1 is minCompileSdk 37 + AGP 9.1, both
-# cleared by compileSdk 37.1 / AGP 9.5.1.
+# Complications 1.3.0 AARs are minCompileSdk 34; Wear Compose 1.7.2 is minCompileSdk 37 + AGP 9.1, both
+# cleared by compileSdk 37.1 / AGP 9.5.2.
 wearComplications = "1.3.0"
-wearCompose = "1.7.1"
+wearCompose = "1.7.2"
 # Tiles 1.6.2 / ProtoLayout 1.4.2: Material3TileService and the M3 Expressive tile layouts; tiles ask for
 # compileSdk 35. Wear Widgets (glance-wear, compose-remote) are alpha only, so the stable-only rule keeps
 # the watch on a tile until they ship stable.

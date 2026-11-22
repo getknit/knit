@@ -12,9 +12,8 @@
       </trusted-artifacts>
       <ignored-keys>
          <ignored-key id="479D601F3A7B5C1A" reason="Key couldn't be downloaded from any key server"/>
-         <ignored-key id="991EFB94DB91127D" reason="Key couldn't be downloaded from any key server"/>
          <ignored-key id="A2E7C34BC6E270AE" reason="Key couldn't be downloaded from any key server"/>
-         <ignored-key id="BF984B4145EA13F7" reason="Key couldn't be downloaded from any key server"/>
+         <ignored-key id="F3D1600878E85A3D" reason="Key couldn't be downloaded from any key server"/>
       </ignored-keys>
       <trusted-keys>
          <trusted-key id="04543577D6A9CC626239C50C7ECBD740FF06AEB5">
@@ -32,6 +31,7 @@
             <trusting group="androidx.core"/>
             <trusting group="androidx.databinding"/>
             <trusting group="androidx.datastore"/>
+            <trusting group="androidx.emoji2"/>
             <trusting group="androidx.lifecycle"/>
             <trusting group="androidx.media3"/>
             <trusting group="androidx.navigation"/>
@@ -68,6 +68,7 @@
          <trusted-key id="190D5A957FF22273E601F7A7C92C5FEC70161C62" group="org.apache" name="apache" version="18"/>
          <trusted-key id="19BEAB2D799C020F17C69126B16698A4ADF4D638" group="org.checkerframework" name="checker-qual"/>
          <trusted-key id="1A55F091AD28C07F831FA44D7905DE25C78AD456" group="com.google.protobuf"/>
+         <trusted-key id="1D0A8B5E77C678A7C724445ABF984B4145EA13F7" group="com.squareup" name="javapoet" version="1.13.0"/>
          <trusted-key id="1D217F8475EEE9F19AB8DD6B793FD5751A0F0780" group="^com[.]squareup($|([.].*))" regex="true"/>
          <trusted-key id="1D85469D8559C2E1DF5F925131D2D79DF7E85DD3" group="org.jcommander" name="jcommander" version="1.85"/>
          <trusted-key id="20723A6399BC060154283B37CFAE163B64AC9189">
@@ -93,8 +94,12 @@
          <trusted-key id="31BAE2E51D95E0F8AD9B7BCC40A3C4432BD7308C" group="com.googlecode.juniversalchardet" name="juniversalchardet" version="1.0.3"/>
          <trusted-key id="33FD4BFD33554634053D73C0C2148900BCD3C2AF" group="^org[.]jetbrains($|([.].*))" regex="true"/>
          <trusted-key id="34441E504A937F43EB0DAEF96A65176A0FB1CD0B" group="org.apache.groovy"/>
+         <trusted-key id="3EC80CAD1A3D50AFBBEFC136C2B98E64C61147AC" group="org.conscrypt" name="conscrypt-openjdk-uber" version="2.8.0"/>
          <trusted-key id="4021EEEAFF5DE8404DCD0A270AA3E5C3D232E79B" group="jakarta.inject" name="jakarta.inject-api" version="2.0.1"/>
-         <trusted-key id="41CD49B4EF5876F9E9F691DABAC30622339994C4" group="org.jspecify" name="jspecify" version="1.0.0"/>
+         <trusted-key id="41CD49B4EF5876F9E9F691DABAC30622339994C4">
+            <trusting group="org.jspecify" name="jspecify" version="1.0.0"/>
+            <trusting group="org.jspecify" name="jspecify" version="1.0.1"/>
+         </trusted-key>
          <trusted-key id="44FBDBBC1A00FE414F1C1873586654072EAD6677" group="org.sonatype.oss" name="oss-parent" version="9"/>
          <trusted-key id="475F3B8E59E6E63AA78067482C7B12F2A511E325" group="org.slf4j"/>
          <trusted-key id="47EB6836245D2D40E89DFB4136D4E9618F3ADAB5" group="io.github.oshai"/>
@@ -175,17 +180,24 @@
             <trusting group="^com[.]squareup($|([.].*))" regex="true"/>
          </trusted-key>
          <trusted-key id="DF25D3C4868FEC177182FAD64D176DC503FB4267" group="io.coil-kt.coil3"/>
-         <trusted-key id="E52F07877A5805F9AF4AB0ACD46C5610D06E7001" group="com.ibm.icu" name="icu4j" version="78.3"/>
+         <trusted-key id="E52F07877A5805F9AF4AB0ACD46C5610D06E7001">
+            <trusting group="com.ibm.icu" name="icu4j" version="78.3"/>
+            <trusting group="com.ibm.icu" name="icu4j" version="79.1"/>
+         </trusted-key>
          <trusted-key id="E65BD4351D0FF0EF9C0C15FF3CCBD94F6FC0F446">
             <trusting group="io.github.webrtc-sdk" name="android" version="150.7871.01"/>
             <trusting group="io.github.webrtc-sdk" name="android" version="150.7871.04"/>
+            <trusting group="io.github.webrtc-sdk" name="android" version="150.7871.08"/>
          </trusted-key>
          <trusted-key id="E77417AC194160A3FABD04969A259C7EE636C5ED" group="com.google.errorprone"/>
          <trusted-key id="E7DC75FC24FB3C8DFE8086AD3D5839A2262CBBFB" group="^org[.]jetbrains[.]kotlinx($|([.].*))" regex="true"/>
          <trusted-key id="E85AED155021AF8A6C6B7A4A7C7D8456294423BA" group="org.objenesis"/>
          <trusted-key id="EE0CA873074092F806F59B65D364ABAA39A47320" group="com.google.errorprone"/>
          <trusted-key id="F1A51E051F527E0C8E24D54D4B1E11D5A4B91E89" group="com.google.protobuf"/>
-         <trusted-key id="F3184BCD55F4D016E30D4C9BF42E87F9665015C9" group="org.jsoup" name="jsoup" version="1.15.1"/>
+         <trusted-key id="F3184BCD55F4D016E30D4C9BF42E87F9665015C9">
+            <trusting group="org.jsoup" name="jsoup" version="1.15.1"/>
+            <trusting group="org.jsoup" name="jsoup" version="1.23.1"/>
+         </trusted-key>
          <trusted-key id="FA7929F83AD44C4590F6CC6815C71C0A4E0B8EDD" group="net.java.dev.jna"/>
          <trusted-key id="FAABC3738B1F58DA2D776FA2EB380DC13C39F675" group="com.intellij" name="annotations" version="12.0"/>
          <trusted-key id="FC411CD3CB7DCB0ABC9801058118B3BCDB1A5000" group="jakarta.xml.bind"/>
@@ -1014,6 +1026,11 @@
          </artifact>
          <artifact name="lifecycle-livedata-2.11.0.module">
             <sha256 value="d990bc920ae43729d702d80077328e8a59781ea5a35b24c02bc47d326ae73d7d" origin="Generated by Gradle" reason="A key couldn't be downloaded"/>
+         </artifact>
+      </component>
+      <component group="androidx.lifecycle" name="lifecycle-livedata" version="2.11.1">
+         <artifact name="lifecycle-livedata-2.11.1.aar">
+            <sha256 value="917081edc738291d8764fa95aa796730a3a0e2b5b70ac9e22cd5345134ce6405" origin="Generated by Gradle"/>
          </artifact>
       </component>
       <component group="androidx.lifecycle" name="lifecycle-livedata-core" version="2.11.0">
@@ -2349,6 +2366,11 @@
             <sha256 value="9532ca9ba8aceb4cd2067171f981c799988b7f5844e3e274811a3bb757034bc4" origin="Generated by Gradle" reason="Artifact is not signed"/>
          </artifact>
       </component>
+      <component group="com.google.guava" name="guava" version="33.7.2-jre">
+         <artifact name="guava-33.7.2-android.jar">
+            <sha256 value="b949fe975a32421c1a2633c07a4f1578b462f2f467668aa0a4023c5ff7c4a808" origin="Generated by Gradle" reason="Artifact is not signed"/>
+         </artifact>
+      </component>
       <component group="com.google.guava" name="guava-parent" version="26.0-android">
          <artifact name="guava-parent-26.0-android.pom">
             <sha256 value="f8698ab46ca996ce889c1afc8ca4f25eb8ac6b034dc898d4583742360016cc04" origin="Generated by Gradle"/>
@@ -2770,6 +2792,11 @@
             <sha256 value="3898187a9ef5aab97f98af9e16a213808f8ebbc2edf3b6c935e44403d9fa4ca0" origin="Generated by Gradle" reason="A key couldn't be downloaded"/>
          </artifact>
       </component>
+      <component group="io.netty" name="netty-bom" version="4.2.16.Final">
+         <artifact name="netty-bom-4.2.16.Final.pom">
+            <sha256 value="59d50f5c951e6455c474fe5261b7d84b2c546b9c1fc73976fb2cd66db5849338" origin="Generated by Gradle" reason="A key couldn't be downloaded"/>
+         </artifact>
+      </component>
       <component group="jakarta.activation" name="jakarta.activation-api" version="1.2.1">
          <artifact name="jakarta.activation-api-1.2.1.jar">
             <sha256 value="8b0a0f52fa8b05c5431921a063ed866efaa41dadf2e3a7ee3e1961f2b0d9645b" origin="Generated by Gradle" reason="A key couldn't be downloaded"/>
@@ -3063,6 +3090,7 @@
       </component>
       <component group="org.ow2" name="ow2" version="1.5.1">
          <artifact name="ow2-1.5.1.pom">
+            <pgp value="10F3C7A02ECA55E502BADCF3991EFB94DB91127D"/>
             <sha256 value="321ddbb7ee6fe4f53dea6b4cd6db74154d6bfa42391c1f763b361b9f485acf05" origin="Generated by Gradle" reason="A key couldn't be downloaded"/>
          </artifact>
       </component>

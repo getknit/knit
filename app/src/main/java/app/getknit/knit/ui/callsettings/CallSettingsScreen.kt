@@ -12,6 +12,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextObfuscationMode
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -27,6 +30,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedSecureTextField
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -40,7 +44,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -48,8 +54,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -371,13 +375,23 @@ private fun TurnFields(
         singleLine = true,
         modifier = Modifier.fillMaxWidth().testTag("call_settings_turn_user").noAutofillMenu(),
     )
-    OutlinedTextField(
-        value = draft.turnPass,
-        onValueChange = { text -> onEdit { it.copy(turnPass = text) } },
+    // A secure field holds its own TextFieldState: the draft's password flows in (the saved settings load after the
+    // first frame) and every edit flows back out, so the draft stays the one source the save and the probe read.
+    val pass = rememberTextFieldState(draft.turnPass)
+    // Only a typed change is an edit: editDraft also clears the probe result, which the draft arriving must not do.
+    val edit by rememberUpdatedState(onEdit)
+    val drafted by rememberUpdatedState(draft.turnPass)
+    LaunchedEffect(draft.turnPass) {
+        if (pass.text.toString() != draft.turnPass) pass.setTextAndPlaceCursorAtEnd(draft.turnPass)
+    }
+    LaunchedEffect(pass) {
+        snapshotFlow { pass.text.toString() }.collect { text -> if (text != drafted) edit { it.copy(turnPass = text) } }
+    }
+    OutlinedSecureTextField(
+        state = pass,
         label = { Text(stringResource(R.string.call_settings_turn_pass_label)) },
-        singleLine = true,
-        visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        // Hidden, not the System default (which flashes the last typed character): what PasswordVisualTransformation did.
+        textObfuscationMode = if (showPass) TextObfuscationMode.Visible else TextObfuscationMode.Hidden,
         trailingIcon = {
             IconButton(onClick = { showPass = !showPass }) {
                 Icon(
