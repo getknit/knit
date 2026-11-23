@@ -72,6 +72,17 @@ reviewer, and blocks the stop on a finding instead of asking: a ktlint or detekt
 reviewer read and forces a second round. lintorama runs on every stop with a change; the Gradle checks take minutes,
 so only when a reviewer is about to be asked. CI runs them all again on every push.
 
+## A push runs the unit suite
+
+No Stop hook runs the tests, and the review gate reads only uncommitted work, so a commit made in a turn reaches the
+push unreviewed and untested. `.githooks/pre-push` closes that: before a push publishes a commit, it runs
+`:app:testDebugUnitTest` on the tip of each ref through `scripts/gradle-turn.sh`, and refuses the push on a failure. It
+skips a commit the remote already holds and a tree that already passed (`<common git dir>/knit-push-tests.pass`, shared
+by every worktree), so pushing to the second remote costs nothing. It runs in place, so the working tree must match the
+pushed commit: commit or `git stash -u` first. Never park a failing test with `@Ignore` to get a push through; a test
+that guards a rule (`MeshcoreProtoTest.aReleaseBuildNeverCarriesTheDevelopmentDataType`) failing means the change
+broke the rule. `KNIT_PUSH_TESTS=0 git push` skips the tests and keeps the LFS upload; `--no-verify` skips both.
+
 ## ktlint autocorrects; detekt doesn't
 
 **`./gradlew ktlintFormat` autocorrects** the mechanical ktlint violations in place — run it, then

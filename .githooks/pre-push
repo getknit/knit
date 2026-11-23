@@ -1,12 +1,110 @@
-#!/bin/sh
-# Git LFS's own pre-push hook: it uploads the LFS objects a push's commits point at. Without it the remote
-# gets the pointers and never the images, and every other clone's `git lfs pull` fails on them.
+#!/usr/bin/env bash
+# pre-push: run the JVM unit suite (`:app:testDebugUnitTest`, CI's "JVM unit tests" step) on each commit a push
+# would publish, then hand off to Git LFS's own pre-push hook.
 #
-# `git lfs install` writes this hook into .git/hooks, which `core.hooksPath` replaces wholesale — so the
-# copy has to live here too, or opting into the repo's hooks would silently drop it. LFS holds only the
-# Compose preview screenshot references (see .gitattributes); nothing on the release path needs it, so a
-# machine without git-lfs passes through instead of being blocked.
+# Why here: no Stop hook runs the unit suite (0ff5ca2ff dropped it, since CI runs it), and the review gate reads only
+# uncommitted work, so a commit landed in a turn skips it. Work on main is committed locally and pushed in batches, so
+# a commit that breaks a test, and a later one that parks it with @Ignore, could reach CI together and CI would never
+# see the failing state (6013d18c9 + 5e6ac3df9). The push is the last point that sees every commit before it goes out.
+#
+# What it tests: the tip of each ref the push updates, not every commit under it, and not a commit the remote already
+# holds (a remote-tracking ref of this remote contains it) or one whose tree already passed here (recorded in
+# <common git dir>/knit-push-tests.pass, shared by every worktree, so pushing the same commit to `github` after
+# `origin` runs nothing). Gradle's build cache makes a tree whose declared inputs did not move come back FROM-CACHE.
+#
+# Where it runs: in this worktree, through scripts/gradle-turn.sh like every other Gradle run, and only when the
+# working tree matches the commit being pushed. An uncommitted change or an untracked file would test something other
+# than what is pushed, so the push stops and says so: commit or stash (`git stash -u`) first.
+#
+# `KNIT_PUSH_TESTS=0 git push` skips the tests and still uploads the LFS objects; `git push --no-verify` skips this
+# whole hook, LFS upload included, so prefer the variable.
+#
+# Git LFS: `git lfs install` writes its pre-push into .git/hooks, which `core.hooksPath` replaces wholesale, so its
+# call lives here too: it uploads the LFS objects a push's commits point at (only the Compose preview screenshot
+# references, see .gitattributes). A machine without git-lfs passes through.
 #
 # Active only while `core.hooksPath` points at this directory (see CONTRIBUTING.md).
-command -v git-lfs >/dev/null 2>&1 || exit 0
-exec git lfs pre-push "$@"
+
+set -uo pipefail
+
+remote="${1:-}"
+# Git writes one line per ref to stdin; LFS reads the same lines, so keep them for it.
+refs=$(cat)
+
+lfs() {
+  command -v git-lfs >/dev/null 2>&1 || exit 0
+  if [ -n "$refs" ]; then printf '%s\n' "$refs"; fi | git lfs pre-push "$@"
+  exit $?
+}
+
+[ "${KNIT_PUSH_TESTS:-1}" = 0 ] && lfs "$@"
+
+top=$(git rev-parse --show-toplevel) || lfs "$@"
+cd "$top" || lfs "$@"
+common=$(git rev-parse --path-format=absolute --git-common-dir)
+gitdir=$(git rev-parse --absolute-git-dir)
+pass="$common/knit-push-tests.pass"
+
+# The commits whose tests are owed: the peeled tip of each ref pushed, minus deletions, refs the remote already has
+# at that commit, commits the remote already holds, and trees that already passed. One entry per tree.
+owed=()
+owed_trees=" "
+while read -r _ local_sha _ remote_sha; do
+  [ -n "${local_sha:-}" ] || continue
+  [[ "$local_sha" =~ ^0+$ ]] && continue
+  [ "$local_sha" = "${remote_sha:-}" ] && continue
+  commit=$(git rev-parse --verify -q "$local_sha^{commit}") || continue
+  if [ -n "$remote" ] && [ -n "$(git for-each-ref --count=1 --contains "$commit" "refs/remotes/$remote/")" ]; then
+    continue
+  fi
+  tree=$(git rev-parse "$commit^{tree}")
+  grep -qxF "$tree" "$pass" 2>/dev/null && continue
+  case "$owed_trees" in *" $tree "*) continue ;; esac
+  owed_trees+="$tree "
+  owed+=("$commit $tree")
+done <<<"$refs"
+
+for entry in "${owed[@]}"; do
+  read -r commit tree <<<"$entry"
+  short=$(git rev-parse --short "$commit")
+
+  untracked=$(git ls-files --others --exclude-standard)
+  if ! git diff --quiet "$commit" -- || [ -n "$untracked" ]; then
+    {
+      echo "pre-push: the unit tests run on the commit being pushed ($short), and this working tree differs from it:"
+      git diff --name-only "$commit" -- | sed 's/^/  changed:   /' | head -n 10
+      printf '%s\n' "$untracked" | sed '/^$/d; s/^/  untracked: /' | head -n 10
+      echo "Commit or stash (\`git stash -u\`) and push again, or push from a worktree checked out at $short."
+      echo "\`KNIT_PUSH_TESTS=0 git push\` skips the tests (CI still runs them)."
+    } >&2
+    exit 1
+  fi
+
+  log="$gitdir/knit-push-tests.log"
+  echo "pre-push: running :app:testDebugUnitTest on $short (log: $log; KNIT_PUSH_TESTS=0 skips)" >&2
+  "$top/scripts/gradle-turn.sh" ./gradlew :app:testDebugUnitTest --console=plain >"$log" 2>&1
+  status=$?
+  if [ "$status" -eq 75 ]; then
+    echo "pre-push: Gradle stayed busy past the turn's wait, so the tests did not run. Push again later." >&2
+    exit 1
+  fi
+  if [ "$status" -ne 0 ]; then
+    {
+      echo "pre-push: \`./gradlew :app:testDebugUnitTest\` failed on $short (exit $status); nothing was pushed."
+      echo
+      grep -E 'FAILED|tests completed|failing tests|See the report at|What went wrong' "$log" || tail -n 30 "$log"
+      echo
+      echo "Full log: $log"
+    } >&2
+    exit 1
+  fi
+  printf '%s\n' "$tree" >>"$pass"
+  echo "pre-push: unit tests pass on $short" >&2
+done
+
+# Keep the pass record short; the newest trees are the ones a push meets again.
+if [ -f "$pass" ] && [ "$(wc -l <"$pass")" -gt 500 ]; then
+  tail -n 200 "$pass" >"$pass.tmp" && mv "$pass.tmp" "$pass"
+fi
+
+lfs "$@"

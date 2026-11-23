@@ -60,7 +60,9 @@ surrounding code style.
 
 `git config core.hooksPath .githooks` opts into the repo's hooks — a `prepare-commit-msg` that adds
 the DCO sign-off, a `commit-msg` that strips agent session-link trailers, and a `pre-commit` that
-refuses an ADR commit whose generated router is out of sync, plus Git LFS's four hooks. That setting
+refuses an ADR commit whose generated router is out of sync, a `pre-push` that runs
+`./gradlew :app:testDebugUnitTest` on each commit a push would publish (it needs a working tree that matches
+that commit; `KNIT_PUSH_TESTS=0 git push` skips it), plus Git LFS's four hooks. That setting
 replaces `.git/hooks` wholesale, so anything you keep there stops running; `git commit --no-verify`
 skips them for one commit.
 
