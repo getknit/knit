@@ -46,12 +46,14 @@ data class InspectFacts(
     val custodyPins: Int = 0,
     // The reader's Content filtering switch, which [MessageEntity.hiddenByFilter] reads.
     val filterOn: Boolean = true,
+    // What the LoRa trace holds about the row (ADR 2026-10.s7wg's slice-3 amendment), or null where there is no trace.
+    val lora: LoraTraceView? = null,
     val now: Long,
 )
 
 /**
- * The message inspector's rows (ADR 2026-10.s7wg): what this phone holds about one message, raw, in five groups. Pure,
- * so every row is pinned by `MessageInspectionTest`.
+ * The message inspector's rows (ADR 2026-10.s7wg): what this phone holds about one message, raw, in five groups, and
+ * the LoRa trace's group ([LoraTraceRows], the slice-3 amendment). Pure, so every row is pinned by `MessageInspectionTest`.
  *
  * It shows a fact as stored and an absent one as [ABSENT], never inferred. It decodes a custodied frame's envelope
  * header and touches no key. It never shows the attachment key (only whether there is one), a ratchet header's `ek`,
@@ -59,7 +61,14 @@ data class InspectFacts(
  */
 object MessageInspection {
     fun groups(facts: InspectFacts): List<InspectGroup> =
-        listOfNotNull(identity(facts), delivery(facts), custody(facts), attachment(facts), checks(facts))
+        listOfNotNull(
+            identity(facts),
+            delivery(facts),
+            LoraTraceRows.group(facts.message, facts.lora),
+            custody(facts),
+            attachment(facts),
+            checks(facts),
+        )
 
     private fun identity(facts: InspectFacts): InspectGroup {
         val m = facts.message

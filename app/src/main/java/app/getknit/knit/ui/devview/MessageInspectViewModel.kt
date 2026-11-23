@@ -36,7 +36,7 @@ import kotlinx.coroutines.launch
  * phone holds about the message. Built only where the developer view is wired, so `MessageDetailsViewModel` reads
  * nothing more in any build.
  *
- * The row and its receipts are flows. Custody and the attachment's bytes, verdict, holders and pins are one-shot reads
+ * The row and its receipts are flows. Custody, the LoRa trace and the attachment's bytes, verdict, holders and pins are one-shot reads
  * on a [tickMs] tick while the screen is started, never a table subscription: Room invalidates per table, so a
  * subscription would re-run on every write anywhere (ADR 2026-09.fjcw). The links are polled for the attachment's
  * progress ([MeshController.arrivals]) only while its bytes are not here, as the chat does.
@@ -55,6 +55,8 @@ class MessageInspectViewModel(
     identity: IdentitySource,
     private val clock: () -> Long = System::currentTimeMillis,
     tickMs: Long = TICK_MS,
+    // The LoRa trace (ADR 2026-10.s7wg's slice-3 amendment), read on the tick; null where there is none.
+    private val loraTrace: LoraTraceBook? = null,
 ) : ViewModel() {
     private val selfNodeId = MutableStateFlow<String?>(null)
 
@@ -70,6 +72,7 @@ class MessageInspectViewModel(
         val verdict: BlobVerdictEntity? = null,
         val holders: List<AttachmentHolderEntity> = emptyList(),
         val pins: Int = 0,
+        val lora: LoraTraceView? = null,
     )
 
     private val row = messages.observeMessage(messageId)
@@ -117,6 +120,7 @@ class MessageInspectViewModel(
                         holders = h.holders,
                         custodyPins = h.pins,
                         filterOn = filterOn,
+                        lora = h.lora,
                         now = clock(),
                     ),
                 )
@@ -125,10 +129,13 @@ class MessageInspectViewModel(
 
     private suspend fun read(hash: String?): Held {
         val custody = forward.liveRow(messageId, clock())
-        if (hash == null) return Held(custody = custody)
+        // An in-memory copy under the book's monitor: no I/O, so it rides the tick beside the one-shot reads.
+        val lora = loraTrace?.let { LoraTraceView(it.of(messageId), it.facts()) }
+        if (hash == null) return Held(custody = custody, lora = lora)
         return Held(
             hash = hash,
             custody = custody,
+            lora = lora,
             blobSize = blobs.sizes(listOf(hash))[hash],
             verdict = verdicts.find(hash),
             holders = holders.holdersOf(hash),

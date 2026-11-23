@@ -1972,7 +1972,7 @@ internal class MeshcoreSession(
                 payload = decoded ?: f.text,
                 rxSnr = f.snr,
                 rxRssi = null,
-                hopsAway = hopsOf(f.pathLen),
+                hopsAway = MeshcoreProto.hopsOf(f.pathLen),
                 rxTimeMs = null,
                 kind = kind,
             ),
@@ -1987,7 +1987,7 @@ internal class MeshcoreSession(
         f: McFrame.ChannelMessage,
     ) {
         val kind = MeshcorePacket(MeshcorePacket.Type.CHANNEL_TEXT, f.slot, f.pathLen, f.txtType, null, f.timestamp, c.live, false, f.text)
-        emitPacket(BoardPacket(null, false, f.slot, f.text, f.snr, null, hopsOf(f.pathLen), null, kind))
+        emitPacket(BoardPacket(null, false, f.slot, f.text, f.snr, null, MeshcoreProto.hopsOf(f.pathLen), null, kind))
     }
 
     private fun onChannelData(
@@ -1995,15 +1995,13 @@ internal class MeshcoreSession(
         f: McFrame.ChannelData,
     ) {
         val kind = MeshcorePacket(MeshcorePacket.Type.CHANNEL_DATA, f.slot, f.pathLen, null, f.dataType, null, c.live, false, null)
-        emitPacket(BoardPacket(null, false, f.slot, f.data, f.snr, null, hopsOf(f.pathLen), null, kind))
+        emitPacket(BoardPacket(null, false, f.slot, f.data, f.snr, null, MeshcoreProto.hopsOf(f.pathLen), null, kind))
     }
 
     /** Never dropped: the channel is unbounded and outlives every connection of this session. */
     private fun emitPacket(packet: BoardPacket) {
         _packets.trySend(packet)
     }
-
-    private fun hopsOf(pathLen: Int): Int? = if (pathLen == MeshcoreProto.PATH_UNKNOWN) null else pathLen and MeshcoreProto.PATH_HOPS_MASK
 
     /**
      * A `0x81` / `0x8F` for [key] (binding rule "sends" 2): when Knit taught it, a read of its learned route — never a write:

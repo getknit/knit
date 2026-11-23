@@ -6335,6 +6335,8 @@ class InboundPipelineTest {
         mentionedAs: String? = null,
         tag: String? = null,
         underOwnName: Boolean = false,
+        hops: Int? = null,
+        snrDeci: Int? = null,
     ) = MeshcorePost(
         name = name,
         body = body,
@@ -6343,7 +6345,39 @@ class InboundPipelineTest {
         mentionedAs = mentionedAs,
         tag = tag,
         underOwnName = underOwnName,
+        hops = hops,
+        snrDeci = snrDeci,
     )
+
+    /**
+     * A MeshCore post's reception lands in the row's existing columns (`originHops` / `originSnrDeci`), as the Meshtastic
+     * room's does, and the first copy's stays: a replay of the post heard over another path changes nothing.
+     */
+    @Test
+    fun aMeshcorePostsRowKeepsTheFirstCopysHopsAndSnr() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            rig.pipeline.deliverMeshcorePost(meshcorePost("anyone around?", hops = 2, snrDeci = -45))
+            advanceUntilIdle()
+            val row = rig.msgMap.values.single()
+            assertEquals(2, row.originHops)
+            assertEquals(-45, row.originSnrDeci)
+            assertFalse("never an MQTT copy", row.originViaMqtt)
+
+            // The board's offline-queue replay, drained again with another reading: the row it already wrote stays as it was.
+            rig.pipeline.deliverMeshcorePost(meshcorePost("anyone around?", hops = 5, snrDeci = 30))
+            advanceUntilIdle()
+            val again = rig.msgMap.values.single()
+            assertEquals(2, again.originHops)
+            assertEquals(-45, again.originSnrDeci)
+
+            // Arrived direct (`0xFF`) off a V1 frame: neither carried, both absent.
+            rig.pipeline.deliverMeshcorePost(meshcorePost("direct", hops = null, snrDeci = null))
+            advanceUntilIdle()
+            val direct = rig.msgMap.values.single { it.body == "direct" }
+            assertNull(direct.originHops)
+            assertNull(direct.originSnrDeci)
+        }
 
     @Test
     fun aMeshcorePostLandsInItsRoomAsAStrangerUnderTheSentinel() =

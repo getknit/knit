@@ -198,6 +198,37 @@ class MeshcorePublicJudgeTest {
         assertFalse(live.key.toString().contains("$STAMP"))
     }
 
+    /**
+     * The reception the room's row keeps (`originHops` / `originSnrDeci`): a flooded text's hop count off `path_len`'s low six
+     * bits, the hash-size bits never a count; `0xFF` arrived direct, its count not carried; a V3 frame's SNR in tenths, rounded
+     * as the Meshtastic room's; a V1 frame carries none.
+     */
+    @Test
+    fun theHopCountAndSnrAreTheDrainsReadingOrNone() {
+        fun read(
+            pathLen: Int?,
+            snr: Float?,
+        ): MeshcorePublicPost {
+            val verdict = MeshcorePublicJudge.judge("Ana: hi".encodeToByteArray(), STAMP, live = true, pathLen = pathLen, snr = snr)
+            return (verdict as MeshcorePublicJudge.Verdict.Post).post
+        }
+        val flooded = read(pathLen = 3, snr = 6.25f)
+        assertEquals(3, flooded.hops)
+        assertEquals("quarter-dB to tenths, rounded", 63, flooded.snrDeci)
+        assertEquals("the hash-size bits (6–7) are no count", 3, read(pathLen = 0x80 or 3, snr = null).hops)
+        assertEquals("a zero-hop flood is zero, not none", 0, read(pathLen = 0x40, snr = null).hops)
+        assertNull("0xFF: direct, its count not carried", read(pathLen = MeshcoreProto.PATH_UNKNOWN, snr = -4.5f).hops)
+        assertEquals(-45, read(pathLen = MeshcoreProto.PATH_UNKNOWN, snr = -4.5f).snrDeci)
+        assertEquals("half a tenth rounds up, as the Meshtastic room's does", -7, read(pathLen = 1, snr = -0.75f).snrDeci)
+        val v1 = read(pathLen = 2, snr = null)
+        assertNull("a V1 frame carries no SNR", v1.snrDeci)
+        assertEquals(2, v1.hops)
+        val none = read(pathLen = null, snr = null)
+        assertNull(none.hops)
+        assertNull(none.snrDeci)
+        assertEquals("the one reading the session's packets use", MeshcoreProto.hopsOf(0xC5), read(pathLen = 0xC5, snr = null).hops)
+    }
+
     // --- slot 0 as the handshake reads it ---
 
     @Test

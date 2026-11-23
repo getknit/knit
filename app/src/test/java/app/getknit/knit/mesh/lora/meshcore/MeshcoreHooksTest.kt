@@ -148,6 +148,7 @@ class MeshcoreHooksTest {
             ceiling: Ceiling,
             timestampSecs: Long,
             name: MeshcoreHandle,
+            traceId: String?,
         ): Boolean {
             if (queueTakes) {
                 publicQueued += Triple(text, ceiling, timestampSecs)
@@ -1036,16 +1037,29 @@ class MeshcoreHooksTest {
         live: Boolean = true,
         slot: Int = MeshcoreHooks.PUBLIC_SLOT,
         stamp: Long? = POST_STAMP,
+        pathLen: Int = 0,
+        snr: Float? = 5f,
     ) = BoardPacket(
         from = null,
         toUs = false,
         channel = slot,
         payload = text,
-        rxSnr = 5f,
+        rxSnr = snr,
         rxRssi = null,
-        hopsAway = 0,
+        hopsAway = MeshcoreProto.hopsOf(pathLen),
         rxTimeMs = null,
-        kind = MeshcorePacket(MeshcorePacket.Type.CHANNEL_TEXT, slot, 0, MeshcoreProto.TXT_TYPE_PLAIN, null, stamp, live, false, text),
+        kind =
+            MeshcorePacket(
+                MeshcorePacket.Type.CHANNEL_TEXT,
+                slot,
+                pathLen,
+                MeshcoreProto.TXT_TYPE_PLAIN,
+                null,
+                stamp,
+                live,
+                false,
+                text,
+            ),
     )
 
     /** What the core does with a packet: the route, and the kind's own hook for a [PacketRoute.KIND]. */
@@ -1082,6 +1096,29 @@ class MeshcoreHooksTest {
         assertEquals(PublicPostKey(POST_STAMP, frameLike), heard[1].key)
         assertEquals(2L, hooks.counters.publicDelivered.get())
         assertEquals(2L, hooks.counters.publicHeard.get())
+    }
+
+    /**
+     * The drain's own reading reaches the post (ADR 2026-10.s7wg's slice-3 amendment): the hop count `path_len` carries,
+     * read past its hash-size bits, and the board's SNR in tenths; a frame that arrived direct (`0xFF`) carries no count.
+     */
+    @Test
+    fun aHeardPublicPostCarriesTheDrainsHopCountAndSnr() {
+        land(publicText("Knit 1a2b: two hops out".encodeToByteArray(), pathLen = 0x40 or 2, snr = 5.25f))
+        land(
+            publicText(
+                "Knit 1a2b: straight in".encodeToByteArray(),
+                stamp = POST_STAMP + 1,
+                pathLen = MeshcoreProto.PATH_UNKNOWN,
+                snr = -11.5f,
+            ),
+        )
+
+        assertEquals(2, heard.size)
+        assertEquals(2, heard[0].hops)
+        assertEquals(53, heard[0].snrDeci)
+        assertNull("arrived direct: no count carried", heard[1].hops)
+        assertEquals(-115, heard[1].snrDeci)
     }
 
     /**

@@ -16,6 +16,7 @@ import app.getknit.knit.mesh.isPresenceEvidence
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.link.FragReassembler
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreHandle
+import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -206,6 +207,12 @@ internal class LoraMeshTransport(
      * `SecureRandom` in production; the JVM tests inject their own. Meshtastic keeps its seeded counter ([fragSeq]).
      */
     private val fragIds: () -> Int = { FRAG_IDS.nextInt(FRAG_ID_MASK + 1) },
+    /**
+     * The developer view's message inspector's trace (ADR 2026-10.s7wg): told what this plane did with a row, at points it
+     * already passes, and never read back — no air, gate, pacing or reading depends on it. [LoraTrace.NONE] everywhere but
+     * where the developer view hands its book in; the lab keeps it so.
+     */
+    private val trace: LoraTrace = LoraTrace.NONE,
 ) : MeshTransport,
     LoraPlaneStatus,
     PublicChannelSink,
@@ -240,6 +247,7 @@ internal class LoraMeshTransport(
         pace: LoraPacePolicy =
             LoraPacePolicy(minGapMs = BoardTraits.MESHTASTIC.minGapMs, airtime = LoraAirtime(dedicatedUnlocksDuty = true)),
         lingerSweepMs: Long = LINGER_SWEEP_MS,
+        trace: LoraTrace = LoraTrace.NONE,
     ) : this(
         selfId = selfId,
         plane = meshtasticPlane(link, scope, metrics, clock, log, onPublicPost, onBoardBound),
@@ -260,6 +268,7 @@ internal class LoraMeshTransport(
         log = log,
         pace = pace,
         lingerSweepMs = lingerSweepMs,
+        trace = trace,
     )
 
     override val kind = TransportKind.LoRa
@@ -307,6 +316,8 @@ internal class LoraMeshTransport(
             override val config: LoraConfig? get() = currentConfig
             override val maxPayload: Int get() = this@LoraMeshTransport.maxPayload
             override val restored: Boolean get() = this@LoraMeshTransport.restored.value
+            override val trace: LoraTrace get() = this@LoraMeshTransport.trace
+            override val wallNow: Long get() = wallClock()
 
             override fun enqueue(
                 parts: List<ByteArray>,
@@ -322,6 +333,7 @@ internal class LoraMeshTransport(
                 ceiling: Ceiling,
                 timestampSecs: Long,
                 name: MeshcoreHandle,
+                traceId: String?,
             ): Boolean =
                 this@LoraMeshTransport.enqueue(
                     OutboundFrame(
@@ -335,6 +347,7 @@ internal class LoraMeshTransport(
                         gate = RideGate(freshUntil = timestampSecs * PUBLIC_STAMP_MS + LoraFramePolicy.FRESH_MS),
                         timestampSecs = timestampSecs,
                         publicName = name,
+                        traceId = traceId,
                     ),
                 )
 
@@ -1000,6 +1013,7 @@ internal class LoraMeshTransport(
         if (!LoraFramePolicy.eligible(env)) return
         if (!LoraFramePolicy.isFresh(env, wallClock())) {
             metrics.onLoraSuppressed() // a custody re-serve of an old frame — custody's business, not a live plane's
+            refusedTrace(env.id, TraceReason.NOT_FRESH)
             return
         }
         // Written before this process started (ADR 2026-10.ug4a): not something the user just typed, but an own post
@@ -1008,6 +1022,7 @@ internal class LoraMeshTransport(
         if (LoraFramePolicy.predates(env, processStartWall)) {
             metrics.onLoraSuppressed()
             log("lora not re-aired $label:${env.id}: written before this process started")
+            refusedTrace(env.id, TraceReason.PREDATES_PROCESS)
             return
         }
         admitFanout(wire, env, label, preId = self == null)
@@ -1027,7 +1042,11 @@ internal class LoraMeshTransport(
         label: String,
         preId: Boolean = false,
     ) {
-        val parts = encodeOrNull(wire, "$label:${env.type}") ?: return
+        val parts =
+            encodeOrNull(wire, "$label:${env.type}") ?: run {
+                refusedTrace(env.id, TraceReason.TOO_BIG)
+                return
+            }
         // A room post rides only in one packet (ADR 2026-10.rp3s): the room is read by everyone the flood reaches, so
         // a post that needs two is two packets of a shared window spent on one line nobody is waiting for, while the
         // radios and the spool carry it anyway. Asked after encoding, because the 0x05 deflate makes the fit
@@ -1037,11 +1056,13 @@ internal class LoraMeshTransport(
         if (LoraFramePolicy.isBroadcastRoomChat(env) && parts.size > traits.roomPartLimit) {
             metrics.onLoraRoomTooLong()
             log("lora room too long $label:${env.id} parts=${parts.size}")
+            refusedTrace(env.id, TraceReason.ROOM_TOO_LONG)
             return
         }
         // Before the id, judged on kind alone — but only a few, refused like a non-own frame past the cap.
         if (preId && !reservePreId()) {
             metrics.onLoraPreIdRefused()
+            refusedTrace(env.id, TraceReason.PRE_ID_FULL)
             return
         }
         val key = dedupKey(wire, env)
@@ -1051,6 +1072,7 @@ internal class LoraMeshTransport(
         if (!sigSeen.add(key, freshUntil ?: (now + SIG_TTL_MS), now)) {
             if (preId) preIdAdmitted.decrementAndGet()
             metrics.onLoraSuppressed() // already fanned over LoRa while it is fresh
+            refusedTrace(env.id, TraceReason.ALREADY_QUEUED)
             return
         }
         val accepted =
@@ -1064,6 +1086,7 @@ internal class LoraMeshTransport(
                 // window. Carried so [staleReason] can ask them again on the way out.
                 gate = RideGate(freshUntil = freshUntil, authorId = env.senderId),
                 sigKey = key,
+                traceId = env.id,
             )
         if (preId && !accepted) preIdAdmitted.decrementAndGet() // the queue refused it: nothing of the cap was spent
     }
@@ -1160,7 +1183,9 @@ internal class LoraMeshTransport(
         gate: RideGate = RideGate(),
         to: BoardAddr? = null,
         sigKey: String? = null,
-    ): Boolean = enqueue(OutboundFrame(parts, label, FrameClass.ROOM, ceiling, destination, to, gate = gate, sigKey = sigKey))
+        traceId: String? = null,
+    ): Boolean =
+        enqueue(OutboundFrame(parts, label, FrameClass.ROOM, ceiling, destination, to, gate = gate, sigKey = sigKey, traceId = traceId))
 
     /**
      * Queues [frame] and says whether it is in the queue now. [LoraPacePolicy.Admission.DROPPED_OLDEST] is in:
@@ -1172,8 +1197,98 @@ internal class LoraMeshTransport(
         abandonShed() // the frame this one displaced, if it shed one
         if (pace.lastSuperseded > 0) log("lora ${frame.label} superseded ${pace.lastSuperseded} still queued")
         wake.trySend(Unit)
+        if (admission == LoraPacePolicy.Admission.REFUSED) {
+            refusedTrace(frame.traceId, TraceReason.QUEUE_FULL)
+        } else {
+            traced(frame.traceId) {
+                LoraTraceEvent.Queued(
+                    wallClock(),
+                    traits.kind,
+                    routeOf(frame),
+                    frame.messages.size,
+                    frame.messages.sumOf { it.size },
+                    (frame.direct?.addr ?: frame.to)?.let(::traceLabel),
+                )
+            }
+        }
         return admission != LoraPacePolicy.Admission.REFUSED
     }
+
+    // --- the developer view's trace (ADR 2026-10.s7wg): write-only, every call through the one guarded helper ---
+
+    /** Notes [build]'s event under row [id] when the trace is on and the row is known ([LoraTrace.emit]). */
+    private inline fun traced(
+        id: String?,
+        build: () -> LoraTraceEvent,
+    ) = trace.emit(id, log, build)
+
+    /** Notes [build]'s event under our board's packet [handle] when the trace is on ([LoraTrace.emitByHandle]). */
+    private inline fun tracedByHandle(
+        handle: UInt,
+        build: () -> LoraTraceEvent,
+    ) = trace.emitByHandle(handle, log, build)
+
+    private fun refusedTrace(
+        id: String?,
+        reason: TraceReason,
+    ) = traced(id) { LoraTraceEvent.Refused(wallClock(), traits.kind, reason) }
+
+    /**
+     * [refusedTrace] whose [reason] is read only once the trace is on and [id] known, inside the same guard; a null reason
+     * notes nothing.
+     */
+    private inline fun refusedTraceOf(
+        id: String?,
+        reason: () -> TraceReason?,
+    ) {
+        if (id == null || !trace.on) return
+        val why = runCatching(reason).getOrNull() ?: return
+        refusedTrace(id, why)
+    }
+
+    private fun requeuedTrace(
+        id: String?,
+        reason: TraceReason,
+    ) = traced(id) { LoraTraceEvent.Requeued(wallClock(), traits.kind, reason) }
+
+    private fun endedTrace(
+        id: String?,
+        outcome: TraceOutcome,
+        late: Boolean = false,
+        nak: String? = null,
+        refundedMs: Long? = null,
+    ) = traced(id) { LoraTraceEvent.Ended(wallClock(), traits.kind, outcome, late, nak, refundedMs) }
+
+    /** A compact DM's row: a [DirectKind.MESSAGE]'s frame id, never a ✓✓'s or a reaction's (no row is theirs). */
+    private fun DirectSend.traceId(): String? = frameId.takeIf { kind == DirectKind.MESSAGE }
+
+    private fun routeOf(frame: OutboundFrame): TraceRoute =
+        when {
+            frame.direct != null -> TraceRoute.DIRECT
+            frame.destination == Destination.Knit -> TraceRoute.FRAME
+            else -> TraceRoute.ROOM
+        }
+
+    /** The slot a write went to: the bound Knit slot it names, or slot 0 for the kind's own public post. */
+    private fun slotOf(purpose: SendPurpose): Int =
+        when (purpose) {
+            is SendPurpose.KnitFrame -> purpose.channel
+            is SendPurpose.DirectDm -> purpose.channel
+            is SendPurpose.Debug -> purpose.channel
+            is SendPurpose.PublicPost, is SendPurpose.AutoReply, is SendPurpose.Admin -> PublicChannelPolicy.PRIMARY_INDEX
+        }
+
+    private fun traceReasonOf(reason: StaleAtSend): TraceReason =
+        when (reason) {
+            StaleAtSend.LINKED -> TraceReason.LINKED
+            StaleAtSend.INTERNET -> TraceReason.INTERNET
+            StaleAtSend.NOT_DIRECT -> TraceReason.NOT_DIRECT
+            StaleAtSend.HELD -> TraceReason.HELD
+            StaleAtSend.ACKED -> TraceReason.ACKED
+            StaleAtSend.SLOT_ZERO -> TraceReason.SLOT_ZERO
+            StaleAtSend.STALE -> TraceReason.STALE
+            StaleAtSend.NOT_OWN -> TraceReason.NOT_OWN
+        }
 
     // --- compact DMs: one pair-sealed unicast to the recipient's board (ADR 2026-10.x9fa) ---
 
@@ -1203,14 +1318,29 @@ internal class LoraMeshTransport(
         kind: DirectKind,
     ) {
         val now = clock()
-        val holder = directHolder(recipientId, kind, now) ?: return
+        // The row the trace notes this offer under: a DM a person wrote, never a ✓✓ or a reaction (no row is theirs).
+        val traceId = frameId.takeIf { kind == DirectKind.MESSAGE }
+        val holder =
+            directHolder(recipientId, kind, now) ?: run {
+                // Only on a configured plane: an unconfigured one has nothing to say about any DM. The reason is chosen
+                // inside the guard, so nothing is read while the trace is off.
+                refusedTraceOf(traceId) {
+                    when {
+                        !mayTransmit() -> null
+                        currentConfig?.dms != true -> TraceReason.DMS_OFF
+                        else -> TraceReason.NO_BOARD
+                    }
+                }
+                return
+            }
         if (!clearToOffer(recipientId, frameId, kind, now)) return
         if (direct.mustWait(recipientId, now, pace.hasQueuedTo(recipientId))) {
             direct.park(recipientId, LoraDirectPolicy.Parked(frameId, sentAtMs, plaintext, kind))
+            refusedTrace(traceId, TraceReason.PARKED)
             publishStatus()
             return
         }
-        val packet = sealOrNull(recipientId, frameId, sentAtMs, plaintext) ?: return
+        val packet = sealOrNull(recipientId, frameId, sentAtMs, plaintext, traceId) ?: return
         // Counted where it goes, not where it passed the gate: a DM parked behind a send passes it again when replayed.
         if (kind == DirectKind.MESSAGE && direct.reachOf(recipientId, now) == LoraDirectPolicy.Reach.UNREACHABLE) {
             metrics.onLoraDirectPastHold()
@@ -1257,29 +1387,39 @@ internal class LoraMeshTransport(
         frameId: String,
         kind: DirectKind,
         now: Long,
-    ): Boolean =
-        when {
+    ): Boolean {
+        val traceId = frameId.takeIf { kind == DirectKind.MESSAGE }
+        return when {
             skipCovered(recipientId) -> {
+                // skipCovered's own order: a link (or ourselves) first, then the spool; read only while the trace is on.
+                refusedTraceOf(traceId) {
+                    if (recipientId == selfIdCached || recipientId in linkedPeers) TraceReason.LINKED else TraceReason.INTERNET
+                }
                 false
             }
 
             hooks.directSlotRefused(currentConfig?.channelIndex) -> {
                 metrics.onLoraDirectSlotZero()
+                refusedTrace(traceId, TraceReason.SLOT_ZERO)
                 false
             }
 
             copyWaiting(frameId) -> {
+                refusedTrace(traceId, TraceReason.COPY_WAITING)
                 false
             }
 
             direct.holds(recipientId, now) -> {
-                clearOfMark(recipientId, frameId, kind, direct.reachOf(recipientId, now))
+                clearOfMark(recipientId, frameId, kind, direct.reachOf(recipientId, now)).also {
+                    if (!it) refusedTrace(traceId, TraceReason.HELD)
+                }
             }
 
             else -> {
                 true
             }
         }
+    }
 
     /**
      * Whether an offer to [recipientId], whose board is marked [reach], goes anyway. A DM the user just typed passes an
@@ -1332,15 +1472,18 @@ internal class LoraMeshTransport(
         frameId: String,
         sentAtMs: Long,
         plaintext: ByteArray,
+        traceId: String?,
     ): ByteArray? {
         val packet = crypto.seal(peerId, frameId, sentAtMs, plaintext)
         if (packet == null) {
             log("lora direct unsealed $frameId -> $peerId")
+            refusedTrace(traceId, TraceReason.UNSEALED)
             return null
         }
         if (packet.size > directPayloadCap()) {
             metrics.onLoraDirectTooLong()
             log("lora direct too long $frameId -> $peerId ${packet.size}B")
+            refusedTrace(traceId, TraceReason.TOO_LONG)
             return null
         }
         return packet
@@ -1380,6 +1523,7 @@ internal class LoraMeshTransport(
                 supersedes = frameKey(send.frameId),
                 gate = gate,
                 direct = send,
+                traceId = send.traceId(),
             ),
         )
     }
@@ -1406,7 +1550,7 @@ internal class LoraMeshTransport(
         if (copyWaiting(dm.frameId)) return false
         if (direct.reachOf(peerId, clock()).keepsResendsOff()) return false
         if (direct.mustWait(peerId, clock(), pace.hasQueuedTo(peerId))) return false
-        val packet = sealOrNull(peerId, dm.frameId, dm.sentAtMs, dm.plaintext) ?: return false
+        val packet = sealOrNull(peerId, dm.frameId, dm.sentAtMs, dm.plaintext, dm.frameId) ?: return false
         return enqueueDirect(
             packet,
             DirectSend(
@@ -1627,13 +1771,15 @@ internal class LoraMeshTransport(
         flight: LoraDirectPolicy.Flight,
         now: Long,
         reported: Int? = null,
-    ) {
+    ): Long {
         val flown = reported?.coerceIn(0, flight.send.airings) ?: (1 + traits.retriesBefore(now - flight.sentAt, flight.retransmitMs))
         val back = pace.airtime.refund(flight.sentAt, flight.airMs, flight.send.airings - flown)
         if (back > 0) {
             pace.onAirReturned()
             wake.trySend(Unit) // air came back: a frame the window held may fit now
         }
+        // What came back, for the trace's `Ended` alone.
+        return back * flight.airMs
     }
 
     /**
@@ -1661,6 +1807,8 @@ internal class LoraMeshTransport(
         }
         if (outcome is PacketOutcome.Acked && !outcome.byDestination) {
             metrics.onLoraDirectImplicitAck()
+            // Counted, never delivery, and the wait goes on: noted by the handle, which the reader maps to the airing.
+            tracedByHandle(outcome.id) { LoraTraceEvent.Ended(wallClock(), traits.kind, TraceOutcome.IMPLICIT_ACK) }
             return
         }
         direct.resolve(outcome.id, outcome)?.let { settle(it, outcome) }
@@ -1675,7 +1823,10 @@ internal class LoraMeshTransport(
         val now = clock()
         when (outcome) {
             is PacketOutcome.Acked -> {
-                if (!outcome.byDestination) return
+                if (!outcome.byDestination) {
+                    tracedByHandle(outcome.id) { LoraTraceEvent.Ended(wallClock(), traits.kind, TraceOutcome.IMPLICIT_ACK, late = true) }
+                    return
+                }
                 val send = direct.ended(outcome.id) ?: return
                 direct.onAcked(send.peerId, now)
                 hooks.onDelivered(send.addr)
@@ -1723,16 +1874,18 @@ internal class LoraMeshTransport(
             refusal == RefusalClass.PEER_LACKS_KEY -> {
                 metrics.onLoraDirectPeerLacksOurKey()
                 hooks.bookKeyReply(now)
+                endedTrace(send.traceId(), TraceOutcome.PEER_LACKS_KEY, late = true, nak = outcome.reason.name)
             }
 
             refusal == RefusalClass.DEST_REFUSED -> {
                 direct.onRefused(send.peerId, now)
                 publishStatus()
+                endedTrace(send.traceId(), TraceOutcome.DEST_REFUSED, late = true, nak = outcome.reason.name)
             }
 
             // Any other class (pacing, a missing key not handled above) keeps the late NAK's handling, attributed or not.
             else -> {
-                onLateNak(outcome)
+                onLateNak(outcome, send)
             }
         }
     }
@@ -1750,11 +1903,14 @@ internal class LoraMeshTransport(
         send: DirectSend,
         ack: PacketOutcome.Acked,
         late: Boolean,
+        refundedMs: Long? = null,
     ) {
         if (ack.proof == AckProof.INVALID) {
             log("lora direct ack proof invalid ${send.frameId} -> ${send.peerId}")
+            endedTrace(send.traceId(), TraceOutcome.PROOF_INVALID, late = late, refundedMs = refundedMs)
             return
         }
+        endedTrace(send.traceId(), TraceOutcome.ACKED, late = late, refundedMs = refundedMs)
         if (send.kind == DirectKind.MESSAGE) {
             runCatching { onRadioReached(send.frameId, send.peerId, late) }.onFailure { log("lora direct radio reached failed: $it") }
         }
@@ -1765,10 +1921,21 @@ internal class LoraMeshTransport(
      * A late refusal of a send nothing waits on: counted, and paced by its reason alone through the Meshtastic reading of
      * a NAK ([LoraPacePolicy.onNak], the classifier's) — whoever sent it, as before the seam.
      */
-    private fun onLateNak(outcome: PacketOutcome.Refused) {
+    private fun onLateNak(
+        outcome: PacketOutcome.Refused,
+        send: DirectSend? = null,
+    ) {
         metrics.onLoraNak(outcome.reason.name)
         log("lora nak id=${outcome.id} reason=${outcome.reason} (late)")
         pace.onNak(outcome.reason, clock())
+        // A compact DM's by its row; anything else (a broadcast's) by the handle its airing was noted under.
+        if (send != null) {
+            endedTrace(send.traceId(), TraceOutcome.NAK, late = true, nak = outcome.reason.name)
+        } else {
+            tracedByHandle(outcome.id) {
+                LoraTraceEvent.Ended(wallClock(), traits.kind, TraceOutcome.NAK, late = true, nak = outcome.reason.name)
+            }
+        }
     }
 
     /**
@@ -1786,13 +1953,13 @@ internal class LoraMeshTransport(
         val peer = send.peerId
         when (outcome) {
             is PacketOutcome.Acked -> {
-                refundUnflown(flight, now, outcome.flown)
+                val refunded = refundUnflown(flight, now, outcome.flown)
                 metrics.onLoraDirectAcked()
                 direct.onAcked(peer, now)
                 // Their board took a PKI packet under the key ours holds: should ours lose it again, it may be taught once more.
                 hooks.onDelivered(send.addr)
                 if (send.kind == DirectKind.MESSAGE) reprobe.onAcked(peer, now, fresh = !send.resend)
-                destinationAcked(send, outcome, late = false)
+                destinationAcked(send, outcome, late = false, refundedMs = refunded)
                 log("lora direct acked ${send.frameId} -> $peer")
                 direct.unpark(peer).forEach { offer(peer, it.frameId, it.sentAtMs, it.plaintext, it.kind) }
                 if (send.flushAfter.isNotEmpty()) scope.launch { flush(peer, send.flushAfter) }
@@ -1810,11 +1977,16 @@ internal class LoraMeshTransport(
             is PacketOutcome.Unreachable, is PacketOutcome.NoOutcome -> {
                 // Every airing stays booked, as it was at send: the firmware flew them all, or may have. Only a link that
                 // counted them (`flown`) gets the unflown ones back; the deadline's own no-outcome never carries a count.
-                outcome.flown?.let { refundUnflown(flight, now, it) }
+                val refunded = outcome.flown?.let { refundUnflown(flight, now, it) }
                 direct.onUnreachable(peer, now)
                 reprobe.onFailed(peer, now)
                 // Counted after the mark: a reader that sees the counter move may act on the mark (mesh-lab-reviewer).
                 if (outcome is PacketOutcome.Unreachable) metrics.onLoraDirectUnreachable() else metrics.onLoraDirectNoOutcome()
+                endedTrace(
+                    send.traceId(),
+                    if (outcome is PacketOutcome.Unreachable) TraceOutcome.UNREACHABLE else TraceOutcome.NO_OUTCOME,
+                    refundedMs = refunded,
+                )
                 log("lora direct unreachable ${send.frameId} -> $peer (${outcome::class.simpleName})")
                 tellUndelivered(send, "unreachable")
                 // The DM typed while it was out gets the next attempt; the rest are left to the source, re-aired by the
@@ -1877,9 +2049,15 @@ internal class LoraMeshTransport(
             }
 
             else -> {
-                refundUnflown(flight, now)
+                val refunded = refundUnflown(flight, now)
                 metrics.onLoraNak(outcome.reason.name)
                 log("lora direct refused ${send.frameId} -> $peer reason=${outcome.reason} byDestination=${outcome.byDestination}")
+                endedTrace(
+                    send.traceId(),
+                    if (refusal == RefusalClass.DEST_REFUSED) TraceOutcome.DEST_REFUSED else TraceOutcome.NAK,
+                    nak = outcome.reason.name,
+                    refundedMs = refunded,
+                )
                 if (refusal == RefusalClass.DEST_REFUSED) direct.onRefused(peer, now)
                 if (refusal == RefusalClass.PACE) pace.onPaceRefusal(now)
                 // Our own board's refusal (pace, or its own reason) says nothing about their board: a ✓✓ may ride later,
@@ -1912,6 +2090,7 @@ internal class LoraMeshTransport(
             reprobe.onFailed(peer, now)
             metrics.onLoraDirectUnreachable() // after the mark, as in settle
             log("lora direct peer lacks our key ${send.frameId} -> $peer again: unreachable")
+            endedTrace(send.traceId(), TraceOutcome.PEER_LACKS_KEY)
             // Marked unreachable, not keyless: a DM typed a second later passes that mark and its own 35 sends our NodeInfo
             // again, so the one typed during this send gets the same turn. It starts afresh (`afterPeerKey` false), so a
             // burst costs at most two sends (lora-reviewer's round 2).
@@ -1930,6 +2109,7 @@ internal class LoraMeshTransport(
                 airings = send.airings,
             )
         direct.scheduleRetry(peer, now + flight.retransmitMs, frameOf(flight, retry, packet))
+        requeuedTrace(send.traceId(), TraceReason.PEER_LACKS_KEY)
         flightWake.trySend(Unit)
         log("lora direct peer lacks our key ${send.frameId} -> $peer: re-offer in ${flight.retransmitMs}ms")
     }
@@ -1949,6 +2129,7 @@ internal class LoraMeshTransport(
             supersedes = frameKey(send.frameId),
             gate = flight.gate,
             direct = send,
+            traceId = send.traceId(),
         )
 
     /** Gives back every airing [flight] was booked for: our own board refused it, so none flew. */
@@ -1989,15 +2170,18 @@ internal class LoraMeshTransport(
         if (own == null || hooks.provisioning) {
             // Between sessions, or inside a setup's admin transaction: ask again once it is over.
             requeue(frame)
+            requeuedTrace(frame.traceId, TraceReason.NOT_READY)
             return
         }
         if (holder == null || holder.addr != send.addr) {
             abandon(frame) // their board changed while it waited: the offer's gates decide anew
+            refusedTrace(frame.traceId, TraceReason.NOT_DIRECT)
             return
         }
         when (val teach = hooks.teachKey(peer, holder, own, sentAfter)) {
             is KeyTeach.Write -> {
                 direct.holdForContact(peer, frame)
+                requeuedTrace(frame.traceId, TraceReason.KEY_TEACHING)
                 // A coroutine on the plane's scope: the write waits on the board's answer.
                 scope.launch { onKeyWritten(peer, teach.write()) }
             }
@@ -2005,6 +2189,7 @@ internal class LoraMeshTransport(
             KeyTeach.Refused -> {
                 direct.onNoKey(peer, clock())
                 abandon(frame)
+                endedTrace(frame.traceId, TraceOutcome.NO_KEY)
             }
         }
         publishStatus()
@@ -2031,7 +2216,10 @@ internal class LoraMeshTransport(
 
             KeyWrite.REFUSED -> {
                 direct.onNoKey(peerId, clock())
-                direct.releaseContact(peerId)?.let(::abandon)
+                direct.releaseContact(peerId)?.let { frame ->
+                    abandon(frame)
+                    endedTrace(frame.traceId, TraceOutcome.NO_KEY)
+                }
             }
         }
         publishStatus()
@@ -2116,6 +2304,23 @@ internal class LoraMeshTransport(
         // kind that vouches for no sender it lifts a mark but is never counted a radio (`boardsHeard`, Stage 5c-2a). Only a
         // verified zero-hop room post counts one there.
         val heard = heardDirect(packet, opened)
+        // Every opened compact frame, by its id: the plane cannot tell a DM from a ✓✓ or a reaction without reading the
+        // plaintext, which it never does; only a DM's id names a row, so the others are never looked up.
+        traced(opened.frameId) {
+            heardOf(
+                wallClock(),
+                traits.kind,
+                TraceRoute.DIRECT,
+                packet,
+                live = isLive(packet),
+                notes =
+                    buildSet {
+                        add(if (isFresh(opened.sentAtMs)) HeardNote.PRESENCE else HeardNote.NOT_FRESH)
+                        if (lifted) add(HeardNote.COVER_LIFTED)
+                        if (heard) add(HeardNote.BOARD_HEARD)
+                    },
+            )
+        }
         scope.launch {
             runCatching { inbox.deliver(opened) }
                 .onSuccess { log("lora direct delivered ${opened.frameId} from ${opened.peerId}") }
@@ -2432,6 +2637,7 @@ internal class LoraMeshTransport(
         val ready = board.state.value as? BoardState.Ready
         if (ready == null) {
             requeue(frame)
+            requeuedTrace(frame.traceId, TraceReason.NOT_READY)
             return
         }
         // Asked only of a frame that has not yet put a fragment on the air: [OutboundFrame.remaining] exists
@@ -2441,6 +2647,7 @@ internal class LoraMeshTransport(
                 metrics.onLoraStaleAtSend(reason.name)
                 log("lora stale at send ${frame.label}: ${reason.name.lowercase()}")
                 abandon(frame, if (reason == StaleAtSend.HELD && unreachableNow(frame)) Abandon.HELD else Abandon.PATH)
+                refusedTrace(frame.traceId, traceReasonOf(reason))
                 return
             }
         }
@@ -2448,6 +2655,7 @@ internal class LoraMeshTransport(
         val ch = hooks.boundSlot(currentConfig?.channelIndex, ready)
         if (ch == null) {
             abandon(frame)
+            refusedTrace(frame.traceId, TraceReason.NO_SLOT)
             return
         }
         val skipped = slotRefusal(frame, ready, ch)
@@ -2455,6 +2663,7 @@ internal class LoraMeshTransport(
             metrics.onLoraSuppressed()
             log("lora send skipped: $skipped")
             abandon(frame)
+            refusedTrace(frame.traceId, TraceReason.SLOT_REFUSED)
             return
         }
         // Resume where the board left off. A frame refused part-way is requeued whole, and re-sending the
@@ -2515,7 +2724,7 @@ internal class LoraMeshTransport(
         return when (result) {
             is SendResult.Queued -> {
                 pace.onQueueStatus(result.queue.free)
-                onTaken(frame, message, result.id, userSeq)
+                onTaken(frame, message, result.id, userSeq, purpose)
                 FragmentOutcome.SENT
             }
 
@@ -2526,10 +2735,11 @@ internal class LoraMeshTransport(
                 if (frame.direct == null) {
                     log("lora tx ${frame.label} gave up: $result")
                     abandon(frame)
+                    endedTrace(frame.traceId, TraceOutcome.WRITE_TIMEOUT)
                     FragmentOutcome.ENDED
                 } else {
                     log("lora tx ${frame.label} unconfirmed, awaited as id=${result.id}")
-                    onTaken(frame, message, result.id, userSeq)
+                    onTaken(frame, message, result.id, userSeq, purpose)
                     FragmentOutcome.SENT
                 }
             }
@@ -2539,11 +2749,13 @@ internal class LoraMeshTransport(
                 log("lora nak id=${result.id} reason=${result.reason} label=${frame.label}")
                 if (refusal == RefusalClass.PACE) pace.onPaceRefusal(clock())
                 abandon(frame, if (refusal == RefusalClass.PACE) Abandon.AIR else Abandon.PATH) // a no-op once a fragment has flown
+                endedTrace(frame.traceId, TraceOutcome.NAK, nak = result.reason.name)
                 FragmentOutcome.ENDED
             }
 
             SendResult.Busy -> {
                 requeue(frame)
+                requeuedTrace(frame.traceId, TraceReason.BUSY)
                 FragmentOutcome.OWED
             }
 
@@ -2553,6 +2765,7 @@ internal class LoraMeshTransport(
             // parked behind it parked.
             is SendResult.NotReady -> {
                 requeue(frame)
+                requeuedTrace(frame.traceId, TraceReason.NOT_READY)
                 FragmentOutcome.OWED
             }
 
@@ -2560,6 +2773,7 @@ internal class LoraMeshTransport(
                 val unaired = refusedUnaired(frame, result)
                 log("lora tx ${frame.label} gave up: $result")
                 abandon(frame, Abandon.AIR)
+                endedTrace(frame.traceId, TraceOutcome.REJECTED)
                 if (unaired) FragmentOutcome.REFUSED else FragmentOutcome.ENDED
             }
         }
@@ -2594,9 +2808,11 @@ internal class LoraMeshTransport(
         message: ByteArray,
         handle: UInt,
         userSeq: Long,
+        purpose: SendPurpose,
     ) {
         val now = clock()
         val send = frame.direct
+        val part = frame.sentParts
         // At the frame's own price, the one its admission asked (OutboundFrame.price, #243): a broadcast at its slot's
         // cliff; a unicast — a compact DM and the auto-reply alike — unsigned and with the PKC overhead the firmware adds
         // to every PKI unicast (ADR 2026-10.x9fa's PKI amendment). Read once, so the flight's airing is the booked one.
@@ -2609,6 +2825,19 @@ internal class LoraMeshTransport(
             repeat(send.airings) { pace.airtime.record(message.size, now, price, frame.ceiling) }
         }
         frame.onPartSent()
+        traced(frame.traceId) {
+            LoraTraceEvent.Aired(
+                wallClock(),
+                traits.kind,
+                slot = slotOf(purpose),
+                handles = listOf(handle.toLong()),
+                bookedMs = pace.airtime.timeOnAirMs(message.size, price) * (send?.airings ?: 1),
+                part = part,
+                parts = frame.messages.size,
+                heldForAir = frame.heldForAir,
+                heldForBand = frame.heldForBand,
+            )
+        }
         send?.let { launchFlight(frame, it, handle, message, price, now, userSeq) }
         // The ledger just moved, and a send is the only thing that spends it — so republish here
         // rather than leave the chat's saturation notice and the radio screen's percentage waiting
@@ -2667,7 +2896,10 @@ internal class LoraMeshTransport(
 
     /** [abandon]s whatever the pacer dropped unsent since the last look: a shed or an oversize evict, both for want of air. */
     private fun abandonShed() {
-        pace.drainShed().forEach { abandon(it, Abandon.AIR) }
+        pace.drainShed().forEach {
+            abandon(it, Abandon.AIR)
+            refusedTrace(it.traceId, TraceReason.SHED)
+        }
     }
 
     /**
@@ -2681,6 +2913,7 @@ internal class LoraMeshTransport(
             metrics.onLoraAirNever()
             log("lora air never ${frame.label} parts=${frame.messages.size}: over its ceiling of an empty window")
             abandon(frame, Abandon.AIR)
+            refusedTrace(frame.traceId, TraceReason.AIR_NEVER)
         }
     }
 
@@ -2747,14 +2980,64 @@ internal class LoraMeshTransport(
         // And never off our own board, heard back through a repeater: that is our own airing, nobody's reach.
         // On a kind that vouches for no sender, only a frame whose signature verifies is presence (the 5c-1 reviews' N1): a
         // whole `0x03`/`0x05` is read unverified, and anyone on the public key could make any id look LoRa-reachable.
-        if (isPresence(packet, read)) noteReachable(Peer(env.senderId))
+        val presence = isPresence(packet, read)
+        if (presence) noteReachable(Peer(env.senderId))
         if (!traits.hearsSender) hearAuthor(packet, wire, env)
         metrics.onLoraReceived()
         if (fragmented) metrics.onLoraReassembled()
         if (LoraFramePolicy.isDmForm(env)) metrics.onLoraDmReceived()
         _inbound.tryEmit(InboundFrame(wire, env, fromNodeId = env.senderId))
         log("lora rx ${env.type} id=${env.id} from ${env.senderId}")
+        // Past the read, the verify and the own-echo return: only a frame the plane read is noted, by its envelope id, with
+        // the completing packet's reception and the count it completed. Nothing kept beside the reassemblers. The id is the
+        // sender's claim (an unverified frame's is whatever it wrote), so only an id of the shape every door admits
+        // (`FrameId.admits`) is noted, asked only while the trace is on, and the Heard says whether its author verified.
+        if (trace.on && runCatching { FrameId.admits(env) }.getOrDefault(false)) {
+            traced(env.id) {
+                heardOf(
+                    wallClock(),
+                    traits.kind,
+                    TraceRoute.FRAME,
+                    packet,
+                    live = isLive(packet),
+                    parts = if (fragmented) partsOf(packet.payload) else 1,
+                    notes = frameNotes(packet, read, presence),
+                )
+            }
+        }
     }
+
+    /** The fragment count the completing [payload] names (`0x04` or `0x07`), for the trace alone. */
+    private fun partsOf(payload: ByteArray): Int {
+        val frag =
+            if (payload[0] ==
+                FastFrameCodec.TAG_BOUND_FRAG
+            ) {
+                FastFrameCodec.parseBoundFragment(payload)
+            } else {
+                FastFrameCodec.parseFragment(payload)
+            }
+        return frag?.count ?: 1
+    }
+
+    /**
+     * The verdicts [onFramePacket] already reached about [read], for the trace: [presence] as it decided, the freshness and
+     * own-board tests its rule is made of, and whether its author verified: checked on the way in ([FrameRead.verified]),
+     * or by [isPresence] on a kind that vouches for no sender (presence there is a verified signature); else
+     * [HeardNote.AUTHOR_UNVERIFIED] — never a verification of the trace's own.
+     */
+    private fun frameNotes(
+        packet: BoardPacket,
+        read: FrameRead,
+        presence: Boolean,
+    ): Set<HeardNote> =
+        buildSet {
+            if (presence) add(HeardNote.PRESENCE)
+            if (!isPresenceEvidence(read.env, wallClock())) add(HeardNote.NOT_FRESH)
+            val own = ownBoard()
+            if (own != null && packet.from == own) add(HeardNote.OWN_BOARD)
+            add(if (read.verified || (!traits.hearsSender && presence)) HeardNote.AUTHOR_VERIFIED else HeardNote.AUTHOR_UNVERIFIED)
+        }
 
     /**
      * Whether [read] is presence of its author: fresh by `FramePresence`'s rule, not our own board's airing, and — on a kind

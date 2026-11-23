@@ -390,7 +390,7 @@ internal class MeshcoreHooks(
      */
     override fun onKindPacket(packet: BoardPacket) {
         val mc = packet.kind as? MeshcorePacket ?: return
-        if (mc.type == MeshcorePacket.Type.CHANNEL_TEXT && mc.slot == PUBLIC_SLOT) public.onText(mc)
+        if (mc.type == MeshcorePacket.Type.CHANNEL_TEXT && mc.slot == PUBLIC_SLOT) public.onText(mc, packet)
     }
 
     /** The board's own Knit slot, as its session read it (`Ready.channel`): there is no slot setting for this kind. */

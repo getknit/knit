@@ -804,6 +804,13 @@ internal class OutboundFrame(
      * figure) and the write refuses the frame when the board reads another. Null on every other frame.
      */
     val publicName: MeshcoreHandle? = null,
+    /**
+     * The message row the developer view's trace notes this frame's fate under ([LoraTrace], ADR 2026-10.s7wg): the fan-out's
+     * envelope id, a compact DM's frame id for a [DirectKind.MESSAGE], a MeshCore Public post's row id; null on every other
+     * frame. Read by no policy and no gate — not by [supersedes], [shedRank], the pricing or the send-time re-ask — only by the
+     * trace's emit points.
+     */
+    val traceId: String? = null,
 ) {
     /**
      * A frame addressed by a Meshtastic node number, [MeshtasticProto.BROADCAST] for the channel: the form before

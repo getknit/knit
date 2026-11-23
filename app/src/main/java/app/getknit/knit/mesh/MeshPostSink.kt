@@ -44,7 +44,7 @@ interface MeshPostSink {
 /**
  * One post heard on a MeshCore board's Public channel, judged by the plane (`mesh/lora/meshcore/MeshcorePublicJudge`) and
  * handed across the seam into the MeshCore room — the MeshCore twin of [MeshPost], with far less in it: a channel text
- * names no sender, carries no packet id, no hop count and no signature.
+ * names no sender and carries no packet id and no signature.
  *
  * [name] is the self-chosen display name the sender's board put in front of the text (cleaned, null when there was none)
  * and proves nothing: anyone on the key can post under any name, `You` and our own board's `Knit xxxx` included, so it is
@@ -58,6 +58,9 @@ interface MeshPostSink {
  * hashes heard text itself. [underOwnName] says [name] keys ([app.getknit.knit.identity.NameKey]) as the bound board's own
  * name did when the post was heard: our echo, or a namesake's — the room drops a reaction under it either way (lora's
  * design pass, 2026-11-21: losing a namesake's tapback is the cheaper error). A claim like the name, read for nothing else.
+ * [hops] is the repeaters' hop count a flooded channel text's `path_len & 0x3F` carries (null when it arrived direct,
+ * `0xFF`, which carries no count), and [snrDeci] the last hop's SNR to our board in tenths of a dB (null off a V1 frame):
+ * the row's `originHops` / `originSnrDeci`, frozen with the first copy, as the Meshtastic room's are.
  *
  * Equal by content. [toString] names neither the text nor the name: a stranger's words never reach a log.
  */
@@ -69,6 +72,8 @@ class MeshcorePost(
     val mentionedAs: String? = null,
     val tag: String? = null,
     val underOwnName: Boolean = false,
+    val hops: Int? = null,
+    val snrDeci: Int? = null,
 ) {
     private val bytes = raw.copyOf()
 
@@ -83,7 +88,9 @@ class MeshcorePost(
             other.bytes.contentEquals(bytes) &&
             other.mentionedAs == mentionedAs &&
             other.tag == tag &&
-            other.underOwnName == underOwnName
+            other.underOwnName == underOwnName &&
+            other.hops == hops &&
+            other.snrDeci == snrDeci
 
     override fun hashCode(): Int {
         var h = name.hashCode()
@@ -92,10 +99,13 @@ class MeshcorePost(
         h = h * PRIME + bytes.contentHashCode()
         h = h * PRIME + mentionedAs.hashCode()
         h = h * PRIME + tag.hashCode()
-        return h * PRIME + underOwnName.hashCode()
+        h = h * PRIME + underOwnName.hashCode()
+        h = h * PRIME + hops.hashCode()
+        return h * PRIME + snrDeci.hashCode()
     }
 
-    override fun toString(): String = "MeshcorePost(named=${name != null}, ${body.length} ch, mention=${mentionedAs != null})"
+    override fun toString(): String =
+        "MeshcorePost(named=${name != null}, ${body.length} ch, mention=${mentionedAs != null}, hops=${hops != null}, snr=${snrDeci != null})"
 
     private companion object {
         const val PRIME = 31

@@ -4,6 +4,7 @@ import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshPost
 import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.meshNodeLabel
+import app.getknit.knit.mesh.protocol.FrameId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
@@ -137,7 +138,7 @@ internal class MeshtasticHooks(
         val raw = packet.meshtastic ?: return
         when (raw.portnum) {
             MeshtasticProto.PORT_NODEINFO -> onNodeInfo(raw)
-            MeshtasticProto.PORT_TEXT_MESSAGE -> onTextPacket(raw)
+            MeshtasticProto.PORT_TEXT_MESSAGE -> onTextPacket(raw, packet)
         }
     }
 
@@ -151,7 +152,10 @@ internal class MeshtasticHooks(
      * is PKI-encrypted and reported on index 0 whatever slot the sender used, and an older board reports the slot it
      * decoded on.
      */
-    private fun onTextPacket(raw: ReceivedPacket) {
+    private fun onTextPacket(
+        raw: ReceivedPacket,
+        packet: BoardPacket,
+    ) {
         if (raw.to != MeshtasticProto.BROADCAST) {
             onDirectMessage(raw)
             return
@@ -172,7 +176,7 @@ internal class MeshtasticHooks(
 
                     else -> null
                 }
-            if (closed != null) metrics.onMeshPostRefused(closed) else onPrimaryPacket(raw)
+            if (closed != null) metrics.onMeshPostRefused(closed) else onPrimaryPacket(raw, packet)
         }
     }
 
@@ -187,7 +191,10 @@ internal class MeshtasticHooks(
      * and is why the preset-mismatch notice cannot be gated on evidence. Counting stock neighbours here would
      * quietly change all of that.
      */
-    private fun onPrimaryPacket(packet: ReceivedPacket) {
+    private fun onPrimaryPacket(
+        packet: ReceivedPacket,
+        heard: BoardPacket,
+    ) {
         metrics.onMeshPostHeard()
         val ready = board.state.value.meshtasticReady ?: return
         val verdict =
@@ -213,6 +220,18 @@ internal class MeshtasticHooks(
                         "signed=${verdict.post.signature != null} boardVerified=${verdict.post.boardVerified}",
                 )
                 room.offer(verdict.post)
+                // The developer view's trace (ADR 2026-10.s7wg), under the row id the room derives from the post.
+                core.trace.emitDerived({ FrameId.forMeshPost(verdict.post.node, verdict.post.packetId) }, log) {
+                    val now = core.wallNow
+                    heardOf(
+                        now,
+                        BoardKind.MESHTASTIC,
+                        TraceRoute.ROOM,
+                        heard,
+                        live = MeshtasticTraits.live(heard, now),
+                        payloadTag = tracePayloadTag(packet.payload),
+                    )
+                }
             }
         }
     }

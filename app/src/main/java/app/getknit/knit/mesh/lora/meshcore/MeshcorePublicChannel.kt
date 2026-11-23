@@ -2,12 +2,15 @@ package app.getknit.knit.mesh.lora.meshcore
 
 import app.getknit.knit.mesh.MeshcoreReactions
 import app.getknit.knit.mesh.PublicPostRefusal
+import app.getknit.knit.mesh.lora.BoardKind
+import app.getknit.knit.mesh.lora.BoardPacket
 import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.Destination
 import app.getknit.knit.mesh.lora.FragmentOutcome
 import app.getknit.knit.mesh.lora.LoraAirtime
 import app.getknit.knit.mesh.lora.LoraFramePolicy
 import app.getknit.knit.mesh.lora.LoraMeshTransport
+import app.getknit.knit.mesh.lora.LoraTraceEvent
 import app.getknit.knit.mesh.lora.OrderedRoomSink
 import app.getknit.knit.mesh.lora.OutboundFrame
 import app.getknit.knit.mesh.lora.PlaneCore
@@ -16,6 +19,13 @@ import app.getknit.knit.mesh.lora.PublicPostEnded
 import app.getknit.knit.mesh.lora.PublicPostKey
 import app.getknit.knit.mesh.lora.PublicPostResult
 import app.getknit.knit.mesh.lora.SendPurpose
+import app.getknit.knit.mesh.lora.TraceOutcome
+import app.getknit.knit.mesh.lora.TraceRoute
+import app.getknit.knit.mesh.lora.emit
+import app.getknit.knit.mesh.lora.emitDerived
+import app.getknit.knit.mesh.lora.heardOf
+import app.getknit.knit.mesh.lora.tracePayloadTag
+import app.getknit.knit.mesh.protocol.FrameId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -91,9 +101,12 @@ internal class MeshcorePublicChannel(
      * A text on slot 0, on the packet collector: dropped and counted while the MeshCore room is off (`LoraConfig.room`, which
      * this plane's config folds from `meshcoreRoomEnabled` alone, never the bound kind's facts: security N13) or slot 0 is
      * Knit's own; else judged and the post queued for the room behind every earlier one ([room]), live or replayed from the
-     * board's offline queue alike. Returns at once.
+     * board's offline queue alike, with [packet]'s hop count and SNR. Returns at once.
      */
-    fun onText(mc: MeshcorePacket) {
+    fun onText(
+        mc: MeshcorePacket,
+        packet: BoardPacket,
+    ) {
         counters.publicHeard.incrementAndGet()
         if (core.config?.room != true) {
             counters.publicRoomOff.incrementAndGet()
@@ -104,7 +117,7 @@ internal class MeshcorePublicChannel(
             counters.publicRefused.incrementAndGet()
             return
         }
-        when (val verdict = MeshcorePublicJudge.judge(mc.text, mc.senderTimestamp, mc.live)) {
+        when (val verdict = MeshcorePublicJudge.judge(mc.text, mc.senderTimestamp, mc.live, mc.pathLen, packet.rxSnr)) {
             is MeshcorePublicJudge.Verdict.Refused -> {
                 counters.publicRefused.incrementAndGet()
             }
@@ -112,6 +125,18 @@ internal class MeshcorePublicChannel(
             is MeshcorePublicJudge.Verdict.Post -> {
                 counters.publicDelivered.incrementAndGet()
                 room.offer(verdict.post)
+                // The developer view's trace (ADR 2026-10.s7wg), under the row id the room derives from the post's key.
+                val key = verdict.post.key
+                core.trace.emitDerived({ FrameId.forMeshcorePost(key.timestampSecs, key.raw) }, log) {
+                    heardOf(
+                        core.wallNow,
+                        BoardKind.MESHCORE,
+                        TraceRoute.ROOM,
+                        packet,
+                        live = mc.live,
+                        payloadTag = mc.text?.let(::tracePayloadTag),
+                    )
+                }
             }
         }
     }
@@ -197,12 +222,15 @@ internal class MeshcorePublicChannel(
         // raced this one past the check claims first, and this one is too soon.
         if (!lastPostAt.compareAndSet(last, now)) return refuse(PublicPostRefusal.TOO_SOON)
         val stamp = wallClock() / MS_PER_SECOND
-        if (!core.enqueuePublic(text, LABEL, MeshcoreTraits.publicCeiling, stamp, name)) {
+        val key = PublicPostKey(stamp, name.bytes + SEPARATOR.encodeToByteArray() + text)
+        // The row our own post is written under (`di/meshcoreRowId`'s function over this key), for the developer view's trace
+        // alone: derived only while it is on.
+        val traceId = if (core.trace.on) runCatching { FrameId.forMeshcorePost(key.timestampSecs, key.raw) }.getOrNull() else null
+        if (!core.enqueuePublic(text, LABEL, MeshcoreTraits.publicCeiling, stamp, name, traceId)) {
             lastPostAt.compareAndSet(now, last)
             return refuse(PublicPostRefusal.NO_AIR)
         }
         counters.publicPostsQueued.incrementAndGet()
-        val key = PublicPostKey(stamp, name.bytes + SEPARATOR.encodeToByteArray() + text)
         synchronized(pending) {
             pending[pendingKey(stamp, text)] = key
             while (pending.size > PENDING_MAX) pending.remove(pending.keys.first())
@@ -264,7 +292,10 @@ internal class MeshcorePublicChannel(
         val stamp = frame.timestampSecs
         if (frame.destination != Destination.Public || stamp == null) return
         val freshUntil = frame.gate.freshUntil
-        if (freshUntil != null && wallClock() > freshUntil) return ended(stamp, message, PublicPostEnded.Reason.STALE)
+        if (freshUntil != null && wallClock() > freshUntil) {
+            core.trace.emit(frame.traceId, log) { LoraTraceEvent.Ended(wallClock(), BoardKind.MESHCORE, TraceOutcome.STALE_AT_WRITE) }
+            return ended(stamp, message, PublicPostEnded.Reason.STALE)
+        }
         when (send(message, SendPurpose.PublicPost(stamp, frame.publicName))) {
             FragmentOutcome.OWED -> {
                 return

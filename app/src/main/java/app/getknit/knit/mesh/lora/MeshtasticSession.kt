@@ -698,6 +698,7 @@ internal class MeshtasticSession(
                 hopLimit = packet.hopLimit,
                 nextHop = packet.nextHop,
                 pkiEncrypted = packet.pkiEncrypted,
+                hopStart = packet.hopStart,
             ),
         )
     }

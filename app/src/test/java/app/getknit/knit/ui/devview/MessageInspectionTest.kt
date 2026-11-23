@@ -8,6 +8,13 @@ import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.receipt.MessageReceiptEntity
 import app.getknit.knit.mesh.ArrivingFile
 import app.getknit.knit.mesh.ForwardStore
+import app.getknit.knit.mesh.lora.BoardKind
+import app.getknit.knit.mesh.lora.HeardNote
+import app.getknit.knit.mesh.lora.HeardRadio
+import app.getknit.knit.mesh.lora.LoraTraceEvent
+import app.getknit.knit.mesh.lora.TraceOutcome
+import app.getknit.knit.mesh.lora.TraceReason
+import app.getknit.knit.mesh.lora.TraceRoute
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameType
@@ -280,6 +287,158 @@ class MessageInspectionTest {
         receivedAt = NOW - 60_000L,
         expiresAt = NOW + 3_600_000L,
     )
+
+    @Test
+    fun aLoraRowTheTraceDoesNotHoldReadsAbsentBesideTheBooksOwnFactsAndNeverAGuessedCause() {
+        val view = LoraTraceView(record = null, book = LoraTraceBookFacts(onSince = NOW - 5_000L, evicted = 3))
+
+        val lora = inspect(InspectFacts(inbound(DeliveryPlane.LoRa.code), selfNodeId = ME, lora = view, now = NOW)).getValue("lora")
+
+        assertEquals(
+            mapOf(
+                "lora_trace" to InspectFormat.ABSENT,
+                "lora_trace on since" to InspectFormat.stamp(NOW - 5_000L),
+                "lora_trace evicted" to "3",
+            ),
+            lora,
+        )
+        assertNull(
+            "a short-range row the trace does not hold shows no lora group",
+            inspect(InspectFacts(inbound(DeliveryPlane.Bluetooth.code), selfNodeId = ME, lora = view, now = NOW))["lora"],
+        )
+        assertNull("no trace in this build, no group", inspect(InspectFacts(inbound(DeliveryPlane.LoRa.code), now = NOW))["lora"])
+    }
+
+    @Test
+    fun theTracesEventsReadOldestFirstInLogNotationAndTheRadiosClaimIsNeverTheAuthor() {
+        val record =
+            LoraTraceRecord(
+                listOf(relayedFrame(), directRoomPost()),
+                heardMore = 2,
+                differentPayload = 1,
+                requeues = 0,
+                dropped = 0,
+                originated = false,
+            )
+
+        val lora =
+            inspect(InspectFacts(inbound(DeliveryPlane.LoRa.code), lora = LoraTraceView(record, LoraTraceBookFacts(NOW, 0)), now = NOW))
+                .getValue("lora")
+
+        assertEquals("heard only", lora["lora_trace"])
+        assertEquals(InspectFormat.stamp(NOW), lora["first noted"])
+        assertEquals(
+            "+0 ms · meshtastic frame slot 1 · from !a1b2c3d4 (radio's claim) · pkt 0x1234abcd · snr 6.5 dB · rssi -97 dBm · " +
+                "hops 1 (start 3, limit 2) · not live · board rx -12.0 s (board clock) · parts 3 · NOT_FRESH",
+            lora["heard 1"],
+        )
+        assertEquals(
+            "+1.5 s · meshcore room slot 0 · from — (radio's claim) · snr -2.5 dB · rssi — · hops — (direct, count not carried) · live · " +
+                "payload differs from the first heard",
+            lora["heard 2"],
+        )
+        assertEquals("2", lora["heard (not kept)"])
+        assertEquals("1", lora["heard, different payload"])
+        assertFalse(
+            "the payload tag is compared, never shown",
+            lora.values.any { v -> listOf("5ec2e7", "6210279", "bad", "2989").any { it in v.lowercase() } },
+        )
+    }
+
+    @Test
+    fun anOriginatedRowReadsQueuedAiredAndEnded() {
+        val record =
+            LoraTraceRecord(
+                listOf(
+                    LoraTraceEvent.Queued(NOW, BoardKind.MESHTASTIC, TraceRoute.DIRECT, parts = 1, bytes = 180, to = "!0000beef"),
+                    LoraTraceEvent.Aired(
+                        NOW + 900L,
+                        BoardKind.MESHTASTIC,
+                        slot = 1,
+                        handles = listOf(0xDEADBEEFL),
+                        bookedMs = 1_234L,
+                        part = 0,
+                        parts = 1,
+                        heldForAir = true,
+                        heldForBand = false,
+                    ),
+                    LoraTraceEvent.Requeued(NOW + 400L, BoardKind.MESHTASTIC, TraceReason.BUSY),
+                    LoraTraceEvent.Ended(NOW + 4_000L, BoardKind.MESHTASTIC, TraceOutcome.ACKED, late = true, refundedMs = 600L),
+                ).sortedBy { it.atMs },
+                heardMore = 0,
+                differentPayload = 0,
+                requeues = 4,
+                dropped = 0,
+                originated = true,
+                heardOnOwn = 2,
+            )
+        val mine = inbound().copy(senderId = ME, recipientId = PEER)
+
+        val lora =
+            inspect(
+                InspectFacts(mine, selfNodeId = ME, lora = LoraTraceView(record, LoraTraceBookFacts(NOW, 0)), now = NOW),
+            ).getValue("lora")
+
+        assertEquals("originated here", lora["lora_trace"])
+        assertEquals("+0 ms · meshtastic direct · parts 1 · 180 B · to !0000beef", lora["queued 1"])
+        assertEquals("+400 ms · meshtastic BUSY", lora["requeued 1"])
+        assertEquals("+900 ms · meshtastic slot 1 part 1/1 · handle 0xdeadbeef · booked 1.2 s · held for air", lora["aired 1"])
+        assertEquals("+4.0 s · meshtastic ACKED · late · refunded 600 ms", lora["ended 1"])
+        assertEquals("4", lora["requeued (not kept)"])
+        assertEquals("2", lora["heard under our own id (not kept)"])
+    }
+
+    private fun relayedFrame() =
+        LoraTraceEvent.Heard(
+            atMs = NOW,
+            board = BoardKind.MESHTASTIC,
+            route = TraceRoute.FRAME,
+            slot = 1,
+            from = "!a1b2c3d4",
+            fromVouched = false,
+            packetId = 0x1234ABCDL,
+            radio =
+                HeardRadio(
+                    snrDeci = 65,
+                    rssi = -97,
+                    hops = 1,
+                    direct = false,
+                    hopStart = 3,
+                    hopLimit = 2,
+                    viaMqtt = false,
+                    live = false,
+                    boardRxMs = NOW - 12_000L,
+                ),
+            parts = 3,
+            payloadTag = 0x5EC2E7,
+            notes = setOf(HeardNote.NOT_FRESH),
+        )
+
+    private fun directRoomPost() =
+        LoraTraceEvent.Heard(
+            atMs = NOW + 1_500L,
+            board = BoardKind.MESHCORE,
+            route = TraceRoute.ROOM,
+            slot = 0,
+            from = null,
+            fromVouched = false,
+            packetId = null,
+            radio =
+                HeardRadio(
+                    snrDeci = -25,
+                    rssi = null,
+                    hops = null,
+                    direct = true,
+                    hopStart = null,
+                    hopLimit = null,
+                    viaMqtt = false,
+                    live = true,
+                    boardRxMs = null,
+                ),
+            parts = 1,
+            payloadTag = 0x0BAD,
+            notes = emptySet(),
+        )
 
     private companion object {
         const val NOW = 1_700_000_000_000L

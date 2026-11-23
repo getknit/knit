@@ -6,6 +6,7 @@ import app.getknit.knit.identity.NameKey
 import app.getknit.knit.mesh.MeshcoreReactions
 import app.getknit.knit.mesh.lora.KnitChannel
 import app.getknit.knit.mesh.lora.PublicPostKey
+import kotlin.math.roundToInt
 
 /**
  * A MeshCore board's slot 0 as the handshake read it (ADR 2026-11.gsqu's Stage 6 amendment): whatever it holds, never a
@@ -53,7 +54,10 @@ internal data class MeshcorePublicSlot(
  * replayed what it heard while the phone was away). [tag] is the post's MeshCore One reaction tag
  * ([MeshcoreReactions.tag], ADR 2026-11.gsqu's 2026-11-21 amendment), computed here in the plane over the body's bytes as
  * drained and the sender's stamp, so only its 8 characters cross the seam: the room never holds the raw body and never
- * hashes heard text. [toString] names nothing.
+ * hashes heard text. [hops] is the repeaters' hop count the drain's `path_len` carried ([MeshcoreProto.hopsOf]; null when
+ * it arrived direct, `0xFF`, or the drain carried none) and [snrDeci] its SNR in tenths of a dB (a V3 frame's quarter-dB
+ * reading; null off a V1 frame): what the room's row keeps as `originHops` / `originSnrDeci`, as the Meshtastic room's
+ * does. [toString] names nothing.
  */
 internal class MeshcorePublicPost(
     val name: String?,
@@ -61,6 +65,8 @@ internal class MeshcorePublicPost(
     val key: PublicPostKey,
     val live: Boolean,
     val tag: String,
+    val hops: Int? = null,
+    val snrDeci: Int? = null,
 ) {
     override fun toString(): String = "MeshcorePublicPost(named=${name != null}, ${body.length} ch, live=$live)"
 }
@@ -92,6 +98,11 @@ internal class MeshcorePublicPost(
  * reaction to our own post, 2026-11-21). A name the split refuses (over 31 B) stays in the hashed text, as it stays in the
  * body.
  *
+ * **The reception.** The hop count is [MeshcoreProto.hopsOf] over the drain's `path_len` (a flooded text's low six bits; the
+ * hash-size bits are never a count; `0xFF` is a direct arrival whose count is not carried, null), and the SNR the V3 frame's
+ * quarter-dB byte in tenths, rounded as the Meshtastic room's ([app.getknit.knit.mesh.lora.PublicChannelPolicy]); a V1 frame
+ * carries none. Facts about the last hop to our board, never about the sender.
+ *
  * Receive-only: nothing here transmits, and nothing it reads is logged.
  */
 internal object MeshcorePublicJudge {
@@ -99,6 +110,7 @@ internal object MeshcorePublicJudge {
     const val NAME_MAX_BYTES = 31
 
     private const val COLON: Byte = 0x3A
+    private const val DECI = 10f
     private const val SPACE: Byte = 0x20
 
     /** Why a slot-0 text was not a post, for the plane's counters. */
@@ -120,11 +132,16 @@ internal object MeshcorePublicJudge {
         ) : Verdict
     }
 
-    /** Judges the drained [text] of a slot-0 channel message stamped [timestampSecs] by its sender, [live] or replayed. */
+    /**
+     * Judges the drained [text] of a slot-0 channel message stamped [timestampSecs] by its sender, [live] or replayed, received
+     * under [pathLen] (the raw `path_len`, null when unknown) at [snr] dB (null off a V1 frame).
+     */
     fun judge(
         text: ByteArray?,
         timestampSecs: Long?,
         live: Boolean,
+        pathLen: Int? = null,
+        snr: Float? = null,
     ): Verdict {
         if (text == null || timestampSecs == null) return Verdict.Refused(Refusal.NO_TEXT)
         val at = separatorAt(text)
@@ -141,7 +158,17 @@ internal object MeshcorePublicJudge {
                 ?.let { TextLimits.cleanReceived(it.decodeToString(), TextLimits.DISPLAY_NAME) }
                 ?.takeIf { NameKey.of(it).isNotEmpty() }
         val tag = MeshcoreReactions.tag(bodyBytes, timestampSecs)
-        return Verdict.Post(MeshcorePublicPost(name, body, PublicPostKey(timestampSecs, text), live, tag))
+        return Verdict.Post(
+            MeshcorePublicPost(
+                name,
+                body,
+                PublicPostKey(timestampSecs, text),
+                live,
+                tag,
+                hops = pathLen?.let(MeshcoreProto::hopsOf),
+                snrDeci = snr?.let { (it * DECI).roundToInt() },
+            ),
+        )
     }
 
     /** Where the first `": "` starts, when what precedes it is a name a companion can hold (1–31 bytes); else null. */

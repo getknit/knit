@@ -486,6 +486,15 @@ internal interface PlaneCore {
     /** Whether the last process's limiters are back ([LoraPlaneState]): nothing may claim one before. */
     val restored: Boolean
 
+    /**
+     * The developer view's write-only trace ([LoraTrace], ADR 2026-10.s7wg): a kind notes what it heard or ended on its own
+     * paths through [emit], never reading it back. [LoraTrace.NONE] unless the plane was handed one.
+     */
+    val trace: LoraTrace get() = LoraTrace.NONE
+
+    /** This phone's wall clock as the plane reads it: what a [trace] event is stamped with. */
+    val wallNow: Long get() = System.currentTimeMillis()
+
     /** Queues a kind's own one-packet frame, as a room-class frame at [ceiling]; true when it is in the queue now. */
     fun enqueue(
         parts: List<ByteArray>,
@@ -501,7 +510,8 @@ internal interface PlaneCore {
      * `Busy` retry included, airs that one stamp — and fresh until `LoraFramePolicy.FRESH_MS` past it (`RideGate.freshUntil`,
      * which the kind asks at the write). The board's [name], read at enqueue, rides the frame too (ADR 2026-11.f4d3): its
      * price and the write's name check read it. True when it is in the queue now. A core that cannot carry the stamp queues
-     * nothing.
+     * nothing. [traceId] is the room row the developer view's trace notes the frame's fate under (`OutboundFrame.traceId`),
+     * null when the trace is off: read by nothing else.
      */
     fun enqueuePublic(
         text: ByteArray,
@@ -509,6 +519,7 @@ internal interface PlaneCore {
         ceiling: Ceiling,
         timestampSecs: Long,
         name: MeshcoreHandle,
+        traceId: String? = null,
     ): Boolean = false
 
     /** A persisted limiter moved: the core saves the plane state behind its debounce. */

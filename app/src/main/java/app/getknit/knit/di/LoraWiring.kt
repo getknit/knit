@@ -42,6 +42,7 @@ import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.LoraStatus
+import app.getknit.knit.mesh.lora.LoraTrace
 import app.getknit.knit.mesh.lora.PublicPostEnded
 import app.getknit.knit.mesh.lora.PublicPostKey
 import app.getknit.knit.mesh.lora.PublicPostResult
@@ -52,6 +53,7 @@ import app.getknit.knit.mesh.lora.meshcore.MeshcoreHooks
 import app.getknit.knit.mesh.lora.meshcore.MeshcoreNames
 import app.getknit.knit.mesh.lora.meshcore.MeshcorePublicPost
 import app.getknit.knit.mesh.protocol.FrameId
+import app.getknit.knit.ui.devview.LoraTraceBook
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -231,6 +233,10 @@ internal fun Module.loraPlaneOf(
             // never re-airs (ADR 2026-10.ug4a), while one typed before the plane was first resolved still goes.
             processStartWall = System.currentTimeMillis() - (SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime()),
             log = log,
+            // The developer view's LoRa trace (ADR 2026-10.s7wg's slice-3 amendment), only where the view is wired: a build
+            // without it hands the plane NONE, and R8 drops the book. Never required: a graph without the view's module (a
+            // wiring test, a future host) still builds the plane, which must never wait on a debug surface.
+            trace = if (DEV_VIEW_WIRED) getOrNull<LoraTraceBook>() ?: LoraTrace.NONE else LoraTrace.NONE,
             // A hearing on a kind whose packets name no sender it vouches for (MeshCore); Meshtastic never asks it.
             authorCheck = pinnedAuthorCheck { get<PeerRepository>() },
             // What an elided post's sender prefix resolves against (MeshCore only; Meshtastic never collects it). Resolved at
@@ -292,6 +298,8 @@ internal fun meshcoreHeard(
         mentionedAs = MeshcoreMentions.mentionOf(post.body, ownName?.text),
         tag = post.tag,
         underOwnName = underOwnName(post.name, ownName),
+        hops = post.hops,
+        snrDeci = post.snrDeci,
     )
 
 /**

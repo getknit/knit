@@ -6,6 +6,7 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.ui.devview.EventConsole
 import app.getknit.knit.ui.devview.EventConsoleViewModel
+import app.getknit.knit.ui.devview.LoraTraceBook
 import app.getknit.knit.ui.devview.MeshHudViewModel
 import app.getknit.knit.ui.devview.MessageInspectViewModel
 import kotlinx.coroutines.CoroutineScope
@@ -28,10 +29,25 @@ private fun devViewGraph(): Module =
     module {
         // Keyed by the long-pressed message's id, like MessageDetailsViewModel beside it.
         viewModel { params ->
-            MessageInspectViewModel(params.get(), get(), get(), get<ForwardDao>(), get(), get(), get(), get(), get(), get<Identity>())
+            MessageInspectViewModel(
+                params.get(),
+                get(),
+                get(),
+                get<ForwardDao>(),
+                get(),
+                get(),
+                get(),
+                get(),
+                get(),
+                get<Identity>(),
+                loraTrace = get<LoraTraceBook>(),
+            )
         }
         viewModel { MeshHudViewModel(get(), get(), get<ForwardDao>(), get(), get()) }
         // The event console (the ADR's slice 2): the field log's tap, following the view's switch for the process.
         single { EventConsole().also { console -> console.follow(get<SettingsStore>().debugDevView, get<CoroutineScope>()) } }
         viewModel { EventConsoleViewModel(get(), get()) }
+        // The LoRa trace (the ADR's slice 3): what the LoRa planes noted per message row, following the view's switch for
+        // the process. The planes are handed it in `di/LoraWiring` only where the view is wired.
+        single { LoraTraceBook().also { book -> book.follow(get<SettingsStore>().debugDevView, get<CoroutineScope>()) } }
     }

@@ -3,20 +3,25 @@ package app.getknit.knit.mesh.lora.meshcore
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshcoreReactions
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.BoardAir
 import app.getknit.knit.mesh.lora.BoardBattery
+import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.BoardLink
 import app.getknit.knit.mesh.lora.BoardPacket
 import app.getknit.knit.mesh.lora.BoardPlane
 import app.getknit.knit.mesh.lora.BoardSend
 import app.getknit.knit.mesh.lora.BoardState
 import app.getknit.knit.mesh.lora.DirectDm
+import app.getknit.knit.mesh.lora.HeardNote
 import app.getknit.knit.mesh.lora.LoraAirtime
 import app.getknit.knit.mesh.lora.LoraConfig
 import app.getknit.knit.mesh.lora.LoraDirectCrypto
 import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraMeshTransport
+import app.getknit.knit.mesh.lora.LoraTrace
+import app.getknit.knit.mesh.lora.LoraTraceEvent
 import app.getknit.knit.mesh.lora.PacketOutcome
 import app.getknit.knit.mesh.lora.ProvisionResult
 import app.getknit.knit.mesh.lora.ProvisionSpec
@@ -24,8 +29,17 @@ import app.getknit.knit.mesh.lora.PublicPostKey
 import app.getknit.knit.mesh.lora.PublicPostResult
 import app.getknit.knit.mesh.lora.QueueInfo
 import app.getknit.knit.mesh.lora.RadioParams
+import app.getknit.knit.mesh.lora.RecordingTrace
 import app.getknit.knit.mesh.lora.SendPurpose
 import app.getknit.knit.mesh.lora.SendResult
+import app.getknit.knit.mesh.lora.TraceRoute
+import app.getknit.knit.mesh.lora.tracePayloadTag
+import app.getknit.knit.mesh.protocol.ChatContent
+import app.getknit.knit.mesh.protocol.FrameId
+import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,7 +51,9 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -149,7 +165,10 @@ class MeshcorePublicPostTest {
         val hooks: () -> MeshcoreHooks,
     )
 
-    private fun TestScope.node(name: ByteArray = DEFAULT_NAME): Node {
+    private fun TestScope.node(
+        name: ByteArray = DEFAULT_NAME,
+        trace: LoraTrace = LoraTrace.NONE,
+    ): Node {
         val board = FakeBoard(name)
         val ops = Ops(board)
         var made: MeshcoreHooks? = null
@@ -177,6 +196,7 @@ class MeshcorePublicPostTest {
                 wallClock = { WALL + testScheduler.currentTime },
                 processStartWall = WALL,
                 log = {},
+                trace = trace,
             )
         requireNotNull(ops.observer).beforeReady(board.ready)
         transport.start()
@@ -407,6 +427,141 @@ class MeshcorePublicPostTest {
                 assertEquals(false, status.publicChannel?.postable)
                 assertEquals(true, status.meshcore?.handleUnpostable)
             }
+        }
+
+    // --- the developer view's trace (ADR 2026-10.s7wg's slice-3 brief) ---
+
+    /** Our own post is noted under the row it is written under (`meshcoreRowId` over its key): queued, then aired on slot 0. */
+    @Test
+    fun anOwnPostIsNotedUnderItsRowIdQueuedThenAired() =
+        runTest {
+            val trace = RecordingTrace()
+            val n = node(trace = trace)
+            val result = n.transport.postPublic("north gate", n.consented()) as PublicPostResult.Queued
+            runCurrent()
+            val key = result.key!!
+            val events = trace.of(FrameId.forMeshcorePost(key.timestampSecs, key.raw))
+            assertEquals(listOf("Queued", "Aired"), events.map { it::class.simpleName })
+            val queued = events[0] as LoraTraceEvent.Queued
+            assertEquals(TraceRoute.ROOM, queued.route)
+            assertEquals(BoardKind.MESHCORE, queued.board)
+            assertEquals("the words the board was handed", "north gate".length, queued.bytes)
+            val aired = events[1] as LoraTraceEvent.Aired
+            assertEquals("Public, slot 0", 0, aired.slot)
+            assertEquals(listOf(1L), aired.handles)
+            assertEquals("the price the ledger booked, prefix included", priceOf(10), aired.bookedMs)
+        }
+
+    /** With the trace off the post carries no row id: none is derived, and nothing is noted. */
+    @Test
+    fun anOwnPostDerivesNoRowIdWhileTheTraceIsOff() =
+        runTest {
+            val trace = RecordingTrace(enabled = false)
+            val n = node(trace = trace)
+            n.transport.postPublic("north gate", n.consented())
+            runCurrent()
+            assertEquals(1, n.board.sent.size)
+            assertEquals(0, trace.notedWhileOff)
+            assertTrue(trace.byId.isEmpty())
+        }
+
+    /**
+     * A heard post is noted under the row the room writes for it, with the drain's reception: the repeaters' hop count, the
+     * V3 SNR in tenths, no radio's claim (a channel text names none), and a tag over the bytes as heard.
+     */
+    @Test
+    fun aHeardPostIsNotedUnderItsRoomRowWithItsReception() =
+        runTest {
+            val trace = RecordingTrace()
+            val n = node(trace = trace)
+            val text = "Bob: anyone around?".encodeToByteArray()
+            val stamp = WALL / 1_000 - 5
+            val pathLen = 0x40 or 2
+            val kind =
+                MeshcorePacket(MeshcorePacket.Type.CHANNEL_TEXT, 0, pathLen, MeshcoreProto.TXT_TYPE_PLAIN, null, stamp, true, false, text)
+            n.board.packets.emit(BoardPacket(null, false, 0, text, 5.25f, null, MeshcoreProto.hopsOf(pathLen), null, kind))
+            runCurrent()
+            val heard = trace.of(FrameId.forMeshcorePost(stamp, text)).single() as LoraTraceEvent.Heard
+            assertEquals(TraceRoute.ROOM, heard.route)
+            assertEquals(BoardKind.MESHCORE, heard.board)
+            assertEquals(0, heard.slot)
+            assertNull("a channel text names no sender", heard.from)
+            assertNull(heard.packetId)
+            assertEquals(2, heard.radio.hops)
+            assertFalse(heard.radio.direct)
+            assertEquals(53, heard.radio.snrDeci)
+            assertNull(heard.radio.rssi)
+            assertTrue(heard.radio.live)
+            assertEquals(tracePayloadTag(text), heard.payloadTag)
+        }
+
+    /**
+     * A whole `0x03` Knit frame on the Knit slot, junk-signed by somebody else: a MeshCore plane reads
+     * it unverified (only an elided or bound one is checked on the way in) and, with no author check here, it is no presence
+     * either — so the Heard says its author is unverified. An id no door admits is never noted.
+     */
+    @Test
+    fun aWholeFrameOnTheKnitSlotIsNotedUnverifiedAndAnUnadmittedIdNever() =
+        runTest {
+            val trace = RecordingTrace()
+            val n = node(trace = trace)
+            val id = FrameId.new()
+            val received = mutableListOf<String>()
+            backgroundScope.launch { n.transport.inbound.collect { received += it.envelope.id } }
+            runCurrent()
+
+            fun frame(frameId: String): ByteArray {
+                val env =
+                    RelayEnvelope(
+                        type = FrameType.CHAT,
+                        id = frameId,
+                        senderId = "mallory",
+                        sentAt = WALL,
+                        payload = WireCodec.encodePayload(ChatContent(body = "hi")),
+                    )
+                val wire = WireEnvelope(relay = true, sig = ByteArray(64) { 9 }, signed = WireCodec.encodeEnvelope(env))
+                return FastFrameCodec.encodeCompact(wire)!!
+            }
+
+            fun hear(bytes: ByteArray) =
+                n.board.packets.tryEmit(
+                    BoardPacket(
+                        null,
+                        false,
+                        KNIT_SLOT,
+                        bytes,
+                        5f,
+                        null,
+                        0,
+                        null,
+                        MeshcorePacket(
+                            MeshcorePacket.Type.CHANNEL_DATA,
+                            KNIT_SLOT,
+                            0,
+                            null,
+                            MeshcoreProto.KNIT_DATA_TYPE,
+                            null,
+                            true,
+                            false,
+                            null,
+                        ),
+                    ),
+                )
+            val whole = frame(id)
+            assertEquals(FastFrameCodec.TAG_COMPACT, whole[0])
+            hear(whole)
+            runCurrent()
+            val heard = trace.typed<LoraTraceEvent.Heard>(id).single()
+            assertEquals(TraceRoute.FRAME, heard.route)
+            assertTrue(HeardNote.AUTHOR_UNVERIFIED in heard.notes)
+            assertFalse(HeardNote.AUTHOR_VERIFIED in heard.notes)
+
+            assertEquals("the router has the first", listOf(id), received)
+
+            hear(frame("not-a-minted-id"))
+            runCurrent()
+            assertEquals("it reached the router, so the admission guard is what kept it out", listOf(id, "not-a-minted-id"), received)
+            assertTrue(trace.of("not-a-minted-id").isEmpty())
         }
 
     private companion object {

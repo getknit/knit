@@ -17,6 +17,8 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -165,6 +167,7 @@ class LoraDirectTransportTest {
         knitAead: Boolean = false,
         licensed: Boolean = false,
         log: (String) -> Unit = {},
+        trace: LoraTrace = LoraTrace.NONE,
     ): Node {
         val link =
             FakeMeshtasticLink(
@@ -208,6 +211,7 @@ class LoraDirectTransportTest {
                 wallClock = { wallBase + testScheduler.currentTime },
                 pace = pace,
                 log = log,
+                trace = trace,
             )
         return Node(
             id,
@@ -2533,4 +2537,133 @@ class LoraDirectTransportTest {
     }
 
     private fun LoraMeshTransport.lingerReprobes(): List<String> = reprobeSchedule().map { it.recipientId }
+
+    // --- the developer view's trace (ADR 2026-10.s7wg's slice-3 brief): what the plane notes about a compact DM ---
+
+    private fun TestScope.tracedPair(
+        air: FakeMeshtasticAir,
+        aTrace: LoraTrace,
+        bTrace: LoraTrace = LoraTrace.NONE,
+    ): Pair<Node, Node> {
+        val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)), trace = aTrace)
+        val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)), trace = bTrace)
+        up(a, b)
+        return a to b
+    }
+
+    @Test
+    fun aDmOutIsQueuedAiredAndAckedUnderItsRowAndTheReceiverNotesItHeard() =
+        runTest {
+            val sent = RecordingTrace()
+            val heard = RecordingTrace()
+            val (a, _) = tracedPair(FakeMeshtasticAir(), sent, heard)
+            a.dm("bob", "f1", sentAt = wallBase + testScheduler.currentTime)
+            settle()
+
+            val events = sent.of("f1")
+            assertEquals(
+                listOf("Queued", "Aired", "Ended"),
+                events.map { it::class.simpleName },
+            )
+            val queued = events[0] as LoraTraceEvent.Queued
+            assertEquals(TraceRoute.DIRECT, queued.route)
+            assertEquals("the destination board, as a claim", "!00000002", queued.to)
+            val aired = events[1] as LoraTraceEvent.Aired
+            assertEquals(1, aired.slot)
+            assertEquals(a.link.sentIds.map { it.toLong() }, aired.handles)
+            assertEquals("every airing it may cost", LoraDirectPolicy.AIRINGS * priced(hiPacket), aired.bookedMs)
+            val ended = events[2] as LoraTraceEvent.Ended
+            assertEquals(TraceOutcome.ACKED, ended.outcome)
+            assertFalse(ended.late)
+            assertEquals("the airings that never flew came back", (LoraDirectPolicy.AIRINGS - 1) * priced(hiPacket), ended.refundedMs)
+
+            val rx = heard.of("f1").single() as LoraTraceEvent.Heard
+            assertEquals(TraceRoute.DIRECT, rx.route)
+            assertEquals("!00000001", rx.from)
+            assertTrue(rx.radio.live)
+            assertTrue(HeardNote.PRESENCE in rx.notes)
+            assertTrue(HeardNote.BOARD_HEARD in rx.notes)
+        }
+
+    @Test
+    fun aReceiptOrAReactionOutIsNeverNotedOnlyADmNamesARow() =
+        runTest {
+            val sent = RecordingTrace()
+            val (a, _) = tracedPair(FakeMeshtasticAir(), sent)
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            a.dm("bob", "x1", kind = DirectKind.REACTION)
+            settle()
+            assertEquals("both went out", 2, a.link.sent.size)
+            assertTrue(sent.of("r1").isEmpty())
+            assertTrue(sent.of("x1").isEmpty())
+        }
+
+    @Test
+    fun aLateAckIsNotedLateAfterTheDeadlineEndedTheSend() =
+        runTest {
+            val sent = RecordingTrace()
+            val air = FakeMeshtasticAir().apply { silent = { _, _ -> true } }
+            val (a, _) = tracedPair(air, sent)
+            a.dm("bob", "f1")
+            settle(1_000)
+            val handle = a.link.sentIds.single()
+            settle(LoraDirectPolicy.deadlineMs(priced(hiPacket), LoraAirtime().slotTimeMs()))
+            a.link.emitOutcome(PacketOutcome.Acked(handle, byDestination = true))
+            settle(1_000)
+            val ends = sent.typed<LoraTraceEvent.Ended>("f1")
+            assertEquals(listOf(TraceOutcome.NO_OUTCOME, TraceOutcome.ACKED), ends.map { it.outcome })
+            assertEquals(listOf(false, true), ends.map { it.late })
+            assertNull("booked when it ended: nothing comes back late", ends[1].refundedMs)
+        }
+
+    @Test
+    fun aGiveUpIsNotedUnreachableAndAnImplicitAckOnlyByHandle() =
+        runTest {
+            val sent = RecordingTrace()
+            val air = FakeMeshtasticAir().apply { ackLost = { _, _ -> true } }
+            val (a, _) = tracedPair(air, sent)
+            a.dm("bob", "f1")
+            settle(air.untilGiveUp())
+            assertEquals(TraceOutcome.UNREACHABLE, sent.typed<LoraTraceEvent.Ended>("f1").single().outcome)
+
+            val implicit = RecordingTrace()
+            val air2 = FakeMeshtasticAir().apply { implicitAcks = true }
+            val (c, _) = tracedPair(air2, implicit)
+            c.dm("bob", "f2")
+            settle(500)
+            val handle =
+                c.link.sentIds
+                    .first()
+                    .toLong()
+            assertTrue(
+                "an implicit ack is never delivery, and never noted against the row",
+                implicit.typed<LoraTraceEvent.Ended>("f2").none { it.outcome == TraceOutcome.IMPLICIT_ACK },
+            )
+            assertEquals(
+                TraceOutcome.IMPLICIT_ACK,
+                implicit
+                    .ofHandle(handle)
+                    .filterIsInstance<LoraTraceEvent.Ended>()
+                    .first()
+                    .outcome,
+            )
+        }
+
+    @Test
+    fun aDmTheGatesKeepOffTheAirIsNotedWithTheGatesReason() =
+        runTest {
+            val sent = RecordingTrace()
+            val a = node(FakeMeshtasticAir(), 1u, "alice", mapOf("bob" to holder(2u, direct = false)), trace = sent)
+            up(a)
+            a.dm("bob", "f1")
+            a.dm("carol", "f2")
+            a.transport.suppressDataPath(setOf("dave"))
+            a.boards.value = mapOf("dave" to holder(4u))
+            runCurrent()
+            a.dm("dave", "f3")
+            settle()
+            assertEquals(TraceReason.NO_BOARD, sent.typed<LoraTraceEvent.Refused>("f1").single().reason)
+            assertEquals(TraceReason.NO_BOARD, sent.typed<LoraTraceEvent.Refused>("f2").single().reason)
+            assertEquals(TraceReason.LINKED, sent.typed<LoraTraceEvent.Refused>("f3").single().reason)
+        }
 }

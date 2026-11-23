@@ -451,6 +451,12 @@ internal class ReceivedPacket(
      * board arrives (ADR 2026-10.x9fa's PKI amendment). Read by nothing that decides; the opener names the sender.
      */
     val pkiEncrypted: Boolean = false,
+    /**
+     * `MeshPacket.hop_start` as the board received it, 0 when the sender's firmware wrote none: read by nothing that decides,
+     * only by the developer view's trace beside [hopLimit] ([LoraTraceEvent.Heard]), where [hopsAway] alone would hide a
+     * `hop_limit` past its start.
+     */
+    val hopStart: Int = 0,
 )
 
 /**

@@ -255,6 +255,15 @@ class LoraPlaneWiringTest {
             assertEquals(MeshcorePost("Knit 1a2b", "hi", 1_763_200_000, "Knit 1a2b: hi".encodeToByteArray(), tag = "xehwes2p"), heard)
             // The plane's tag crosses as it is, and is part of the post's equality.
             assertNotEquals(MeshcorePost("Knit 1a2b", "hi", 1_763_200_000, "Knit 1a2b: hi".encodeToByteArray()), heard)
+            // The reception crosses as the judge read it, and is part of the post's equality too.
+            val received =
+                MeshcorePublicPost(name = "Knit 1a2b", body = "hi", key = key, live = true, tag = "xehwes2p", hops = 2, snrDeci = -45)
+            val crossed = meshcoreHeard(received)
+            assertEquals(2, crossed.hops)
+            assertEquals(-45, crossed.snrDeci)
+            assertNotEquals(heard, crossed)
+            assertNotEquals(crossed, meshcoreHeard(MeshcorePublicPost("Knit 1a2b", "hi", key, true, "xehwes2p", hops = 2, snrDeci = -44)))
+            assertEquals(crossed.hashCode(), meshcoreHeard(received).hashCode())
             // A token naming the board's name as heard now is the post's mention of us, as written (the 2026-11-19
             // amendment); none without a name known.
             val tagged = MeshcorePublicPost(name = "Bob", body = "@[walter] hi", key = key, live = true, tag = "xehwes2p")

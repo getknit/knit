@@ -577,10 +577,21 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `MeshcorePublicPostTest`, `MeshcoreHooksTest`'s Stage 6 block, `MeshcoreSessionTest`'s Public write block,
   `MeshcoreHearingTest.aPublicTextIsNoHearingEvenWhenItsBytesAreAVerifiedKnitPost`, `MeshcoreTraitsTest`, `FakeMeshcoreAirTest`,
   `LoraStatusRepositoryTest`.
+- **Before touching the developer view's LoRa trace on the plane side — `LoraTrace`, `LoraTraceEvent`, `HeardRadio`,
+  `TraceRoute` / `HeardNote` / `TraceReason` / `TraceOutcome`, the guarded `emit` / `emitDerived` / `emitByHandle`,
+  `heardOf`, `OutboundFrame.traceId`, `PlaneCore.trace` / `wallNow`, `ReceivedPacket.hopStart`, or `LoraMeshTransport`'s
+  `traced*` helpers:** READ ADR 2026-10.s7wg's slice-3 amendment. Write-only: nothing in the plane reads the trace or
+  `traceId`, so no gate, pacing, booking or dedup moves; every call goes through the guarded helper (off → nothing built; a
+  throwing trace is logged by class name and never ends a loop); an id is noted only once admitted, opened or derived,
+  never a fragment before it is whole, and a frame the plane did not verify carries `AUTHOR_UNVERIFIED` (the book never
+  keeps a Heard under an id we sent under); events are plain classes with no `toString` and carry no payload, name, key, channel
+  secret or signature bytes. `from` is the radio's claim, never the author. Regression: `LoraTraceTest`,
+  `LoraDirectTransportTest`'s trace block, `MeshcorePublicPostTest`; the book's side is `LoraTraceBookTest`.
 - **Before touching the MeshCore room's DI seam — `di/LoraWiring`'s `postToMeshcorePublic`, `meshcorePostEnds`,
   `meshcoreRowId`, `meshcoreHeard` or `meshcoreBoardName`, or `MeshModule`'s `onPublicPost` /
   `meshcorePublicChannel` / `meshcorePostsEnded` wiring:** READ ADR 2026-11.gsqu's Stage 6 amendment (part 6b), then the bridged-rooms entry in
-  `messages.md`. The plane's types stop at `di/`: a heard post crosses as `MeshcorePost`, a post's answer as
+  `messages.md`. The plane's types stop at `di/`: a heard post crosses as `MeshcorePost` (with its hop count, `MeshcoreProto.hopsOf`, null at `0xFF`, and its V3 SNR in
+  tenths, which fill `originHops` / `originSnrDeci` for the inspector while the bubble shows neither — s7wg slice 3), a post's answer as
   `PublicChannelAnswer`, an end as `PublicPostEnd`, each keyed by `meshcoreRowId` (`FrameId.forMeshcorePost` over the
   `PublicPostKey`) so a heard post and our own meet on one row. A post reaches the MeshCore plane only while a MeshCore board
   is the bound one (`NO_BOARD` otherwise); the ended flow is read lazily, collected from `MeshManager.start`. Regression:

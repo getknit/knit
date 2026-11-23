@@ -174,6 +174,12 @@ internal object MeshcoreProto {
     const val PATH_HOPS_MASK = 0x3F
 
     /**
+     * The repeaters' hop count a received `path_len` carries, or null for [PATH_UNKNOWN] (arrived direct: the count is not
+     * carried). The one reading of it: a drained packet's `BoardPacket.hopsAway` and a heard Public post's hops are both this.
+     */
+    fun hopsOf(pathLen: Int): Int? = if (pathLen == PATH_UNKNOWN) null else pathLen and PATH_HOPS_MASK
+
+    /**
      * `DATA_TYPE_DEV` (`TxtDataHelpers.h:12`), the firmware's own development namespace. The binding rule of the
      * 2026-11-13 design passes: Knit's channel data rides this until MeshCore's `number_allocations.md` registers a
      * value for Knit, and `MeshcoreProtoTest` keeps a release build from shipping on it.

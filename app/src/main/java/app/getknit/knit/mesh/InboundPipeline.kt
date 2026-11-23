@@ -1400,8 +1400,9 @@ class InboundPipeline(
                     node = MeshPostOrigin.MESHCORE_NODE,
                     name = post.name,
                     channel = null,
-                    hops = null,
-                    snrDeci = null,
+                    // The reception the plane read off the drain (the first copy's: the row is inserted only if absent).
+                    hops = post.hops,
+                    snrDeci = post.snrDeci,
                     viaMqtt = false,
                 ),
             ack = false,

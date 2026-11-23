@@ -41,7 +41,10 @@ lines.
   never inferred. The one fact it needed and the phone did not keep, the radio a frame arrived on, is recorded under
   ADR 2026-10.e42d: `InboundPipeline.planeOf` names `Bluetooth` / `WifiAware`, and every reader tests `shortRange`,
   never `== Nearby`. Its event console (the ADR's slice-2 amendment) is the field log's `FieldTap`, handed each event
-  ahead of the field log's switch, in memory only: never written, and `FieldWriter` gains nothing for it. It writes, logs and sends nothing, shows no key material, ticket or credential, and its rows are
+  ahead of the field log's switch, in memory only: never written, and `FieldWriter` gains nothing for it. Its LoRa trace
+  (the slice-3 amendment: `LoraTraceBook`, `LoraTraceRows`, the inspector's `lora` group, `LoraTraceView`) holds what the
+  LoRa planes noted per message row through `mesh/lora/LoraTrace`, in memory, bounded per id and per side (originated ids
+  apart from heard-only ones), emptied when the switch goes off; an id it does not hold reads `—` beside its own facts. It writes, logs and sends nothing, shows no key material, ticket or credential, and its rows are
   deliberately English. It ships only where the flag is on, and shows only while the switch, off by default, is on.
 - **When touching the Diagnostics node sections (`DiagnosticsViewModel.state`, `NodeInfo`, `KNOWN_LIMIT`,
   `hideableKnown`, the selection mode and Hide / Show hidden in `ui/diagnostics/DiagnosticsScreen.kt`, or
