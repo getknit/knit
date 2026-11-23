@@ -165,9 +165,8 @@ internal object MeshcoreTraits : BoardTraits {
      */
     override fun heardZeroHop(packet: BoardPacket): Boolean {
         val mc = packet.kind as? MeshcorePacket ?: return false
-        if (!mc.live) return false
         // One rule for every type since lora NB4: the packet's own flood path length, never our record.
-        return !mc.direct && (mc.pathLen and MeshcoreProto.PATH_HOPS_MASK) == 0
+        return mc.live && !mc.direct && (mc.pathLen and MeshcoreProto.PATH_HOPS_MASK) == 0
     }
 
     /**

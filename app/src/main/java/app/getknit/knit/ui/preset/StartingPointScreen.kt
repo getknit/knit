@@ -13,7 +13,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -69,7 +68,6 @@ fun StartingPointScreen(
  * relays on shows their disclosure until it was accepted once. "Switch" forgets the person's own values for what the
  * preset covers; where they have some, "Keep my changes" moves only the defaults beneath them and leaves relays.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun StartingPointScreenContent(
     current: StartingPoint,

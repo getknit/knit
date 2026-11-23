@@ -125,7 +125,7 @@ internal class MeshcoreSession(
     private val ownNode: (suspend () -> String?)? = null,
 ) : BoardLink,
     MeshcoreBoardOps {
-    private val _state = MutableStateFlow<BoardState>(down(MeshcoreLinkState.Idle))
+    private val _state = MutableStateFlow(down(MeshcoreLinkState.Idle))
     override val state: StateFlow<BoardState> = _state.asStateFlow()
 
     override val ready: BoardState.Ready? get() = _state.value as? BoardState.Ready
@@ -561,7 +561,7 @@ internal class MeshcoreSession(
         op: suspend (Conn) -> T,
     ): T {
         if (_state.value !is BoardState.Ready) return notReady()
-        val cmd = Cmd.Op(SessionOp<Conn, T>(op, notReady))
+        val cmd = Cmd.Op(SessionOp(op, notReady))
         if (!post(cmd)) return notReady()
         val reply = cmd.op.reply
         val inTime = withTimeoutOrNull(deadlineMs) { reply.await().let { true } } ?: false
@@ -801,7 +801,7 @@ internal class MeshcoreSession(
         }
 
     private suspend fun runSession(c: Conn): SessionEnd {
-        var box: Channel<Cmd>? = null
+        var box: Channel<Cmd>?
         var ticker: Job? = null
         try {
             handshake(c)?.let { return it }
@@ -812,7 +812,7 @@ internal class MeshcoreSession(
                 readConsent(c)
                 ready(c)
             }
-            ticker = scope.launch { ticker(requireNotNull(box)) }
+            ticker = scope.launch { ticker(box) }
             return sessionLoop(c, box)
         } catch (e: EndSession) {
             return e.end
@@ -849,7 +849,7 @@ internal class MeshcoreSession(
             busy = flights.isNotEmpty() || headroomPolicy.holding || lastQueue > 0
             // The inbox first: select is biased to its first clause, and frames keep coming on a busy band.
             val next =
-                select<Any> {
+                select {
                     box.onReceive { it }
                     c.channel.frames.onReceiveCatching { it.getOrNull() ?: NusEvent.Disconnected(STATUS_CLOSED) }
                 }
@@ -1688,9 +1688,9 @@ internal class MeshcoreSession(
         val unbonded = dialer.bondState(c.address) != BondState.BONDED
         val timeout = if (unbonded && !c.authenticated) BONDING_TIMEOUT_MS else WRITE_TIMEOUT_MS
         val r = c.channel.write(bytes, timeout)
-        when {
-            r is GattResult.Ok -> c.authenticated = true
-            r is GattResult.Failed && r.status == WRITE_TOO_LONG -> throw CommandRefused()
+        when (r) {
+            is GattResult.Ok -> c.authenticated = true
+            is GattResult.Failed if r.status == WRITE_TOO_LONG -> throw CommandRefused()
             else -> throw EndSession(classify(c.address, r, unbonded) ?: SessionEnd("$REASON_WRITE $r"))
         }
     }
@@ -2273,19 +2273,19 @@ internal class MeshcoreSession(
         }
         if (slotReading?.knit != true) return SendResult.Rejected(0u, MeshcoreRefusal.SLOT_NOT_KNIT)
         val judged = writeJudged(c, bytes)
-        return when {
-            judged.answer == Answer.OK -> {
+        return when (judged.answer) {
+            Answer.OK -> {
                 queued(handle)
             }
 
             // `SEND_CHANNEL_DATA`'s NOT_FOUND is a slot index the board no longer has (`MyMesh.cpp:1225`), never a missing
             // contact: the slot is refused, and read again before the next post.
-            judged.answer == Answer.ERR && judged.errCode == MeshcoreProto.ERR_NOT_FOUND -> {
+            Answer.ERR if judged.errCode == MeshcoreProto.ERR_NOT_FOUND -> {
                 slotReading = null
                 SendResult.Rejected(handle, MeshcoreRefusal.SLOT_NOT_KNIT)
             }
 
-            judged.answer == Answer.ERR -> {
+            Answer.ERR -> {
                 onSendErr(handle, judged.errCode, notFoundIsBusy = false)
             }
 
@@ -3478,7 +3478,7 @@ internal class MeshcoreSession(
         val autoadd = scope?.let { ask<McFrame.Autoadd>(c, MeshcoreProto.getAutoadd()) }
         val self = c.self
         if (autoadd == null || self == null) return SetupRead.Refused(setupFailed(if (scanned) "settings" else "identity"))
-        c.defaultScope = requireNotNull(scope).set
+        c.defaultScope = scope.set
         val existing = c.slots.firstOrNull { it.knit }
         // The erase clears every slot but Public and Knit's, so any other slot is Knit's to take: an empty one first.
         val slot =

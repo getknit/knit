@@ -564,7 +564,7 @@ class BluetoothMeshTransport internal constructor(
     // The L2CAP responder's servers: the one the advert names, and while blinding the one a rotation just replaced, still
     // accepting for a dial timeout ([PsmRotation], step 5b's W4). Guarded by its own monitor; taken inside [writer]'s
     // lock by a rotation's install, never the other way round. [acceptJobs] holds each live server's accept loop.
-    private val servers = PsmRotation<BluetoothServerSocket>(::listenL2cap, ::closeServerSocket)
+    private val servers = PsmRotation(::listenL2cap, ::closeServerSocket)
     private val acceptJobs = ConcurrentHashMap<BluetoothServerSocket, Job>()
     private val psmDraw = SecureRandom()
 

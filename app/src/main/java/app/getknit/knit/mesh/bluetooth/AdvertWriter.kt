@@ -378,5 +378,12 @@ internal object TagChoice {
         schedule: TagSchedule,
         source: Source,
         generation: Long? = null,
-    ): Choice = Choice(AdvertOrder.Form(NodeId.fromBytes(schedule.random().tag), blinded = true), generation, source, false, false)
+    ): Choice =
+        Choice(
+            AdvertOrder.Form(NodeId.fromBytes(schedule.random().tag), blinded = true),
+            generation,
+            source,
+            resolvable = false,
+            stale = false,
+        )
 }

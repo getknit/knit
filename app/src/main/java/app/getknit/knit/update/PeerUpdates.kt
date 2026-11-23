@@ -265,9 +265,9 @@ class PeerUpdates(
      */
     private fun expire(ask: AskState): AskState? {
         val now = clock()
-        return when {
-            ask is AskState.Waiting && now - ask.at >= timings.askTtlMs -> AskState.Unanswered(ask.build)
-            ask is AskState.Answered && now - ask.at >= timings.askTtlMs -> null
+        return when (ask) {
+            is AskState.Waiting if now - ask.at >= timings.askTtlMs -> AskState.Unanswered(ask.build)
+            is AskState.Answered if now - ask.at >= timings.askTtlMs -> null
             else -> ask
         }
     }
@@ -526,15 +526,14 @@ class PeerUpdates(
             sendDecline(senderId, request, reason)
             return null
         }
-        val admitted = request
         synchronized(lock) {
-            _requests.value += senderId to admitted
-            cards.getOrPut(senderId) { HashSet() } += admitted.requestId
+            _requests.value += senderId to request
+            cards.getOrPut(senderId) { HashSet() } += request.requestId
         }
-        record(admitted, UpdateRequestPhase.Waiting)
-        scope.launch { lapse(admitted) }
+        record(request, UpdateRequestPhase.Waiting)
+        scope.launch { lapse(request) }
         log("update: ${peer(senderId)} asked for ${p.versionCode}")
-        return admitted
+        return request
     }
 
     // [request] ends unanswered once its time is up, unless the person answered it first.

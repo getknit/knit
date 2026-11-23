@@ -52,10 +52,7 @@ internal object MeshcoreBind {
         nodeId: ByteArray,
         key: ByteArray,
         sig: ByteArray,
-    ): Boolean {
-        if (!MeshcoreKey.accepts(key)) return false
-        return verifiesChecked(nodeId, key, sig)
-    }
+    ): Boolean = MeshcoreKey.accepts(key) && verifiesChecked(nodeId, key, sig)
 
     /**
      * [verifies] over the text forms the profile and the settings carry: [nodeId] a node id, [key] and [sig] canonical

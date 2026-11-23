@@ -398,6 +398,7 @@ internal class AppUsbControlApi :
                 it.writtenBy(me) && (kind == ConversationKind.DM || kind == ConversationKind.GROUP)
             }
         if (ours.isEmpty()) return emptyMap()
+        @Suppress("ConvertCallChainIntoSequence") // forMessages suspends, and a Sequence's lambdas cannot call it
         val readersByMessage =
             ours
                 .map { it.id }

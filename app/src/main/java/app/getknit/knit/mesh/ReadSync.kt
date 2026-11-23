@@ -324,7 +324,7 @@ class ReadSync(
         } finally {
             if (read == null) giveBack(taken)
         }
-        val owed = checkNotNull(read)
+        val owed: Set<String> = read
         val gone = taken.filterNot { it in owed }
         if (gone.isNotEmpty()) giveBack(gone)
         return taken.filter { it in owed }

@@ -165,7 +165,7 @@ object VideoEncodePolicy {
         writtenUs: Long,
         plannedUs: Long,
     ): Long {
-        val scaled = if (writtenUs <= 0 || plannedUs <= writtenUs) 0L else capBytes * plannedUs / writtenUs
+        val scaled = if (writtenUs !in 1..<plannedUs) 0L else capBytes * plannedUs / writtenUs
         return maxOf(scaled, capBytes + 1)
     }
 

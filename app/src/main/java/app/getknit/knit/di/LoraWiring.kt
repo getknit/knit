@@ -36,7 +36,6 @@ import app.getknit.knit.mesh.lora.LoraAuthorIds
 import app.getknit.knit.mesh.lora.LoraBoardHolder
 import app.getknit.knit.mesh.lora.LoraBoardMap
 import app.getknit.knit.mesh.lora.LoraConfig
-import app.getknit.knit.mesh.lora.LoraDirectInbox
 import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraMeshTransport
@@ -198,7 +197,7 @@ internal fun Module.loraPlaneOf(
             // The compact-DM seams (ADR 2026-10.x9fa). Everything MeshManager owns is reached late, at call time, since the
             // manager is built over the composite this transport is a child of.
             crypto = get<LoraDirectSeal>(),
-            inbox = LoraDirectInbox { frame -> get<MeshManager>().deliverLoraDirect(frame) },
+            inbox = { frame -> get<MeshManager>().deliverLoraDirect(frame) },
             source =
                 object : LoraDirectSource {
                     // The plane's own budget, passed through (ADR 2026-11.gsqu, Stage 1a.4; required since Stage 5c-1).

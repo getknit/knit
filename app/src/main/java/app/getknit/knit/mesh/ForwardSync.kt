@@ -835,13 +835,6 @@ class ForwardSync(
             listOfNotNull(round, credit).minOrNull()?.let { minOf(it, clock() + MAX_ROUND_GAP_MS) }
         }
 
-    // Whether a look stamped [at] is due by [now]. One further out than any look can be was stamped before the wall clock
-    // went back: it is due now, never after the jump.
-    private fun due(
-        at: Long,
-        now: Long,
-    ): Boolean = at <= now || at - now > MAX_ROUND_GAP_MS
-
     /** Waits until a digest arrives, a link custody answers over drains, or [timeoutMs] passes: the serve loop's sleep. */
     suspend fun awaitWake(timeoutMs: Long) {
         withTimeoutOrNull(timeoutMs.coerceAtLeast(0)) { wakes.receive() }

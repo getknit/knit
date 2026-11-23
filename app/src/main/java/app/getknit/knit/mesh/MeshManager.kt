@@ -4727,7 +4727,7 @@ class MeshManager(
         // sender either, whose thread stays accepted.
         val blocked = settings.blockedNodeIds.first()
         val wanted =
-            releasing.mapTo(mutableListOf<Pair<String, String?>>()) { (hash, rows) ->
+            releasing.mapTo(mutableListOf()) { (hash, rows) ->
                 hash to RequestHold.askedFirst(rows, accepted::contains, blocked)
             }
         // The hashes a row of ours fetches: the carried half below never wants one of them in its own right. A hash only
@@ -6238,8 +6238,7 @@ class MeshManager(
         if (!readLinked(peerId) || peerId in settings.blockedNodeIds.first()) return false
         val caps = peers.find(peerId)?.capabilities ?: return false
         val needed = Protocol.CAP_DIRECT_TRANSFER or Protocol.CAP_RATCHET
-        if (caps and needed != needed) return false
-        return AcceptanceSnapshot.of(settings, peers, messages, identity.nodeId()).isAccepted(peerId)
+        return caps and needed == needed && AcceptanceSnapshot.of(settings, peers, messages, identity.nodeId()).isAccepted(peerId)
     }
 
     /**
@@ -7393,7 +7392,6 @@ class MeshManager(
      * ack a packet their app throws away) and the profile version a refusal is told apart by, ranked by [boardHolders].
      * Late-bound into the transport by `di/MeshModule`, which collects it only while a board is configured.
      */
-    @OptIn(ExperimentalCoroutinesApi::class)
     internal fun loraBoardMap(): LoraBoardMap =
         flow {
             val me = identity.nodeId()
@@ -7431,7 +7429,7 @@ class MeshManager(
             }.groupBy { it.loraNode }
             .values
             .map { claims ->
-                val winner = claims.maxWith(compareBy<PeerEntity>({ it.verified || it.nodeId in known }, { it.updatedAt }, { it.nodeId }))
+                val winner = claims.maxWith(compareBy({ it.verified || it.nodeId in known }, { it.updatedAt }, { it.nodeId }))
                 // A rival contests the board only if its own key binds to it (CRC32 of the key is the node, ADR
                 // 2026-10.aajj): a bare claim to a number anybody can type cannot block our board being taught a key.
                 winner to claims.any { it !== winner && bindsBoard(it) }

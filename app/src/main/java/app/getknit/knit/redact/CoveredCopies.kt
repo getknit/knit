@@ -75,8 +75,7 @@ object CoveredCopies {
         file: File,
     ): Boolean {
         val folder = file.canonicalFile.parentFile ?: return false
-        if (folder.parentFile != File(cacheDir, DIR).canonicalFile) return false
-        return folder.deleteRecursively()
+        return folder.parentFile == File(cacheDir, DIR).canonicalFile && folder.deleteRecursively()
     }
 
     private fun pruneRoot(

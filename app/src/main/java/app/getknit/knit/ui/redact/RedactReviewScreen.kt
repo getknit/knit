@@ -282,10 +282,10 @@ private fun Status(
 ) {
     val found = redaction.covers.any { it.found }
     val headline =
-        when {
-            search == FaceSearch.Looking -> stringResource(R.string.redact_looking)
-            search == FaceSearch.Unavailable && redaction.coveredCount == 0 -> stringResource(R.string.redact_unavailable)
-            search == FaceSearch.Done && !found && redaction.coveredCount == 0 -> stringResource(R.string.redact_none_found)
+        when (search) {
+            FaceSearch.Looking -> stringResource(R.string.redact_looking)
+            FaceSearch.Unavailable if redaction.coveredCount == 0 -> stringResource(R.string.redact_unavailable)
+            FaceSearch.Done if !found && redaction.coveredCount == 0 -> stringResource(R.string.redact_none_found)
             else -> pluralStringResource(R.plurals.redact_covered, redaction.coveredCount, redaction.coveredCount)
         }
     Column(

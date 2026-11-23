@@ -51,6 +51,9 @@ interface LinkPort : Closeable {
      * the same link, which a datagram reaches without leaving it (`PunchPolicy.preferred`). Default false.
      */
     fun onLink(address: ByteArray): Boolean = false
+
+    /** Releases the socket and ends a pending [receive]. Never throws and never blocks, so any coroutine may call it. */
+    override fun close()
 }
 
 /** One datagram in: its bytes and where it came from. */

@@ -28,10 +28,9 @@ internal class NusInbox(
     private val maxFrames: Int = MAX_FRAMES,
     private val maxBytes: Long = MAX_BYTES,
 ) {
-    private val channel = Channel<NusEvent>(Channel.UNLIMITED)
-
     /** What the session reads: every frame in arrival order, then at most one [NusEvent.Disconnected]. */
-    val frames: ReceiveChannel<NusEvent> get() = channel
+    val frames: ReceiveChannel<NusEvent>
+        field = Channel<NusEvent>(Channel.UNLIMITED)
 
     private var heldFrames = 0
     private var heldBytes = 0L
@@ -54,7 +53,7 @@ internal class NusInbox(
     @Synchronized
     fun frame(bytes: ByteArray): Take {
         if (ended) return Take.ENDED
-        if (channel.isEmpty) {
+        if (frames.isEmpty) {
             heldFrames = 0
             heldBytes = 0
         }
@@ -64,7 +63,7 @@ internal class NusInbox(
         }
         heldFrames++
         heldBytes += bytes.size
-        channel.trySend(NusEvent.Frame(bytes))
+        frames.trySend(NusEvent.Frame(bytes))
         return Take.HELD
     }
 
@@ -76,12 +75,12 @@ internal class NusInbox(
 
     private fun end(status: Int) {
         ended = true
-        channel.trySend(NusEvent.Disconnected(status))
+        frames.trySend(NusEvent.Disconnected(status))
     }
 
     /** Closes the session's side: a read past what is held finds the channel closed. */
     fun close() {
-        channel.close()
+        frames.close()
     }
 
     companion object {

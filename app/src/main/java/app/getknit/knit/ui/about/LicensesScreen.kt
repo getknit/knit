@@ -16,7 +16,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -66,7 +65,6 @@ fun LicensesScreen(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun LicensesScreenContent(
     notices: List<ThirdPartyNotice>,

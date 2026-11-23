@@ -2,7 +2,6 @@
 
 package app.getknit.knit.ui.chat
 
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.OutputTransformation
 import androidx.compose.foundation.text.input.TextFieldBuffer
@@ -237,7 +236,6 @@ fun snapOutOfChips(
  * inside it, and the cursor steps over it. The text stays the plain "@name" the send filters its mentions
  * against and the bubble highlights, so nothing about what goes out changes.
  */
-@OptIn(ExperimentalFoundationApi::class)
 class MentionChips(
     private val mentions: () -> List<Mention>,
 ) : InputTransformation {

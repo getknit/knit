@@ -240,7 +240,7 @@ internal class LoraDirectSeal(
         const val HEADER_BYTES = 1 + 4 + SALT_BYTES + FrameId.ID_BYTES + 6
 
         /** The replay window's lower edge: custody's TTL, the longest any copy of a frame is still being served. */
-        val WINDOW_MS: Long = ForwardRepository.DEFAULT_TTL_MS
+        const val WINDOW_MS: Long = ForwardRepository.DEFAULT_TTL_MS
 
         private const val TAG_AT = 1
         private const val TAG_BYTES = 4

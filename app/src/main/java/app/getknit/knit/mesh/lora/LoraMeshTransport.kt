@@ -2467,9 +2467,9 @@ internal class LoraMeshTransport(
      * field reason.
      */
     private fun coverReason(to: String): StaleAtSend? =
-        when {
-            to == selfIdCached || to in linkedPeers -> StaleAtSend.LINKED
-            to in covered -> StaleAtSend.INTERNET
+        when (to) {
+            selfIdCached, in linkedPeers -> StaleAtSend.LINKED
+            in covered -> StaleAtSend.INTERNET
             else -> null
         }
 

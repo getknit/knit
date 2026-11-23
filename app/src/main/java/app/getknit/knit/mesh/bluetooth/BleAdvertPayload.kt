@@ -100,7 +100,7 @@ internal object BleAdvertPayload {
     const val FLAG_LINK_SEAL = 0x10
 
     /** This build's HELLO carries `Protocol.CAP_LINK_SEAL`: what [FLAG_LINK_SEAL] says, and the only thing that sets it. */
-    val SEALS_LINKS: Boolean = Protocol.LOCAL_CAPABILITIES and Protocol.CAP_LINK_SEAL != 0L
+    const val SEALS_LINKS: Boolean = Protocol.LOCAL_CAPABILITIES and Protocol.CAP_LINK_SEAL != 0L
 
     /**
      * The flags byte this node advertises: [FLAG_SIDE_CHANNEL] while its side channel is [sideLive],

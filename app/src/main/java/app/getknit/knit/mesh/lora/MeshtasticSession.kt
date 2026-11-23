@@ -401,7 +401,7 @@ internal class MeshtasticSession(
         // replaced writes its identity under that address alone, never under the newer binding.
         val ready = LinkState.Ready(requireNotNull(board), channels, mtu, radio, signaturePolicy, address = address)
         // Undelivered covers what closing the box leaves in it, and what a cancelled select took and never handed over.
-        val box = Channel<Cmd>(Channel.BUFFERED, onUndeliveredElement = ::refuse)
+        val box = Channel(Channel.BUFFERED, onUndeliveredElement = ::refuse)
         // Replaced, never overwritten: a session that ended on a flag read false then true, or a stop() whose finally has
         // not run, can leave the last box open with its senders waiting. The state is not Ready here, so it may be refused.
         retire(inbox.getAndSet(box))
@@ -813,12 +813,12 @@ internal class MeshtasticSession(
         proof: AckProof,
     ) {
         val outcome =
-            when {
-                reason == RoutingError.NONE -> {
+            when (reason) {
+                RoutingError.NONE -> {
                     PacketOutcome.Acked(id, byDestination = fromDestination, proof = proof)
                 }
 
-                reason == RoutingError.MAX_RETRANSMIT || reason == RoutingError.NO_RESPONSE -> {
+                RoutingError.MAX_RETRANSMIT, RoutingError.NO_RESPONSE -> {
                     PacketOutcome.Unreachable(id)
                 }
 

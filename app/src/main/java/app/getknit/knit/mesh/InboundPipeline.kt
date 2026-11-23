@@ -448,8 +448,8 @@ class InboundPipeline(
         fromNodeId: String,
         plane: DeliveryPlane,
     ) {
-        when {
-            env.type == FrameType.BLOB_REQ -> {
+        when (env.type) {
+            FrameType.BLOB_REQ -> {
                 decodeCounted<BlobReqContent>(env.payload)?.let { req ->
                     blobExchange.onRequest(
                         req.hash,
@@ -463,15 +463,15 @@ class InboundPipeline(
                 metrics.onBlobAskHandled()
             }
 
-            env.type == FrameType.BLOB_HAVE -> {
+            FrameType.BLOB_HAVE -> {
                 decodeCounted<BlobHaveContent>(env.payload)?.let { blobExchange.onHaveQuery(it.hashes, fromNodeId, env.id) }
             }
 
-            env.type == FrameType.BLOB_PROGRESS -> {
+            FrameType.BLOB_PROGRESS -> {
                 decodeCounted<BlobProgressContent>(env.payload)?.let { blobExchange.onProgressReport(it, fromNodeId) }
             }
 
-            env.type == FrameType.BLOB_CANCEL -> {
+            FrameType.BLOB_CANCEL -> {
                 decodeCounted<BlobCancelContent>(env.payload)?.let { blobExchange.onCancel(it.hash, fromNodeId) }
             }
 
@@ -3537,7 +3537,7 @@ class InboundPipeline(
         // download, so never left to a delivery that holds our own row of it. The re-arm's fast-only hold reads the same
         // rule (`MeshManager.unopenedForUs`, #291), so it never re-holds this pull.
         val fastOnly =
-            if (RequestHold.carriedForOthers(carried, me, acceptance(me))) false else carriedFastOnly(env, content, hash, member) ?: return
+            !RequestHold.carriedForOthers(carried, me, acceptance(me)) && (carriedFastOnly(env, content, hash, member) ?: return)
         // A request's frame to us that another row fetches (#321): asked of that row's sender and pulled through by that
         // row's window, never the stranger's who sent this frame, as the delivery right behind will judge it. Nor is the
         // stranger the hop it came from, when they handed it over themselves.
@@ -4871,8 +4871,7 @@ class InboundPipeline(
     /** Whether [authorId] could read a sealed receipt: a pinned bundle carrying `CAP_RATCHET` (the seal itself may still fail). */
     private suspend fun canSealDmReceipt(authorId: String): Boolean {
         val peer = peers.find(authorId) ?: return false
-        if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return false
-        return peer.pubKey?.let { PublicKeyBundle.decode(it) } != null
+        return (peer.capabilities ?: 0L) and Protocol.CAP_RATCHET != 0L && peer.pubKey?.let { PublicKeyBundle.decode(it) } != null
     }
 
     /**
@@ -6054,7 +6053,7 @@ class InboundPipeline(
      */
     internal suspend fun onBlocked(nodeId: String) {
         val previous: String =
-            db.withWriteTransaction<String?> {
+            db.withWriteTransaction {
                 val peer = peers.find(nodeId) ?: return@withWriteTransaction null
                 val face = peer.avatarHash ?: return@withWriteTransaction null
                 peers.upsert(peer.copy(avatarHash = null))

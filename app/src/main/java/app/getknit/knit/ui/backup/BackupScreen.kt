@@ -25,7 +25,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -119,7 +118,6 @@ fun BackupScreen(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 @Suppress("LongParameterList") // the stateless twin of the screen: every callback the two halves need
 internal fun BackupScreenContent(

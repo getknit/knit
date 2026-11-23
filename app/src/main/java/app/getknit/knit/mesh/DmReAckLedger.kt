@@ -165,7 +165,7 @@ class DmReAckLedger(
             // A negative age is our wall clock stepped back (NITZ, a network fix after weeks offline, ADR 026): read
             // as past the floor, or the jump would hold back the held-but-unapplied re-arm by its own size.
             val age = now - entry.sealedAt
-            if (age < 0 || age >= ttlMs) {
+            if (age !in 0..<ttlMs) {
                 entries.remove(key)
                 return@synchronized Read.Reseal(if (age < 0) DmReSealCause.CLOCK_BACK else DmReSealCause.AGED_OUT)
             }

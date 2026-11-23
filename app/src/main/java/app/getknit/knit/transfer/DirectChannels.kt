@@ -53,12 +53,7 @@ object DirectChannels {
      * 100–144 and 149–177.
      */
     private val TABLE: IntArray =
-        (
-            (2412..2472 step 5) +
-                (5180..5320 step 20) +
-                (5500..5720 step 20) +
-                (5745..5885 step 20)
-        ).toIntArray()
+        listOf(2412..2472 step 5, 5180..5320 step 20, 5500..5720 step 20, 5745..5885 step 20).flatten().toIntArray()
 
     /** The most entries [TABLE] may hold: bit 63 is the sign, which a CBOR encoder writes as a negative integer. */
     const val MAX_ENTRIES = 63

@@ -2356,12 +2356,7 @@ class BlobExchange(
         asker: String,
         bytes: Long,
         overLink: Boolean,
-    ): Boolean =
-        if (overLink) {
-            false
-        } else {
-            sharesRadioBudget(asker, bytes)
-        }
+    ): Boolean = !overLink && sharesRadioBudget(asker, bytes)
 
     /** [ridesSharedBudget] for a copy that rides a radio: by its plane, its size and the link's pace. */
     private fun sharesRadioBudget(
@@ -3429,6 +3424,7 @@ class BlobExchange(
     }
 
     /** The linked neighbours as one step reads them ([linkedNow]), and whether this phone's network was metered then. */
+    @Suppress("JavaDefaultMethodsNotOverriddenByDelegation") // read only: a default method's pass over iterator() answers the same
     private class Linked(
         candidates: List<Candidate>,
         val metered: Boolean,

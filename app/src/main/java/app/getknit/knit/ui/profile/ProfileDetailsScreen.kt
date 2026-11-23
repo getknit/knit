@@ -128,7 +128,6 @@ private const val NAMED_GROUPS_MAX = 3
  * Reached by tapping a peer's avatar in a chat, or a sender's avatar in the Message Requests inbox.
  * [onRemoved] runs once a confirmed removal has finished writing — the DM it deleted may be the screen below.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileDetailsScreen(
     nodeId: String,

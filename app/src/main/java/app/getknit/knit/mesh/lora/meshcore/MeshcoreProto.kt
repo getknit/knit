@@ -186,9 +186,6 @@ internal object MeshcoreProto {
      */
     const val DATA_TYPE_DEV = 0xFFFF
 
-    /** `DATA_TYPE_RESERVED`: the board refuses channel data under it (`MyMesh.cpp:1228`). */
-    const val DATA_TYPE_RESERVED = 0x0000
-
     /** What Knit's room posts are tagged with ([DATA_TYPE_DEV] until registered): the one constant to move. */
     const val KNIT_DATA_TYPE = DATA_TYPE_DEV
 
@@ -263,9 +260,6 @@ internal object MeshcoreProto {
 
     /** `MAX_PATH_SIZE`. */
     const val PATH_FIELD = 64
-
-    /** `CMD_SET_CHANNEL` that the firmware accepts: code, index, name, 16-B secret (`MyMesh.cpp:1769`). */
-    const val SET_CHANNEL_SIZE = 2 + NAME_FIELD + SECRET_BYTES
 
     /** A contact record without `lastmod` or a position: what a teach writes (the board stamps `lastmod` itself). */
     const val CONTACT_BASIC_SIZE = 1 + KEY_BYTES + 3 + PATH_FIELD + NAME_FIELD + 4
@@ -356,7 +350,8 @@ internal object MeshcoreProto {
         payload: ByteArray,
         dataType: Int = KNIT_DATA_TYPE,
     ): ByteArray? {
-        if (payload.isEmpty() || payload.size > CHANNEL_DATA_CAP || dataType !in 1..U16_MAX) return null // 0 is DATA_TYPE_RESERVED
+        // 0 is `DATA_TYPE_RESERVED`, which the board refuses (`MyMesh.cpp:1228`).
+        if (payload.isEmpty() || payload.size > CHANNEL_DATA_CAP || dataType !in 1..U16_MAX) return null
         return byteArrayOf(
             CMD_SEND_CHANNEL_DATA.toByte(),
             slot.toByte(),
@@ -755,8 +750,6 @@ internal object MeshcoreProto {
     ): Long = leInt(b, at).toLong() and U32_MASK
 
     internal fun u32(v: Long): ByteArray = ByteArray(ACK_BYTES) { k -> (v shr (BITS_PER_BYTE * k)).toByte() }
-
-    internal fun i32(v: Int): ByteArray = u32(v.toLong())
 
     /** The bytes of a NUL-padded field, up to its first zero. */
     internal fun cBytes(

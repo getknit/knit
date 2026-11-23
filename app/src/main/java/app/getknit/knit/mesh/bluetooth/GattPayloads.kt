@@ -113,7 +113,7 @@ internal class GattPayloads(
         val readAtWall: Long = 0L,
         val untilWall: Long = Long.MAX_VALUE,
     ) {
-        fun pastEdge(wall: Long): Boolean = payload.blinded && (wall >= untilWall || wall < readAtWall)
+        fun pastEdge(wall: Long): Boolean = payload.blinded && wall !in readAtWall..<untilWall
 
         /** The slot a blinded payload was read in, null for a clear one: what `GattTargets.withheld` reads. */
         val readSlot: Long? get() = if (payload.blinded) BlindTag.slotOf(readAtWall) else null

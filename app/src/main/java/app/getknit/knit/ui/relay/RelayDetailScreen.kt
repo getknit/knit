@@ -20,7 +20,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -104,7 +103,6 @@ fun RelayDetailScreen(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Suppress("LongMethod", "LongParameterList") // one screen's sections, its dialogs and its verbs, mirrored in one place
 @Composable
 internal fun RelayDetailScreenContent(

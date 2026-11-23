@@ -105,8 +105,9 @@ object RequestHold {
         acceptance: AcceptanceSnapshot,
     ): Boolean {
         val group = frame.groupId ?: return false
-        if (frame.senderId == me || conversationOf(frame.copy(member = true), me) != null) return false
-        return !acceptance.isAccepted(group, frame.senderId)
+        return frame.senderId != me &&
+            conversationOf(frame.copy(member = true), me) == null &&
+            !acceptance.isAccepted(group, frame.senderId)
     }
 
     /**

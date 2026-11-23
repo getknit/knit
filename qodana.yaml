@@ -155,13 +155,14 @@ exclude:
   - name: UnusedReceiverParameter
     paths:
       - app/src/main/java/app/getknit/knit/ui/theme
-  # The calls overlay is not a source set: app/build.gradle.kts adds it to a variant's manifests only under the call
-  # flags, so the IDE model never attaches it to `main` and every component it names (all of them real classes in
-  # ui/call/) reads as unresolved.
+  # The calls, STT and peer-update overlays are not source sets: app/build.gradle.kts adds each to a variant's manifests
+  # only under its flag, so the IDE model never attaches it to `main` and every component it names (all of them real
+  # classes) reads as unresolved.
   - name: AndroidDomInspection
     paths:
       - app/src/calls/AndroidManifest.xml
       - app/src/stt/AndroidManifest.xml
+      - app/src/peerUpdate/AndroidManifest.xml
   # Compound status strings ("%1$d nearby · %2$d linked") are not plural candidates in English.
   - name: AndroidLintPluralsCandidate
   # Dependency pins are load-bearing for F-Droid's byte-for-byte rebuild — see

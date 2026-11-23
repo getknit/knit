@@ -27,7 +27,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -100,7 +99,6 @@ fun ContactsScreen(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ContactsScreenContent(
     state: ContactsUiState,

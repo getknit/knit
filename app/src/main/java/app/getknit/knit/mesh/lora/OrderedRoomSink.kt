@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * the air a hostile radio is held to the preset's airtime. So [CAPACITY] is past any drain and a burst that reaches it
  * is a stalled room or a forged flood, where shedding the newest is the safe answer. Pure: no `android.*`.
  */
-internal class OrderedRoomSink<T>(
+internal class OrderedRoomSink<T : Any>(
     private val scope: CoroutineScope,
     private val onDropped: () -> Unit,
     private val onFailed: (Exception) -> Unit,

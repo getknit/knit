@@ -920,13 +920,13 @@ internal class OutboundFrame(
      */
     val purpose: AirPurpose
         get() =
-            when {
-                destination == Destination.Knit -> if (direct != null) AirPurpose.DIRECT_DM else AirPurpose.ROOM_FLOOD
+            when (destination) {
+                Destination.Knit -> if (direct != null) AirPurpose.DIRECT_DM else AirPurpose.ROOM_FLOOD
 
                 // The bridge's raw payload is the same channel data on the same slot: a room post's price.
-                destination == Destination.Debug -> AirPurpose.ROOM_FLOOD
+                Destination.Debug -> AirPurpose.ROOM_FLOOD
 
-                destination == Destination.Public && direct == null -> AirPurpose.PUBLIC_POST
+                Destination.Public if direct == null -> AirPurpose.PUBLIC_POST
 
                 else -> AirPurpose.REPLY
             }

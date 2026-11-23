@@ -15,7 +15,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material3.Card
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -40,7 +39,6 @@ import app.getknit.knit.ui.releaseNotesUrl
  * Every announcement, newest first — where the chat list's card leads, and where Settings' overflow keeps
  * them for whoever closed the card. Opening it marks the newest one seen (the route does that, in `KnitApp`).
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WhatsNewScreen(
     onBack: () -> Unit,

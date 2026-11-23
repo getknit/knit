@@ -66,9 +66,9 @@ private class AndroidLinkPort(
     override val candidates: List<LinkCandidate> =
         own.mapNotNull { address ->
             val kind =
-                when {
-                    address.bytes.size == V6_BYTES && address.temporary -> LinkCandidate.Kind.V6_TEMPORARY
-                    address.bytes.size == V6_BYTES -> LinkCandidate.Kind.V6
+                when (address.bytes.size) {
+                    V6_BYTES if address.temporary -> LinkCandidate.Kind.V6_TEMPORARY
+                    V6_BYTES -> LinkCandidate.Kind.V6
                     else -> LinkCandidate.Kind.HOST
                 }
             LinkCandidate(address.bytes, localPort, kind).takeIf(PunchPolicy::sane)

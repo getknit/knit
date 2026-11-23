@@ -239,7 +239,7 @@ object LinkHandshake {
         val reply = receiveHello(input) ?: return DialOutcome.NoReply
         val wrongPeer = if (expectedId == null) reply.wire.nodeId == prover.nodeId else reply.wire.nodeId != expectedId
         if (wrongPeer) return DialOutcome.WrongPeer(reply.wire)
-        if (sealsLinks && reply.offersSeal) return DialOutcome.SealRefused(reply.wire)
+        if (SEALS_LINKS && reply.offersSeal) return DialOutcome.SealRefused(reply.wire)
         if (!reply.offersProof) {
             return if (expectedId == null) {
                 DialOutcome.ProofFailed(reply.wire, WHY_UNPROVEN)
@@ -320,7 +320,7 @@ object LinkHandshake {
      * §7, the responder's half: the dialer opened plain, its HELLO carries [Protocol.CAP_LINK_SEAL], and this build's would
      * too. Checked before R1 and every other admission refusal; the caller closes without a reply and counts it once.
      */
-    fun refusesPlain(hello: ReceivedHello): Boolean = sealsLinks && hello.offersSeal
+    fun refusesPlain(hello: ReceivedHello): Boolean = SEALS_LINKS && hello.offersSeal
 
     /**
      * Responder, plain form, once its plane kept [dialer]: reply with our HELLO (the bit and [nonce]), and when the dialer's
@@ -671,7 +671,7 @@ object LinkHandshake {
             ?.lowercase() ?: "type-$tag record"
 
     /** This build seals links: its HELLO carries [Protocol.CAP_LINK_SEAL]. */
-    private val sealsLinks: Boolean = Protocol.LOCAL_CAPABILITIES and Protocol.CAP_LINK_SEAL != 0L
+    private const val SEALS_LINKS: Boolean = Protocol.LOCAL_CAPABILITIES and Protocol.CAP_LINK_SEAL != 0L
 
     /**
      * The direct-link plane's HELLO: this build's caps, the bit among them, and a fresh nonce, as [Protocol.hello] writes

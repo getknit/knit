@@ -173,7 +173,7 @@ internal class ExpectedTagTable(
         if (older.isEmpty()) return
         val (gone, capped) = older.partition { it.lingering }
         gone.forEach(::unlistGeneration)
-        contact.generations = contact.generations - gone.toSet()
+        contact.generations -= gone.toSet()
         val until = nowMs + previousKeyMaxMs
         capped.forEach { it.untilMs = minOf(it.untilMs ?: Long.MAX_VALUE, until) }
         nextLapseMs = minOf(nextLapseMs, until)

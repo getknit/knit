@@ -688,7 +688,7 @@ internal class AdvertAliases<L : Any>(
         pending.values.removeAll { it.link == link || it.nodeId == provenId }
         // At the cap an ended link's announcement goes before a held link's, the soonest to expire first (N4).
         if (pending.size >= config.entryCap) {
-            evict(pending, compareBy<Claim<L>>({ it.link in heldLinks }, { it.expiresAtMs }))
+            evict(pending, compareBy({ it.link in heldLinks }, { it.expiresAtMs }))
         }
         pending[tag] = incoming
         queueClaim(pending, tag, incoming)
@@ -877,7 +877,7 @@ internal class AdvertAliases<L : Any>(
         claimsVoided += (if (claims.remove(tag) != null) 1 else 0) + (if (pending.remove(tag) != null) 1 else 0) + hinted + incoming
         // At the cap a void unproven claimants made goes before one two of our dials made, the soonest first (N4).
         if (tag !in voided && voided.size >= config.entryCap) {
-            evict(voided, compareBy<VoidMark<L>>({ it.dialProven }, { it.expiresAtMs }))
+            evict(voided, compareBy({ it.dialProven }, { it.expiresAtMs }))
         }
         val mark = VoidMark(now + config.claimLifetimeMs, dialProven, claimants)
         voided[tag] = mark

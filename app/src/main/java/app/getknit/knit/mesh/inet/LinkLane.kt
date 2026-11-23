@@ -75,7 +75,7 @@ class LinkLane(
     ): ByteArray? {
         if (length < HEADER_BYTES + TAG_BYTES || length > datagram.size || datagram[0] != VERSION) return null
         val counter = counter(datagram)
-        if (counter < 0 || counter >= MAX_COUNTER || !fresh(counter)) return null
+        if (counter !in 0..<MAX_COUNTER || !fresh(counter)) return null
         val plaintext =
             try {
                 val cipher = Cipher.getInstance(TRANSFORM)

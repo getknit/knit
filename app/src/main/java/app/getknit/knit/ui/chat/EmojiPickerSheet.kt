@@ -104,7 +104,6 @@ import org.koin.compose.koinInject
  * message row, because a sheet composed in a lazy item dies the moment its row scrolls off. The catalog is
  * parsed on first open (a skeleton meanwhile) and cached by the injected [loader] for the process.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun EmojiPickerSheet(
     onPick: (String) -> Unit,

@@ -435,11 +435,11 @@ class FramedLink(
 
     /**
      * What custody's estimate reads of this link's feed in one hold of [pendingLock]: its [lastDrain], [drainRatio],
-     * [fileMoving], and whether it is streaming a file out now ([txInProgress]) and is windowed ([txWindowed]).
+     * [fileMoving], and whether it is streaming a file out now ([txInProgress]).
      */
     fun feedReadings(): FeedReadings =
         synchronized(pendingLock) {
-            FeedReadings(meter.lastRate, meter.drainRatio, movingLocked(now()), feedingOut = txInProgress, windowedOut = txWindowed)
+            FeedReadings(meter.lastRate, meter.drainRatio, movingLocked(now()), feedingOut = txInProgress)
         }
 
     /**
@@ -1213,7 +1213,6 @@ class FramedLink(
         val drainRatio: Double,
         val fileMoving: Boolean,
         val feedingOut: Boolean,
-        val windowedOut: Boolean,
     )
 
     /** The custody digest waiting in [pendingDigest], encoded: its [size] is what [queued] counts for it. */

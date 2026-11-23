@@ -408,6 +408,7 @@ internal object UsbControlServer : KoinComponent {
                 .put("bytesOut", bytesOut.get())
                 .put("eventsOut", eventsOut.get())
 
+        @Suppress("BlockingMethodInNonBlockingContext") // only under [start]'s launch(Dispatchers.IO), on an IO worker
         private suspend fun readLoop() {
             val deframer = UsbControlDeframer()
             val buf = ByteArray(READ_BUFFER)

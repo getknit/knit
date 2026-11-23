@@ -20,7 +20,6 @@ import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -219,7 +218,6 @@ private fun clipItemText(item: ClipData.Item): String? =
 /** The schemes `ClipData.Item.coerceToText` would open as a stream rather than hand back as text. */
 private val STREAM_SCHEMES = setOf("content", "file", "android.resource")
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun AddContactScreenContent(
     state: AddContactUiState,

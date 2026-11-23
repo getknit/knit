@@ -212,8 +212,7 @@ private fun Module.linkDemand() =
 // radio, and a hold the radios make needless is not renewed and lapses.
 private fun Scope.walkieHold(peerId: String): Boolean {
     val mesh = getKoin().getOrNull<MeshManager>() ?: return false
-    if (mesh.talkRadioPath(peerId)) return false
-    return getKoin().getOrNull<DirectLinks>()?.raise(peerId) ?: false
+    return !mesh.talkRadioPath(peerId) && (getKoin().getOrNull<DirectLinks>()?.raise(peerId) ?: false)
 }
 
 // The mesh's half of [LinkPeers], resolved late: the mesh graph builds MeshManager, whose inbound hook reaches the

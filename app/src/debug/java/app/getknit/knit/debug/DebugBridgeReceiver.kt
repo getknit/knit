@@ -3028,12 +3028,12 @@ class DebugBridgeReceiver :
                 }
                 val contacts = sc.setupErasedContacts.get()
                 val slots = sc.setupClearedSlots.get()
-                var r = plane.provisionKnitChannel(app.getknit.knit.mesh.lora.ProvisionMode.Setup, null)
+                var r = plane.provisionKnitChannel(ProvisionMode.Setup, null)
                 // Another board's record at this address (Stage 7): refused unless `--ez replace true`, which replaces it with the
                 // token from this same refusal — the screen's "replace" — and is refused again if the record moved in between.
                 val different = r as? app.getknit.knit.mesh.lora.ProvisionResult.DifferentBoard
                 val replace = different != null && intent.getBooleanExtra("replace", false)
-                if (replace) r = plane.provisionReplacing(requireNotNull(different).token)
+                if (replace) r = plane.provisionReplacing(different.token)
                 result
                     .put("prov", "setup")
                     .put("result", r::class.simpleName)
@@ -3072,7 +3072,7 @@ class DebugBridgeReceiver :
             }
 
             "restore" -> {
-                val r = plane.provisionKnitChannel(app.getknit.knit.mesh.lora.ProvisionMode.Restore, null)
+                val r = plane.provisionKnitChannel(ProvisionMode.Restore, null)
                 result.put("prov", "restore").put("result", r::class.simpleName)
             }
 

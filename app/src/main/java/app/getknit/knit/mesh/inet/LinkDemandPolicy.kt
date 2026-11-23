@@ -158,9 +158,9 @@ object LinkDemandPolicy {
         why: LinkWhy,
         besideRadio: Boolean,
     ): LongRange =
-        when {
-            why == LinkWhy.FILE -> 0L..FILE_WINDOW_MS
-            why == LinkWhy.WANT -> (if (besideRadio) 0L else WANT_WAIT_MS)..FILE_WINDOW_MS
+        when (why) {
+            LinkWhy.FILE -> 0L..FILE_WINDOW_MS
+            LinkWhy.WANT -> (if (besideRadio) 0L else WANT_WAIT_MS)..FILE_WINDOW_MS
             else -> TICK_WAIT_MS..WINDOW_MS
         }
 }

@@ -240,7 +240,7 @@ internal class BoardGatt(
                 device.connectGatt(appContext, autoConnect, link.callback, BluetoothDevice.TRANSPORT_LE).also { answered = true }
             } ?: return outcomes.notStarted(answered)
         link.attach(gatt)
-        var result: R? = null
+        var result: R?
         var opened = false
         try {
             result =
@@ -544,7 +544,7 @@ internal class BoardGatt(
                 val d = CompletableDeferred<GattResult<ByteArray>>()
                 pending = d
                 try {
-                    when (stackCall<Boolean?>(what, null) { issue() }) {
+                    when (stackCall(what, null) { issue() }) {
                         null -> {
                             GattResult.Failed(spec.stackThrew)
                         }

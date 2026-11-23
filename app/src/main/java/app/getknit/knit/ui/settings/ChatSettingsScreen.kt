@@ -13,7 +13,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
@@ -63,7 +62,7 @@ fun ChatSettingsScreen(
 ) {
     val typingIndicatorsEnabled by viewModel.typingIndicatorsEnabled.collectAsStateWithLifecycle()
     val readReceiptsEnabled by viewModel.readReceiptsEnabled.collectAsStateWithLifecycle()
-    val coverFacesEnabled = if (FACE_REDACTION_WIRED) viewModel.coverFacesEnabled.collectAsStateWithLifecycle().value else false
+    val coverFacesEnabled = FACE_REDACTION_WIRED && viewModel.coverFacesEnabled.collectAsStateWithLifecycle().value
     val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
     val contentFilteringEnabled by viewModel.contentFilteringEnabled.collectAsStateWithLifecycle()
     val bluetoothDownloadLimit by viewModel.bluetoothDownloadLimit.collectAsStateWithLifecycle()
@@ -93,7 +92,6 @@ fun ChatSettingsScreen(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ChatSettingsScreenContent(
     form: ChatSettingsForm,

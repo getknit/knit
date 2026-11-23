@@ -14,6 +14,8 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.TreeMap
+import kotlin.math.abs
+import kotlin.math.ceil
 
 /**
  * The byte stream over one direct link (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md` §6): ordered, acknowledged,
@@ -63,7 +65,7 @@ import java.util.TreeMap
  */
 class LinkArq(
     private val send: (ByteArray) -> Boolean,
-    private val scope: CoroutineScope,
+    scope: CoroutineScope,
     private val clock: () -> Long,
     private val onClose: () -> Unit = {},
     private val window: Int = RECV_WINDOW,
@@ -570,7 +572,7 @@ class LinkArq(
     private fun queueBound(now: Long): Int {
         val rate = deliveryRate(now) ?: return Int.MAX_VALUE
         val ms = maxOf(QUEUE_TARGET_MS.toDouble(), 2 * (minRtt ?: 0.0))
-        return maxOf(PACE_BURST, Math.ceil(rate * ms / MAX_PAYLOAD).toInt()) // toInt saturates
+        return maxOf(PACE_BURST, ceil(rate * ms / MAX_PAYLOAD).toInt()) // toInt saturates
     }
 
     // Under the lock: the largest sample of the last [RATE_WINDOW_MS], in bytes per ms; the newest when all are older
@@ -625,7 +627,7 @@ class LinkArq(
     // Under the lock: how long until the bucket holds a whole segment.
     private fun paceWaitMs(): Long {
         val rate = paceRate() ?: return 1
-        return Math.ceil((1 - paceTokens) / rate).toLong().coerceAtLeast(1)
+        return ceil((1 - paceTokens) / rate).toLong().coerceAtLeast(1)
     }
 
     // Under the lock: the lowest lost segment, else the next new one below the peer's limit, else none.
@@ -680,7 +682,7 @@ class LinkArq(
         latestRtt = r
         minRtt = minOf(minRtt ?: Double.MAX_VALUE, r)
         val s = srtt ?: return setRtt(r.toLong())
-        rttvar = (1 - RTT_BETA) * rttvar + RTT_BETA * Math.abs(s - r)
+        rttvar = (1 - RTT_BETA) * rttvar + RTT_BETA * abs(s - r)
         srtt = (1 - RTT_ALPHA) * s + RTT_ALPHA * r
     }
 
