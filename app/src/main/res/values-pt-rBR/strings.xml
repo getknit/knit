@@ -685,6 +685,21 @@
     <string name="chat_list_clear_nearby_confirm_body">Todas as mensagens da sala Por Perto serão removidas só deste aparelho. A sala continua na sua lista de conversas.</string>
     <string name="chat_action_block">Bloquear usuário</string>
     <string name="chat_action_unblock">Desbloquear usuário</string>
+    <string name="chat_mute">Silenciar notificações</string>
+    <string name="chat_unmute">Reativar notificações</string>
+    <plurals name="chat_mute_for_hours">
+        <item quantity="one">%d hora</item>
+        <item quantity="many">%d horas</item>
+        <item quantity="other">%d horas</item>
+    </plurals>
+    <plurals name="chat_mute_for_days">
+        <item quantity="one">%d dia</item>
+        <item quantity="many">%d dias</item>
+        <item quantity="other">%d dias</item>
+    </plurals>
+    <string name="chat_mute_always">Sempre</string>
+    <string name="chat_muted_until">Notificações silenciadas até %1$s</string>
+    <string name="chat_muted">Notificações silenciadas</string>
     <string name="chat_view_profile">Ver perfil de %1$s</string>
     <string name="chat_view_group_info">Ver informações do grupo</string>
     <string name="chat_sender_verified">Você verificou %1$s</string>

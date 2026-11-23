@@ -695,6 +695,23 @@
     <string name="chat_list_clear_nearby_confirm_body">Усі повідомлення «Поруч» буде видалено лише з цього пристрою. Кімната залишиться у вашому списку чатів.</string>
     <string name="chat_action_block">Заблокувати користувача</string>
     <string name="chat_action_unblock">Розблокувати користувача</string>
+    <string name="chat_mute">Вимкнути сповіщення</string>
+    <string name="chat_unmute">Увімкнути сповіщення</string>
+    <plurals name="chat_mute_for_hours">
+        <item quantity="one">%d година</item>
+        <item quantity="few">%d години</item>
+        <item quantity="many">%d годин</item>
+        <item quantity="other">%d години</item>
+    </plurals>
+    <plurals name="chat_mute_for_days">
+        <item quantity="one">%d день</item>
+        <item quantity="few">%d дні</item>
+        <item quantity="many">%d днів</item>
+        <item quantity="other">%d дня</item>
+    </plurals>
+    <string name="chat_mute_always">Завжди</string>
+    <string name="chat_muted_until">Сповіщення вимкнено до %1$s</string>
+    <string name="chat_muted">Сповіщення вимкнено</string>
     <string name="chat_view_profile">Переглянути профіль: %1$s</string>
     <string name="chat_view_group_info">Інформація про групу</string>
     <string name="chat_sender_verified">Ви перевірили контакт %1$s</string>

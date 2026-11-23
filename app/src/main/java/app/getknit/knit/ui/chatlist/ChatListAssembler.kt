@@ -132,6 +132,7 @@ internal class ChatListAssembler(
                 lastMineId = mineLast?.id,
                 discriminator = thread.discriminator,
                 isBridged = thread.kind.isBridged,
+                mutedUntil = s.inputs.mutes[thread.id],
             )
         // An empty group sorts/labels by its creation time so it isn't stranded at the bottom.
         val createdAt = thread.group?.createdAt

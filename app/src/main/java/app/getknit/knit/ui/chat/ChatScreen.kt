@@ -99,6 +99,8 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.WifiCalling3
 import androidx.compose.material.icons.outlined.AddReaction
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.PushPin
@@ -251,6 +253,7 @@ import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleKey
 import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.StyleSpans
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.translate.InputLanguageTally
 import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateLang
@@ -259,6 +262,7 @@ import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.components.GroupAvatar
 import app.getknit.knit.ui.components.KnitStitchIndicator
+import app.getknit.knit.ui.components.MuteChoices
 import app.getknit.knit.ui.components.PeerNameText
 import app.getknit.knit.ui.components.PermissionDeniedDialog
 import app.getknit.knit.ui.components.RoomAvatar
@@ -379,6 +383,7 @@ fun ChatScreen(
     // Before Android's "Install unknown apps" screen, which Knit needs once to install its own update.
     var showUpdateGrant by remember { mutableStateOf(false) }
     val pinned by viewModel.pinned.collectAsStateWithLifecycle()
+    val mutedUntil by viewModel.mutedUntil.collectAsStateWithLifecycle()
     val isSending by viewModel.isSending.collectAsStateWithLifecycle()
     val pendingAttachment by viewModel.pendingAttachment.collectAsStateWithLifecycle()
     val stagedAttachmentRelay by viewModel.stagedAttachmentRelay.collectAsStateWithLifecycle()
@@ -836,6 +841,10 @@ fun ChatScreen(
         onSetPinned = viewModel::setPinned,
         onBlock = viewModel::block,
         onUnblock = viewModel::unblock,
+        mutedUntil = mutedUntil,
+        canMute = viewModel.canMute,
+        onMute = viewModel::mute,
+        onUnmute = viewModel::unmute,
         onCopy = { text ->
             copyScope.launch {
                 clipboard.setClipEntry(
@@ -1126,6 +1135,12 @@ internal fun ChatScreenContent(
     onDeleteMessage: (messageId: String) -> Unit,
     onBlock: (nodeId: String) -> Unit,
     onUnblock: (nodeId: String) -> Unit,
+    // The chat's mute (ADR 2026-11.sp7k): when it ends, null while unmuted. Defaulted (no Mute offered) for previews and
+    // the content tests that never mute.
+    mutedUntil: Long? = null,
+    canMute: Boolean = false,
+    onMute: (MuteFor) -> Unit = {},
+    onUnmute: () -> Unit = {},
     onCopy: (text: String) -> Unit,
     onSaveAttachment: (hash: String, key: String?, mime: String?) -> Unit,
     // A held video's plaintext for the player, and its save (ADR 2026-10.hmfe); defaulted for previews and tests.
@@ -1192,6 +1207,7 @@ internal fun ChatScreenContent(
     // below and MessageBubble). Null when nothing is highlighted.
     var highlightedMessageId by remember { mutableStateOf<String?>(null) }
     var headerMenuOpen by remember { mutableStateOf(false) }
+    var muteChoosing by remember { mutableStateOf(false) }
     var showEncryptionInfo by remember { mutableStateOf(false) }
     var showRelayInfo by remember { mutableStateOf(false) }
     var showLoraInfo by remember { mutableStateOf(false) }
@@ -1639,6 +1655,35 @@ internal fun ChatScreenContent(
                                         onClick = {
                                             headerMenuOpen = false
                                             onLocationClick()
+                                        },
+                                    )
+                                }
+                                // Every kind of chat, the rooms included: the shade is this phone's own (ADR 2026-11.sp7k).
+                                if (canMute) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                stringResource(
+                                                    if (mutedUntil ==
+                                                        null
+                                                    ) {
+                                                        R.string.chat_mute
+                                                    } else {
+                                                        R.string.chat_unmute
+                                                    },
+                                                ),
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                if (mutedUntil == null) Icons.Outlined.NotificationsOff else Icons.Outlined.Notifications,
+                                                contentDescription = null,
+                                            )
+                                        },
+                                        modifier = Modifier.testTag(if (mutedUntil == null) "chat_mute" else "chat_unmute"),
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            if (mutedUntil == null) muteChoosing = true else onUnmute()
                                         },
                                     )
                                 }
@@ -2233,6 +2278,27 @@ internal fun ChatScreenContent(
                     TextButton(onClick = { showLoraInfo = false }) {
                         Text(stringResource(R.string.action_close))
                     }
+                },
+            )
+        }
+
+        if (muteChoosing) {
+            // In the chat's window, so the keyboard stays up (ADR 2026-11.pk9u).
+            InWindowAlertDialog(
+                paneTitle = stringResource(R.string.chat_mute),
+                onDismissRequest = { muteChoosing = false },
+                title = { Text(stringResource(R.string.chat_mute)) },
+                text = {
+                    MuteChoices(
+                        onPick = {
+                            muteChoosing = false
+                            onMute(it)
+                        },
+                    )
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { muteChoosing = false }) { Text(stringResource(R.string.action_cancel)) }
                 },
             )
         }

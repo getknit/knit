@@ -14,6 +14,7 @@ import app.getknit.knit.ui.chatlist.CloneBannerPreview
 import app.getknit.knit.ui.chatlist.ConversationListItemDeliveredPreview
 import app.getknit.knit.ui.chatlist.ConversationListItemDmPreview
 import app.getknit.knit.ui.chatlist.ConversationListItemGroupPreview
+import app.getknit.knit.ui.chatlist.ConversationListItemMutedPreview
 import app.getknit.knit.ui.chatlist.ConversationListItemPendingPreview
 import app.getknit.knit.ui.chatlist.ConversationListItemRoomPreview
 import app.getknit.knit.ui.chatlist.ConversationListItemSentPreview
@@ -64,6 +65,11 @@ fun ConversationListItemPending() = ConversationListItemPendingPreview()
 @ComponentShots
 @Composable
 fun ConversationListItemGroup() = ConversationListItemGroupPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun ConversationListItemMuted() = ConversationListItemMutedPreview()
 
 @PreviewTest
 @ComponentShots

@@ -45,6 +45,8 @@ import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -93,6 +95,7 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.relay.RelayPlane
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.ui.chat.DeliveryStatus
 import app.getknit.knit.ui.chat.deliveryIcon
@@ -103,6 +106,7 @@ import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.BadgeVisuals
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.components.GroupAvatar
+import app.getknit.knit.ui.components.MuteDialog
 import app.getknit.knit.ui.components.PeerNameText
 import app.getknit.knit.ui.components.RoomAvatar
 import app.getknit.knit.ui.components.peerBadge
@@ -178,6 +182,9 @@ fun ChatListScreen(
         onResumeMesh = viewModel::resumeMesh,
         onStartMesh = viewModel::startMesh,
         onDeleteConversation = viewModel::deleteConversation,
+        canMute = viewModel.canMute,
+        onMuteConversation = viewModel::mute,
+        onUnmuteConversation = viewModel::unmute,
         whatsNew = whatsNew,
         onOpenWhatsNew = {
             viewModel.dismissWhatsNew()
@@ -263,6 +270,10 @@ internal fun ChatListScreenContent(
     onResumeMesh: () -> Unit,
     onStartMesh: () -> Unit,
     onDeleteConversation: (conversationId: String) -> Unit,
+    // A row's Mute / Unmute (ADR 2026-11.sp7k); defaulted off for the previews and the tests that never mute.
+    canMute: Boolean = false,
+    onMuteConversation: (conversationId: String, span: MuteFor) -> Unit = { _, _ -> },
+    onUnmuteConversation: (conversationId: String) -> Unit = {},
     // The announcement card ([WhatsNewCard]), or null; defaulted so the previews and tests that predate it
     // read as a list with nothing to announce.
     whatsNew: WhatsNewEntry? = null,
@@ -478,6 +489,9 @@ internal fun ChatListScreenContent(
                                 now = now,
                                 onClick = { onOpenConversation(row.id) },
                                 onDelete = onDeleteConversation,
+                                canMute = canMute,
+                                onMute = onMuteConversation,
+                                onUnmute = onUnmuteConversation,
                                 // A DM's conversation id is the peer's node id; a room's or a group's is no node.
                                 online = !row.isRoom && !row.isGroup && row.id in onlineIds,
                                 // Unlike the message list, placement IS animated here: the ViewModel sorts
@@ -591,16 +605,22 @@ internal fun ConversationListItem(
     modifier: Modifier = Modifier,
     onDelete: (conversationId: String) -> Unit = {},
     online: Boolean = false,
+    canMute: Boolean = false,
+    onMute: (conversationId: String, span: MuteFor) -> Unit = { _, _ -> },
+    onUnmute: (conversationId: String) -> Unit = {},
 ) {
     // Nearby and the Meshtastic room are cleared rather than removed: the history goes, Nearby's row stays,
-    // and the Meshtastic row stays while a radio is bound. A commons is left from its relay row, so it gets a
-    // plain tap with no long-press menu.
+    // and the Meshtastic row stays while a radio is bound. A commons is left from its relay row, so its menu
+    // holds Mute alone (ADR 2026-11.sp7k).
     val isNearby = row.id == Conversations.NEARBY
     val deletable = !row.isRoom || row.isBridged || isNearby
+    val muted = row.mutedUntil != null
+    val hasMenu = deletable || canMute
     var menuOpen by remember { mutableStateOf(false) }
     var showConfirm by remember { mutableStateOf(false) }
+    var muteChoosing by remember { mutableStateOf(false) }
     val clickModifier =
-        if (deletable) {
+        if (hasMenu) {
             Modifier.combinedClickable(onClick = onClick, onLongClick = { menuOpen = true })
         } else {
             Modifier.clickable(onClick = onClick)
@@ -647,10 +667,14 @@ internal fun ConversationListItem(
     val spokenBadge = badge?.let { BadgeVisuals.markLabelFor(it) }?.let { stringResource(it) }
     // The avatar's dot, said here for the same reason: the row's summary is all a screen reader hears of it.
     val spokenOnline = if (online) stringResource(R.string.profile_details_nearby) else null
+    // The muted mark is drawn without a description of its own, so the summary says it.
+    val spokenMuted = if (muted) stringResource(R.string.chat_muted) else null
     val rowDescription =
-        listOfNotNull(row.title, spokenBadge, spokenOnline, spokenMark, preview, spokenTime, spokenStatus, spokenUnread)
+        listOfNotNull(row.title, spokenBadge, spokenOnline, spokenMuted, spokenMark, preview, spokenTime, spokenStatus, spokenUnread)
             .joinToString(", ")
     val deleteLabel = stringResource(R.string.chat_list_delete_action)
+    val muteLabel = stringResource(if (muted) R.string.chat_unmute else R.string.chat_mute)
+    val toggleMute = { if (muted) onUnmute(row.id) else muteChoosing = true }
 
     Box(modifier = modifier) {
         Row(
@@ -669,15 +693,27 @@ internal fun ConversationListItem(
                             onClick()
                             true
                         }
-                        if (deletable) {
-                            customActions =
-                                listOf(
+                        val actions =
+                            listOfNotNull(
+                                if (canMute) {
+                                    CustomAccessibilityAction(muteLabel) {
+                                        toggleMute()
+                                        true
+                                    }
+                                } else {
+                                    null
+                                },
+                                if (deletable) {
                                     CustomAccessibilityAction(deleteLabel) {
                                         showConfirm = true
                                         true
-                                    },
-                                )
-                        }
+                                    }
+                                } else {
+                                    null
+                                },
+                            )
+                        // A row with nothing to offer carries no actions at all, not an empty list.
+                        if (actions.isNotEmpty()) customActions = actions
                     },
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -745,6 +781,16 @@ internal fun ConversationListItem(
                     //
                     // Keyed on the glyph, not the status: "reached their LoRa radio" keeps the one check here (its
                     // words ride the row's description), and a pop that swaps a check for the same check is a twitch.
+                    // A muted chat's mark, ahead of the tick and time so the time stays flush right. Decorative: the
+                    // row's summary says "Muted" (spokenMuted).
+                    if (muted) {
+                        Icon(
+                            Icons.Outlined.NotificationsOff,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
                     row.lastStatus?.let { status ->
                         val tickEnter = KnitMotion.enterPop()
                         val tickExit = KnitMotion.exitPop()
@@ -778,9 +824,11 @@ internal fun ConversationListItem(
                 ) {
                     Column(horizontalAlignment = Alignment.End) {
                         Spacer(Modifier.height(4.dp))
+                        // A muted chat still counts what is unread, quietly, as Signal's list does.
                         Badge(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                            containerColor =
+                                if (muted) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.primary,
+                            contentColor = if (muted) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onPrimary,
                         ) {
                             // A count that ticks up while the thread is on screen should read as the same
                             // badge counting, not as a badge being replaced.
@@ -793,67 +841,114 @@ internal fun ConversationListItem(
                 }
             }
         }
-        if (deletable) {
+        if (hasMenu) {
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            text = stringResource(R.string.chat_list_delete_action),
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Filled.Delete,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                        )
-                    },
-                    onClick = {
+                if (canMute) {
+                    DropdownMenuItem(
+                        text = { Text(muteLabel) },
+                        leadingIcon = {
+                            Icon(
+                                if (muted) Icons.Outlined.Notifications else Icons.Outlined.NotificationsOff,
+                                contentDescription = null,
+                            )
+                        },
+                        modifier = Modifier.semantics { testTag = if (muted) "chat_row_unmute" else "chat_row_mute" },
+                        onClick = {
+                            menuOpen = false
+                            toggleMute()
+                        },
+                    )
+                }
+                if (deletable) {
+                    DeleteMenuItem {
                         menuOpen = false
                         showConfirm = true
-                    },
-                )
+                    }
+                }
             }
         }
     }
 
-    if (showConfirm) {
-        AlertDialog(
-            onDismissRequest = { showConfirm = false },
-            // "Delete chat?" would promise the room goes too; Nearby's dialog says it stays.
-            title = {
-                Text(
-                    stringResource(
-                        if (isNearby) R.string.chat_list_clear_nearby_confirm_title else R.string.chat_list_delete_confirm_title,
-                    ),
-                )
+    if (muteChoosing) {
+        MuteDialog(
+            onPick = {
+                muteChoosing = false
+                onMute(row.id, it)
             },
-            text = {
-                Text(
-                    stringResource(
-                        if (isNearby) R.string.chat_list_clear_nearby_confirm_body else R.string.chat_list_delete_confirm_body,
-                    ),
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    onDelete(row.id)
-                    showConfirm = false
-                }) {
-                    Text(
-                        text = stringResource(R.string.chat_list_delete_action),
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showConfirm = false }) {
-                    Text(stringResource(android.R.string.cancel))
-                }
-            },
+            onDismiss = { muteChoosing = false },
         )
     }
+
+    if (showConfirm) {
+        DeleteConfirmDialog(
+            isNearby = isNearby,
+            onConfirm = {
+                onDelete(row.id)
+                showConfirm = false
+            },
+            onDismiss = { showConfirm = false },
+        )
+    }
+}
+
+/** The row menu's Delete, in the error colour: it takes the history with it. */
+@Composable
+private fun DeleteMenuItem(onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = {
+            Text(
+                text = stringResource(R.string.chat_list_delete_action),
+                color = MaterialTheme.colorScheme.error,
+            )
+        },
+        leadingIcon = {
+            Icon(
+                Icons.Filled.Delete,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+            )
+        },
+        onClick = onClick,
+    )
+}
+
+/** Delete's confirmation. "Delete chat?" would promise the room goes too; Nearby's dialog says it stays. */
+@Composable
+private fun DeleteConfirmDialog(
+    isNearby: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                stringResource(
+                    if (isNearby) R.string.chat_list_clear_nearby_confirm_title else R.string.chat_list_delete_confirm_title,
+                ),
+            )
+        },
+        text = {
+            Text(
+                stringResource(
+                    if (isNearby) R.string.chat_list_clear_nearby_confirm_body else R.string.chat_list_delete_confirm_body,
+                ),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(
+                    text = stringResource(R.string.chat_list_delete_action),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(android.R.string.cancel))
+            }
+        },
+    )
 }
 
 /**
@@ -1015,6 +1110,30 @@ fun ConversationListItemGroupPreview() =
                 ),
             now = PREVIEW_NOW,
             onClick = {},
+        )
+    }
+
+/** A muted group with unread posts: the muted mark beside the time, and a quiet badge (ADR 2026-11.sp7k). */
+@Preview(showBackground = true)
+@Composable
+fun ConversationListItemMutedPreview() =
+    KnitPreview {
+        ConversationListItem(
+            row =
+                ConversationRow(
+                    id = "group-2",
+                    title = "Neighbourhood watch",
+                    avatarHash = null,
+                    isRoom = false,
+                    isGroup = true,
+                    lastPreview = "Sam: the gate code changed again",
+                    lastMessageAt = PREVIEW_NOW - 20 * 60_000L,
+                    unreadCount = 14,
+                    mutedUntil = PREVIEW_NOW + 8 * 60 * 60_000L,
+                ),
+            now = PREVIEW_NOW,
+            onClick = {},
+            canMute = true,
         )
     }
 

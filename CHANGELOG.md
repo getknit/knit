@@ -38,6 +38,9 @@ document:
   and hides its preview in recent apps. Privacy-first turns it on.
 - Knit can cover the faces in a photo before you send it. It finds them on your phone, and you check the photo
   before it goes: tap a face to uncover it, or drag to cover more. Turn it on in Settings › Chats.
+- You can now mute a chat for 1 hour, 8 hours, 1 day, 7 days or always, from the chat's menu, its details
+  screen or a long press in the chat list. Calls still ring, and in a group a message that mentions you by
+  name gets through.
 
 ### Changed
 

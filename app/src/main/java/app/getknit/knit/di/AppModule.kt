@@ -60,6 +60,7 @@ import app.getknit.knit.data.receipt.ReadMarkRepository
 import app.getknit.knit.data.relay.RelayInviteApplier
 import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.CallPreferenceStore
+import app.getknit.knit.data.settings.ChatMutes
 import app.getknit.knit.data.settings.HiddenKnownStore
 import app.getknit.knit.data.settings.HomeStore
 import app.getknit.knit.data.settings.IncomingCallStore
@@ -289,6 +290,8 @@ val appModule =
         // The sealed profile's MeshCore claim (ADR 2026-11.gsqu, Stage 4): the bound board's key and its sealed-only version.
         single { MeshcoreClaimStore(get()) }
         single { HiddenKnownStore(get()) }
+        // The chats the user muted (ADR 2026-11.sp7k): SettingsStore's own, the one the notification gate reads.
+        single<ChatMutes> { get<SettingsStore>().chatMutes }
         single { PeerBadges(get<PeerRepository>().observeBadges(), get<CoroutineScope>(), BadgeKeys.forBuild(BuildConfig.DEBUG)) }
         // A build without Knit Anywhere (release: ANYWHERE_WIRED off) hands the applier no key store, so an invite's
         // issuer and key are ignored without a word, as the room half is with the commons dark.

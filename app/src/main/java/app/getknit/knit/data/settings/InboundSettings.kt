@@ -1,6 +1,7 @@
 package app.getknit.knit.data.settings
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * The read/block slice of [SettingsStore] the inbound frame pipeline needs — the two block lists, the
@@ -29,6 +30,12 @@ interface InboundSettings {
 
     /** Whether a typing cue this phone receives is shown at all ([SettingsStore.typingIndicatorsEnabled]). */
     val typingIndicatorsEnabled: Flow<Boolean>
+
+    /**
+     * The chats the user muted, conversation id → when the mute ends ([ChatMutes.mutedUntil], ADR 2026-11.sp7k); an
+     * entry may be past. Defaults to none, for the rigs that never post a notification.
+     */
+    val chatMutedUntil: Flow<Map<String, Long>> get() = flowOf(emptyMap())
 
     /** Blocks [nodeId]; also records the peer's [deviceTag] (when known) so the block survives a key reset. */
     suspend fun block(

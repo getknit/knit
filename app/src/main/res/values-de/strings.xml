@@ -675,6 +675,19 @@
     <string name="chat_list_clear_nearby_confirm_body">Alle Nachrichten im Raum „In der Nähe“ werden nur von diesem Gerät entfernt. Der Raum bleibt in deiner Chatliste.</string>
     <string name="chat_action_block">Person blockieren</string>
     <string name="chat_action_unblock">Blockierung aufheben</string>
+    <string name="chat_mute">Benachrichtigungen stummschalten</string>
+    <string name="chat_unmute">Stummschaltung aufheben</string>
+    <plurals name="chat_mute_for_hours">
+        <item quantity="one">%d Stunde</item>
+        <item quantity="other">%d Stunden</item>
+    </plurals>
+    <plurals name="chat_mute_for_days">
+        <item quantity="one">%d Tag</item>
+        <item quantity="other">%d Tage</item>
+    </plurals>
+    <string name="chat_mute_always">Immer</string>
+    <string name="chat_muted_until">Stummgeschaltet bis %1$s</string>
+    <string name="chat_muted">Stummgeschaltet</string>
     <string name="chat_view_profile">Profil von %1$s anzeigen</string>
     <string name="chat_view_group_info">Gruppeninfo anzeigen</string>
     <string name="chat_sender_verified">Du hast %1$s verifiziert</string>

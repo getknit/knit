@@ -685,6 +685,21 @@
     <string name="chat_list_clear_nearby_confirm_body">Todos los mensajes de Cerca se eliminarán solo de este dispositivo. La sala se mantiene en tu lista de chats.</string>
     <string name="chat_action_block">Bloquear usuario</string>
     <string name="chat_action_unblock">Desbloquear usuario</string>
+    <string name="chat_mute">Silenciar notificaciones</string>
+    <string name="chat_unmute">Activar notificaciones</string>
+    <plurals name="chat_mute_for_hours">
+        <item quantity="one">%d hora</item>
+        <item quantity="many">%d horas</item>
+        <item quantity="other">%d horas</item>
+    </plurals>
+    <plurals name="chat_mute_for_days">
+        <item quantity="one">%d día</item>
+        <item quantity="many">%d días</item>
+        <item quantity="other">%d días</item>
+    </plurals>
+    <string name="chat_mute_always">Siempre</string>
+    <string name="chat_muted_until">Notificaciones silenciadas hasta %1$s</string>
+    <string name="chat_muted">Notificaciones silenciadas</string>
     <string name="chat_view_profile">Ver el perfil de %1$s</string>
     <string name="chat_view_group_info">Ver información del grupo</string>
     <string name="chat_sender_verified">Verificaste a %1$s</string>

@@ -136,6 +136,12 @@ class SettingsStore(
      */
     override val acceptedConversations: Flow<Set<String>> = dataStore.data.map { it[KEY_ACCEPTED] ?: emptySet() }
 
+    /** The chats the user muted, over this same file (ADR 2026-11.sp7k). */
+    val chatMutes: ChatMutes by lazy { ChatMuteStore(dataStore) }
+
+    /** [chatMutes]' deadlines, for the notification gate. */
+    override val chatMutedUntil: Flow<Map<String, Long>> get() = chatMutes.mutedUntil
+
     /**
      * The quick-reaction row's most-recently-used emoji, newest first — the classic six until the first
      * pick. One separator-joined string, not a preference *set*: order is the whole datum. The codec, seed

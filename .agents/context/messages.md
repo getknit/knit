@@ -141,6 +141,17 @@ lines.
   bubble, so a value that arrives after it opens (the Translate offer) is read inside the content, never captured: a
   capture that changes in the frame the layer first composes is lost. Tests: `ChatScreenContentTest` (one root,
   composer still focused), `MessageBubbleMenuTest` (a late Translate offer).
+- **When touching the per-chat mute — `ChatMute` (`silences`, `personalMention`, `active`, `labelStyle`), `MuteFor`,
+  `ChatMutes` / `ChatMuteStore` (the `chat_muted_until` key), `SettingsStore.chatMutes`,
+  `InboundSettings.chatMutedUntil`, `ChatMuteHandle`, `InboundPipeline.muted`, `ui/components/MuteChoices.kt`, or a
+  `canMute` / `mutedUntil` on a screen:** READ ADR 2026-11.sp7k. A mute gates only the notification post, in the
+  pipeline's two funnels (`notifyWithBody`, `notifyMention`): the post is still stored, acked, counted unread and
+  read-receipted, and calls, file offers, update asks and the request heads-up are untouched. A personal mention gets
+  through a muted group or commons only (`@everyone` and a bridged room's `@[Name]` never). Every surface reads a
+  deadline through `ChatMute.activeUntil` / `active`, so a lapsed entry is no mute; `Long.MAX_VALUE` is Always. In
+  the settings DataStore and carried by a backup; a contact removal, a group leave and a commons leave clear it, a
+  thread delete does not. Tests: `ChatMuteTest`, `ChatMuteStoreTest`, the mute block of `InboundPipelineTest`,
+  `ConversationListItemMuteTest`, `MuteNotificationsRowTest`.
 - **When touching `data/pin/` (`PinEntity`, `PinDao`), `PinRepository`, `ChatViewModel.pinned` / `setPinned`,
   `senderName` or `ChatScreen`'s `PinnedBar`:** READ ADR 2026-10.2r7e. Pins are local to this phone: nothing is
   framed or enters custody, and the bar jumps through the quote-jump path. A row exists only while its message is

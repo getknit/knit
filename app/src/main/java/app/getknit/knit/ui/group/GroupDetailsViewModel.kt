@@ -20,11 +20,14 @@ import app.getknit.knit.data.group.toGroupInfo
 import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.message.groupFaces
 import app.getknit.knit.data.message.groupTitle
+import app.getknit.knit.data.settings.ChatMutes
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.normalizeSingleLine
+import app.getknit.knit.notifications.ChatMuteHandle
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.ui.util.computeAvatarCrop
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -84,6 +87,8 @@ class GroupDetailsViewModel(
     private val blobs: BlobRepository,
     identity: Identity,
     context: Context,
+    // The chats the user muted (ADR 2026-11.sp7k): null in a rig that wires none, which offers no Mute.
+    private val mutes: ChatMutes? = null,
 ) : ViewModel() {
     private val me = MutableStateFlow<String?>(null)
 
@@ -231,10 +236,29 @@ class GroupDetailsViewModel(
         viewModelScope.launch {
             meshManager.sendGroupLeave(groupId)
             groups.leave(groupId)
-            // Leaving deletes the thread's messages, and an unsent line in it is no different.
+            // Leaving deletes the thread's messages, and an unsent line in it is no different; a mute of a group
+            // this phone is no longer in goes with it.
             drafts.clear(groupId)
+            mutes?.unmute(groupId)
             _left.tryEmit(Unit)
         }
+    }
+
+    // This chat's mute (ADR 2026-11.sp7k), null in a rig that wires none.
+    private val muteHandle = mutes?.let { ChatMuteHandle(it, groupId, viewModelScope) }
+
+    /** Whether the screen offers Mute at all: false in a rig that wires no mutes. */
+    val canMute: Boolean = muteHandle != null
+
+    /** When the group's mute ends, null while it is not muted ([ChatMuteHandle.mutedUntil]). */
+    val mutedUntil: StateFlow<Long?> = muteHandle?.mutedUntil ?: MutableStateFlow(null)
+
+    fun mute(span: MuteFor) {
+        muteHandle?.mute(span)
+    }
+
+    fun unmute() {
+        muteHandle?.unmute()
     }
 
     override fun onCleared() {

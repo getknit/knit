@@ -27,6 +27,8 @@ import app.getknit.knit.ui.components.GroupAvatarClusterPreview
 import app.getknit.knit.ui.components.GroupAvatarGlyphPreview
 import app.getknit.knit.ui.components.GroupAvatarLargePreview
 import app.getknit.knit.ui.components.KnitStitchIndicatorPreview
+import app.getknit.knit.ui.components.MuteChoicesPreview
+import app.getknit.knit.ui.components.MuteNotificationsRowPreview
 import app.getknit.knit.ui.components.NameBadgeStylesPreview
 import app.getknit.knit.ui.components.PeerNameTextPlainPreview
 import app.getknit.knit.ui.components.PeerNameTextPreview
@@ -170,6 +172,16 @@ fun GroupAvatarLarge() = GroupAvatarLargePreview()
 @ComponentShots
 @Composable
 fun KnitStitchIndicator() = KnitStitchIndicatorPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun MuteChoices() = MuteChoicesPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun MuteNotificationsRow() = MuteNotificationsRowPreview()
 
 @PreviewTest
 @ComponentShots

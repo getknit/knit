@@ -665,6 +665,17 @@
     <string name="chat_list_clear_nearby_confirm_body">“附近”的所有消息仅会从此设备上移除。该聊天室仍会保留在你的聊天列表中。</string>
     <string name="chat_action_block">屏蔽用户</string>
     <string name="chat_action_unblock">取消屏蔽用户</string>
+    <string name="chat_mute">静音通知</string>
+    <string name="chat_unmute">取消静音</string>
+    <plurals name="chat_mute_for_hours">
+        <item quantity="other">%d 小时</item>
+    </plurals>
+    <plurals name="chat_mute_for_days">
+        <item quantity="other">%d 天</item>
+    </plurals>
+    <string name="chat_mute_always">始终</string>
+    <string name="chat_muted_until">已静音，将于 %1$s 恢复</string>
+    <string name="chat_muted">已静音</string>
     <string name="chat_view_profile">查看 %1$s 的个人资料</string>
     <string name="chat_view_group_info">查看群组信息</string>
     <string name="chat_sender_verified">你已验证 %1$s</string>

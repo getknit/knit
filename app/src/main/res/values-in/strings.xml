@@ -665,6 +665,17 @@
     <string name="chat_list_clear_nearby_confirm_body">Semua pesan Sekitar hanya akan dihapus dari perangkat ini. Ruangnya tetap ada di daftar chat Anda.</string>
     <string name="chat_action_block">Blokir pengguna</string>
     <string name="chat_action_unblock">Buka blokir pengguna</string>
+    <string name="chat_mute">Bisukan notifikasi</string>
+    <string name="chat_unmute">Bunyikan notifikasi</string>
+    <plurals name="chat_mute_for_hours">
+        <item quantity="other">%d jam</item>
+    </plurals>
+    <plurals name="chat_mute_for_days">
+        <item quantity="other">%d hari</item>
+    </plurals>
+    <string name="chat_mute_always">Selalu</string>
+    <string name="chat_muted_until">Dibisukan sampai %1$s</string>
+    <string name="chat_muted">Dibisukan</string>
     <string name="chat_view_profile">Lihat profil %1$s</string>
     <string name="chat_view_group_info">Lihat info grup</string>
     <string name="chat_sender_verified">Anda telah memverifikasi %1$s</string>

@@ -165,6 +165,7 @@ import app.getknit.knit.moderation.ModelLoadGuard
 import app.getknit.knit.moderation.ModelLoadPolicy
 import app.getknit.knit.moderation.NsfwImageModerator
 import app.getknit.knit.moderation.modelGuardStamp
+import app.getknit.knit.notifications.ChatMute
 import app.getknit.knit.notifications.NotifMessage
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.review.ReviewPromptPolicy
@@ -275,7 +276,8 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   conversation id) from `--es from <peerNodeId>` (default the roster's first other member) with body
  *   `--es text <body>`, resolving the conversation the way [app.getknit.knit.mesh.InboundPipeline] would —
  *   title, photo, and for a photo-less group its members' faces — so the shade's avatar can be checked on the
- *   radio-less build (ADR 2026-09.zapp). Needs POST_NOTIFICATIONS.
+ *   radio-less build (ADR 2026-09.zapp). A muted chat posts nothing and answers `"muted": true` (ADR 2026-11.sp7k).
+ *   Needs POST_NOTIFICATIONS.
  * - [ACTION_FLAGMSG] — injects one synthetic **inbound message the on-device text moderator flagged** (the UI
  *   collapses it behind a tap-to-reveal) as the newest row of `--es conv <id>` (default the broadcast room),
  *   from `--es from <peerNodeId>` (default a synthetic sender, named on upsert) with body `--es text <body>`:
@@ -1671,7 +1673,8 @@ class DebugBridgeReceiver :
      * and for a photo-less group the `groupFaceIds` pick resolved to bytes, so `NotificationAvatars.clusterAvatar`
      * draws what the list does.
      * `--es conv <id>` (required), `--es from <peerNodeId>` (default the first other member / the DM peer),
-     * `--es text <body>`. The app must hold `POST_NOTIFICATIONS` or the post silently no-ops.
+     * `--es text <body>`. The app must hold `POST_NOTIFICATIONS` or the post silently no-ops. A chat the user muted
+     * posts nothing and answers `"muted": true`, as the pipeline's gate would (ADR 2026-11.sp7k).
      */
     private suspend fun handleMsgNotif(intent: Intent): JSONObject {
         val conv = intent.getStringExtra(EXTRA_CONV) ?: return JSONObject().put("error", "missing --es conv <id>")
@@ -1685,7 +1688,12 @@ class DebugBridgeReceiver :
         val fromAvatar = peers.find(from)?.avatarHash?.let { blobs.bytes(it) }
         val body = intent.getStringExtra(EXTRA_TEXT) ?: "Shade check"
         val conversation = conversationFaces.resolve(conv, me, labels)
-        val incoming = NotifMessage(from, fromName, body, System.currentTimeMillis(), conv, fromAvatar)
+        val now = System.currentTimeMillis()
+        // The pipeline's own mute gate (ADR 2026-11.sp7k), so a muted chat can be checked on the radio-less build.
+        if (ChatMute.silences(settings.chatMutedUntil.first()[conv], now, personalMention = false, kind)) {
+            return JSONObject().put("conv", conv).put("kind", kind.name).put("muted", true)
+        }
+        val incoming = NotifMessage(from, fromName, body, now, conv, fromAvatar)
         notifier.createChannel()
         notifier.notify(incoming, conversation, me, settings.displayName.first(), settings.ownAvatarHash.first()?.let { blobs.bytes(it) })
         return JSONObject()
@@ -1694,6 +1702,7 @@ class DebugBridgeReceiver :
             .put("title", conversation.title)
             .put("faces", JSONArray(conversation.faces.map { it.nodeId }))
             .put("photo", conversation.avatarBytes != null)
+            .put("muted", false)
     }
 
     /**

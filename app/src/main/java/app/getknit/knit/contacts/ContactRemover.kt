@@ -19,9 +19,9 @@ import kotlinx.coroutines.withContext
  * Removes a contact — [ContactImporter]'s inverse, and a local decision only (ADR 2026-09.adgd). A contact is
  * derived, not stored (`ui/contacts/ContactUniverse.kt`), so removing one clears each signal of our own that
  * makes them one: the explicit accept, the out-of-band verification, the DM thread we wrote in (deleted with
- * its draft, its notifications and its conversation shortcut), and a contact-card intro still pending. Their DM scope
- * anchor goes too (ADR 2026-11.dgj2), so a later backup carries nothing of theirs. What remains is a stranger: their
- * next DM lands in Message Requests.
+ * its draft, its mute, its notifications and its conversation shortcut), and a contact-card intro still pending.
+ * Their DM scope anchor goes too (ADR 2026-11.dgj2), so a later backup carries nothing of theirs. What remains is a
+ * stranger: their next DM lands in Message Requests.
  *
  * Nothing is sent and nothing the mesh converges on moves: the peer row (the key pin that lets this node carry
  * their frames), the ratchet session, custody and the block list are left exactly as they were, so the
@@ -70,6 +70,8 @@ class ContactRemover(
             // back (ADR 2026-11.dgj2). One already running finishes before the drop (`MeshManager.anchorPass`).
             mesh.dropScopeAnchor(nodeId)
             drafts.clear(nodeId)
+            // A mute of the thread just deleted goes with it (ADR 2026-11.sp7k).
+            settings.chatMutes.unmute(nodeId)
             peers.setVerified(nodeId, false)
             settings.unaccept(nodeId)
         }

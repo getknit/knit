@@ -16,9 +16,12 @@ import app.getknit.knit.data.draft.DraftRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.settings.ChatMutes
+import app.getknit.knit.data.settings.FakeChatMutes
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.FakeMeshController
 import app.getknit.knit.mesh.Peer
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.ui.directoryOf
 import app.getknit.knit.ui.group
 import app.getknit.knit.ui.peer
@@ -40,6 +43,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -73,7 +77,8 @@ class GroupDetailsViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun vm() = GroupDetailsViewModel(groupId, groups, drafts, peers, mesh, avatars, blobs, identity, context)
+    private fun vm(mutes: ChatMutes? = null) =
+        GroupDetailsViewModel(groupId, groups, drafts, peers, mesh, avatars, blobs, identity, context, mutes = mutes)
 
     @Test
     fun rosterOrdersSelfFirstThenOnlineThenAlphabetical() =
@@ -188,5 +193,26 @@ class GroupDetailsViewModelTest {
             assertEquals(listOf(groupId), mesh.sentGroupLeaves)
             coVerify { groups.leave(groupId) }
             assertEquals(1, lefts.size)
+        }
+
+    @Test
+    fun theGroupsMuteIsShownChangedAndGoesWhenTheGroupIsLeft() =
+        runTest {
+            // Always, never a timed span: a live timed mute re-checks the wall clock every minute, which the virtual
+            // one never moves, so `advanceUntilIdle` would never come back. `ChatMuteTest` pins the lapse.
+            val mutes = FakeChatMutes(mapOf("g-other" to ChatMutes.ALWAYS))
+            val vm = vm(mutes)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.mutedUntil.collect {} }
+            assertTrue(vm.canMute)
+            assertNull(vm.mutedUntil.value)
+
+            vm.mute(MuteFor.ALWAYS)
+            advanceUntilIdle()
+            assertEquals(ChatMutes.ALWAYS, vm.mutedUntil.value)
+
+            vm.leaveGroup()
+            advanceUntilIdle()
+            assertEquals("only the left group's mute goes", mapOf("g-other" to ChatMutes.ALWAYS), mutes.state.value)
+            assertNull(vm.mutedUntil.value)
         }
 }

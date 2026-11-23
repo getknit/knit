@@ -24,6 +24,7 @@ import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.data.settings.AwareSwitch
 import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.CallPreferenceStore
+import app.getknit.knit.data.settings.ChatMutes
 import app.getknit.knit.data.settings.HiddenKnownStore
 import app.getknit.knit.data.settings.IncomingCallStore
 import app.getknit.knit.data.settings.MeshcoreClaimStore
@@ -166,6 +167,7 @@ val uiModule =
                         flowOf(null)
                     },
                 faces = if (FACE_REDACTION_WIRED) get<FaceDetector>() else null,
+                mutes = get<ChatMutes>(),
             )
         }
         viewModel {
@@ -185,6 +187,7 @@ val uiModule =
                 get<ReactionRepository>(),
                 receipts = get<MessageReceiptRepository>(),
                 loraRooms = get<LoraStatusRepository>().perKind,
+                mutes = get<ChatMutes>(),
             )
         }
         viewModel { ContactsViewModel(get(), get(), get(), get(), get(), get()) }
@@ -292,6 +295,7 @@ val uiModule =
                 androidContext(),
                 calls = if (CALLS_WIRED) get<CallManager>() else null,
                 pins = get<PinRepository>(),
+                mutes = get<ChatMutes>(),
             )
         }
         // MessageDetailsViewModel takes the long-pressed message's id as a runtime param.
@@ -327,7 +331,7 @@ val uiModule =
         }
         // GroupDetailsViewModel takes the group id as a runtime param; the rest are resolved by type.
         viewModel { params ->
-            GroupDetailsViewModel(params.get(), get(), get(), get(), get(), get(), get(), get(), androidContext())
+            GroupDetailsViewModel(params.get(), get(), get(), get(), get(), get(), get(), get(), androidContext(), mutes = get<ChatMutes>())
         }
         // A commons' room details, keyed by its conversation id; no store while the commons is hidden.
         viewModel { params ->
@@ -339,6 +343,7 @@ val uiModule =
                 get<RelayStatusRepository>().facts,
                 get(),
                 androidContext(),
+                mutes = get<ChatMutes>(),
             )
         }
         viewModel { BlockedUsersViewModel(get(), get()) }

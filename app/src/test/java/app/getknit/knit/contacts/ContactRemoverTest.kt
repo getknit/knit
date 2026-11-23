@@ -4,6 +4,7 @@ import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.draft.DraftRepository
+import app.getknit.knit.data.settings.ChatMutes
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.MeshController
@@ -43,6 +44,7 @@ class ContactRemoverTest {
     private val notifier = mockk<Notifier>(relaxed = true)
     private val identity = mockk<Identity>(relaxed = true)
     private val forgetUpdates = mockk<(String) -> Unit>(relaxed = true)
+    private val mutes = mockk<ChatMutes>(relaxed = true)
 
     // River is a contact three ways (accepted, verified, a DM we wrote in) and the only known peer who has
     // posted in Ridge, a group we neither accepted nor wrote in — so Ridge is a chat only because of River.
@@ -59,6 +61,7 @@ class ContactRemoverTest {
         every { groups.observeGroups() } returns flowOf(listOf(ridge))
         every { settings.acceptedConversations } returns accepted
         every { settings.blockedNodeIds } returns MutableStateFlow(emptySet())
+        every { settings.chatMutes } returns mutes
         coEvery { peers.verifiedNodeIds() } returns listOf(RIVER)
     }
 
@@ -79,6 +82,8 @@ class ContactRemoverTest {
                 messages.deleteByConversation(RIVER)
                 mesh.dropScopeAnchor(RIVER)
                 drafts.clear(RIVER)
+                // The deleted thread's mute goes with it (ADR 2026-11.sp7k).
+                mutes.unmute(RIVER)
                 peers.setVerified(RIVER, false)
                 settings.unaccept(RIVER)
             }

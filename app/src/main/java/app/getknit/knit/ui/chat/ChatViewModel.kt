@@ -75,6 +75,7 @@ import app.getknit.knit.data.relay.noticeFor
 import app.getknit.knit.data.relay.photoFitBytes
 import app.getknit.knit.data.relay.planeFor
 import app.getknit.knit.data.relay.reachFor
+import app.getknit.knit.data.settings.ChatMutes
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.video.VideoEncodePolicy
 import app.getknit.knit.di.FACE_REDACTION_WIRED
@@ -119,6 +120,8 @@ import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.moderation.ImageScreeningService
+import app.getknit.knit.notifications.ChatMuteHandle
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.redact.CoveredCopies
 import app.getknit.knit.redact.FaceDetector
@@ -822,6 +825,8 @@ class ChatViewModel(
     // with every face the person's to cover, and in a build without face redaction (FACE_REDACTION_WIRED), which never
     // reviews at all.
     faces: FaceDetector? = null,
+    // The chats the user muted (ADR 2026-11.sp7k): null in a rig that wires none, which offers no Mute.
+    mutes: ChatMutes? = null,
 ) : ViewModel() {
     // Null by a constant in a build without translation (TRANSLATE_WIRED), so R8 drops every path that reads it.
     private val translation: ChatTranslation? = if (TRANSLATE_WIRED) translation else null
@@ -3422,6 +3427,25 @@ class ChatViewModel(
             settings.unblock(nodeId, peers.find(nodeId)?.deviceTag)
             _events.tryEmit(R.string.chat_user_unblocked)
         }
+    }
+
+    // This chat's mute (ADR 2026-11.sp7k), null in a rig that wires none.
+    private val muteHandle = mutes?.let { ChatMuteHandle(it, conversationId, viewModelScope) }
+
+    /** Whether the overflow offers Mute at all: false in a rig that wires no mutes. */
+    val canMute: Boolean = muteHandle != null
+
+    /** When this chat's mute ends, null while it is not muted ([ChatMuteHandle.mutedUntil]). */
+    val mutedUntil: StateFlow<Long?> = muteHandle?.mutedUntil ?: MutableStateFlow(null)
+
+    /** Mutes this chat's notifications for [span]. */
+    fun mute(span: MuteFor) {
+        muteHandle?.mute(span)
+    }
+
+    /** Ends this chat's mute. */
+    fun unmute() {
+        muteHandle?.unmute()
     }
 
     /**

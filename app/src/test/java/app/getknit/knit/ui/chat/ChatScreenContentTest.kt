@@ -71,6 +71,7 @@ import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.VideoInfo
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.ui.theme.KnitTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -108,6 +109,8 @@ class ChatScreenContentTest {
     private var locationClicks = 0
     private var searches = 0
     private var mediaOpens = 0
+    private val mutePicks = mutableListOf<MuteFor>()
+    private var unmutes = 0
     private var accepts = 0
     private var consentsAccepted = 0
     private var longVideoSends = 0
@@ -137,6 +140,8 @@ class ChatScreenContentTest {
         // Read inside the composition, so a test can swap the state under a running screen (the rows landing).
         liveState: (() -> ChatUiState)? = null,
         onOpenMessageDetails: (String) -> Unit = {},
+        mutedUntil: Long? = null,
+        canMute: Boolean = false,
     ): @androidx.compose.runtime.Composable () -> Unit =
         {
             KnitTheme {
@@ -186,6 +191,10 @@ class ChatScreenContentTest {
                     onHandedJumpConsumed = onHandedJumpConsumed,
                     onSearch = { searches++ },
                     onOpenMedia = { mediaOpens++ },
+                    mutedUntil = mutedUntil,
+                    canMute = canMute,
+                    onMute = { mutePicks += it },
+                    onUnmute = { unmutes++ },
                 )
             }
         }
@@ -1218,6 +1227,47 @@ class ChatScreenContentTest {
         assertTrue("and ahead of Send location", media.top < location.top)
         compose.onNodeWithTag("chat_media").performClick()
         assertEquals(1, mediaOpens)
+    }
+
+    @Test
+    fun anUnmutedChatsOverflowOffersMuteAndItsSpansAndMediaStillFollowsSearch() {
+        compose.setContent(content(input = "", state = ChatUiState(isRoom = false, myNodeId = "me"), canMute = true))
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithTag("chat_unmute").assertDoesNotExist()
+        val search = compose.onNodeWithTag("chat_search").getUnclippedBoundsInRoot()
+        val media = compose.onNodeWithTag("chat_media").getUnclippedBoundsInRoot()
+        assertEquals(search.bottom.value, media.top.value, 0.5f)
+
+        compose.onNodeWithTag("chat_mute").performClick()
+        compose.onNodeWithText("1 hour").assertIsDisplayed()
+        compose.onNodeWithText("7 days").assertIsDisplayed()
+        compose.onNodeWithText("Always").assertIsDisplayed()
+        compose.onNodeWithTag("mute_for_eight_hours").performClick()
+
+        assertEquals(listOf(MuteFor.EIGHT_HOURS), mutePicks)
+        compose.onNodeWithTag("mute_for_eight_hours").assertDoesNotExist()
+    }
+
+    @Test
+    fun aMutedChatsOverflowUnmutesInOneTap() {
+        compose.setContent(
+            content(input = "", state = ChatUiState(isRoom = true, myNodeId = "me"), canMute = true, mutedUntil = Long.MAX_VALUE),
+        )
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithTag("chat_mute").assertDoesNotExist()
+        compose.onNodeWithTag("chat_unmute").performClick()
+
+        assertEquals(1, unmutes)
+        assertTrue(mutePicks.isEmpty())
+        compose.onNodeWithTag("mute_for_hour").assertDoesNotExist()
+    }
+
+    @Test
+    fun aRigWithNoMutesOffersNone() {
+        compose.setContent(content(input = "", state = ChatUiState(isRoom = false, myNodeId = "me")))
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithTag("chat_mute").assertDoesNotExist()
+        compose.onNodeWithTag("chat_unmute").assertDoesNotExist()
     }
 
     @Test

@@ -1072,7 +1072,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   a DM peer id) from `--es from <peerNodeId>` (default the roster's first other member) with `--es text <body>`,
   resolving the conversation the way `InboundPipeline` would — title, photo, and for a photo-less group its
   members' faces (ADR 2026-09.zapp) — so the **shade's avatar** can be checked on the radio-less build, which
-  never runs the pipeline. The reply names the `faces` it sent. Needs `POST_NOTIFICATIONS`
+  never runs the pipeline. The reply names the `faces` it sent. A chat the user muted posts nothing and answers
+  `"muted": true`, as the pipeline's gate would (ADR 2026-11.sp7k). Needs `POST_NOTIFICATIONS`
   (`pm grant app.getknit.knit android.permission.POST_NOTIFICATIONS`); expand the shade with
   `cmd statusbar expand-notifications` and screencap.
 - `…debug.REQNOTIF --ei count N` (default 1, capped) — writes N synthetic **unaccepted inbound DMs** from fresh

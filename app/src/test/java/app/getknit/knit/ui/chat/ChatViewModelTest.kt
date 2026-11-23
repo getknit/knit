@@ -50,6 +50,8 @@ import app.getknit.knit.data.relay.FreeUploadOffer
 import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.RelayFacts
 import app.getknit.knit.data.relay.RelayReach
+import app.getknit.knit.data.settings.ChatMutes
+import app.getknit.knit.data.settings.FakeChatMutes
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
@@ -95,6 +97,7 @@ import app.getknit.knit.mesh.spool.SpoolUploads
 import app.getknit.knit.mesh.spool.TicketKeyJournal
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.moderation.ShippedWordList
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.redact.FaceBox
 import app.getknit.knit.redact.FaceDetector
@@ -152,6 +155,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * The richest ViewModel: a 5-way state combine plus the send double-submit guard and the attach room-vs-DM
@@ -345,6 +349,7 @@ class ChatViewModelTest {
         // Each kind's own facts: null, as the production default for a rig, reads [loraFactsFlow] as its kind's alone.
         loraRooms: Flow<Map<BoardKind, LoraFacts>>? = null,
         faces: FaceDetector? = null,
+        mutes: ChatMutes? = null,
     ) = ChatViewModel(
         conversationId,
         messages,
@@ -384,7 +389,42 @@ class ChatViewModelTest {
         meshcoreNaming = meshcoreNamingFlow,
         meshcoreSharesPosition = meshcoreSharesFlow,
         faces = faces,
+        mutes = mutes,
     )
+
+    // --- Per-chat mute (ADR 2026-11.sp7k) --------------------------------------------------------------------------------
+
+    @Test
+    fun theOverflowsMuteWritesThisChatsDeadlineAndUnmuteClearsIt() =
+        runTest {
+            val mutes = FakeChatMutes()
+            val vm = vm(conversationId = GROUP, mutes = mutes)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.mutedUntil.collect {} }
+            assertTrue(vm.canMute)
+            assertNull(vm.mutedUntil.value)
+
+            val before = System.currentTimeMillis()
+            vm.mute(MuteFor.EIGHT_HOURS)
+            runCurrent()
+            val until = mutes.state.value.getValue(GROUP)
+            // The deadline is eight hours from the moment of the tap, on the wall clock the gate reads.
+            assertTrue(until in (before + MUTE_8H)..(System.currentTimeMillis() + MUTE_8H))
+            assertEquals(until, vm.mutedUntil.value)
+
+            vm.unmute()
+            runCurrent()
+            assertNull(vm.mutedUntil.value)
+            assertEquals(emptyMap<String, Long>(), mutes.state.value)
+        }
+
+    @Test
+    fun aRigWithNoMutesOffersNoMute() =
+        runTest {
+            val vm = vm(conversationId = GROUP)
+            assertFalse(vm.canMute)
+            vm.mute(MuteFor.ALWAYS)
+            assertNull(vm.mutedUntil.value)
+        }
 
     // --- Pinned messages (#42, ADR 2026-10.2r7e) ---------------------------------------------------------------------
 
@@ -4571,6 +4611,7 @@ class ChatViewModelTest {
 
     private companion object {
         const val GROUP = "g-trailhead"
+        val MUTE_8H = TimeUnit.HOURS.toMillis(8)
 
         /** A bound for work on real threads, sized for the one-vCPU runner (testing.md, flake shape 7). */
         const val AWAIT_MS = 10_000L

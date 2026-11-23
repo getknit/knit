@@ -685,6 +685,21 @@
     <string name="chat_list_clear_nearby_confirm_body">Tous les messages du salon À proximité seront supprimés de cet appareil uniquement. Le salon reste dans votre liste des discussions.</string>
     <string name="chat_action_block">Bloquer l’utilisateur</string>
     <string name="chat_action_unblock">Débloquer l’utilisateur</string>
+    <string name="chat_mute">Désactiver les notifications</string>
+    <string name="chat_unmute">Réactiver les notifications</string>
+    <plurals name="chat_mute_for_hours">
+        <item quantity="one">%d heure</item>
+        <item quantity="many">%d heures</item>
+        <item quantity="other">%d heures</item>
+    </plurals>
+    <plurals name="chat_mute_for_days">
+        <item quantity="one">%d jour</item>
+        <item quantity="many">%d jours</item>
+        <item quantity="other">%d jours</item>
+    </plurals>
+    <string name="chat_mute_always">Toujours</string>
+    <string name="chat_muted_until">Notifications désactivées jusqu’à %1$s</string>
+    <string name="chat_muted">Notifications désactivées</string>
     <string name="chat_view_profile">Voir le profil de %1$s</string>
     <string name="chat_view_group_info">Voir les infos du groupe</string>
     <string name="chat_sender_verified">Vous avez vérifié %1$s</string>

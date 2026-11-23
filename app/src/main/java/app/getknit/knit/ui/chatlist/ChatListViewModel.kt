@@ -24,6 +24,7 @@ import app.getknit.knit.data.reaction.ReactionHead
 import app.getknit.knit.data.relay.RelayFacts
 import app.getknit.knit.data.relay.RelayPlane
 import app.getknit.knit.data.relay.planeFor
+import app.getknit.knit.data.settings.ChatMutes
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.TRANSLATE_WIRED
 import app.getknit.knit.identity.Identity
@@ -34,6 +35,8 @@ import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
+import app.getknit.knit.notifications.ChatMute
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.transfer.TransferManager
 import app.getknit.knit.transfer.TransferState
 import app.getknit.knit.ui.ConversationTable
@@ -102,6 +105,9 @@ data class ConversationRow(
     // so it draws the room glyph), but unlike Nearby it *is* clearable: clearing it drops the history, and
     // the row itself stays only while a radio is bound (or history remains).
     val isBridged: Boolean = false,
+    // When this chat's mute ends (ADR 2026-11.sp7k), null while it is not muted: the row draws the muted mark and a quiet
+    // badge. Already judged live upstream (`ChatMute.active`), so a lapsed mute is null here.
+    val mutedUntil: Long? = null,
 )
 
 /** The mark a row draws ahead of its preview line ([ConversationRow.previewMark]). */
@@ -194,6 +200,9 @@ class ChatListViewModel(
     // Who has read our newest message in each thread (ADR 2026-11.z6jw). Nullable and last for the same reason
     // as [commons]; null reads as "nobody has read anything", so the tick stays at ✓✓.
     private val receipts: MessageReceiptRepository? = null,
+    // The chats the user muted (ADR 2026-11.sp7k). Nullable and last for the same reason as [commons]; null marks no row
+    // muted and offers no Mute.
+    private val mutes: ChatMutes? = null,
 ) : ViewModel() {
     private val myNodeId = MutableStateFlow<String?>(null)
 
@@ -219,6 +228,8 @@ class ChatListViewModel(
         val showTranslations: Boolean = false,
         /** Our DMs whose LoRa copy their radio acked (`MeshController.loraRadioReached`, ADR 040's 2026-10-31 amendment). */
         val radioReached: Map<String, LoraRadioReached> = emptyMap(),
+        /** The live mutes, conversation id → when each ends (ADR 2026-11.sp7k). */
+        val mutes: Map<String, Long> = emptyMap(),
     )
 
     // Neighbor count + radio health + the (already-dismissal-aware) banner + Internet-plane state, folded
@@ -265,14 +276,22 @@ class ChatListViewModel(
         val radioReached: Map<String, LoraRadioReached>,
     )
 
-    // Grouped for the same reason: the joined commons, whether content filtering hides a flagged preview, and
-    // whether Translation is on.
+    // Grouped for the same reason: the joined commons, whether content filtering hides a flagged preview, whether
+    // Translation is on, and the live mutes.
     private val roomsAndFilters =
         combine(
             commons?.observeAll() ?: flowOf(emptyList()),
             settings.contentFilteringEnabled.distinctUntilChanged(),
             translationOn.distinctUntilChanged(),
-        ) { rooms, hideFlagged, translated -> Triple(rooms, hideFlagged, translated) }
+            mutes?.let { ChatMute.active(it.mutedUntil, System::currentTimeMillis) } ?: flowOf(emptyMap()),
+        ) { rooms, hideFlagged, translated, muted -> RoomsAndFilters(rooms, hideFlagged, translated, muted) }
+
+    private data class RoomsAndFilters(
+        val rooms: List<CommonsEntity>,
+        val hideFlagged: Boolean,
+        val translated: Boolean,
+        val mutes: Map<String, Long>,
+    )
 
     // Per-thread summaries for every conversation, blocked senders left out of each (so a blocked peer's
     // message never becomes a row's preview, and their DM thread is dropped below).
@@ -287,18 +306,19 @@ class ChatListViewModel(
             draftsAndTransfers,
             messages.observeNewestOriginChannel(Conversations.MESHTASTIC).distinctUntilChanged(),
             roomsAndFilters,
-        ) { accepted, groupList, threads, channel, (rooms, hideFlagged, translated) ->
+        ) { accepted, groupList, threads, channel, filters ->
             ListInputs(
                 accepted,
                 groupList,
                 threads.drafts,
                 threads.transfers,
                 channel,
-                rooms,
-                hideFlagged,
+                filters.rooms,
+                filters.hideFlagged,
                 threads.reactions,
-                showTranslations = translated,
+                showTranslations = filters.translated,
                 radioReached = threads.radioReached,
+                mutes = filters.mutes,
             )
         }
 
@@ -540,6 +560,27 @@ class ChatListViewModel(
      */
     fun startMesh() {
         viewModelScope.launch { settings.setMeshEnabled(true) }
+    }
+
+    /** Whether a row's menu offers Mute at all: false in a rig that wires no mutes. */
+    val canMute: Boolean = mutes != null
+
+    /** Mutes [conversationId]'s notifications for [span] (ADR 2026-11.sp7k); the row's mark follows from the store. */
+    fun mute(
+        conversationId: String,
+        span: MuteFor,
+    ) {
+        val store = mutes ?: return
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            store.mute(conversationId, span.deadline(now), now)
+        }
+    }
+
+    /** Ends [conversationId]'s mute. */
+    fun unmute(conversationId: String) {
+        val store = mutes ?: return
+        viewModelScope.launch { store.unmute(conversationId) }
     }
 
     /**

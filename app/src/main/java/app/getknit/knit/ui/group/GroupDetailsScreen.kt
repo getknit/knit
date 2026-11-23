@@ -55,10 +55,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.TextLimits
 import app.getknit.knit.clampToUtf16
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.FullscreenImageViewer
 import app.getknit.knit.ui.components.GroupAvatar
+import app.getknit.knit.ui.components.MuteNotificationsRow
 import app.getknit.knit.ui.components.PeerNameText
 import app.getknit.knit.ui.components.noAutofillMenu
 import app.getknit.knit.ui.components.peerBadge
@@ -102,6 +104,7 @@ fun GroupDetailsScreen(
 
     // Group-photo pick → crop → save, mirroring the profile-avatar flow (and the old chat header path).
     val groupPhotoCropTarget by viewModel.groupPhotoCropTarget.collectAsStateWithLifecycle()
+    val mutedUntil by viewModel.mutedUntil.collectAsStateWithLifecycle()
     val groupPhotoPicker =
         rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
             uri?.let(viewModel::pickGroupPhoto)
@@ -127,6 +130,10 @@ fun GroupDetailsScreen(
         },
         onRename = viewModel::renameGroup,
         onLeave = viewModel::leaveGroup,
+        mutedUntil = mutedUntil,
+        canMute = viewModel.canMute,
+        onMute = viewModel::mute,
+        onUnmute = viewModel::unmute,
     )
 }
 
@@ -139,6 +146,11 @@ internal fun GroupDetailsScreenContent(
     onSetPhoto: () -> Unit,
     onRename: (name: String) -> Unit,
     onLeave: () -> Unit,
+    // The group's mute (ADR 2026-11.sp7k): when it ends, null while unmuted. Defaulted (no row) for previews and tests.
+    mutedUntil: Long? = null,
+    canMute: Boolean = false,
+    onMute: (MuteFor) -> Unit = {},
+    onUnmute: () -> Unit = {},
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
@@ -250,6 +262,17 @@ internal fun GroupDetailsScreenContent(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
+
+            if (canMute) {
+                MuteNotificationsRow(
+                    mutedUntil = mutedUntil,
+                    now = remember(mutedUntil) { System.currentTimeMillis() },
+                    onMute = onMute,
+                    onUnmute = onUnmute,
+                    // The column is padded already.
+                    horizontalPadding = 0.dp,
+                )
+            }
 
             HorizontalDivider()
 

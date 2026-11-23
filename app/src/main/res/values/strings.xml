@@ -837,6 +837,24 @@
     <string name="chat_list_clear_nearby_confirm_body">All Nearby messages will be removed from this device only. The room stays in your chat list.</string>
     <string name="chat_action_block">Block user</string>
     <string name="chat_action_unblock">Unblock user</string>
+    <!-- Per-chat mute (ADR 2026-11.sp7k): the chat's menu item, the dialog's title and the details screens' row. -->
+    <string name="chat_mute">Mute notifications</string>
+    <string name="chat_unmute">Unmute notifications</string>
+    <!-- The mute dialog's spans name MuteFor's numbers: 1 and 8 hours, 1 and 7 days. -->
+    <plurals name="chat_mute_for_hours">
+        <item quantity="one">%d hour</item>
+        <item quantity="other">%d hours</item>
+    </plurals>
+    <plurals name="chat_mute_for_days">
+        <item quantity="one">%d day</item>
+        <item quantity="other">%d days</item>
+    </plurals>
+    <!-- The mute dialog's last span: muted until the user unmutes. -->
+    <string name="chat_mute_always">Always</string>
+    <!-- %1$s is when a timed mute ends, in the phone's time format: "3:15 PM", "Tue 3:15 PM" or "Nov 29, 3:15 PM". -->
+    <string name="chat_muted_until">Muted until %1$s</string>
+    <!-- A chat muted with no end; also what a screen reader says of a muted chat in the list. -->
+    <string name="chat_muted">Muted</string>
     <string name="chat_view_profile">View %1$s\'s profile</string>
     <string name="chat_view_group_info">View group info</string>
     <string name="chat_sender_verified">You verified %1$s</string>

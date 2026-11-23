@@ -7,9 +7,12 @@ import app.getknit.knit.R
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.relay.RelayFacts
+import app.getknit.knit.data.settings.ChatMutes
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.spool.SpoolUrl
+import app.getknit.knit.notifications.ChatMuteHandle
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.ui.group.GroupMemberRow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -52,6 +55,8 @@ class CommonsDetailsViewModel(
     relayFacts: Flow<RelayFacts>,
     identity: Identity,
     context: Context,
+    // The chats the user muted (ADR 2026-11.sp7k): null in a rig that wires none, which offers no Mute.
+    private val mutes: ChatMutes? = null,
 ) : ViewModel() {
     private val me = MutableStateFlow<String?>(null)
 
@@ -62,6 +67,23 @@ class CommonsDetailsViewModel(
 
     init {
         viewModelScope.launch { me.value = identity.nodeId() }
+    }
+
+    // This chat's mute (ADR 2026-11.sp7k), null in a rig that wires none.
+    private val muteHandle = mutes?.let { ChatMuteHandle(it, conversationId, viewModelScope) }
+
+    /** Whether the screen offers Mute at all: false in a rig that wires no mutes. */
+    val canMute: Boolean = muteHandle != null
+
+    /** When the room's mute ends, null while it is not muted ([ChatMuteHandle.mutedUntil]). */
+    val mutedUntil: StateFlow<Long?> = muteHandle?.mutedUntil ?: MutableStateFlow(null)
+
+    fun mute(span: MuteFor) {
+        muteHandle?.mute(span)
+    }
+
+    fun unmute() {
+        muteHandle?.unmute()
     }
 
     val state: StateFlow<CommonsDetailsUiState> =
@@ -109,6 +131,8 @@ class CommonsDetailsViewModel(
         val store = commons ?: return
         viewModelScope.launch {
             store.leave(conversationId)
+            // A mute of the room just left goes with it (ADR 2026-11.sp7k).
+            mutes?.unmute(conversationId)
             meshManager.refreshRelays()
             _left.tryEmit(Unit)
         }

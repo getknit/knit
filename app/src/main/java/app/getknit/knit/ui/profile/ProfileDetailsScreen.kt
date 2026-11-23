@@ -83,6 +83,7 @@ import app.getknit.knit.badge.Badges
 import app.getknit.knit.badge.VerifiedBadge
 import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.mesh.IntroState
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.ui.Reach
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.BadgeMark
@@ -93,6 +94,7 @@ import app.getknit.knit.ui.components.DetailRow
 import app.getknit.knit.ui.components.FullscreenImageViewer
 import app.getknit.knit.ui.components.GroupAvatar
 import app.getknit.knit.ui.components.LocalPeerBadges
+import app.getknit.knit.ui.components.MuteNotificationsRow
 import app.getknit.knit.ui.components.PeerNameText
 import app.getknit.knit.ui.components.SectionHeader
 import app.getknit.knit.ui.components.peerBadge
@@ -138,6 +140,7 @@ fun ProfileDetailsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val scanResult by viewModel.scanResult.collectAsStateWithLifecycle()
+    val mutedUntil by viewModel.mutedUntil.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
     // Outside the scanner branch below, so a removal that lands while the scanner is up still closes.
@@ -187,6 +190,10 @@ fun ProfileDetailsScreen(
             onRemoveContact = viewModel::removeContact,
             onMarkVerified = viewModel::markVerified,
             onClearVerification = viewModel::clearVerification,
+            mutedUntil = mutedUntil,
+            canMute = viewModel.canMute,
+            onMute = viewModel::mute,
+            onUnmute = viewModel::unmute,
         )
     }
 }
@@ -213,6 +220,11 @@ internal fun ProfileDetailsScreenContent(
     // in a profile a release build has no radio for, and a line about a feature that isn't there is noise.
     // A parameter rather than a bare BuildConfig read so the hidden case is previewable and testable.
     showLoraRadio: Boolean = BuildConfig.LORA_PLANE,
+    // The DM's mute (ADR 2026-11.sp7k): when it ends, null while unmuted. Defaulted (no row) for previews and tests.
+    mutedUntil: Long? = null,
+    canMute: Boolean = false,
+    onMute: (MuteFor) -> Unit = {},
+    onUnmute: () -> Unit = {},
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var showAvatarFullscreen by remember { mutableStateOf(false) }
@@ -329,6 +341,14 @@ internal fun ProfileDetailsScreenContent(
                 }
             }
 
+            if (canMute) {
+                MuteNotificationsRow(
+                    mutedUntil = mutedUntil,
+                    now = remember(mutedUntil) { System.currentTimeMillis() },
+                    onMute = onMute,
+                    onUnmute = onUnmute,
+                )
+            }
             InCommonSection(state.inCommon.groups, onOpenGroup = onOpenGroup)
             DetailsSection(state = state, showLoraRadio = showLoraRadio, snackbarHostState = snackbarHostState)
 

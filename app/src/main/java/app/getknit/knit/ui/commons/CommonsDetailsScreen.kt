@@ -37,7 +37,9 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.ui.components.BarTitle
+import app.getknit.knit.ui.components.MuteNotificationsRow
 import app.getknit.knit.ui.components.RoomAvatar
 import app.getknit.knit.ui.group.GroupMemberRow
 import app.getknit.knit.ui.group.MemberRow
@@ -62,6 +64,7 @@ fun CommonsDetailsScreen(
     viewModel: CommonsDetailsViewModel = koinViewModel { parametersOf(conversationId) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val mutedUntil by viewModel.mutedUntil.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { viewModel.left.collect { onLeft() } }
     LaunchedEffect(state.exists) { if (!state.exists) onLeft() }
     CommonsDetailsScreenContent(
@@ -69,6 +72,10 @@ fun CommonsDetailsScreen(
         onBack = onBack,
         onOpenMemberProfile = onOpenMemberProfile,
         onLeave = viewModel::leave,
+        mutedUntil = mutedUntil,
+        canMute = viewModel.canMute,
+        onMute = viewModel::mute,
+        onUnmute = viewModel::unmute,
     )
 }
 
@@ -79,6 +86,11 @@ internal fun CommonsDetailsScreenContent(
     onBack: () -> Unit,
     onOpenMemberProfile: (nodeId: String) -> Unit,
     onLeave: () -> Unit,
+    // The room's mute (ADR 2026-11.sp7k): when it ends, null while unmuted. Defaulted (no row) for previews and tests.
+    mutedUntil: Long? = null,
+    canMute: Boolean = false,
+    onMute: (MuteFor) -> Unit = {},
+    onUnmute: () -> Unit = {},
 ) {
     var showLeaveConfirm by remember { mutableStateOf(false) }
 
@@ -125,6 +137,17 @@ internal fun CommonsDetailsScreenContent(
                     color = MaterialTheme.colorScheme.error,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.testTag("commons_details_stale"),
+                )
+            }
+
+            if (canMute) {
+                MuteNotificationsRow(
+                    mutedUntil = mutedUntil,
+                    now = remember(mutedUntil) { System.currentTimeMillis() },
+                    onMute = onMute,
+                    onUnmute = onUnmute,
+                    // The column is padded already.
+                    horizontalPadding = 0.dp,
                 )
             }
 

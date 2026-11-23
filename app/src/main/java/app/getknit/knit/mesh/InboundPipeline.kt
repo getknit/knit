@@ -121,6 +121,7 @@ import app.getknit.knit.mesh.spool.ScopeSync
 import app.getknit.knit.mesh.spool.SpoolUrl
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.normalizeSingleLine
+import app.getknit.knit.notifications.ChatMute
 import app.getknit.knit.notifications.ConversationFaces
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.incomingNotification
@@ -5213,6 +5214,8 @@ class InboundPipeline(
         // A reaction's line key ([reactionNotificationKey]): a later change replaces the line in place.
         key: String? = null,
     ) {
+        // A muted chat stores and counts the post as ever; only the shade is spared (ADR 2026-11.sp7k).
+        if (muted(conversationId, personalMention = false)) return
         val me = identity.nodeId()
         val peer = peers.find(env.senderId)
         // Collision-aware (ADR 058): "Alice (JoyfulFerret)" when another known peer is also an Alice.
@@ -5439,6 +5442,8 @@ class InboundPipeline(
         origin: MeshPostOrigin? = null,
     ) {
         val me = identity.nodeId()
+        // A mention of this person by name gets through a muted group or commons; `@everyone` does not (ADR 2026-11.sp7k).
+        if (muted(conversationId, ChatMute.personalMention(content.mentions, me))) return
         val peer = peers.find(env.senderId)
         // Collision-aware (ADR 058): "Alice (JoyfulFerret)" when another known peer is also an Alice.
         val labels = peers.labelIndex()
@@ -5460,6 +5465,18 @@ class InboundPipeline(
         val selfAvatar = settings.ownAvatarHash.first()?.let { blobs.bytes(it) }
         notifier.notifyMention(incoming, conversation, me, settings.displayName.first(), selfAvatar)
     }
+
+    /** Whether the user's mute of [conversationId] keeps this notification off the shade now ([ChatMute.silences]). */
+    private suspend fun muted(
+        conversationId: String,
+        personalMention: Boolean,
+    ): Boolean =
+        ChatMute.silences(
+            until = settings.chatMutedUntil.first()[conversationId],
+            now = clock(),
+            personalMention = personalMention,
+            kind = Conversations.kindFor(conversationId),
+        )
 
     /**
      * Pins an inbound peer's profile (self-cert check → last-writer-wins → immutable-pin guard → upsert),

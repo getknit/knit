@@ -44,6 +44,7 @@ import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.receipt.MessageReceiptEntity
 import app.getknit.knit.data.scopeconfig.ScopeConfigRepository
+import app.getknit.knit.data.settings.ChatMutes
 import app.getknit.knit.data.settings.InboundSettings
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.IdentitySource
@@ -127,6 +128,7 @@ import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.meshcoreReactionKey
 import app.getknit.knit.notifications.reactionNotificationKey
 import app.getknit.knit.transfer.TransferNotice
+import app.getknit.knit.ui.chat.EVERYONE_NAME
 import com.google.crypto.tink.InsecureSecretKeyAccess
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
@@ -240,6 +242,8 @@ class InboundPipelineTest {
         val accepted = MutableStateFlow(emptySet<String>())
         override val acceptedConversations get() = accepted
         override val typingIndicatorsEnabled = MutableStateFlow(true)
+        val muted = MutableStateFlow(emptyMap<String, Long>())
+        override val chatMutedUntil get() = muted
 
         override suspend fun block(
             nodeId: String,
@@ -768,10 +772,11 @@ class InboundPipelineTest {
             id: String,
             body: String,
             replyTo: ReplyRef? = null,
+            mentions: List<Mention> = emptyList(),
         ): RelayEnvelope {
             val header = MessageCrypto.header(id, author.nodeId, 5L, to.nodeId)
-            val enc =
-                author.crypto.seal(MessageContent(body = body, replyTo = replyTo).encode(), header, mapOf(to.nodeId to to.bundle))!!
+            val content = MessageContent(body = body, replyTo = replyTo, mentions = mentions)
+            val enc = author.crypto.seal(content.encode(), header, mapOf(to.nodeId to to.bundle))!!
             return RelayEnvelope(
                 type = FrameType.CHAT,
                 id = id,
@@ -5325,6 +5330,152 @@ class InboundPipelineTest {
             coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
         }
 
+    // --- per-chat mute (ADR 2026-11.sp7k): the shade is spared, nothing else moves ---
+
+    @Test
+    fun aMutedDmIsStoredAndAckedButNotNotified() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId)
+            rig.settings.muted.value = mapOf(alice.nodeId to ChatMutes.ALWAYS)
+
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "dm-muted", body = "quiet please"))
+
+            assertEquals("quiet please", rig.msgMap["dm-muted"]?.body)
+            assertTrue("a muted DM still acks", rig.originated.any { it.type == FrameType.RECEIPT })
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { rig.notifier.notifyMention(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aMuteThatHasLapsedNotifiesAsBefore() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId)
+            // Ends exactly now on the pipeline's clock: a deadline not ahead of the clock is no mute.
+            rig.settings.muted.value = mapOf(alice.nodeId to rig.nowMs)
+
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "dm-lapsed", body = "back again"))
+
+            coVerify(exactly = 1) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aMuteOfAnotherChatLeavesThisOneNotifying() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId)
+            rig.settings.muted.value = mapOf("someone-else" to ChatMutes.ALWAYS)
+
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "dm-other", body = "hi"))
+
+            coVerify(exactly = 1) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aMutedDmIsNotBrokenByAMentionOfUs() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId)
+            rig.settings.muted.value = mapOf(alice.nodeId to ChatMutes.ALWAYS)
+
+            rig.deliver(
+                alice,
+                rig.dmChat(alice, rig.self, id = "dm-at", body = "@me look", mentions = listOf(Mention(rig.self.nodeId, "Me"))),
+            )
+
+            assertEquals("@me look", rig.msgMap["dm-at"]?.body)
+            coVerify(exactly = 0) { rig.notifier.notifyMention(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aMutedGroupStillNotifiesAMentionOfUsByName() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val group = rig.group(members = listOf(rig.self.nodeId, alice.nodeId), createdBy = alice.nodeId, name = "Crew")
+            rig.settings.accepted.value = setOf(group.id)
+            rig.settings.muted.value = mapOf(group.id to ChatMutes.ALWAYS)
+
+            rig.deliver(alice, rig.groupChat(alice, group, id = "gm-plain", body = "lunch?"))
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+
+            val mention = listOf(Mention(nodeId = rig.self.nodeId, name = "Me"))
+            rig.deliver(alice, rig.groupChat(alice, group, id = "gm-at", body = "@Me you in?", mentions = mention))
+            coVerify(exactly = 1) { rig.notifier.notifyMention(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aMutedGroupHoldsAgainstEveryone() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val members = listOf(alice.nodeId, rig.self.nodeId, "other1")
+            val group = rig.group(members = members, createdBy = alice.nodeId, name = "Crew")
+            rig.settings.accepted.value = setOf(group.id)
+            rig.settings.muted.value = mapOf(group.id to ChatMutes.ALWAYS)
+            val everyone = (members - alice.nodeId).map { Mention(nodeId = it, name = EVERYONE_NAME) }
+
+            rig.deliver(alice, rig.groupChat(alice, group, id = "gm-ev", body = "@everyone standup", mentions = everyone))
+
+            assertEquals("@everyone standup", rig.msgMap["gm-ev"]?.body)
+            coVerify(exactly = 0) { rig.notifier.notifyMention(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aReactionInAMutedDmIsAppliedButNotNotified() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.ownMessage("mine", conversationId = alice.nodeId)
+            rig.settings.muted.value = mapOf(alice.nodeId to ChatMutes.ALWAYS)
+
+            rig.deliver(alice, rig.reaction(alice, messageId = "mine", emoji = "👍"))
+
+            coVerify(exactly = 1) { rig.reactions.apply(ReactionEntity("mine", alice.nodeId, "👍", 7L)) }
+            assertTrue(rig.postedLines().isEmpty())
+        }
+
+    @Test
+    fun aMutedDmStillRingsAndStillOffersAFile() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId)
+            rig.settings.muted.value = mapOf(alice.nodeId to ChatMutes.ALWAYS)
+            val author = V2Author(alice, rig)
+            val offer = CallPayload(id = "c-m", ph = CallPayload.PHASE_OFFER, sdp = "v=0")
+
+            rig.deliver(alice, author.dm("cl-m", "", ctl = MessageContent.CTL_CALL, cl = offer, sentAt = 7L))
+            rig.deliver(alice, author.dm("xf-m", "", ctl = MessageContent.CTL_TRANSFER, xf = offerPayload("t-m"), sentAt = 8L))
+
+            assertEquals(listOf(Triple(alice.nodeId, offer, 7L)), rig.callSignals)
+            coVerify(exactly = 1) {
+                rig.notifier.notifyTransferOffer(
+                    peerId = alice.nodeId,
+                    peerName = any(),
+                    peerAvatarBytes = any(),
+                    fileName = "clip.mp4",
+                    sizeBytes = 2_500_000L,
+                )
+            }
+        }
+
     // --- voice-call signaling (CTL_CALL, call/CallManager; experimental) ---
 
     @Test
@@ -6822,6 +6973,27 @@ class InboundPipelineTest {
             rig.ackSync.retryPending()
 
             assertEquals(listOf(alice.nodeId to listOf("cp1")), escalated)
+        }
+
+    /** The commons half of the per-chat mute's mention rule (ADR 2026-11.sp7k), driven through the room's own door. */
+    @Test
+    fun aMutedCommonsStillNotifiesAMentionOfUsByNameAndNothingElse() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.muted.value = mapOf(room to ChatMutes.ALWAYS)
+
+            rig.pipeline.deliverCommonsPost(commonsEnv(alice, "cp1", "dinner at 7?"), ChatContent(body = "dinner at 7?"), room)
+            advanceUntilIdle()
+            assertNotNull("a muted room still stores the post", rig.msgMap["cp1"])
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+
+            val mention = ChatContent(body = "@Me you in?", mentions = listOf(Mention(nodeId = rig.self.nodeId, name = "Me")))
+            rig.pipeline.deliverCommonsPost(commonsEnv(alice, "cp2", "@Me you in?"), mention, room)
+            advanceUntilIdle()
+            coVerify(exactly = 1) { rig.notifier.notifyMention(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
         }
 
     @Test

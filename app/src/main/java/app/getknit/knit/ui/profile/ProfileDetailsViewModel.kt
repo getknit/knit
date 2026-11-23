@@ -20,6 +20,7 @@ import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.message.groupFaces
 import app.getknit.knit.data.message.groupTitle
 import app.getknit.knit.data.peer.MetPeerRepository
+import app.getknit.knit.data.settings.ChatMutes
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
@@ -34,6 +35,8 @@ import app.getknit.knit.mesh.meshNodeLabel
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.spool.SpoolStatus
 import app.getknit.knit.mesh.spool.spoolPresentPeers
+import app.getknit.knit.notifications.ChatMuteHandle
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.ui.Reach
 import app.getknit.knit.ui.contacts.ContactStanding
 import app.getknit.knit.ui.contacts.contactStanding
@@ -208,6 +211,8 @@ class ProfileDetailsViewModel(
     private val calls: CallManager? = null,
     // Pinned messages (ADR 2026-10.2r7e): blocking this peer unpins what they sent. Null in a rig that wires none.
     private val pins: PinRepository? = null,
+    // The chats the user muted (ADR 2026-11.sp7k): null in a rig that wires none, which offers no Mute.
+    mutes: ChatMutes? = null,
 ) : ViewModel() {
     private val me = MutableStateFlow<MyIdentity?>(null)
 
@@ -429,6 +434,23 @@ class ProfileDetailsViewModel(
     /** Unblocks this peer, restoring their (never-deleted) message history. */
     fun unblock() {
         viewModelScope.launch { settings.unblock(nodeId, peerDeviceTag) }
+    }
+
+    // This chat's mute (ADR 2026-11.sp7k), null in a rig that wires none.
+    private val muteHandle = mutes?.let { ChatMuteHandle(it, nodeId, viewModelScope) }
+
+    /** Whether the screen offers Mute at all: false in a rig that wires no mutes. */
+    val canMute: Boolean = muteHandle != null
+
+    /** When the DM's mute ends, null while it is not muted ([ChatMuteHandle.mutedUntil]). */
+    val mutedUntil: StateFlow<Long?> = muteHandle?.mutedUntil ?: MutableStateFlow(null)
+
+    fun mute(span: MuteFor) {
+        muteHandle?.mute(span)
+    }
+
+    fun unmute() {
+        muteHandle?.unmute()
     }
 
     /**

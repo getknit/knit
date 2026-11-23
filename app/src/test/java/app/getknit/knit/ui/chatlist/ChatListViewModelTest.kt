@@ -19,6 +19,8 @@ import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.relay.RelayFacts
+import app.getknit.knit.data.settings.ChatMutes
+import app.getknit.knit.data.settings.FakeChatMutes
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
@@ -32,6 +34,7 @@ import app.getknit.knit.mesh.lora.BoardKind
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.moderation.ShippedWordList
+import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.ui.InMemoryMessages
 import app.getknit.knit.ui.chat.DeliveryStatus
 import app.getknit.knit.ui.directoryOf
@@ -173,6 +176,60 @@ class ChatListViewModelTest {
             commons,
             loraRooms = loraRoomsFlow,
         )
+
+    // Always, never a timed span: a live timed mute re-checks its deadline every minute against the wall clock, which
+    // the virtual one never moves, so `advanceUntilIdle` would never come back. `ChatMuteTest` pins the lapse.
+    @Test
+    fun aMutedChatsRowCarriesItsMuteAndTheMenuChangesIt() =
+        runTest {
+            val mutes = FakeChatMutes(mapOf(Conversations.NEARBY to ChatMutes.ALWAYS))
+            val vm =
+                ChatListViewModel(
+                    messages,
+                    peers,
+                    settings,
+                    identity,
+                    mesh,
+                    groups,
+                    drafts,
+                    mockk(relaxed = true) { every { states } returns MutableStateFlow(emptyMap()) },
+                    relayFlow,
+                    loraFlow,
+                    context,
+                    commons,
+                    mutes = mutes,
+                )
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+            assertTrue(vm.canMute)
+
+            fun nearby() =
+                vm.state.value.conversations
+                    .single { it.id == Conversations.NEARBY }
+            assertEquals(ChatMutes.ALWAYS, nearby().mutedUntil)
+
+            vm.unmute(Conversations.NEARBY)
+            advanceUntilIdle()
+            assertNull(nearby().mutedUntil)
+            assertEquals(emptyMap<String, Long>(), mutes.state.value)
+
+            vm.mute(Conversations.NEARBY, MuteFor.ALWAYS)
+            advanceUntilIdle()
+            assertEquals(ChatMutes.ALWAYS, nearby().mutedUntil)
+        }
+
+    @Test
+    fun aListWithNoMutesWiredMarksNothingAndOffersNoMute() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+            assertFalse(vm.canMute)
+            assertTrue(
+                vm.state.value.conversations
+                    .all { it.mutedUntil == null },
+            )
+        }
 
     @Test
     fun eachBridgedRoomsRowFollowsItsOwnKind() =

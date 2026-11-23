@@ -1,5 +1,8 @@
 package app.getknit.knit.ui.group
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -51,5 +54,26 @@ class GroupDetailsScreenContentTest {
         compose.onNodeWithTag("group_member_a").assertIsDisplayed()
         compose.onNodeWithTag("group_member_a").performClick()
         assertEquals("a", opened)
+    }
+
+    @Test
+    fun theMuteRowShowsOnlyWhereMutesAreWired() {
+        var canMute by mutableStateOf(false)
+        compose.setContent {
+            KnitTheme {
+                GroupDetailsScreenContent(
+                    state = state(),
+                    onBack = {},
+                    onOpenMemberProfile = {},
+                    onSetPhoto = {},
+                    onRename = {},
+                    onLeave = {},
+                    canMute = canMute,
+                )
+            }
+        }
+        compose.onNodeWithTag("mute_notifications_row").assertDoesNotExist()
+        canMute = true
+        compose.onNodeWithTag("mute_notifications_row").assertIsDisplayed()
     }
 }
