@@ -2129,6 +2129,33 @@ class BlobHolderQueryTest {
         }
 
     /**
+     * #212: a budget is clamped at 0 before the hop is spent, so an ask whose `pull` is negative — `Int.MIN_VALUE`, which
+     * wrapped to `Int.MAX_VALUE` — is a fetch only, as one with 0 is: no want, and nobody asked to pull it through.
+     */
+    @Test
+    fun anAskWithANegativePullIsAFetchOnlyAndNeverWrapsToABudget() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val b = Node("b", backgroundScope)
+            val c = Node("c", backgroundScope)
+            b.transport.connect(a.transport)
+            b.transport.connect(c.transport)
+
+            for ((i, pull) in listOf(Int.MIN_VALUE, -1, 0).withIndex()) {
+                val hash = sha256Hex(picture(2_000 + i))
+                c.store.lying[hash] = 2_000L // c answers b's query as a holder, so any want of b's would ask it
+                b.exchange.onRequest(hash, "a", pull = pull)
+                assertTrue("pull = $pull makes no want", hash !in b.exchange.wantedHashes())
+                assertTrue("and asks nobody for it: ${c.asksFrom(hash)}", c.asksFrom(hash).isEmpty())
+            }
+            assertEquals(
+                "each declined as a fetch only",
+                3,
+                b.events.count { it == BlobExchange.BlobEvent.EchoDeclined },
+            )
+        }
+
+    /**
      * #282: a carrier's pull-through ask for a message request's attachment, once its own deferral has ended, must not make
      * the recipient fetch what the user has not accepted. The ask is declined as a past-deadline one is; one for any other
      * blob is pulled through as before.

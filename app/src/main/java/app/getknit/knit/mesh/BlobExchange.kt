@@ -2915,9 +2915,10 @@ class BlobExchange(
     /**
      * The budget a want made for an ask that allowed [pull] has: one hop less, an ask no newer than this build's own
      * [PULL_BUDGET] counted at that, and an ask with no field — an older build's, the iOS port's today — counted as 1, a
-     * fetch only (#195). Negative when the ask allowed none: such an ask makes no want.
+     * fetch only (#195). Negative when the ask allowed none: such an ask makes no want. A negative [pull] is clamped to 0
+     * before the hop is spent, so `Int.MIN_VALUE` never wraps to a budget past [PULL_BUDGET] (#212).
      */
-    private fun budgetOf(pull: Int?): Int = if (pullBudgets) minOf(pull ?: 1, PULL_BUDGET) - 1 else PULL_BUDGET
+    private fun budgetOf(pull: Int?): Int = if (pullBudgets) (pull ?: 1).coerceIn(0, PULL_BUDGET) - 1 else PULL_BUDGET
 
     /** Oldest-wanted-first snapshot of the fetching hashes, copied under the lock so callers iterate safely. */
     private fun snapshotFetching(): List<String> = synchronized(lock) { fetching.keys.toList() }
