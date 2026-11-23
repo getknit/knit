@@ -4,8 +4,14 @@ import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import app.getknit.knit.identity.Alias
+import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.moderation.NameScreen
+import app.getknit.knit.moderation.ShownNames
 import app.getknit.knit.ui.chat.EVERYONE_NAME
+import app.getknit.knit.ui.chat.MAX_VOUCHED_IDS
+import app.getknit.knit.ui.chat.MAX_VOUCHED_NAME
 import app.getknit.knit.ui.chat.MentionCandidate
 import app.getknit.knit.ui.chat.MentionEdit
 import app.getknit.knit.ui.chat.activeMentionQuery
@@ -19,6 +25,9 @@ import app.getknit.knit.ui.chat.matchesEveryone
 import app.getknit.knit.ui.chat.mentionSpans
 import app.getknit.knit.ui.chat.mentionsStillIn
 import app.getknit.knit.ui.chat.snapOutOfChips
+import app.getknit.knit.ui.chat.vouchedMentions
+import app.getknit.knit.ui.directoryOf
+import app.getknit.knit.ui.peer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -380,5 +389,134 @@ class MentionTextTest {
         assertEquals(pending, mentionsStillIn("@everyone and @Carol", pending))
         assertEquals(listOf(Mention("c", "Carol")), mentionsStillIn("hi @Carol", pending))
         assertEquals(emptyList<Mention>(), mentionsStillIn("hi all", pending))
+    }
+
+    // --- vouchedMentions (ADR 2026-11.p6dk) ---
+
+    @Test
+    fun everyVouchCaseKeepsAndStylesWhatTheContractStates() {
+        for (case in MentionVouchCases.CASES) {
+            val vouched = case.vouched()
+            assertEquals(case.label, case.kept.map { case.mentions[it] }, vouched)
+            assertEquals(case.label, case.styled, case.spans().map { case.body.substring(it.start, it.end) })
+        }
+    }
+
+    @Test
+    fun theVouchDirectoriesLabelAsTheContractStates() {
+        val c = MentionVouchCases
+        val plain = c.PLAIN.peerDirectory
+        assertEquals(
+            listOf("Walter", "Alice", "Bob", Alias.aliasFor(c.G), Alias.aliasFor(c.U)),
+            c.PLAIN.labelled.map { plain.label(it).text },
+        )
+        val clash = c.CLASH.peerDirectory
+        assertEquals("Alice (${Alias.aliasFor(c.A)})", clash.label(c.A).text)
+        assertEquals("Alic\u0435 (${Alias.aliasFor(c.X)})", clash.label(c.X).text)
+        assertEquals("Walter", clash.label(c.W).text)
+    }
+
+    @Test
+    fun aKeptTokenInsideADroppedOneIsStyledAtItsOwnLength() {
+        val case = MentionVouchCases.CASES.single { it.body == "@Alice (zz) hi" }
+        assertEquals(listOf(TextRange(0, 6)), case.spans())
+    }
+
+    @Test
+    fun aNameTheContentFilterHidesDrawsPlainAndItsAliasIsKept() {
+        val screen = ShownNames(NameScreen(emptyList(), listOf("fuck"), emptyList(), emptyList(), emptyList()))
+        val flagged = NodeId.derive("mention-vouch-flagged")
+        val dir = directoryOf(listOf(peer(flagged, "Fuck")), me = MentionVouchCases.W, myName = "Walter", screen = screen)
+        val alias = Alias.aliasFor(flagged)
+        val mentions = listOf(Mention(flagged, "Fuck"), Mention(flagged, alias))
+        val kept = vouchedMentions(mentions, MentionVouchCases.B, MentionVouchCases.W, false, null, dir::mentionTexts)
+        assertEquals(listOf(Mention(flagged, alias)), kept)
+        // Filtering off, the name is the label again and the bare alias of a named peer is not.
+        val off = directoryOf(listOf(peer(flagged, "Fuck")), me = MentionVouchCases.W, myName = "Walter")
+        assertEquals(
+            listOf(Mention(flagged, "Fuck")),
+            vouchedMentions(mentions, MentionVouchCases.B, MentionVouchCases.W, false, null, off::mentionTexts),
+        )
+    }
+
+    @Test
+    fun theMeshcoreRoomKeepsTheBindingOurReceiveCodeMade() {
+        val me = MentionVouchCases.W
+        val dir = MentionVouchCases.PLAIN.peerDirectory
+        val bound = listOf(Mention(me, "[Knit 1a2b]"))
+        assertEquals(bound, vouchedMentions(bound, "a-heard-speaker", me, meshcoreRoom = true, roster = null, dir::mentionTexts))
+        // The same entry anywhere else names us under a name we do not hold.
+        assertEquals(
+            emptyList<Mention>(),
+            vouchedMentions(bound, MentionVouchCases.B, me, meshcoreRoom = false, roster = null, dir::mentionTexts),
+        )
+    }
+
+    @Test
+    fun everyoneIsJudgedOnlyAgainstARosterWhenOneIsGiven() {
+        val c = MentionVouchCases
+        val dir = c.PLAIN.peerDirectory
+        val entries = listOf(Mention(c.W, EVERYONE_NAME), Mention(c.U, EVERYONE_NAME))
+        // Our own id is kept even when the roster no longer lists us; an id outside it is not.
+        assertEquals(listOf(entries[0]), vouchedMentions(entries, c.B, c.W, false, roster = listOf(c.A), dir::mentionTexts))
+        // A peer whose label is "everyone" is mentioned by name outside a group, as any name is.
+        val named = directoryOf(listOf(peer(c.A, EVERYONE_NAME)), me = c.W, myName = "Walter")
+        val byName = listOf(Mention(c.A, EVERYONE_NAME))
+        assertEquals(byName, vouchedMentions(byName, c.B, c.W, false, roster = null, named::mentionTexts))
+        // Not ASCII-exact, so it is a name: "EVERYONE" under nobody's label draws plain even in a group.
+        val shouted = listOf(Mention(c.A, "EVERYONE"))
+        assertEquals(emptyList<Mention>(), vouchedMentions(shouted, c.B, c.W, false, roster = listOf(c.W, c.A), dir::mentionTexts))
+    }
+
+    @Test
+    fun inAGroupANonMemberNamedEveryoneDrawsPlainThoughItsLabelMatches() {
+        val c = MentionVouchCases
+        val named = directoryOf(listOf(peer(c.A, EVERYONE_NAME), peer(c.B, "Bob")), me = c.W, myName = "Walter")
+        val self = listOf(Mention(c.A, EVERYONE_NAME))
+        assertEquals(EVERYONE_NAME, named.label(c.A).text)
+        assertEquals(emptyList<Mention>(), vouchedMentions(self, c.A, c.W, false, roster = listOf(c.W, c.B), named::mentionTexts))
+        // A member is kept by rule 3, the same entry in a direct thread by its name.
+        assertEquals(self, vouchedMentions(self, c.A, c.W, false, roster = listOf(c.W, c.A), named::mentionTexts))
+        assertEquals(self, vouchedMentions(self, c.A, c.W, false, roster = null, named::mentionTexts))
+    }
+
+    @Test
+    fun onlySixteenDistinctIdsAreLookedUpAndSettledEntriesDoNotCount() {
+        val c = MentionVouchCases
+        val asked = mutableListOf<String>()
+        val lookup = { id: String ->
+            asked += id
+            c.PLAIN.peerDirectory.mentionTexts(id)
+        }
+        val fresh = (1..40).map { Mention(NodeId.derive("crafted-$it"), "a") }
+        // Our own entries settled by @everyone in the group and a too-long name never take one of the sixteen.
+        val settled = List(20) { Mention(c.W, EVERYONE_NAME) } + Mention(NodeId.derive("long"), "a".repeat(MAX_VOUCHED_NAME + 1))
+        val mentions = settled + fresh.take(MAX_VOUCHED_IDS - 1) + Mention(c.A, "Alice") + fresh.drop(MAX_VOUCHED_IDS - 1)
+        val kept = vouchedMentions(mentions, c.B, c.W, false, roster = listOf(c.W, c.A), lookup)
+        assertEquals(List(20) { Mention(c.W, EVERYONE_NAME) } + Mention(c.A, "Alice"), kept)
+        assertEquals(MAX_VOUCHED_IDS, asked.size)
+        assertEquals(MAX_VOUCHED_IDS, asked.toSet().size)
+    }
+
+    @Test
+    fun anIdNamedManyTimesIsLookedUpOnce() {
+        val c = MentionVouchCases
+        val asked = mutableListOf<String>()
+        val lookup = { id: String ->
+            asked += id
+            c.PLAIN.peerDirectory.mentionTexts(id)
+        }
+        val mentions = List(1_000) { Mention(c.A, if (it % 2 == 0) "Alice" else "Mallory") }
+        val kept = vouchedMentions(mentions, c.B, c.W, false, null, lookup)
+        assertEquals(500, kept.size)
+        assertEquals(listOf(c.A), asked)
+    }
+
+    @Test
+    fun noMentionsKeepNothing() {
+        assertEquals(
+            emptyList<Mention>(),
+            vouchedMentions(emptyList(), "b", "me", false, null) { error("never asked") },
+        )
     }
 }

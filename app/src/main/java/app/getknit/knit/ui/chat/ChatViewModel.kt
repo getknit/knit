@@ -390,7 +390,10 @@ data class ChatRow(
     // nothing was declared. Labels for the translation's priors and the composer's hint, never trusted beyond that.
     val bodyLang: String? = null,
     val authorReads: String? = null,
+    // Every entry the row carries, as received: translation protects each one's span (`mentionRanges`).
     val mentions: List<Mention> = emptyList(),
+    // The entries of [mentions] the bubble draws as mentions (`vouchedMentions`, ADR 2026-11.p6dk); the rest draw plain.
+    val styledMentions: List<Mention> = emptyList(),
     // The sender's formatting over [body] (ADR 2026-10.p95v), canonical as the receiver stored it; the bubble draws
     // it ([bubbleStyles]), and every other surface reads the plain body.
     val styles: List<StyleSpan> = emptyList(),
@@ -1773,6 +1776,14 @@ class ChatViewModel(
             val labels = HashMap<String, PeerLabel>()
 
             fun label(nodeId: String) = labels.getOrPut(nodeId) { directory.label(nodeId) }
+
+            // The texts a received mention of an id is drawn under (ADR 2026-11.p6dk), resolved once per id like [label].
+            val accepted = HashMap<String, List<String>>()
+
+            fun mentionTexts(nodeId: String) = accepted.getOrPut(nodeId) { directory.mentionTexts(nodeId) }
+
+            // `@everyone` is drawn only against a group's own roster, never a commons' seen members.
+            val roster = if (isGroup) members else null
             val selfLabel = context.getString(R.string.chat_self_name)
             // The names a MeshCore room post's claimed name gets the bubble's clash line for (security N2): "You", ours, our own
             // board's live name and its `Knit xxxx` default (ADR 2026-11.f4d3), and every person's name as stored and as the
@@ -1810,6 +1821,7 @@ class ChatViewModel(
                                 }
                             }
                     val heldBytes = m.attachmentHash?.let { blobSizes[it] }
+                    val received = MentionStore.decode(m.mentions)
                     ChatRow(
                         id = m.id,
                         meshcoreReactable =
@@ -1911,7 +1923,9 @@ class ChatViewModel(
                             },
                         linkCard = linkCardFor(m, cards),
                         location = GeoUri.find(m.body),
-                        mentions = MentionStore.decode(m.mentions),
+                        mentions = received,
+                        styledMentions =
+                            vouchedMentions(received, m.senderId, me, isMeshcoreRoom, roster, ::mentionTexts),
                         styles = StyleStore.decode(m.styles),
                         reactions = tallies,
                         quote = quoteViewFor(m, mine, me, selfLabel) { label(it).text },

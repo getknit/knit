@@ -330,6 +330,7 @@ carries; never renumber an old one.
 | [2026-11.khhj](decisions/2026-11-khhj-an-evicted-own-profile-goes-back-as-the-bytes-we-kept.md) | an evicted own profile goes back as the bytes we kept, never re-minted | mesh, profiles, custody |
 | [2026-11.mfbq](decisions/2026-11-mfbq-a-callee-with-no-live-path-declines-no-route-unrung.md) | A callee with no live path declines no_route unrung, and the caller re-places it as a mesh call | calls |
 | [2026-11.nsbf](decisions/2026-11-nsbf-a-block-also-holds-a-person-s-profile-presentation.md) | A block also holds a person's profile presentation | moderation, privacy, security, profile, contacts |
+| [2026-11.p6dk](decisions/2026-11-p6dk-a-received-mention-is-highlighted-only-under-a-name-the-reader-gives-that-person.md) | A received mention is highlighted only under a name the reader gives that person | mentions, names |
 | [2026-11.pk9u](decisions/2026-11-pk9u-chat-menus.md) | Chat menus, sheets and confirmations draw in the chat's own window | ui |
 | [2026-11.qu98](decisions/2026-11-qu98-a-message-request-s-attachments-wait-for-acceptance.md) | a message request's attachments wait for acceptance | blobs, messages, security |
 | [2026-11.sfms](decisions/2026-11-sfms-a-reset-the-replacement-floor-refuses-is-re-opened-when-the-floor-ends.md) | A reset the replacement floor refuses is re-opened when the floor ends | crypto, pfs, recovery |

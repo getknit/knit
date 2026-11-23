@@ -30,6 +30,12 @@ data class PeerDirectory(
         return if (row != null) labels.labelFor(nodeId, row.name) else labels.labelFor(nodeId)
     }
 
+    /** The texts a received mention of [nodeId] is drawn under, [label]'s first (ADR 2026-11.p6dk); same name rule as [label]. */
+    fun mentionTexts(nodeId: String): List<String> {
+        val row = byNode[nodeId]
+        return if (row != null) labels.mentionTexts(nodeId, row.name) else labels.mentionTexts(nodeId)
+    }
+
     /** Another person's [text] as names are shown now: blank while Content filtering hides it (ADR 2026-11.y4pc). */
     fun shown(text: String): String = labels.shown(text)
 

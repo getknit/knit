@@ -1,0 +1,734 @@
+{
+  "description": "Which received mentions a bubble styles, and the labels they are read against (ADR 2026-11.p6dk)",
+  "maxTokens": 10,
+  "everyone": "everyone",
+  "me": {
+    "nodeId": "2bsf72qxczfbzwe6i3pzs7e4si",
+    "name": "Walter"
+  },
+  "directories": {
+    "plain": {
+      "peers": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice"
+        },
+        {
+          "nodeId": "yuv27obtdy3wawjedmd6zxadle",
+          "name": "Bob"
+        },
+        {
+          "nodeId": "e6nhhzrgkq3cjqtspx57jpsaoq",
+          "name": ""
+        }
+      ],
+      "unknown": [
+        "ro4zaqqer4rm7psd7fwykb6yoq"
+      ],
+      "labels": {
+        "2bsf72qxczfbzwe6i3pzs7e4si": "Walter",
+        "u4bvlnndp6ywr6gmmhalvefshi": "Alice",
+        "yuv27obtdy3wawjedmd6zxadle": "Bob",
+        "e6nhhzrgkq3cjqtspx57jpsaoq": "GraciouslyCozyHarp",
+        "ro4zaqqer4rm7psd7fwykb6yoq": "ProfoundlyBreezyPheasant"
+      }
+    },
+    "clash": {
+      "peers": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice"
+        },
+        {
+          "nodeId": "yuv27obtdy3wawjedmd6zxadle",
+          "name": "Bob"
+        },
+        {
+          "nodeId": "e6nhhzrgkq3cjqtspx57jpsaoq",
+          "name": ""
+        },
+        {
+          "nodeId": "yllpjfh4esic4amolf3c5znqhu",
+          "name": "Alic\u0435"
+        }
+      ],
+      "unknown": [
+        "ro4zaqqer4rm7psd7fwykb6yoq"
+      ],
+      "labels": {
+        "2bsf72qxczfbzwe6i3pzs7e4si": "Walter",
+        "u4bvlnndp6ywr6gmmhalvefshi": "Alice (OpenlySpiritedVole)",
+        "yuv27obtdy3wawjedmd6zxadle": "Bob",
+        "e6nhhzrgkq3cjqtspx57jpsaoq": "GraciouslyCozyHarp",
+        "yllpjfh4esic4amolf3c5znqhu": "Alic\u0435 (VividlySereneFlame)",
+        "ro4zaqqer4rm7psd7fwykb6yoq": "ProfoundlyBreezyPheasant"
+      }
+    }
+  },
+  "cases": [
+    {
+      "label": "the reader's label for the id, in any case",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@Alice and @ALICE",
+      "mentions": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice"
+        },
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "ALICE"
+        }
+      ],
+      "kept": [
+        0,
+        1
+      ],
+      "spans": [
+        [
+          0,
+          6
+        ],
+        [
+          11,
+          17
+        ]
+      ]
+    },
+    {
+      "label": "the label grown by the id's own tokens, as a sender that saw a clash writes it",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@Alice (OpenlySpiritedVole) and @Alice (OpenlySpiritedVole CalmlyNobleAster)",
+      "mentions": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice (OpenlySpiritedVole)"
+        },
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice (OpenlySpiritedVole CalmlyNobleAster)"
+        }
+      ],
+      "kept": [
+        0,
+        1
+      ],
+      "spans": [
+        [
+          0,
+          27
+        ],
+        [
+          32,
+          76
+        ]
+      ]
+    },
+    {
+      "label": "another id's token, another id's name and a named peer's bare alias",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@Alice (RoyallyTranquilPheasant) @Alice @OpenlySpiritedVole",
+      "mentions": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice (RoyallyTranquilPheasant)"
+        },
+        {
+          "nodeId": "yuv27obtdy3wawjedmd6zxadle",
+          "name": "Alice"
+        },
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "OpenlySpiritedVole"
+        }
+      ],
+      "kept": [],
+      "spans": []
+    },
+    {
+      "label": "an id outside the index: its alias, not a name",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@Alice @ProfoundlyBreezyPheasant",
+      "mentions": [
+        {
+          "nodeId": "ro4zaqqer4rm7psd7fwykb6yoq",
+          "name": "Alice"
+        },
+        {
+          "nodeId": "ro4zaqqer4rm7psd7fwykb6yoq",
+          "name": "ProfoundlyBreezyPheasant"
+        }
+      ],
+      "kept": [
+        1
+      ],
+      "spans": [
+        [
+          7,
+          32
+        ]
+      ]
+    },
+    {
+      "label": "a blank-named peer: its alias and continuations, not a name",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@GraciouslyCozyHarp hi @GraciouslyCozyHarp (MainlyGoldenBear) @Greg",
+      "mentions": [
+        {
+          "nodeId": "e6nhhzrgkq3cjqtspx57jpsaoq",
+          "name": "GraciouslyCozyHarp"
+        },
+        {
+          "nodeId": "e6nhhzrgkq3cjqtspx57jpsaoq",
+          "name": "GraciouslyCozyHarp (MainlyGoldenBear)"
+        },
+        {
+          "nodeId": "e6nhhzrgkq3cjqtspx57jpsaoq",
+          "name": "Greg"
+        }
+      ],
+      "kept": [
+        0,
+        1
+      ],
+      "spans": [
+        [
+          0,
+          19
+        ],
+        [
+          23,
+          61
+        ]
+      ]
+    },
+    {
+      "label": "us, under our own label",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "u4bvlnndp6ywr6gmmhalvefshi",
+      "body": "@Walter @Walter (DreamilyAdeptNewt) @Wally",
+      "mentions": [
+        {
+          "nodeId": "2bsf72qxczfbzwe6i3pzs7e4si",
+          "name": "Walter"
+        },
+        {
+          "nodeId": "2bsf72qxczfbzwe6i3pzs7e4si",
+          "name": "Walter (DreamilyAdeptNewt)"
+        },
+        {
+          "nodeId": "2bsf72qxczfbzwe6i3pzs7e4si",
+          "name": "Wally"
+        }
+      ],
+      "kept": [
+        0,
+        1
+      ],
+      "spans": [
+        [
+          0,
+          7
+        ],
+        [
+          8,
+          35
+        ]
+      ]
+    },
+    {
+      "label": "our own message keeps every entry",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "2bsf72qxczfbzwe6i3pzs7e4si",
+      "body": "@Robert",
+      "mentions": [
+        {
+          "nodeId": "yuv27obtdy3wawjedmd6zxadle",
+          "name": "Robert"
+        }
+      ],
+      "kept": [
+        0
+      ],
+      "spans": [
+        [
+          0,
+          7
+        ]
+      ]
+    },
+    {
+      "label": "@everyone in a group, for members",
+      "directory": "plain",
+      "thread": "group",
+      "roster": [
+        "2bsf72qxczfbzwe6i3pzs7e4si",
+        "u4bvlnndp6ywr6gmmhalvefshi",
+        "yuv27obtdy3wawjedmd6zxadle"
+      ],
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@everyone hi",
+      "mentions": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "everyone"
+        },
+        {
+          "nodeId": "yuv27obtdy3wawjedmd6zxadle",
+          "name": "everyone"
+        }
+      ],
+      "kept": [
+        0,
+        1
+      ],
+      "spans": [
+        [
+          0,
+          9
+        ]
+      ]
+    },
+    {
+      "label": "@everyone in a group, for ids not in its roster",
+      "directory": "plain",
+      "thread": "group",
+      "roster": [
+        "2bsf72qxczfbzwe6i3pzs7e4si",
+        "e6nhhzrgkq3cjqtspx57jpsaoq"
+      ],
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@everyone hi",
+      "mentions": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "everyone"
+        },
+        {
+          "nodeId": "yuv27obtdy3wawjedmd6zxadle",
+          "name": "everyone"
+        }
+      ],
+      "kept": [],
+      "spans": []
+    },
+    {
+      "label": "@everyone in the Nearby room",
+      "directory": "plain",
+      "thread": "room",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@everyone hi",
+      "mentions": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "everyone"
+        },
+        {
+          "nodeId": "yuv27obtdy3wawjedmd6zxadle",
+          "name": "everyone"
+        }
+      ],
+      "kept": [],
+      "spans": []
+    },
+    {
+      "label": "@everyone in a direct thread",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@everyone hi",
+      "mentions": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "everyone"
+        },
+        {
+          "nodeId": "yuv27obtdy3wawjedmd6zxadle",
+          "name": "everyone"
+        }
+      ],
+      "kept": [],
+      "spans": []
+    },
+    {
+      "label": "one token, a dropped entry and a kept one",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@Alice hi",
+      "mentions": [
+        {
+          "nodeId": "ro4zaqqer4rm7psd7fwykb6yoq",
+          "name": "Alice"
+        },
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice"
+        }
+      ],
+      "kept": [
+        1
+      ],
+      "spans": [
+        [
+          0,
+          6
+        ]
+      ]
+    },
+    {
+      "label": "a kept token inside a dropped one",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@Alice (zz) hi",
+      "mentions": [
+        {
+          "nodeId": "ro4zaqqer4rm7psd7fwykb6yoq",
+          "name": "Alice (zz)"
+        },
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice"
+        }
+      ],
+      "kept": [
+        1
+      ],
+      "spans": [
+        [
+          0,
+          6
+        ]
+      ]
+    },
+    {
+      "label": "a lookalike under its own name, the name it imitates, or that name with an invisible mark",
+      "directory": "clash",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@Alic\u0435 @Alice @Alice\uFE0F",
+      "mentions": [
+        {
+          "nodeId": "yllpjfh4esic4amolf3c5znqhu",
+          "name": "Alic\u0435"
+        },
+        {
+          "nodeId": "yllpjfh4esic4amolf3c5znqhu",
+          "name": "Alice"
+        },
+        {
+          "nodeId": "yllpjfh4esic4amolf3c5znqhu",
+          "name": "Alice\uFE0F"
+        }
+      ],
+      "kept": [],
+      "spans": []
+    },
+    {
+      "label": "a lookalike under its label, in either spelling: the keys match and the token is its own",
+      "directory": "clash",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@Alic\u0435 (VividlySereneFlame) @Alice (VividlySereneFlame)",
+      "mentions": [
+        {
+          "nodeId": "yllpjfh4esic4amolf3c5znqhu",
+          "name": "Alic\u0435 (VividlySereneFlame)"
+        },
+        {
+          "nodeId": "yllpjfh4esic4amolf3c5znqhu",
+          "name": "Alice (VividlySereneFlame)"
+        }
+      ],
+      "kept": [
+        0,
+        1
+      ],
+      "spans": [
+        [
+          0,
+          27
+        ],
+        [
+          28,
+          55
+        ]
+      ]
+    },
+    {
+      "label": "a clash this phone sees: the bare name goes plain, the label is kept",
+      "directory": "clash",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@Alice @Alice (OpenlySpiritedVole)",
+      "mentions": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice"
+        },
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice (OpenlySpiritedVole)"
+        }
+      ],
+      "kept": [
+        1
+      ],
+      "spans": [
+        [
+          7,
+          34
+        ]
+      ]
+    },
+    {
+      "label": "a lookalike under the label of the name it imitates",
+      "directory": "clash",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@Alice (OpenlySpiritedVole)",
+      "mentions": [
+        {
+          "nodeId": "yllpjfh4esic4amolf3c5znqhu",
+          "name": "Alice (OpenlySpiritedVole)"
+        }
+      ],
+      "kept": [],
+      "spans": []
+    },
+    {
+      "label": "the seventeenth distinct id is not judged by name",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@x @Alice",
+      "mentions": [
+        {
+          "nodeId": "vqqrivgjqjujxfdakrbsqpxs74",
+          "name": "x"
+        },
+        {
+          "nodeId": "gojpgvfrktbexfbw76evzzleze",
+          "name": "x"
+        },
+        {
+          "nodeId": "35b7azcq6y2jcw63vhzmnpggcm",
+          "name": "x"
+        },
+        {
+          "nodeId": "icsbeij3lhkyzsp6zvjg54tey4",
+          "name": "x"
+        },
+        {
+          "nodeId": "ii63m73oj2mct3wi5epkq2uffi",
+          "name": "x"
+        },
+        {
+          "nodeId": "k377cqzrzim64faqjgk2bbfnsu",
+          "name": "x"
+        },
+        {
+          "nodeId": "aelokkxc4nahdjummr4ehwupja",
+          "name": "x"
+        },
+        {
+          "nodeId": "nvobqtkt43bxht4xfwjlyisckm",
+          "name": "x"
+        },
+        {
+          "nodeId": "7jq2o3uoogr6v5tw635bsabrse",
+          "name": "x"
+        },
+        {
+          "nodeId": "f52azdhd2y2nm5i2bo323szpb4",
+          "name": "x"
+        },
+        {
+          "nodeId": "wetyihs665m4o6ciej67lixqqa",
+          "name": "x"
+        },
+        {
+          "nodeId": "b5bkohjs6ljodpiobdpkoks6h4",
+          "name": "x"
+        },
+        {
+          "nodeId": "kf45okn4c7ftgpiflv7e6urd7q",
+          "name": "x"
+        },
+        {
+          "nodeId": "vskzthhoenpo7hqc7id76yb5tm",
+          "name": "x"
+        },
+        {
+          "nodeId": "hagr7isgtp7ybllb4274543z3i",
+          "name": "x"
+        },
+        {
+          "nodeId": "hq7x42jnzcxgiswalkwurxaz2y",
+          "name": "x"
+        },
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice"
+        }
+      ],
+      "kept": [],
+      "spans": []
+    },
+    {
+      "label": "the first distinct id is judged by name, whatever follows it",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@x @Alice",
+      "mentions": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice"
+        },
+        {
+          "nodeId": "vqqrivgjqjujxfdakrbsqpxs74",
+          "name": "x"
+        },
+        {
+          "nodeId": "gojpgvfrktbexfbw76evzzleze",
+          "name": "x"
+        },
+        {
+          "nodeId": "35b7azcq6y2jcw63vhzmnpggcm",
+          "name": "x"
+        },
+        {
+          "nodeId": "icsbeij3lhkyzsp6zvjg54tey4",
+          "name": "x"
+        },
+        {
+          "nodeId": "ii63m73oj2mct3wi5epkq2uffi",
+          "name": "x"
+        },
+        {
+          "nodeId": "k377cqzrzim64faqjgk2bbfnsu",
+          "name": "x"
+        },
+        {
+          "nodeId": "aelokkxc4nahdjummr4ehwupja",
+          "name": "x"
+        },
+        {
+          "nodeId": "nvobqtkt43bxht4xfwjlyisckm",
+          "name": "x"
+        },
+        {
+          "nodeId": "7jq2o3uoogr6v5tw635bsabrse",
+          "name": "x"
+        },
+        {
+          "nodeId": "f52azdhd2y2nm5i2bo323szpb4",
+          "name": "x"
+        },
+        {
+          "nodeId": "wetyihs665m4o6ciej67lixqqa",
+          "name": "x"
+        },
+        {
+          "nodeId": "b5bkohjs6ljodpiobdpkoks6h4",
+          "name": "x"
+        },
+        {
+          "nodeId": "kf45okn4c7ftgpiflv7e6urd7q",
+          "name": "x"
+        },
+        {
+          "nodeId": "vskzthhoenpo7hqc7id76yb5tm",
+          "name": "x"
+        },
+        {
+          "nodeId": "hagr7isgtp7ybllb4274543z3i",
+          "name": "x"
+        },
+        {
+          "nodeId": "hq7x42jnzcxgiswalkwurxaz2y",
+          "name": "x"
+        }
+      ],
+      "kept": [
+        0
+      ],
+      "spans": [
+        [
+          3,
+          9
+        ]
+      ]
+    },
+    {
+      "label": "a name of exactly the longest length read is judged",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@Alice\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B hi",
+      "mentions": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B"
+        }
+      ],
+      "kept": [
+        0
+      ],
+      "spans": [
+        [
+          0,
+          513
+        ]
+      ]
+    },
+    {
+      "label": "a name one unit longer is dropped, though it keys as the label does",
+      "directory": "plain",
+      "thread": "direct",
+      "roster": null,
+      "sender": "yuv27obtdy3wawjedmd6zxadle",
+      "body": "@Alice\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B hi",
+      "mentions": [
+        {
+          "nodeId": "u4bvlnndp6ywr6gmmhalvefshi",
+          "name": "Alice\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B\u200B"
+        }
+      ],
+      "kept": [],
+      "spans": []
+    }
+  ]
+}

@@ -58,7 +58,9 @@ Cleaning group names at store was the other; see above.
 still read as their own names; trust stays with `verified` and the safety number. Cf, Mn and Me come from each
 platform's Unicode tables (ART's ICU, the iOS release), so a code point assigned after the older side's Unicode
 version may differ: accepted, as U+180E was. Raw names shown outside the label index (a heard Meshtastic `longName`,
-a mention's `Mention.name`, relay-invite room names, a contact card's name) are follow-ups. Rows stored before the
+a mention's `Mention.name`, relay-invite room names, a contact card's name) are follow-ups. *Amended by ADR
+2026-11.p6dk (2026-11-23): a received `Mention.name` is now styled only when, by `NameKey`, it is the reader's label
+for its id or that label grown by the id's own tokens; the others remain follow-ups.* Rows stored before the
 upgrade stay raw until that peer's next profile; no migration.
 
 `vectors/name-key-v1.json` (`NameKeyVectorTest`, written on the JVM) pins the fold, the drop ranges, the limits and

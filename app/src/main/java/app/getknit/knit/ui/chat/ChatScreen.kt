@@ -3617,7 +3617,7 @@ internal fun MessageBubble(
                                             text =
                                                 annotateMessageBody(
                                                     words,
-                                                    row.mentions,
+                                                    row.styledMentions,
                                                     mentionStyle,
                                                     linkStyle,
                                                     onLinkClick = { url -> openUrl(context, url) },
@@ -3636,7 +3636,7 @@ internal fun MessageBubble(
                                         text =
                                             annotateMessageBody(
                                                 shownBody,
-                                                row.mentions,
+                                                row.styledMentions,
                                                 mentionStyle,
                                                 linkStyle,
                                                 onLinkClick = { url -> openUrl(context, url) },
@@ -6481,6 +6481,7 @@ fun MessageBubbleWithMentionPreview() =
                     sentAt = PREVIEW_NOW - 60 * 60_000L,
                     received = false,
                     mentions = listOf(Mention(nodeId = "node-grace", name = "Grace")),
+                    styledMentions = listOf(Mention(nodeId = "node-grace", name = "Grace")),
                 ),
             now = PREVIEW_NOW,
             showSenderName = true,

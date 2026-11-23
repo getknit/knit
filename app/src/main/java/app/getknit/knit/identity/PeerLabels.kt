@@ -222,20 +222,53 @@ data class PeerLabelIndex(
     fun labelFor(
         nodeId: String,
         rawName: String? = storedNames[nodeId],
-    ): PeerLabel {
+    ): PeerLabel = resolved(nodeId, rawName).label
+
+    /**
+     * Every text a received mention of [nodeId] may carry and still be drawn as one (ADR 2026-11.p6dk): the reader's
+     * own label for it ([labelFor] under [rawName]), then that label grown by each further token of the id's own alias
+     * phrase, up to [Alias.MAX_TOKENS], in [PeerLabel.text]'s format. A sender that saw a clash this phone does not
+     * writes a longer label, and only the id's own tokens can lengthen it, so none of these is another identity's text.
+     * Never a bare alias for a named peer, a former name, or any name this index does not give the id.
+     */
+    fun mentionTexts(
+        nodeId: String,
+        rawName: String? = storedNames[nodeId],
+    ): List<String> {
+        val r = resolved(nodeId, rawName)
+        return (maxOf(r.consumed, r.from)..Alias.MAX_TOKENS).map { m ->
+            PeerLabel.text(r.label.name, discriminatorOf(r.words, r.storedName, m))
+        }
+    }
+
+    /** [nodeId]'s label under [rawName], with what built it: its presented name, its phrase and the tokens it spent. */
+    private fun resolved(
+        nodeId: String,
+        rawName: String?,
+    ): Resolved {
         val storedName = if (nodeId == selfId) rawName else rawName?.let(presenter::present)
         val name = displayNameFor(storedName, nodeId)
         val words = phrases[nodeId] ?: Alias.tokens(nodeId)
         val k =
             consumed[nodeId]?.takeIf { storedName == storedNames[nodeId] }
                 ?: resolve(nodeId, name, words, storedName)
-        return PeerLabel(
-            nodeId = nodeId,
-            name = name,
-            alias = words.take(maxOf(k, 1)).joinToString(" "),
-            discriminator = discriminatorOf(words, storedName, k),
-        )
+        val label =
+            PeerLabel(
+                nodeId = nodeId,
+                name = name,
+                alias = words.take(maxOf(k, 1)).joinToString(" "),
+                discriminator = discriminatorOf(words, storedName, k),
+            )
+        return Resolved(label, storedName, words, k, tokensInName(storedName))
     }
+
+    private class Resolved(
+        val label: PeerLabel,
+        val storedName: String?,
+        val words: List<String>,
+        val consumed: Int,
+        val from: Int,
+    )
 
     /**
      * Another person's [text] as this index shows names: blank when its [NamePresenter] hides it. For what is not a

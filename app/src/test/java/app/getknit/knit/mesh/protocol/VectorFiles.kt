@@ -32,7 +32,7 @@ internal object VectorFiles {
     /**
      * The file's text for [content], byte for byte what [write] puts there; a test comparing a regeneration reads this.
      * [asciiOnly] writes DEL and every non-ASCII UTF-16 unit as a `\uXXXX` escape, for a file whose strings carry invisible
-     * code points a reviewer could not otherwise see (`name-key-v1.json`); it parses to the same strings.
+     * code points a reviewer could not otherwise see (`name-key-v1.json`, `mention-vouch-v1.json`); it parses to the same strings.
      */
     @OptIn(ExperimentalSerializationApi::class)
     fun render(

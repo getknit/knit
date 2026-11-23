@@ -14,6 +14,7 @@ import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
+import app.getknit.knit.identity.NameKey
 import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.StyleSpan
@@ -120,6 +121,54 @@ fun highlightMentions(
         append(body)
         for (span in mentionSpans(body, mentions)) addStyle(spanStyle, span.start, span.end)
     }
+
+/** The longest received mention name the bubble reads against labels; a stock label is at most 344 units (ADR 2026-11.p6dk). */
+const val MAX_VOUCHED_NAME = 512
+
+/** How many distinct ids one row's mentions are judged for by name; the rest draw plain (ADR 2026-11.p6dk). */
+const val MAX_VOUCHED_IDS = 16
+
+/**
+ * The entries of a received row's [mentions] its bubble may draw as mentions (ADR 2026-11.p6dk); the rest draw as plain
+ * text. The sender lists them and writes their names; this reads each name against the reader's own labels. Each entry
+ * is judged on its own, by the first rule that applies:
+ * 1. our own message ([senderId] is [me]) keeps every entry, since our composer wrote them;
+ * 2. so does the MeshCore room ([meshcoreRoom]), whose one entry our receive code binds to us;
+ * 3. an `@everyone` entry ([EVERYONE_NAME], exactly) in a group thread is kept when its id is in [roster] or ours, and
+ *    dropped otherwise, whatever that id's label; null [roster] means the thread is not a group, and the entry goes on;
+ * 4. any other entry is first bounded: a name longer than [MAX_VOUCHED_NAME] is dropped, and so is an entry whose id is
+ *    not among the first [MAX_VOUCHED_IDS] distinct ids to get this far, so a crafted list cannot make a row slow to
+ *    draw. Then it is kept when its name, by [NameKey], is one of [mentionTexts] for its id: the reader's label for that
+ *    person, or that label grown by more of the id's own alias tokens.
+ *
+ * Pure. Notifications, "mentions me" and translation's protected spans still read every entry.
+ */
+fun vouchedMentions(
+    mentions: List<Mention>,
+    senderId: String,
+    me: String?,
+    meshcoreRoom: Boolean,
+    roster: Collection<String>?,
+    mentionTexts: (String) -> List<String>,
+): List<Mention> {
+    if (mentions.isEmpty() || senderId == me || meshcoreRoom) return mentions
+    // Each judged id's accepted keys and each name's key, worked out once: a list may name one person many times.
+    val accepted = LinkedHashMap<String, Set<String>>()
+    val keys = HashMap<String, String>()
+
+    fun named(m: Mention): Boolean {
+        if (m.name.length > MAX_VOUCHED_NAME) return false
+        val texts =
+            accepted[m.nodeId] ?: run {
+                if (accepted.size >= MAX_VOUCHED_IDS) return false
+                mentionTexts(m.nodeId).mapTo(HashSet(), NameKey::of).also { accepted[m.nodeId] = it }
+            }
+        return keys.getOrPut(m.name) { NameKey.of(m.name) } in texts
+    }
+    return mentions.filter { m ->
+        if (m.name == EVERYONE_NAME && roster != null) m.nodeId == me || m.nodeId in roster else named(m)
+    }
+}
 
 /**
  * Where each "@<name>" of [mentions] sits in [text], sorted by start. Names are matched longest-first (with

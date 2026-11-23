@@ -7,6 +7,7 @@ import app.getknit.knit.identity.PeerLabelIndex
 import app.getknit.knit.identity.PeerLabels
 import app.getknit.knit.identity.displayNameFor
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -304,6 +305,84 @@ class PeerLabelsTest {
         val idx = PeerLabels.index(emptyList(), self = "me" to "Fuck69", presenter = hideFlagged)
         assertEquals("Fuck69", idx.labelFor("me").name)
         assertEquals("Fuck69", idx.labelFor("me", "Fuck69").name)
+    }
+
+    // ADR 2026-11.p6dk: the texts a received mention of an id is drawn under — its label, then the label grown.
+
+    /** [PeerLabel.text]'s format for [name] with the [from]..<[to] tokens of [id]'s phrase; [name] alone when empty. */
+    private fun grown(
+        name: String,
+        id: String,
+        from: Int,
+        to: Int,
+    ): String = if (to == from) name else "$name (${Alias.tokens(id).subList(from, to).joinToString(" ")})"
+
+    @Test
+    fun aPlainNamesMentionTextsAreItsNameThenEveryLongerLabel() {
+        val idx = index("a" to "Alice", "b" to "Bob")
+        val texts = idx.mentionTexts("a")
+        assertEquals(Alias.MAX_TOKENS + 1, texts.size)
+        assertEquals(idx.labelFor("a").text, texts.first())
+        assertEquals((0..Alias.MAX_TOKENS).map { grown("Alice", "a", 0, it) }, texts)
+    }
+
+    @Test
+    fun aCollidedNamesMentionTextsStartAtItsLabel() {
+        val idx = index("a" to "Alice", "x" to "Alic\u0435")
+        val texts = idx.mentionTexts("a")
+        assertEquals(idx.labelFor("a").text, texts.first())
+        assertEquals("Alice (${Alias.aliasFor("a")})", texts.first())
+        assertEquals((1..Alias.MAX_TOKENS).map { grown("Alice", "a", 0, it) }, texts)
+        // Its bare name is no longer among them: this phone shows it with its alias.
+        assertFalse("Alice" in texts)
+    }
+
+    @Test
+    fun aBlankNamesMentionTextsAreItsAliasThenItsContinuations() {
+        val idx = index("g" to "", "b" to "Bob")
+        val first = Alias.aliasFor("g")
+        assertEquals((1..Alias.MAX_TOKENS).map { grown(first, "g", 1, it) }, idx.mentionTexts("g"))
+        assertEquals(first, idx.mentionTexts("g").first())
+    }
+
+    @Test
+    fun anOutsideIdsMentionTextsStartAtTheAliasItIsLabelledUnder() {
+        val idx = index("a" to "Alice")
+        val texts = idx.mentionTexts("zz")
+        assertEquals(idx.labelFor("zz").text, texts.first())
+        assertEquals(Alias.aliasFor("zz"), texts.first())
+        assertEquals(Alias.MAX_TOKENS, texts.size)
+        // Under a name a caller passes, it starts where labelFor puts that name.
+        assertEquals(idx.labelFor("zz", "Alice").text, idx.mentionTexts("zz", "Alice").first())
+        assertEquals("Alice (${Alias.aliasFor("zz")})", idx.mentionTexts("zz", "Alice").first())
+    }
+
+    @Test
+    fun ourOwnMentionTextsAreOurLabelGrown() {
+        val idx = index("a" to "Alice", self = "me" to "Walter")
+        assertEquals((0..Alias.MAX_TOKENS).map { grown("Walter", "me", 0, it) }, idx.mentionTexts("me"))
+        val clashed = index("a" to "Walter", self = "me" to "Walter")
+        assertEquals(clashed.labelFor("me").text, clashed.mentionTexts("me").first())
+        assertEquals(Alias.MAX_TOKENS, clashed.mentionTexts("me").size)
+    }
+
+    @Test
+    fun aStaleNamesakeYieldsSoTheContactsBareNameCountsAgain() {
+        val idx = PeerLabels.index(listOf("c" to "Alice", "s" to "Alice"), stale = setOf("s"))
+        assertEquals("Alice", idx.mentionTexts("c").first())
+        assertEquals(Alias.MAX_TOKENS + 1, idx.mentionTexts("c").size)
+        // The stale one still reads apart, so its texts start at its suffixed label.
+        assertEquals(idx.labelFor("s").text, idx.mentionTexts("s").first())
+        assertFalse("Alice" in idx.mentionTexts("s"))
+    }
+
+    @Test
+    fun aHiddenNamesMentionTextsAreItsAliasOnly() {
+        val idx = PeerLabels.index(listOf("a" to "Fuck69", "b" to "Bob"), presenter = hideFlagged)
+        val texts = idx.mentionTexts("a")
+        assertEquals(Alias.aliasFor("a"), texts.first())
+        assertFalse(texts.any { it.contains("Fuck") })
+        assertEquals(texts, idx.mentionTexts("a", "Fuck69"))
     }
 
     @Test

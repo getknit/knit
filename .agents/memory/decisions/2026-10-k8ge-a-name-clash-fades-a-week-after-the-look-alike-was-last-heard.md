@@ -54,7 +54,8 @@ contact's name reads plain again.
 **What it costs and does not cover.** A contact's label now also changes when the other Alice goes quiet, not only
 when she appears. The appearance is still the tell, and ADR 058's "a contact's label changing is the signal" now
 holds in both directions. Old messages keep the label text they were sent with (`Mention.name`, notifications
-already posted), and a conversation shortcut's title follows on its next face change, as it did for an appearance.
+already posted; *amended by ADR 2026-11.p6dk, 2026-11-23: a received mention's highlight follows the reader's current
+labels, so a fade can turn an old message's highlight on, and a new clash can turn it off*), and a conversation shortcut's title follows on its next face change, as it did for an appearance.
 The contact-card preview asks for a known id under another name, and that lookup yields to stale ids too, so the
 preview can show "(Alias)" before import and none after. Nearby-room regulars the user never wrote to are not
 anchored, so two such strangers can swap which one reads plain as each goes quiet; both stay labelled apart.

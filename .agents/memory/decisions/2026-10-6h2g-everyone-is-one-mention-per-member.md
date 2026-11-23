@@ -35,7 +35,9 @@ pinged. The name `everyone` is not localised, since it lives in the sender's bod
 senders, so someone who left is not mentioned and someone who joined is. A restored draft keeps its text and loses its
 bindings (ADR 2026-09.qtg9), so a re-sent draft's `@everyone` is plain text until picked again. A member who picks
 people by hand and then `@everyone` carries both entries (`{id, label}` and `{id, everyone}`). `mentionSpans` takes
-distinct tokens, so seven same-named entries are one chip and one highlight. A mention alerts; it makes no promise
+distinct tokens, so seven same-named entries are one chip and one highlight. *Amended by ADR 2026-11.p6dk
+(2026-11-23): a received `@everyone` is highlighted only in a group thread, and only for an entry whose id is in the
+group's current roster or is ours. Elsewhere it is judged as a name and draws plain; the notification is unchanged.* A mention alerts; it makes no promise
 about delivery or waking a phone, and the picker copy says no more. No admin-only rule, rate limit or cooldown: any
 member can do what they could already do by seven picks. Pinned by `MentionTextTest` (match rule, expansion),
 `ChatViewModelTest` (what the row offers), `MentionChipsTest`, `InboundPipelineTest` and the `MessageContent` round

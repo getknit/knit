@@ -839,6 +839,78 @@ class ChatViewModelTest {
             }
         }
 
+    // ADR 2026-11.p6dk: a received row's bubble styles only the mentions whose name is the reader's label for that id.
+
+    @Test
+    fun aReceivedRowStylesOnlyTheMentionWhoseNameIsTheReadersLabelForItsId() =
+        runTest {
+            val vm = vm(Conversations.NEARBY)
+            collectState(vm)
+            peersFlow.value = listOf(peer("alice", name = "Alice"), peer("bob", name = "Bob"))
+            val unvouched = listOf(Mention("carol", "Alice"))
+            val real = listOf(Mention("carol", "Alice"), Mention("alice", "Alice"))
+            messagesFlow.value =
+                listOf(
+                    msg(senderId = "bob", body = "@Alice look", sentAt = 1L, id = "unvouched")
+                        .copy(mentions = MentionStore.encode(unvouched)),
+                    msg(senderId = "bob", body = "@Alice look", sentAt = 2L, id = "real").copy(mentions = MentionStore.encode(real)),
+                )
+            advanceUntilIdle()
+
+            val rows =
+                vm.state.value.rows
+                    .associateBy { it.id }
+            assertEquals(emptyList<Mention>(), rows.getValue("unvouched").styledMentions)
+            assertEquals(listOf(Mention("alice", "Alice")), rows.getValue("real").styledMentions)
+            // Every entry stays on the row as received: translation still protects each one's span.
+            assertEquals(unvouched, rows.getValue("unvouched").mentions)
+            assertEquals(real, rows.getValue("real").mentions)
+        }
+
+    @Test
+    fun ourOwnRowKeepsEveryMentionItCarries() =
+        runTest {
+            val vm = vm(Conversations.NEARBY)
+            collectState(vm)
+            peersFlow.value = listOf(peer("bob", name = "Bob"))
+            val mentions = listOf(Mention("bob", "Robert"))
+            messagesFlow.value =
+                listOf(msg(senderId = "me", body = "@Robert hi", sentAt = 1L).copy(mentions = MentionStore.encode(mentions)))
+            advanceUntilIdle()
+
+            val row =
+                vm.state.value.rows
+                    .single()
+            assertEquals(mentions, row.styledMentions)
+            assertEquals(mentions, row.mentions)
+        }
+
+    @Test
+    fun everyoneIsStyledForAGroupsMembersAndNotInTheNearbyRoom() =
+        runTest {
+            val mentions = listOf(Mention("kit", "everyone"), Mention("me", "everyone"))
+            val row = msg(senderId = "amy", body = "@everyone standup", sentAt = 1L).copy(mentions = MentionStore.encode(mentions))
+            groupFlow.value = group(GROUP, members = listOf("me", "amy", "kit"))
+            val inGroup = vm(GROUP)
+            collectState(inGroup)
+            messagesFlow.value = listOf(row)
+            advanceUntilIdle()
+            val groupRow =
+                inGroup.state.value.rows
+                    .single()
+            assertEquals(mentions, groupRow.styledMentions)
+
+            groupFlow.value = null
+            val inRoom = vm(Conversations.NEARBY)
+            collectState(inRoom)
+            advanceUntilIdle()
+            val roomRow =
+                inRoom.state.value.rows
+                    .single()
+            assertEquals(emptyList<Mention>(), roomRow.styledMentions)
+            assertEquals(mentions, roomRow.mentions)
+        }
+
     @Test
     fun aFullGroupsEveryoneSendsSevenEntriesAndDropsThemWhenTheTokenIsEditedAway() =
         runTest {
@@ -1855,9 +1927,11 @@ class ChatViewModelTest {
                 vm.state.value.rows
                     .associateBy { it.id }
             assertEquals(listOf(Mention("me", "[Knit 1a2b]")), rows.getValue("reply").mentions)
+            // The binding our receive code made is drawn, though "[Knit 1a2b]" is no label of ours (ADR 2026-11.p6dk).
+            assertEquals(listOf(Mention("me", "[Knit 1a2b]")), rows.getValue("reply").styledMentions)
             assertEquals(
                 "[@[Knit 1a2b]]",
-                mentionSpans(rows.getValue("reply").body, rows.getValue("reply").mentions)
+                mentionSpans(rows.getValue("reply").body, rows.getValue("reply").styledMentions)
                     .map { rows.getValue("reply").body.substring(it.start, it.end) }
                     .toString(),
             )

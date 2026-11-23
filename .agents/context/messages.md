@@ -133,6 +133,17 @@ lines.
   once, in `deliverChat`, against the clamped body, and takes a sealed message's styles only from its plaintext.
   Only the bubble draws them; every other surface reads the plain body. Markdown-lite (deferred) is a composer input
   method, so receivers never parse markdown. There is no capability bit; a spoiler (code 4, reserved) would need one.
+- **When touching which mentions a bubble styles — `vouchedMentions`, `ChatRow.styledMentions`,
+  `PeerLabelIndex.mentionTexts` / `PeerDirectory.mentionTexts`, the mentions `annotateMessageBody` is handed, or any new
+  surface that styles a mention:** READ ADR 2026-11.p6dk (and ADR 058 for the label, ADR 2026-10.6h2g for `@everyone`).
+  A received entry is styled only under the reader's own label for its id, or that label grown by the id's own alias
+  tokens; `@everyone` only in a group, for a roster member or us; our own rows and the MeshCore room keep every entry.
+  The name rule reads at most `MAX_VOUCHED_IDS` distinct ids a row and no name past `MAX_VOUCHED_NAME`, so a crafted
+  list stays cheap to draw.
+  It runs in `ChatViewModel`'s fold, never at receive time; `ChatRow.mentions` keeps every entry for translation's
+  protected spans, and notifications and "mentions me" read the node id alone. knit-ios mirrors it:
+  `vectors/mention-vouch-v1.json` (`MentionVouchVectorTest`) pins the cases and the labels. Regression:
+  `MentionTextTest`, `PeerLabelsTest`, `ChatViewModelTest`.
 - **When touching the bubble long-press menu (`ReactionPicker`, `pickerPosition`), the "+" emoji sheet
   (`EmojiPickerSheet`), the Delete confirmation or anything else a long-press opens, or `ui/chat/MessageMenuOverlay`
   (`MessageMenuHost`, `MessageMenu`, `InWindowSheet`, `InWindowAlertDialog`):** READ ADR 2026-11.pk9u. They draw in the

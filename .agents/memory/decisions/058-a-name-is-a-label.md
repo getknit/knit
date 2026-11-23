@@ -58,7 +58,10 @@ multi-letter lookalikes (`rn` for `m`) and other scripts.*
 **The one wire-visible consequence.** The mention token a collided candidate inserts is the label —
 `@Alice (JoyfulFerret)` — and `Mention.name` carries that exact text, which is what lets the unchanged
 `highlightMentions`, the send-time reconciliation, and every deployed build locate the span. Detection is
-still by node id; the wire shape is untouched (`GoldenVectorTest` did not move). The one sink that must
+still by node id; the wire shape is untouched (`GoldenVectorTest` did not move). *Amended by ADR 2026-11.p6dk
+(2026-11-23): the sender still writes its own label, but a receiver styles a mention only when that text is the
+label the reader's own phone gives the id, or that label grown by the id's own alias tokens; any other name draws
+plain.* The one sink that must
 stay plain is `ReplyRef.author`, the quote snapshot a reply puts on the wire — `ChatRow.senderPlainName`
 exists for it alone.
 
