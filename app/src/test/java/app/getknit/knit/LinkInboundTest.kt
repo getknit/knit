@@ -27,6 +27,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -253,6 +254,23 @@ class LinkInboundTest {
         listOf("f0", "f1", "f2", "f3").forEach { assertFalse("$it never marked", crossings.firstCrossing(PEER, key(it))) }
         assertEquals(1, waits.size)
     }
+
+    @Test
+    fun aPointToPointFrameHandedOverMarksNoCrossing() =
+        runBlocking {
+            // #356: a key sent ahead is a `relay = false` copy of its sender's profile, written from the pin store and not
+            // by the router. Marked here, our custody copy of the same signed bytes would be skipped toward the peer as an
+            // echo while its custody lacks them.
+            val handOff = LinkInbound(PEER, MutableSharedFlow(extraBufferCapacity = SLOTS), crossings, { true }, System::currentTimeMillis)
+            val env = RelayEnvelope(type = FrameType.PROFILE, id = "profile-a", senderId = "author01", payload = ByteArray(0))
+            val signed = WireCodec.encodeEnvelope(env)
+            val served = WireEnvelope(relay = false, sig = "served".toByteArray(), signed = signed)
+            val relayed = WireEnvelope(sig = "relayed".toByteArray(), signed = signed)
+            assertTrue(handOff.hand(InboundFrame(served, env, PEER)))
+            assertTrue(handOff.hand(InboundFrame(relayed, env, PEER)))
+            assertTrue("a key sent ahead counted as crossed", crossings.firstCrossing(PEER, FrameKey.of(served, env)))
+            assertFalse("a relayed frame never counted as crossed", crossings.firstCrossing(PEER, FrameKey.of(relayed, env)))
+        }
 
     @Test
     fun closeCancelsAReaderWaitingForRoom() {

@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.link
 
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -31,6 +32,15 @@ class LinkCrossingsTest {
         // The transport marks a frame on the way in; the re-fan toward the hop it came from is then a repeat.
         assertTrue(crossings.firstCrossing("bob", "k1")) // Bob handed it to us
         assertFalse(crossings.firstCrossing("bob", "k1")) // ...so it never goes back to Bob
+    }
+
+    @Test
+    fun onlyARelayedFrameCountsOnTheWayIn() {
+        // #356: a key sent ahead is the profile's own signed bytes, written point to point from the sender's pin store,
+        // which its router never saw. Our custody copy of the same frame must still cross to that peer.
+        val signed = byteArrayOf(1, 2, 3)
+        assertFalse(LinkCrossings.marksInbound(WireEnvelope(relay = false, sig = byteArrayOf(9), signed = signed)))
+        assertTrue(LinkCrossings.marksInbound(WireEnvelope(sig = byteArrayOf(9), signed = signed)))
     }
 
     @Test

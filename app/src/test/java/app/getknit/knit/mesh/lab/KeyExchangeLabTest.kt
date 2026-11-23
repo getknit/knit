@@ -2,6 +2,8 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.DropReason
+import app.getknit.knit.mesh.SeenSet
+import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.flow.first
@@ -151,6 +153,71 @@ class KeyExchangeLabTest {
             lab.assertConverged(listOf(alice, carol), atLeast = 1) { it.dmWith(if (it === alice) carol else alice) }
             assertEquals(early, carol.decrypted(carol.dmWith(alice)).single().first)
         }
+
+    /**
+     * #356: a key sent ahead is not a crossing. Bob carries Alice's post but not her profile, and his router has not seen
+     * the profile inside its window (a carrier that lost it to the quota, or a restore). Carol carries the profile but not
+     * the post. When they link, Bob's answer to Carol's digest sends Alice's key ahead of the post (ADR 2026-09.g64k), from
+     * his pin store: the same signed bytes as the profile Carol's answer to Bob's digest pushes. The key reaching Carol
+     * first must not make her memo skip that push as an echo, for Bob's router never saw it and his custody lacks it.
+     *
+     * The order is forced: Carol's pipe to Bob is held from the link-up until Bob's key has crossed to her and her own
+     * push sits in the hold, and the memo judges a held frame at its release.
+     */
+    @Test
+    fun aKeySentAheadDoesNotCostItsSenderTheCustodyCopyOfThatProfile() =
+        runBlocking {
+            val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
+            val carol = lab.node("carol", board = false).apply { setDisplayName("Carol") }
+            val nodes = listOf(alice, bob, carol)
+            lab.linkAll(alice to carol, carol to bob)
+            lab.awaitAcquainted(alice, bob, carol)
+            assertTrue(alice.sendRoom("carried by both"))
+            val post = alice.ownMessageId(Conversations.NEARBY, "carried by both")
+            lab.await(2) { listOf(bob, carol).count { post in it.custodyIds() } }
+            val profiles = alice.custodySignedBytes(FrameType.PROFILE).keys intersect alice.custodyIdsFrom(alice)
+            lab.await(1) { if (carol.custodyIds().containsAll(profiles) && bob.custodyIds().containsAll(profiles)) 1 else 0 }
+            assertTrue("alice has a profile in custody", profiles.isNotEmpty())
+
+            lab.unlink(carol, bob)
+            val bobsOthers = bob.custodyIdsFrom(alice) - post
+            bob.forgetCustody { it in bobsOthers } // Alice's profile among them: only the post is left of hers
+            carol.forgetCustody { it == post }
+            // Past the routers' window: Bob's router would take Alice's profile as new, as a restored one would.
+            lab.clock.advance(SeenSet.DEFAULT_TTL_MS + 1_000L)
+
+            val sentBefore = bob.transport.sent.size // the log only grows: the key ahead is one written from the relink on
+            lab.link(carol, bob, arm = { carol.transport.hold(bob.transport) })
+            lab.await(1) {
+                bob.transport.sent
+                    .drop(sentBefore)
+                    .count { it.isKeyAheadTo(carol, profiles) }
+            }
+            carol.transport.awaitInboundDrained()
+            lab.await(1) { carol.transport.held(bob.transport).count { it.relay && it.isProfileFrom(alice.nodeId) } }
+            carol.transport.release(bob.transport)
+
+            val owed = carol.custodyIdsFrom(alice)
+            if (!lab.tryAwait(1) { if (bob.custodyIds().containsAll(owed)) 1 else 0 }) {
+                throw AssertionError(
+                    "bob is short ${owed - bob.custodyIds()} of alice's frames carol carries; carol skipped " +
+                        "${carol.transport.dupSkipped}\n${lab.report(nodes)}",
+                )
+            }
+            // Alice as a carrier: on a line her post's room tick from Bob has no way back to her, as in the scenario above.
+            lab.assertConverged(listOf(bob, carol), atLeast = 1, carriers = listOf(alice)) { Conversations.NEARBY }
+        }
+
+    /** A `profile` frame of [profiles] this node handed [to] point to point (`relay=false`): a key sent ahead. */
+    private fun String.isKeyAheadTo(
+        to: LabNode,
+        profiles: Set<String>,
+    ): Boolean {
+        // Each line reads "#seq <receiver> <type> <id> relay=<relay> via=<via>".
+        val cols = split(' ')
+        return to.nodeId.startsWith(cols[1]) && cols[2] == FrameType.PROFILE && cols[3] in profiles && cols[4] == "relay=false"
+    }
 
     /**
      * One post of [author]'s let through, counted by frame: the flood's copy and the fast path's can both park, and the

@@ -76,3 +76,24 @@ keeps the same memo, so the box remains the plane as shipped; `LinkCrossingsTest
 memo and the key, `BleFastRoutePolicyTest.fanoutNeverRoutesAFrameBackToItsAuthor` the author rule. Device
 oracle: `bleLinkDupSkipped` on `…debug.STATE` climbing about one per room frame per link while delivery
 counters stay where they were.
+
+## Amendment 2026-11-23 — only a relayed frame counts on the way in (#356)
+
+The inbound mark assumed the far end's router handed the frame on. A point-to-point (`relay = false`) frame need not
+have passed it: a key sent ahead of a backlog (ADR 2026-09.g64k, `KeyExchange.serve` from `ForwardSync.onDigest`) is the
+sender's copy of a profile from its pin store, the same signed bytes as the custody row of that profile. A carrier whose
+router had not seen the profile (fresh after a restore, or past its window) and whose custody lacked it sent the key to
+its peer; the peer marked the frame crossed on the way in and then skipped its own custody push of that profile back as
+an echo, for the memo's ten minutes, so the two custodies disagreed until the window or the link ended
+(`RestoreLabTest` under chaos; `KeyExchangeLabTest.aKeySentAheadDoesNotCostItsSenderTheCustodyCopyOfThatProfile` forces
+the order).
+
+Now a frame read off a link marks its crossing only when `LinkCrossings.marksInbound` says so: `wire.relay`, the bit
+every link codec carries. The Bluetooth reader (`LinkInbound.hand`), the direct link's arrivals and the lab's pipes all
+ask it. The outbound mark is unchanged: the far end's router takes a point-to-point frame into its seen set like any
+other, and ADR 2026-09.7bu7 custodies a served profile. Not marking a point-to-point frame on the way in costs nothing
+the memo was for: the router never floods one back toward its hop, and a copy that does cross again is the far end's
+router's to drop, as before the memo. The rule sits on the receiver, so a key an older build or an iPhone sends ahead
+to an Android phone is covered too. A key an Android phone sends ahead to an iPhone is not yet: knit-ios marks every
+frame that arrives, whatever its relay bit (its twin of this memo, knit-ios ADR 2026-10.f5zs rule 6), so that pair can
+still disagree on the profile for the window until knit-ios takes the same rule.

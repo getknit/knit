@@ -29,6 +29,7 @@ import kotlin.coroutines.cancellation.CancellationException
  * the instant between the two, which the far end's `SeenSet` drops. Only while current: a link replaced under the same
  * node id, or torn down, while its reader waited must not mark the replacement's memo, which would withhold the frame
  * on the new link for ten minutes. [LinkCrossings.firstCrossingIf] reads [current] under the lock its `forget` takes.
+ * A point-to-point frame marks nothing ([LinkCrossings.marksInbound], #356).
  *
  * Each wait is counted ([onWaited]) and the reader's spell of waits is logged at its start and its end: `bt inbound
  * wait <id>` and `bt inbound waited <id> frames=<n> ms=<total> (<why>)`. A spell ends at the first frame that goes
@@ -75,7 +76,9 @@ class LinkInbound(
             }
             noteWait(now() - from)
         }
-        crossings.firstCrossingIf(nodeId, FrameKey.of(frame.wire, frame.envelope), current)
+        if (LinkCrossings.marksInbound(frame.wire)) {
+            crossings.firstCrossingIf(nodeId, FrameKey.of(frame.wire, frame.envelope), current)
+        }
         return true
     }
 

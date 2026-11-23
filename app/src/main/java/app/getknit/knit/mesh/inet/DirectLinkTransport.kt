@@ -247,7 +247,9 @@ class DirectLinkTransport(
                         false
                     }
                 if (ok) {
-                    crossings.firstCrossing(frame.fromNodeId, FrameKey.of(frame.wire, frame.envelope))
+                    if (LinkCrossings.marksInbound(frame.wire)) {
+                        crossings.firstCrossing(frame.fromNodeId, FrameKey.of(frame.wire, frame.envelope))
+                    }
                     crossed(frame.fromNodeId, frame.envelope, outbound = false, author = self)
                     _inbound.emit(frame)
                 }

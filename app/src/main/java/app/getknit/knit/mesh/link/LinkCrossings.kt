@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.link
 
 import app.getknit.knit.mesh.SeenSet
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -18,7 +19,9 @@ import java.util.concurrent.ConcurrentHashMap
  * the memo suppresses is a frame the far end has already handed its router inside a window where the router
  * would drop it again. The one exception is an id the far end reopened (`SeenSet.reopen`'s guard, #347), whose router
  * would deliver a repeat of the same signature again; the memo withholds that repeat for the window, as it did before
- * the guard, and a fresh link or a fresh signature still crosses. It is keyed per link and forgotten with the link
+ * the guard, and a fresh link or a fresh signature still crosses. Only a frame the far end relayed counts on the way in
+ * ([marksInbound]): a point-to-point one may never have passed its router, as a key sent ahead from its pin store has
+ * not (#356). It is keyed per link and forgotten with the link
  * ([forget]): a fresh link to the same peer starts clean, because the peer may have restarted with an empty `SeenSet`
  * and a wiped store — the custody re-serve after its digest exchange must still get through.
  *
@@ -68,5 +71,16 @@ class LinkCrossings(
     companion object {
         /** Per link: comfortably above the custody cap plus a busy room's minute, tiny either way. */
         const val MAX_PER_LINK = 1024
+
+        /**
+         * Whether [wire], read off a link, marks its crossing: only when its sender relayed it (`relay = true`), for then
+         * its router handed it on, or its custody, which the router fills, released it, and a copy written back is one
+         * the far end already holds. A point-to-point frame (`relay = false`) need not have passed the sender's router:
+         * `KeyExchange.serve` writes a profile from the pin store, so the far end's router and custody may lack the very
+         * signed bytes, and a mark would skip our custody copy of them as an echo for the window (#356). Nothing is lost
+         * by not marking one: a point-to-point frame is never flooded back toward its hop, and a copy that does cross
+         * again is dropped by the far end's router, which is what the write cost before this memo.
+         */
+        fun marksInbound(wire: WireEnvelope): Boolean = wire.relay
     }
 }

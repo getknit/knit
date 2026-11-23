@@ -579,7 +579,9 @@ Two paths used to hand the Bluetooth plane the same frame for the same L2CAP str
 it arrived on, because `fastFanout` has no hop id. Different bytes (`hops`), same `sig`, and the far end's
 `SeenSet` dropped the second every time: room chat, reactions, receipts and profiles each crossed every link
 twice. `mesh/link/LinkCrossings` is the per-link memo that stops it, keyed on `mesh/link/FrameKey` (the
-sig-prefix key the side channel already used), marked on the way **in** as well as out, with the router
+sig-prefix key the side channel already used), marked on the way **in** (a relayed frame only,
+`LinkCrossings.marksInbound`: a key sent ahead is written from the pin store, not by the router, #356) as well as out,
+with the router
 `SeenSet`'s ten-minute window and forgotten with the link — so what it skips is exactly what the receiver
 would have dropped, and a peer that restarted with an empty `SeenSet` gets a clean stream. `BleFastRoutePolicy`
 additionally never routes a frame to its own author (a page-first hearing re-fans with the author as hop,

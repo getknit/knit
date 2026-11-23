@@ -1761,7 +1761,9 @@ class LabTransport(
             _inbound.emit(frame) // unbounded: at once
             handed = true
             held.decrementAndGet()
-            crossings.firstCrossingIf(sender.nodeId, FrameKey.of(frame.wire, frame.envelope), live)
+            if (LinkCrossings.marksInbound(frame.wire)) {
+                crossings.firstCrossingIf(sender.nodeId, FrameKey.of(frame.wire, frame.envelope), live)
+            }
         } finally {
             if (!handed) gone() // the router will never have it
         }
@@ -1998,7 +2000,8 @@ class LabTransport(
         mark: Boolean,
     ): InboundFrame? {
         val envelope = WireCodec.decodeEnvelope(wire.signed) ?: return null
-        if (mark) crossings.firstCrossing(fromNodeId, FrameKey.of(wire, envelope)) // in counts: it never goes back this way
+        // In counts, a relayed frame's (`LinkCrossings.marksInbound`): it never goes back this way.
+        if (mark && LinkCrossings.marksInbound(wire)) crossings.firstCrossing(fromNodeId, FrameKey.of(wire, envelope))
         when (envelope.type) {
             FrameType.BLOB_REQ -> {
                 WireCodec.decodePayload<BlobReqContent>(envelope.payload)?.let { ask ->

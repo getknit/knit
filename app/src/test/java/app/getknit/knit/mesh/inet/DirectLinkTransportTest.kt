@@ -269,6 +269,40 @@ class DirectLinkTransportTest {
             assertFalse("reported before its peer is a neighbour", a.upLate.get() || b.upLate.get())
         }
 
+    /**
+     * #356: only a relayed frame counts as crossed on the way in. A point-to-point one (a key sent ahead, written from its
+     * sender's pin store) may be the very signed bytes our custody must still write back, so it crosses back once; a
+     * relayed frame's echo is skipped, which the frame after it shows by arriving first.
+     */
+    @Test
+    fun onlyARelayedFrameArrivingCountsAsCrossedForTheWayBack() =
+        runBlocking<Unit> {
+            val a = End(alice)
+            val b = End(bob)
+            linked(a, b)
+            val served = frame("k1-QQ").let { WireEnvelope(relay = false, sig = it.sig, signed = it.signed) }
+            val relayed = frame("m3-QQ")
+            val atBob =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    b.transport.inbound
+                        .take(2)
+                        .toList()
+                }
+            a.transport.send(served, Peer(bob))
+            a.transport.send(relayed, Peer(bob))
+            assertEquals(listOf("k1-QQ", "m3-QQ"), withTimeout(WAIT_MS) { atBob.await() }.map { it.envelope.id })
+            val atAlice =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    a.transport.inbound
+                        .take(2)
+                        .toList()
+                }
+            b.transport.send(frame("k1-QQ"), Peer(alice)) // custody's copy of the served bytes: crosses
+            b.transport.send(relayed, Peer(alice)) // the relayed frame's echo: skipped
+            b.transport.send(frame("m4-QQ"), Peer(alice))
+            assertEquals(listOf("k1-QQ", "m4-QQ"), withTimeout(WAIT_MS) { atAlice.await() }.map { it.envelope.id })
+        }
+
     @Test
     fun onlyThePairsOwnTrafficCrossesEitherWay() =
         runBlocking<Unit> {
