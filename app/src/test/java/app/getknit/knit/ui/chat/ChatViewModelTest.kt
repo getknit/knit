@@ -333,6 +333,16 @@ class ChatViewModelTest {
             messagesFlow.map { all ->
                 all.filter { it.kind == MessageEntity.KIND_NORMAL }.map { it.senderId }.distinct()
             }
+        // The table's mention window over every stored row, as the DAO answers it (`MentionWindowQueriesTest` holds the two equal).
+        every { messages.observeMentionWindowEdge(conversationId, any(), any(), any()) } answers {
+            val me = secondArg<String>()
+            val blocked = thirdArg<Collection<String>>().toSet()
+            val size = arg<Int>(3)
+            messagesFlow.map { all ->
+                val rows = all.map { WindowRow(it.id, it.senderId, it.sentAt, MentionStore.decode(it.mentions).size) }
+                mentionWindowEdge(rows, me, blocked, size)
+            }
+        }
     }
 
     // The call layer a case hands the chat (experimental); null, as in a build without calls, unless a case sets it.
@@ -909,6 +919,66 @@ class ChatViewModelTest {
                     .single()
             assertEquals(emptyList<Mention>(), roomRow.styledMentions)
             assertEquals(mentions, roomRow.mentions)
+        }
+
+    @Test
+    fun aMentionOlderThanTheThreadsNewestWindowDrawsPlainButItsEveryoneStillCounts() =
+        runTest {
+            groupFlow.value = group(GROUP, members = listOf("me", "amy", "kit"))
+            peersFlow.value = listOf(peer("kit", name = "Kit"))
+            val vm = vm(GROUP)
+            collectState(vm)
+            val old = listOf(Mention("kit", "Kit"), Mention("kit", "everyone"))
+            val one = MentionStore.encode(listOf(Mention("kit", "Kit")))
+            // The oldest row, then a full window of newer rows carrying mentions: it falls outside.
+            messagesFlow.value =
+                listOf(msg(senderId = "amy", body = "@Kit @everyone", sentAt = 1L, id = "old").copy(mentions = MentionStore.encode(old))) +
+                (1..MENTION_WINDOW).map { msg(senderId = "amy", body = "@Kit", sentAt = 1L + it, id = "n$it").copy(mentions = one) }
+            advanceUntilIdle()
+            // The screen loads the newest page only; the window is the table's, so page back until the oldest row shows.
+            repeat(2) {
+                vm.loadOlder()
+                advanceUntilIdle()
+            }
+
+            val rows =
+                vm.state.value.rows
+                    .associateBy { it.id }
+            assertEquals(listOf(Mention("kit", "everyone")), rows.getValue("old").styledMentions)
+            assertEquals(old, rows.getValue("old").mentions)
+            assertEquals(listOf(Mention("kit", "Kit")), rows.getValue("n1").styledMentions)
+        }
+
+    @Test
+    fun blockingAFlooderBringsAnOlderHonestMentionBackIntoTheWindow() =
+        runTest {
+            peersFlow.value = listOf(peer("kit", name = "Kit"))
+            val vm = vm(Conversations.NEARBY)
+            collectState(vm)
+            val one = MentionStore.encode(listOf(Mention("kit", "Kit")))
+            messagesFlow.value =
+                listOf(msg(senderId = "amy", body = "@Kit hi", sentAt = 1L, id = "honest").copy(mentions = one)) +
+                (1..MENTION_WINDOW).map { msg(senderId = "mallory", body = "@Kit", sentAt = 1L + it, id = "f$it").copy(mentions = one) }
+            advanceUntilIdle()
+            repeat(2) {
+                vm.loadOlder()
+                advanceUntilIdle()
+            }
+            assertEquals(
+                emptyList<Mention>(),
+                vm.state.value.rows
+                    .single { it.id == "honest" }
+                    .styledMentions,
+            )
+
+            blockedFlow.value = setOf("mallory")
+            advanceUntilIdle()
+            assertEquals(
+                listOf(Mention("kit", "Kit")),
+                vm.state.value.rows
+                    .single { it.id == "honest" }
+                    .styledMentions,
+            )
         }
 
     @Test

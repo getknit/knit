@@ -3,6 +3,7 @@ package app.getknit.knit
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.mesh.protocol.VectorFiles
 import app.getknit.knit.ui.chat.EVERYONE_NAME
+import app.getknit.knit.ui.chat.MENTION_WINDOW
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
@@ -25,8 +26,9 @@ import org.junit.Test
  *
  * Built from [MentionVouchCases] through `vouchedMentions` and `mentionSpans` on every run and compared byte for byte;
  * `KNIT_WRITE_VECTORS=1` rewrites it, and refuses to write an answer the cases do not state. Each directory's index is
- * its peers plus `me` as self, with Content filtering off and no stale ids. Non-ASCII is written as `\uXXXX` escapes,
- * so the lookalike and the invisible mark read in a diff.
+ * its peers plus `me` as self, with Content filtering off and no stale ids. `windows` pins the mention window over a
+ * thread's stored rows (`mentionWindowEdge`); `MentionWindowQueriesTest` runs the same cases through the table's query.
+ * Non-ASCII is written as `\uXXXX` escapes, so the lookalike and the invisible mark read in a diff.
  */
 class MentionVouchVectorTest {
     @Test
@@ -46,6 +48,7 @@ class MentionVouchVectorTest {
             put("description", "Which received mentions a bubble styles, and the labels they are read against (ADR 2026-11.p6dk)")
             put("maxTokens", Alias.MAX_TOKENS)
             put("everyone", EVERYONE_NAME)
+            put("window", MENTION_WINDOW)
             putJsonObject("me") {
                 put("nodeId", MentionVouchCases.W)
                 put("name", MentionVouchCases.MY_NAME)
@@ -54,7 +57,29 @@ class MentionVouchVectorTest {
                 for (dir in MentionVouchCases.DIRECTORIES) put(dir.name, directoryJson(dir))
             }
             putJsonArray("cases") { for (case in MentionVouchCases.CASES) add(caseJson(case)) }
+            putJsonArray("windows") { for (case in MentionVouchCases.WINDOWS) add(windowJson(case)) }
         }
+
+    /** One thread's rows and the counted rows outside its window; refuses an answer the case does not state. */
+    private fun windowJson(case: MentionVouchCases.WindowCase): JsonObject {
+        val outside = case.computedOutside()
+        check(outside == case.outside) { "${case.label}: $outside outside, the case states ${case.outside}" }
+        return buildJsonObject {
+            put("label", case.label)
+            putJsonArray("rows") {
+                for (row in case.rows) {
+                    addJsonObject {
+                        put("id", row.id)
+                        put("sender", row.senderId)
+                        put("sentAt", row.sentAt)
+                        put("mentions", row.mentions)
+                    }
+                }
+            }
+            putJsonArray("blocked") { for (id in case.blocked) add(id) }
+            putJsonArray("outside") { for (id in outside) add(id) }
+        }
+    }
 
     private fun directoryJson(dir: MentionVouchCases.Directory): JsonObject =
         buildJsonObject {
@@ -83,6 +108,7 @@ class MentionVouchVectorTest {
             put("label", case.label)
             put("directory", case.directory.name)
             put("thread", case.thread.wire)
+            put("inWindow", case.inWindow)
             if (case.roster == null) {
                 put("roster", JsonNull)
             } else {

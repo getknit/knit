@@ -14,6 +14,7 @@ import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
+import app.getknit.knit.data.message.MessagePlace
 import app.getknit.knit.identity.NameKey
 import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.Mention
@@ -128,6 +129,43 @@ const val MAX_VOUCHED_NAME = 512
 /** How many distinct ids one row's mentions are judged for by name; the rest draw plain (ADR 2026-11.p6dk). */
 const val MAX_VOUCHED_IDS = 16
 
+/** How many of a thread's newest counted rows the name rule runs in: its mention window (ADR 2026-11.p6dk). */
+const val MENTION_WINDOW = 200
+
+/** One stored row as the mention window counts it: [mentions] is how many entries it carries. */
+data class WindowRow(
+    val id: String,
+    val senderId: String,
+    val sentAt: Long,
+    val mentions: Int,
+)
+
+/**
+ * The edge of a thread's mention window over every one of its stored [rows]: the place of the oldest of its newest [size]
+ * counted rows, or null while it holds fewer, when every row is inside. A counted row is one whose sender is neither [me]
+ * nor in [blocked] and which carries a mention, so our own rows and plain chatter never push a highlight out, and
+ * blocking a flooder brings the honest highlights back. Newest is the display
+ * order, [MessagePlace]: `sentAt` as stored (a received one is clamped to five minutes past our clock), then the id.
+ * `MessageDao.observeMentionWindowEdge` asks the table the same question.
+ */
+fun mentionWindowEdge(
+    rows: Iterable<WindowRow>,
+    me: String?,
+    blocked: Set<String> = emptySet(),
+    size: Int = MENTION_WINDOW,
+): MessagePlace? =
+    rows
+        .filter { it.senderId != me && it.senderId !in blocked && it.mentions > 0 }
+        .map { MessagePlace(it.sentAt, it.id) }
+        .sortedDescending()
+        .getOrNull(size - 1)
+
+/** Whether a row at [place] is inside the window whose edge is [edge] ([mentionWindowEdge]); null is no edge yet. */
+fun inMentionWindow(
+    place: MessagePlace,
+    edge: MessagePlace?,
+): Boolean = edge == null || place >= edge
+
 /**
  * The entries of a received row's [mentions] its bubble may draw as mentions (ADR 2026-11.p6dk); the rest draw as plain
  * text. The sender lists them and writes their names; this reads each name against the reader's own labels. Each entry
@@ -136,10 +174,11 @@ const val MAX_VOUCHED_IDS = 16
  * 2. so does the MeshCore room ([meshcoreRoom]), whose one entry our receive code binds to us;
  * 3. an `@everyone` entry ([EVERYONE_NAME], exactly) in a group thread is kept when its id is in [roster] or ours, and
  *    dropped otherwise, whatever that id's label; null [roster] means the thread is not a group, and the entry goes on;
- * 4. any other entry is first bounded: a name longer than [MAX_VOUCHED_NAME] is dropped, and so is an entry whose id is
- *    not among the first [MAX_VOUCHED_IDS] distinct ids to get this far, so a crafted list cannot make a row slow to
- *    draw. Then it is kept when its name, by [NameKey], is one of [mentionTexts] for its id: the reader's label for that
- *    person, or that label grown by more of the id's own alias tokens.
+ * 4. any other entry is first bounded, so a crafted list or a flood of them cannot make a thread slow to draw: in a row
+ *    outside its thread's mention window (not [inWindow], [mentionWindowEdge]) it is dropped; a name longer than
+ *    [MAX_VOUCHED_NAME] is dropped; and so is an entry whose id is not among the first [MAX_VOUCHED_IDS] distinct ids to
+ *    get this far. Then it is kept when its name, by [NameKey], is one of [mentionTexts] for its id: the reader's label
+ *    for that person, or that label grown by more of the id's own alias tokens.
  *
  * Pure. Notifications, "mentions me" and translation's protected spans still read every entry.
  */
@@ -149,6 +188,7 @@ fun vouchedMentions(
     me: String?,
     meshcoreRoom: Boolean,
     roster: Collection<String>?,
+    inWindow: Boolean,
     mentionTexts: (String) -> List<String>,
 ): List<Mention> {
     if (mentions.isEmpty() || senderId == me || meshcoreRoom) return mentions
@@ -157,7 +197,7 @@ fun vouchedMentions(
     val keys = HashMap<String, String>()
 
     fun named(m: Mention): Boolean {
-        if (m.name.length > MAX_VOUCHED_NAME) return false
+        if (!inWindow || m.name.length > MAX_VOUCHED_NAME) return false
         val texts =
             accepted[m.nodeId] ?: run {
                 if (accepted.size >= MAX_VOUCHED_IDS) return false

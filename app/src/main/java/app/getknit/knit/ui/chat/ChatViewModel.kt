@@ -49,6 +49,7 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.MessagePlace
 import app.getknit.knit.data.message.PeerRename
 import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.TransferRecord
@@ -1436,6 +1437,8 @@ class ChatViewModel(
         val readCounts: Map<String, Int>,
         // messageId -> their LoRa radio acked our DM (MeshController.loraRadioReached). Empty outside a DM thread.
         val radioReached: Map<String, LoraRadioReached>,
+        // Where the thread's mention window starts ([mentionWindowEdge]); null while every row is inside.
+        val mentionEdge: MessagePlace?,
     )
 
     // What the blob table and the moderation cache say about every attachment, folded into one arm of the
@@ -1498,14 +1501,29 @@ class ChatViewModel(
     private val radioReached: Flow<Map<String, LoraRadioReached>> =
         if (Conversations.kindFor(conversationId) == ConversationKind.DM) meshManager.loraRadioReached else flowOf(emptyMap())
 
-    // The window paired with this thread's full sender list and the radio-reached evidence, folded first so the bundle
-    // below stays at the typed 5-flow combine overload.
+    // The window paired with this thread's full sender list, the radio-reached evidence and the mention window's edge.
+    private data class WindowInputs(
+        val window: Window,
+        val senders: List<String>,
+        val reached: Map<String, LoraRadioReached>,
+        // Where the thread's mention window starts (ADR 2026-11.p6dk), over every stored row, not the loaded page.
+        val mentionEdge: MessagePlace?,
+    )
+
+    // Folded first so the bundle below stays at the typed 5-flow combine overload.
+    @OptIn(ExperimentalCoroutinesApi::class)
     private val windowWithSenders =
         combine(
             windowed.filterNotNull(),
             messages.observeSendersIn(conversationId),
             radioReached,
-        ) { window, senders, reached -> Triple(window, senders, reached) }
+            // Re-asked as the block list changes, the same list the picker and the rows read (revision 5).
+            combine(myNodeId.filterNotNull(), settings.blockedNodeIds) { me, blocked -> me to blocked }
+                .distinctUntilChanged()
+                .flatMapLatest { (me, blocked) ->
+                    messages.observeMentionWindowEdge(conversationId, me, blocked, MENTION_WINDOW).distinctUntilChanged()
+                },
+        ) { window, senders, reached, edge -> WindowInputs(window, senders, reached, edge) }
 
     // Only reactors in the thread are drawn, so the query needs our own id (#301).
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -1516,10 +1534,11 @@ class ChatViewModel(
             settings.blockedNodeIds,
             blobState,
             groupDelivery,
-        ) { (window, senders, reached), reacts, blocked, blob, (group, delivered, read) ->
+        ) { inputs, reacts, blocked, blob, (group, delivered, read) ->
+            val window = inputs.window
             MessagesBundle(
                 window.messages.filter { it.senderId !in blocked },
-                senders.filter { it !in blocked },
+                inputs.senders.filter { it !in blocked },
                 window.messages.size >= window.limit,
                 reacts,
                 blocked,
@@ -1535,7 +1554,8 @@ class ChatViewModel(
                 group,
                 delivered,
                 read,
-                reached,
+                inputs.reached,
+                inputs.mentionEdge,
             )
         }
 
@@ -1925,7 +1945,15 @@ class ChatViewModel(
                         location = GeoUri.find(m.body),
                         mentions = received,
                         styledMentions =
-                            vouchedMentions(received, m.senderId, me, isMeshcoreRoom, roster, ::mentionTexts),
+                            vouchedMentions(
+                                mentions = received,
+                                senderId = m.senderId,
+                                me = me,
+                                meshcoreRoom = isMeshcoreRoom,
+                                roster = roster,
+                                inWindow = inMentionWindow(MessagePlace(m.sentAt, m.id), bundle.mentionEdge),
+                                mentionTexts = ::mentionTexts,
+                            ),
                         styles = StyleStore.decode(m.styles),
                         reactions = tallies,
                         quote = quoteViewFor(m, mine, me, selfLabel) { label(it).text },

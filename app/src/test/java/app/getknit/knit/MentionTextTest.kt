@@ -4,6 +4,7 @@ import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import app.getknit.knit.data.message.MessagePlace
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.protocol.Mention
@@ -12,17 +13,21 @@ import app.getknit.knit.moderation.ShownNames
 import app.getknit.knit.ui.chat.EVERYONE_NAME
 import app.getknit.knit.ui.chat.MAX_VOUCHED_IDS
 import app.getknit.knit.ui.chat.MAX_VOUCHED_NAME
+import app.getknit.knit.ui.chat.MENTION_WINDOW
 import app.getknit.knit.ui.chat.MentionCandidate
 import app.getknit.knit.ui.chat.MentionEdit
+import app.getknit.knit.ui.chat.WindowRow
 import app.getknit.knit.ui.chat.activeMentionQuery
 import app.getknit.knit.ui.chat.annotateMessageBody
 import app.getknit.knit.ui.chat.everyoneMentions
 import app.getknit.knit.ui.chat.filterCandidates
 import app.getknit.knit.ui.chat.findUrls
 import app.getknit.knit.ui.chat.highlightMentions
+import app.getknit.knit.ui.chat.inMentionWindow
 import app.getknit.knit.ui.chat.keepChipsWhole
 import app.getknit.knit.ui.chat.matchesEveryone
 import app.getknit.knit.ui.chat.mentionSpans
+import app.getknit.knit.ui.chat.mentionWindowEdge
 import app.getknit.knit.ui.chat.mentionsStillIn
 import app.getknit.knit.ui.chat.snapOutOfChips
 import app.getknit.knit.ui.chat.vouchedMentions
@@ -429,13 +434,13 @@ class MentionTextTest {
         val dir = directoryOf(listOf(peer(flagged, "Fuck")), me = MentionVouchCases.W, myName = "Walter", screen = screen)
         val alias = Alias.aliasFor(flagged)
         val mentions = listOf(Mention(flagged, "Fuck"), Mention(flagged, alias))
-        val kept = vouchedMentions(mentions, MentionVouchCases.B, MentionVouchCases.W, false, null, dir::mentionTexts)
+        val kept = vouchedMentions(mentions, MentionVouchCases.B, MentionVouchCases.W, false, null, inWindow = true, dir::mentionTexts)
         assertEquals(listOf(Mention(flagged, alias)), kept)
         // Filtering off, the name is the label again and the bare alias of a named peer is not.
         val off = directoryOf(listOf(peer(flagged, "Fuck")), me = MentionVouchCases.W, myName = "Walter")
         assertEquals(
             listOf(Mention(flagged, "Fuck")),
-            vouchedMentions(mentions, MentionVouchCases.B, MentionVouchCases.W, false, null, off::mentionTexts),
+            vouchedMentions(mentions, MentionVouchCases.B, MentionVouchCases.W, false, null, inWindow = true, off::mentionTexts),
         )
     }
 
@@ -444,11 +449,14 @@ class MentionTextTest {
         val me = MentionVouchCases.W
         val dir = MentionVouchCases.PLAIN.peerDirectory
         val bound = listOf(Mention(me, "[Knit 1a2b]"))
-        assertEquals(bound, vouchedMentions(bound, "a-heard-speaker", me, meshcoreRoom = true, roster = null, dir::mentionTexts))
+        assertEquals(
+            bound,
+            vouchedMentions(bound, "a-heard-speaker", me, meshcoreRoom = true, roster = null, inWindow = true, dir::mentionTexts),
+        )
         // The same entry anywhere else names us under a name we do not hold.
         assertEquals(
             emptyList<Mention>(),
-            vouchedMentions(bound, MentionVouchCases.B, me, meshcoreRoom = false, roster = null, dir::mentionTexts),
+            vouchedMentions(bound, MentionVouchCases.B, me, meshcoreRoom = false, roster = null, inWindow = true, dir::mentionTexts),
         )
     }
 
@@ -458,14 +466,20 @@ class MentionTextTest {
         val dir = c.PLAIN.peerDirectory
         val entries = listOf(Mention(c.W, EVERYONE_NAME), Mention(c.U, EVERYONE_NAME))
         // Our own id is kept even when the roster no longer lists us; an id outside it is not.
-        assertEquals(listOf(entries[0]), vouchedMentions(entries, c.B, c.W, false, roster = listOf(c.A), dir::mentionTexts))
+        assertEquals(
+            listOf(entries[0]),
+            vouchedMentions(entries, c.B, c.W, false, roster = listOf(c.A), inWindow = true, dir::mentionTexts),
+        )
         // A peer whose label is "everyone" is mentioned by name outside a group, as any name is.
         val named = directoryOf(listOf(peer(c.A, EVERYONE_NAME)), me = c.W, myName = "Walter")
         val byName = listOf(Mention(c.A, EVERYONE_NAME))
-        assertEquals(byName, vouchedMentions(byName, c.B, c.W, false, roster = null, named::mentionTexts))
+        assertEquals(byName, vouchedMentions(byName, c.B, c.W, false, roster = null, inWindow = true, named::mentionTexts))
         // Not ASCII-exact, so it is a name: "EVERYONE" under nobody's label draws plain even in a group.
         val shouted = listOf(Mention(c.A, "EVERYONE"))
-        assertEquals(emptyList<Mention>(), vouchedMentions(shouted, c.B, c.W, false, roster = listOf(c.W, c.A), dir::mentionTexts))
+        assertEquals(
+            emptyList<Mention>(),
+            vouchedMentions(shouted, c.B, c.W, false, roster = listOf(c.W, c.A), inWindow = true, dir::mentionTexts),
+        )
     }
 
     @Test
@@ -474,10 +488,13 @@ class MentionTextTest {
         val named = directoryOf(listOf(peer(c.A, EVERYONE_NAME), peer(c.B, "Bob")), me = c.W, myName = "Walter")
         val self = listOf(Mention(c.A, EVERYONE_NAME))
         assertEquals(EVERYONE_NAME, named.label(c.A).text)
-        assertEquals(emptyList<Mention>(), vouchedMentions(self, c.A, c.W, false, roster = listOf(c.W, c.B), named::mentionTexts))
+        assertEquals(
+            emptyList<Mention>(),
+            vouchedMentions(self, c.A, c.W, false, roster = listOf(c.W, c.B), inWindow = true, named::mentionTexts),
+        )
         // A member is kept by rule 3, the same entry in a direct thread by its name.
-        assertEquals(self, vouchedMentions(self, c.A, c.W, false, roster = listOf(c.W, c.A), named::mentionTexts))
-        assertEquals(self, vouchedMentions(self, c.A, c.W, false, roster = null, named::mentionTexts))
+        assertEquals(self, vouchedMentions(self, c.A, c.W, false, roster = listOf(c.W, c.A), inWindow = true, named::mentionTexts))
+        assertEquals(self, vouchedMentions(self, c.A, c.W, false, roster = null, inWindow = true, named::mentionTexts))
     }
 
     @Test
@@ -492,7 +509,7 @@ class MentionTextTest {
         // Our own entries settled by @everyone in the group and a too-long name never take one of the sixteen.
         val settled = List(20) { Mention(c.W, EVERYONE_NAME) } + Mention(NodeId.derive("long"), "a".repeat(MAX_VOUCHED_NAME + 1))
         val mentions = settled + fresh.take(MAX_VOUCHED_IDS - 1) + Mention(c.A, "Alice") + fresh.drop(MAX_VOUCHED_IDS - 1)
-        val kept = vouchedMentions(mentions, c.B, c.W, false, roster = listOf(c.W, c.A), lookup)
+        val kept = vouchedMentions(mentions, c.B, c.W, false, roster = listOf(c.W, c.A), inWindow = true, lookup)
         assertEquals(List(20) { Mention(c.W, EVERYONE_NAME) } + Mention(c.A, "Alice"), kept)
         assertEquals(MAX_VOUCHED_IDS, asked.size)
         assertEquals(MAX_VOUCHED_IDS, asked.toSet().size)
@@ -507,16 +524,45 @@ class MentionTextTest {
             c.PLAIN.peerDirectory.mentionTexts(id)
         }
         val mentions = List(1_000) { Mention(c.A, if (it % 2 == 0) "Alice" else "Mallory") }
-        val kept = vouchedMentions(mentions, c.B, c.W, false, null, lookup)
+        val kept = vouchedMentions(mentions, c.B, c.W, false, null, inWindow = true, lookup)
         assertEquals(500, kept.size)
         assertEquals(listOf(c.A), asked)
+    }
+
+    @Test
+    fun everyWindowCaseLeavesOutsideWhatTheContractStates() {
+        for (case in MentionVouchCases.WINDOWS) assertEquals(case.label, case.outside, case.computedOutside())
+    }
+
+    @Test
+    fun aThreadWithFewerCountedRowsThanTheWindowHasNoEdge() {
+        val c = MentionVouchCases
+        val rows = (1..MENTION_WINDOW - 1).map { WindowRow("r$it", c.A, it.toLong(), mentions = 1) }
+        assertNull(mentionWindowEdge(rows, c.W))
+        assertTrue(inMentionWindow(MessagePlace(0L, "older-than-all"), null))
+        // Our own rows and rows without mentions never fill it.
+        val padded = rows + (1..50).map { WindowRow("o$it", c.W, 9_000L + it, mentions = 3) } + WindowRow("p", c.A, 9_999L, 0)
+        assertNull(mentionWindowEdge(padded, c.W))
+    }
+
+    @Test
+    fun aRowOutsideTheWindowAsksNoLabelAndKeepsOnlyWhatRulesOneToThreeSettle() {
+        val c = MentionVouchCases
+        val mentions = listOf(Mention(c.A, "Alice"), Mention(c.B, EVERYONE_NAME))
+        val kept =
+            vouchedMentions(mentions, c.W.reversed(), c.W, false, roster = listOf(c.W, c.B), inWindow = false) {
+                error("a row outside the window asks no label")
+            }
+        assertEquals(listOf(Mention(c.B, EVERYONE_NAME)), kept)
+        // Our own row is still kept whole outside it.
+        assertEquals(mentions, vouchedMentions(mentions, c.W, c.W, false, roster = null, inWindow = false) { error("never") })
     }
 
     @Test
     fun noMentionsKeepNothing() {
         assertEquals(
             emptyList<Mention>(),
-            vouchedMentions(emptyList(), "b", "me", false, null) { error("never asked") },
+            vouchedMentions(emptyList(), "b", "me", false, null, inWindow = true) { error("never asked") },
         )
     }
 }

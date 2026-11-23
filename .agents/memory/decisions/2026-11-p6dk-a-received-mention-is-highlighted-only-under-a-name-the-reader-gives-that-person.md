@@ -25,10 +25,11 @@ every entry as received. Each entry is judged on its own, by the first rule that
 3. **`everyone`** (exactly `EVERYONE_NAME`) in a group thread is kept when its id is in the group's current roster or
    is ours, and is dropped otherwise, even when that id's label is "everyone" (ADR 2026-10.6h2g). In any other thread,
    a commons included, it goes on to rule 4, so it draws plain unless someone's label is literally "everyone".
-4. **The name rule.** Two bounds come first, so a crafted list cannot make a row slow to draw: a name longer than
-   `MAX_VOUCHED_NAME` (512 UTF-16 units; no stock sender writes a label past 344, a 32-unit name and ten 30-character
-   tokens) is dropped, and of the entries that reach this rule and pass that bound, only those whose id is among the
-   first `MAX_VOUCHED_IDS` (16) distinct ids to do so, in list order, are judged; the rest are dropped. Entries settled
+4. **The name rule.** Three bounds come first, so a crafted list, or a flood of them, cannot make a thread slow to
+   draw. In a row outside its thread's mention window (below), every entry that reaches this rule is dropped. A name
+   longer than `MAX_VOUCHED_NAME` (512 UTF-16 units; no stock sender writes a label past 344, a 32-unit name and ten
+   30-character tokens) is dropped. Of the entries that reach this rule and pass those bounds, only those whose id is
+   among the first `MAX_VOUCHED_IDS` (16) distinct ids to do so, in list order, are judged; the rest are dropped. Entries settled
    by rules 1–3 never count toward the 16. Then the entry is kept when its name, by `NameKey`, equals one of
    `PeerLabelIndex.mentionTexts(id)`:
    the reader's own label for that id (`labelFor`, the content filter's presenter applied, an id outside the index under
@@ -36,6 +37,21 @@ every entry as received. Each entry is judged on its own, by the first rule that
    `Alias.MAX_TOKENS`, in `PeerLabel.text`'s format. A named peer's texts are `Alice`, `Alice (a0)`, `Alice (a0 a1)` and
    so on; a collided one's start at its suffixed label; a blank one's at its alias, then `a0 (a1)`. `PeerDirectory` reads
    it with the row's stored name, as `label` does.
+
+**The mention window.** Any new profile changes the label index, so every stored row is judged again; rule 4 runs
+only in a thread's newest `MENTION_WINDOW` (200) counted rows. A counted row is a stored row of the thread whose sender
+is neither us nor on our block list and whose mention list is not empty, so our own rows and plain chatter never push a
+highlight out, and blocking a flooder brings the honest highlights back; the window follows the block list (the one the
+picker and the rows read) as it changes. Newest is
+the display order, `MessagePlace`: `sentAt` as stored (a received one is already clamped to five minutes past our
+clock, `InboundPipeline.clampFuture`), then the id. Arrival time is not used: back-dated rows from a custody replay
+would take the window from current messages, and old rows have no `arrivedAt`. The window covers every stored row,
+not the page `ChatWindow` has loaded, so `MessageDao.observeMentionWindowEdge` asks the table for the 200th counted
+row's place in the `(conversationId, sentAt, id)` index's order; `mentionWindowEdge` is the same rule over a list, which
+the vector's `windows` cases drive, and `MentionWindowQueriesTest` holds the query to it. The index orders the scan but
+the sender and mention filters read each row, so in a long thread with few mentions the query walks the whole thread on
+every `messages` write while the chat is open (about 13 ms over 100,000 rows on a desktop); a partial index is #361,
+left out here because this change moves no schema. Rules 1–3 apply in every row.
 
 The bubble runs the unchanged `mentionSpans` over the kept entries only, for the body and for a translation's words.
 Because the function now sees fewer tokens, a kept "@Alice" inside a dropped "@Alice (zz)" is styled at its own length.
@@ -65,6 +81,13 @@ its own tokens. The rule accepts nothing the directory does not already show for
   earlier received message's highlight on or off. Our own messages are exempt.
 - **The rule is no stronger than the directory.** It accepts nothing the directory does not already show for an id,
   so a gap in how labels grow is a gap here too; a known one is tracked in #360.
+- **Older mentions in a busy thread.** In a thread with more than 200 received messages that carry mentions, the
+  older ones' mentions draw plain. A flood of such posts pushes honest highlights out of the window, as it already
+  pushes honest rows out of retention. A message that arrives late through custody sits at its `sentAt`, and is
+  highlighted only if that puts it among the newest 200. A counted row is one whose *stored* mention list is not empty,
+  and the two ports store differently: knit-ios keeps only the entries whose token is in the body (knit-ios ADR 2026-10.nbhj),
+  Android keeps the list as received. So for a crafted list whose tokens are not in the body, the two windows can
+  differ: Android counts that row and iOS does not. That changes which highlights show, never what one shows.
 - **More than 16 people in one message.** Beyond the first 16 distinct ids that reach rule 4, a received message's
   mentions draw plain. A group holds at most eight members, and the room composer picks people one at a time.
 
@@ -75,8 +98,9 @@ the composer chips (built from the pending list), translation's protection of ev
 
 **The trap.** A new surface that styles a mention must take `styledMentions`, never `mentions`; the pinned bar, quotes,
 search, notifications and Wear draw plain text today. Pinned by `MentionTextTest` (every vector case, the content
-filter, the MeshCore binding, both bounds), `PeerLabelsTest` (`mentionTexts` for a plain, collided, blank, outside, own, stale and
-hidden name), `ChatViewModelTest` (a stranger's "@Alice" dropped, the real one kept, our own row, `@everyone` in a group
+filter, the MeshCore binding, the bounds, the window), `PeerLabelsTest` (`mentionTexts` for a plain, collided, blank, outside, own, stale and
+hidden name), `MentionWindowQueriesTest` (the window's query against `mentionWindowEdge`), `ChatViewModelTest` (a row
+outside the window, a stranger's "@Alice" dropped, the real one kept, our own row, `@everyone` in a group
 and not in the Nearby room, `mentions` unchanged) and `vectors/mention-vouch-v1.json` (`MentionVouchVectorTest`), which
 also pins label parity across both ports, which no vector covered before.
 

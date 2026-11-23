@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface MessageDao :
     BridgedRoomQueries,
+    MentionWindowQueries,
     ThreadMediaQueries {
     // There is deliberately no `SELECT * FROM messages` and no whole-thread read here: an accepted thread
     // has no retention cap, so any such query would grow without bound. The chat screen reads a window

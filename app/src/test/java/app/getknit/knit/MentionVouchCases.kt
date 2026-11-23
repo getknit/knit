@@ -1,13 +1,18 @@
 package app.getknit.knit
 
 import app.getknit.knit.data.PeerDirectory
+import app.getknit.knit.data.message.MessagePlace
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.chat.EVERYONE_NAME
 import app.getknit.knit.ui.chat.MAX_VOUCHED_IDS
 import app.getknit.knit.ui.chat.MAX_VOUCHED_NAME
+import app.getknit.knit.ui.chat.MENTION_WINDOW
+import app.getknit.knit.ui.chat.WindowRow
+import app.getknit.knit.ui.chat.inMentionWindow
 import app.getknit.knit.ui.chat.mentionSpans
+import app.getknit.knit.ui.chat.mentionWindowEdge
 import app.getknit.knit.ui.chat.vouchedMentions
 import app.getknit.knit.ui.directoryOf
 import app.getknit.knit.ui.peer
@@ -74,6 +79,8 @@ internal object MentionVouchCases {
         val sender: String = B,
         val thread: Thread = Thread.DIRECT,
         val roster: List<String>? = null,
+        /** Whether the row is inside its thread's mention window ([WINDOWS] pins the window itself). */
+        val inWindow: Boolean = true,
     ) {
         /** What the rule keeps, run as `ChatViewModel`'s fold runs it. */
         fun vouched(): List<Mention> =
@@ -83,6 +90,7 @@ internal object MentionVouchCases {
                 me = W,
                 meshcoreRoom = false,
                 roster = if (thread == Thread.GROUP) roster else null,
+                inWindow = inWindow,
                 mentionTexts = directory.peerDirectory::mentionTexts,
             )
 
@@ -287,6 +295,82 @@ internal object MentionVouchCases {
                 listOf(m(A, pastBound)),
                 kept = emptyList(),
                 styled = emptyList(),
+            ),
+            Case(
+                "a row outside its thread's window: the name rule does not run",
+                PLAIN,
+                "@Alice hi",
+                listOf(m(A, "Alice")),
+                kept = emptyList(),
+                styled = emptyList(),
+                inWindow = false,
+            ),
+            Case(
+                "@everyone in a group, in a row outside the window: rule 3 still applies",
+                PLAIN,
+                "@everyone hi",
+                listOf(m(A, EVERYONE_NAME)),
+                kept = listOf(0),
+                styled = listOf("@everyone"),
+                thread = Thread.GROUP,
+                roster = listOf(W, A, B),
+                inWindow = false,
+            ),
+        )
+    }
+
+    /** One thread's stored rows and the ids of its counted rows outside the window, as the contract states them. */
+    class WindowCase(
+        val label: String,
+        val rows: List<WindowRow>,
+        val outside: List<String>,
+        /** The senders on our block list (revision 5): their rows never count. */
+        val blocked: List<String> = emptyList(),
+    ) {
+        /** The counted rows outside the window, as [mentionWindowEdge] and [inMentionWindow] place them. */
+        fun computedOutside(): List<String> {
+            val edge = mentionWindowEdge(rows, W, blocked.toSet())
+            return rows
+                .filter { it.senderId != W && it.senderId !in blocked && it.mentions > 0 }
+                .filter { !inMentionWindow(MessagePlace(it.sentAt, it.id), edge) }
+                .map { it.id }
+        }
+    }
+
+    /** [n] counted rows "c001"… from A and B, at `sentAt` 1_000 + i, unless [sentAt] says otherwise. */
+    private fun counted(
+        n: Int,
+        sentAt: (Int) -> Long = { 1_000L + it },
+    ) = (1..n).map { WindowRow("c%03d".format(it), if (it % 2 == 0) A else B, sentAt(it), mentions = 1 + it % 3) }
+
+    val WINDOWS: List<WindowCase> by lazy {
+        val over = counted(MENTION_WINDOW + 1)
+        listOf(
+            WindowCase("one counted row past the window: the oldest is outside", over, outside = listOf("c001")),
+            WindowCase(
+                "the 200th and 201st newest share a sentAt: the smaller id is outside",
+                // c001 and c002 both at 1_001: c002 is newer by its id, so c001 is the 201st.
+                counted(MENTION_WINDOW + 1) { if (it <= 2) 1_001L else 1_000L + it },
+                outside = listOf("c001"),
+            ),
+            WindowCase(
+                "newer rows of ours or with no mentions never count",
+                over +
+                    (1..50).map {
+                        if (it % 2 == 0) {
+                            WindowRow("o%03d".format(it), W, 5_000L + it, mentions = 1)
+                        } else {
+                            WindowRow("p%03d".format(it), A, 5_000L + it, mentions = 0)
+                        }
+                    },
+                outside = listOf("c001"),
+            ),
+            WindowCase("exactly the window's size: nothing is outside", counted(MENTION_WINDOW), outside = emptyList()),
+            WindowCase(
+                "the newest of 201 rows is from a blocked sender: it does not count, and nothing is outside",
+                counted(MENTION_WINDOW) + WindowRow("x201", X, 9_000L, mentions = 1),
+                outside = emptyList(),
+                blocked = listOf(X),
             ),
         )
     }

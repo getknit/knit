@@ -12,6 +12,7 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.MessagePlace
 import app.getknit.knit.data.message.MissingAttachment
 import app.getknit.knit.data.message.OwnPost
 import app.getknit.knit.data.message.PeerAttachment
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.map
  * ([observeNewestMessages]) and the list screens read per-thread summaries ([observeNewestPerConversation]
  * and its companions), so a thread's length costs nothing at open.
  */
+@Suppress("TooManyFunctions") // one thin delegate per query the screens and the mesh read, as MessageDao has
 class MessageRepository(
     private val dao: MessageDao,
     private val nearbyMaxMessages: Int = DEFAULT_NEARBY_MAX_MESSAGES,
@@ -96,6 +98,18 @@ class MessageRepository(
 
     /** Everyone who has posted an ordinary message in [conversationId] — the @-mention candidates. */
     fun observeSendersIn(conversationId: String): Flow<List<String>> = dao.observeSendersIn(conversationId)
+
+    /**
+     * Where [conversationId]'s mention window starts (ADR 2026-11.p6dk): the oldest of its newest [size] counted rows, or
+     * null while it holds fewer, when every row is inside. Rows from us or from the [blocked] never count. See
+     * [MessageDao.observeMentionWindowEdge].
+     */
+    fun observeMentionWindowEdge(
+        conversationId: String,
+        me: String,
+        blocked: Collection<String>,
+        size: Int,
+    ): Flow<MessagePlace?> = dao.observeMentionWindowEdge(conversationId, me, blocked, size - 1)
 
     /** One message by id, null once it is deleted — backs the message-details screen. */
     fun observeMessage(id: String): Flow<MessageEntity?> = dao.observeById(id)

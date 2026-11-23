@@ -138,8 +138,10 @@ lines.
   surface that styles a mention:** READ ADR 2026-11.p6dk (and ADR 058 for the label, ADR 2026-10.6h2g for `@everyone`).
   A received entry is styled only under the reader's own label for its id, or that label grown by the id's own alias
   tokens; `@everyone` only in a group, for a roster member or us; our own rows and the MeshCore room keep every entry.
-  The name rule reads at most `MAX_VOUCHED_IDS` distinct ids a row and no name past `MAX_VOUCHED_NAME`, so a crafted
-  list stays cheap to draw.
+  The name rule reads at most `MAX_VOUCHED_IDS` distinct ids a row and no name past `MAX_VOUCHED_NAME`, and runs only in
+  a thread's newest `MENTION_WINDOW` counted rows (`mentionWindowEdge`, `MentionWindowQueries.observeMentionWindowEdge`,
+  over every stored row, never the loaded page; ours and blocked senders' never count), so a crafted list or a flood
+  stays cheap to draw. The edge query's whole-thread scan is #361.
   It runs in `ChatViewModel`'s fold, never at receive time; `ChatRow.mentions` keeps every entry for translation's
   protected spans, and notifications and "mentions me" read the node id alone. knit-ios mirrors it:
   `vectors/mention-vouch-v1.json` (`MentionVouchVectorTest`) pins the cases and the labels. Regression:
