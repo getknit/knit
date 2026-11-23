@@ -41,6 +41,12 @@ document:
 - You can now mute a chat for 1 hour, 8 hours, 1 day, 7 days or always, from the chat's menu, its details
   screen or a long press in the chat list. Calls still ring, and in a group a message that mentions you by
   name gets through.
+- Knit can now use a MeshCore board as well as a Meshtastic one. Pair it in Settings › Use a LoRa radio to
+  send the Nearby room and your private messages over long-range LoRa, and to read and post in the board's
+  Public channel.
+- Your phone's Bluetooth signal no longer carries a fixed Knit ID that someone nearby could use to follow it
+  from place to place. It now sends a code that changes regularly, and only your contacts can tell it is you.
+  Phones on an older Knit may take longer to connect to yours.
 
 ### Changed
 

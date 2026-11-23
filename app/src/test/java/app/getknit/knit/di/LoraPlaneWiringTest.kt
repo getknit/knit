@@ -42,7 +42,7 @@ import java.io.File
 
 /**
  * The MeshCore plane's wiring (ADR 2026-11.gsqu, Stage 5a-2), as pure rules the module reads: which kinds a build
- * constructs (a release build, `MESHCORE_PLANE` off, builds no MeshCore child), the address a board's late report is
+ * constructs (a build with `MESHCORE_PLANE` off builds no MeshCore child), the address a board's late report is
  * written under (the `dialled` race), and the door claim an offer is gated on per kind.
  */
 class LoraPlaneWiringTest {
@@ -140,8 +140,8 @@ class LoraPlaneWiringTest {
         }
 
     @Test
-    fun aReleaseBuildBuildsNoMeshcoreChildAndADebugBuildBuildsBoth() {
-        assertEquals("release: MESHCORE_PLANE off", listOf(BoardKind.MESHTASTIC), builtBoardKinds(loraPlane = true, meshcorePlane = false))
+    fun withMeshcorePlaneOffABuildBuildsNoMeshcoreChildAndWithItOnBoth() {
+        assertEquals("MESHCORE_PLANE off", listOf(BoardKind.MESHTASTIC), builtBoardKinds(loraPlane = true, meshcorePlane = false))
         assertEquals(listOf(BoardKind.MESHTASTIC, BoardKind.MESHCORE), builtBoardKinds(loraPlane = true, meshcorePlane = true))
         assertEquals(emptyList<BoardKind>(), builtBoardKinds(loraPlane = false, meshcorePlane = false))
         assertTrue(runCatching { builtBoardKinds(loraPlane = false, meshcorePlane = true) }.isFailure)
@@ -173,8 +173,8 @@ class LoraPlaneWiringTest {
     }
 
     @Test
-    fun aReleaseBuildBindsNoMeshcoreDoorAndADebugBuildBindsIt() {
-        assertFalse("release: no MeshCore child, no seam", bindsMeshcoreDirect(builtBoardKinds(loraPlane = true, meshcorePlane = false)))
+    fun withMeshcorePlaneOffNoMeshcoreDoorIsBoundAndWithItOnOneIs() {
+        assertFalse("flag off: no MeshCore child, no seam", bindsMeshcoreDirect(builtBoardKinds(loraPlane = true, meshcorePlane = false)))
         assertFalse(bindsMeshcoreDirect(builtBoardKinds(loraPlane = false, meshcorePlane = false)))
         assertTrue(bindsMeshcoreDirect(builtBoardKinds(loraPlane = true, meshcorePlane = true)))
         assertEquals(app.getknit.knit.BuildConfig.MESHCORE_PLANE, bindsMeshcoreDirect(BUILT_BOARD_KINDS))

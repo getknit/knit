@@ -83,8 +83,8 @@ internal val BUILT_BOARD_KINDS: List<BoardKind> = builtBoardKinds(BuildConfig.LO
 
 /**
  * The board kinds a build with these flags constructs a plane for: Meshtastic's where the build ships the LoRa plane
- * ([loraPlane]), and MeshCore's beside it where `BuildConfig.MESHCORE_PLANE` is on (`-PmeshcorePlane`: on in debug, off in
- * release until the board trials pass, ADR 2026-11.gsqu Stage 5a-2). So a release build builds no MeshCore child: no
+ * ([loraPlane]), and MeshCore's beside it where `BuildConfig.MESHCORE_PLANE` is on (`-PmeshcorePlane`: on in every build since
+ * ADR 2026-11.gsqu's 2026-11-22 amendment, Stage 5a-2). So a build with the flag off builds no MeshCore child: no
  * session, no GATT client, no composite child, no field-log stream, no status. A build that turned the MeshCore flag on
  * without the LoRa plane is refused.
  */

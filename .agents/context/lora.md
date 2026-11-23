@@ -435,8 +435,8 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `LinkState.Ready.address` / `MeshcoreDetail.dialled`, `di/builtBoardKinds` / `bindingAddress` / `loraPlaneOf`,
   `LoraDoorClaim`, `LoraFacts.floodSpent` / `roomBodyBytes` / `directReach`, `LoraSizeHint.MESHCORE_ROOM_BODY_BYTES`, or
   `…debug.LORA --es kind meshcore`:** READ ADR 2026-11.gsqu's Stage 5a-2 amendment (and the maintainer's Stage 5 decisions,
-  the 5a-1 amendment), then "The MeshCore plane in the core" in `lora-bridge.md`. Debug builds only (`MESHCORE_PLANE`); a
-  release build constructs no MeshCore child. The board is Knit's: `route` reads the slot and data type before decoding and
+  the 5a-1 amendment), then "The MeshCore plane in the core" in `lora-bridge.md`. Every build since gsqu's 2026-11-22 amendment
+  (`MESHCORE_PLANE`); a build with it off constructs no MeshCore child. The board is Knit's: `route` reads the slot and data type before decoding and
   counts and discards everything not Knit's as `DROPPED`, never a hearing (Public's channel data, and a `0x04` fragment of
   more than two parts or none that parses; Stage 5c-1 reads the rest, the next entry but one; a text on Public slot 0 is the
   kind's since Stage 6, the MeshCore Public entry below). Our board's answers are booked in `route` for every live acked contact DM, Knit's or not;
@@ -596,7 +596,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `PairingCause`, `SendPurpose.Debug` / `Destination.Debug` / `PlaneCore.enqueueDebug` / `MeshcoreHooks.debugSend` /
   `MeshcoreRawSend` / `MeshcoreDebugSend`, `meshcoreFaceOf`, or the
   bridge's `prov preview|forget`, `--ez replace` and `LORATX --es kind meshcore`:** READ ADR 2026-11.gsqu's Stage 7a amendment,
-  then "Stage 7: the radio screen's half" in `lora-bridge.md`. Debug builds only. Facts are counts and booleans; the
+  then "Stage 7: the radio screen's half" in `lora-bridge.md`. Behind `MESHCORE_PLANE`. Facts are counts and booleans; the
   setup state is never NONE for what was not read; the position is a boolean and the coordinates are read by nothing. The
   Forget is one function on the app's scope; PENDING keeps the binding and withdraws the claim; every edit is behind the
   hooks' claim fence, so no grant made before a Forget lands after it. A different board refuses the setup before any write

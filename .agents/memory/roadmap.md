@@ -207,7 +207,7 @@ doc). **Don't start a deferred item without explicit direction.**
 
 - **A MeshCore board kind on the LoRa plane** (ADR 2026-10.jend, scope decided 2026-10-18 from a two-board spike on
   MeshCore companion v1.18.0; build shape ADR 2026-11.gsqu, proposed 2026-11-12; Stages 0–7 built on `feat/meshcore`
-  by 2026-11-16, debug builds only behind `MESHCORE_PLANE`, unmerged). Parity with the
+  by 2026-11-16 behind `MESHCORE_PLANE`; on in release builds since 2026-11-22). Parity with the
   Meshtastic plane as ADR 2026-10.rp3s narrowed it: own room posts flood in up to two elided packets under
   `Ceiling.FLOOD`, compact DMs ride as COBS-framed contact text DMs pinned zero-hop, plus the Public-channel mirror and
   board setup/restore. One plane instance per board kind over a neutral core; one board bound at a time in v1.

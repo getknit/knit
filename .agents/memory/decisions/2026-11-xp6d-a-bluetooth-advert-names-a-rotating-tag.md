@@ -527,3 +527,12 @@ met. The advert itself is unchanged and outside the seal: `FLAG_LINK_SEAL` (bit 
 build, set in the clear and blinded forms alike. The honeypot stays: a device that advertises still gets dialled and,
 by linking, reads the proven id inside the seal. The re-wrap of a `relay = false` frame (item 14) is now open only to
 the addressee and to a listener on a legacy link.
+
+## Amendment 2026-11-22 — release N+1: a shipped artifact writes tags
+
+2.12.0 was release N: it shipped every reader, `CAP_BLIND_ADVERT` and presence keys (`PRESENCE_KEYS` on), with the
+writer dark. The maintainer turned the writer on for the next release (2026-11-22): `BuildConfig.BLIND_ADVERT` now
+defaults on in a release build as it does in debug, and `-PblindAdvert=false` is what takes it back out. Nothing else in
+"Staging" or "The gates" moves: the runtime switch stays a debug-only key, a release build still reads it as on, and
+the cost named in "Old builds, during the transition" applies from this release, including the un-updated backgrounded
+iPhone that no longer links to a blinding Android until it carries the iOS reader.

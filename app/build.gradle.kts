@@ -129,8 +129,8 @@ val internetPlane = (project.findProperty("internetPlane") as? String)?.toBoolea
 val loraPlane = (project.findProperty("loraPlane") as? String)?.toBoolean()
 
 // The MeshCore board plane (ADR 2026-11.gsqu): a second LoRa plane instance over the same core, one per board kind. ON in
-// debug, OFF in a shipped artifact until the board trials pass, overridable with `-PmeshcorePlane=true|false`, and never
-// on without the LoRa plane. Read once, as `di/BUILT_BOARD_KINDS`, where Stage 5 adds the MeshCore child; until then it
+// every build since the 2026-11-22 amendment (it was debug-only until then), overridable with
+// `-PmeshcorePlane=true|false`, and never on without the LoRa plane. Read once, as `di/BUILT_BOARD_KINDS`, where Stage 5 adds the MeshCore child; until then it
 // builds nothing. Not a code strip, and the defaults live in source so F-Droid's -P-free rebuild stays identical.
 val meshcorePlane = (project.findProperty("meshcorePlane") as? String)?.toBoolean()
 
@@ -227,8 +227,8 @@ val directLinks = (project.findProperty("directLinks") as? String)?.toBoolean() 
 // still reads tags, advertises `CAP_BLIND_ADVERT`, and receives, stores and resolves its contacts' presence keys.
 //  - `presenceKeys`: minting and sending this phone's own presence keys to its linked direct contacts. ON in every build,
 //    so contacts hold each other's keys before any of them airs a tag; `-PpresenceKeys=true|false`.
-//  - `blindAdvert`: writing tags (the advert airs a rotating tag in place of the node id). ON in debug, OFF in a shipped
-//    artifact until release N+1; `-PblindAdvert=true|false`.
+//  - `blindAdvert`: writing tags (the advert airs a rotating tag in place of the node id). ON in every build since
+//    release N+1 (2.12.0 was release N; the ADR's 2026-11-22 amendment); `-PblindAdvert=true|false`.
 // Read once each, in `di/`. Not a code strip, and the defaults live in source so F-Droid's -P-free rebuild stays identical.
 val presenceKeys = (project.findProperty("presenceKeys") as? String)?.toBoolean()
 val blindAdvert = (project.findProperty("blindAdvert") as? String)?.toBoolean()
@@ -433,7 +433,7 @@ android {
         // the screen, and opens no socket until someone says so.
         buildConfigField("boolean", "INTERNET_PLANE", (internetPlane ?: true).toString())
         buildConfigField("boolean", "LORA_PLANE", (loraPlane ?: true).toString())
-        // The MeshCore plane is ON in debug so a lab build carries it once it exists; see `meshcorePlane` above.
+        // The MeshCore plane is ON in every build; see `meshcorePlane` above.
         buildConfigField("boolean", "MESHCORE_PLANE", ((meshcorePlane ?: true) && (loraPlane ?: true)).toString())
         // The commons is ON here so the unit suite and the lab run the real thing; see `commons` above.
         buildConfigField("boolean", "COMMONS", (commons ?: true).toString())
@@ -458,7 +458,7 @@ android {
         buildConfigField("boolean", "PEER_UPDATE", peerUpdateInDebug.toString())
         // Direct links are ON in debug so the unit suite, the lab and a lab phone run them; see `directLinks` above.
         buildConfigField("boolean", "DIRECT_LINKS", (directLinks ?: true).toString())
-        // Presence keys are ON in every build, and writing tags is ON in debug so a lab phone blinds; see `blindAdvert` above.
+        // Presence keys and writing tags are ON in every build; see `blindAdvert` above.
         buildConfigField("boolean", "PRESENCE_KEYS", (presenceKeys ?: true).toString())
         buildConfigField("boolean", "BLIND_ADVERT", (blindAdvert ?: true).toString())
         // Live calls, mesh calls, speech and Knit Anywhere are ON in debug so a lab build runs them; see `calls` above.
@@ -561,8 +561,8 @@ android {
             // visible and reachable, switched off, and inert until the user pairs a Meshtastic board.
             buildConfigField("boolean", "INTERNET_PLANE", (internetPlane ?: true).toString())
             buildConfigField("boolean", "LORA_PLANE", (loraPlane ?: true).toString())
-            // The MeshCore plane stays OFF in a shipped artifact until its board trials pass (ADR 2026-11.gsqu).
-            buildConfigField("boolean", "MESHCORE_PLANE", ((meshcorePlane ?: false) && (loraPlane ?: true)).toString())
+            // The MeshCore plane is introduced: on in a shipped artifact (ADR 2026-11.gsqu's 2026-11-22 amendment).
+            buildConfigField("boolean", "MESHCORE_PLANE", ((meshcorePlane ?: true) && (loraPlane ?: true)).toString())
             // The commons is introduced at 2.11.0: on in a shipped artifact, off in the slim APK.
             // Staging and nonMinifiedRelease inherit this through initWith.
             buildConfigField("boolean", "COMMONS", (commons ?: true).toString())
@@ -587,9 +587,10 @@ android {
             buildConfigField("boolean", "PEER_UPDATE", peerUpdateInRelease.toString())
             // Direct links are introduced at 2.11.0: on in a shipped artifact, off in the slim APK.
             buildConfigField("boolean", "DIRECT_LINKS", (directLinks ?: true).toString())
-            // Presence keys ship ahead of the writer: on in a shipped artifact. Writing tags waits for N+1: dark there.
+            // Presence keys shipped ahead of the writer in 2.12.0 (release N); writing tags is release N+1: both on in a
+            // shipped artifact (ADR 2026-11.xp6d's 2026-11-22 amendment).
             buildConfigField("boolean", "PRESENCE_KEYS", (presenceKeys ?: true).toString())
-            buildConfigField("boolean", "BLIND_ADVERT", (blindAdvert ?: false).toString())
+            buildConfigField("boolean", "BLIND_ADVERT", (blindAdvert ?: true).toString())
             // Live calls, mesh calls, Knit Anywhere and speech are introduced: on in a shipped artifact, which packages
             // WebRTC, core-telecom and Moonshine (see `calls` above).
             buildConfigField("boolean", "LIVE_CALLS", liveCallsInRelease.toString())

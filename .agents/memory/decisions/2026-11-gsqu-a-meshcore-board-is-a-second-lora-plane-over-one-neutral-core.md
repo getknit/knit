@@ -2531,3 +2531,11 @@ Board trial owed: a Knit phone with its board beside a stock MeshCore One phone 
 - A local removal airs nothing.
 - An offline replay places once.
 - A second Knit board named like ours reacts, and nothing lands under our name.
+
+## Amendment 2026-11-22 — a shipped artifact builds the MeshCore plane
+
+The maintainer turned the MeshCore plane on for the next release (2026-11-22): `BuildConfig.MESHCORE_PLANE` now
+defaults on in a release build as it does in debug, still never without `LORA_PLANE`, and `-PmeshcorePlane=false` is
+what takes it back out. `di/builtBoardKinds` therefore builds a MeshCore child in release. The posture is the LoRa
+plane's (ADR 2026-09.6gtm): visible and reachable, switched off, and inert until the user pairs and sets up a MeshCore
+board. Release builds already carried the plane's code (ADR 050's 2026-11 amendment), so the dex ceiling does not move.

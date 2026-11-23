@@ -1190,9 +1190,9 @@ the user's; on a 0.1 % or unmatched band the plane is effectively dead, by desig
 
 ### The MeshCore plane in the core (ADR 2026-11.gsqu's Stage 5a-2 amendment)
 
-Debug builds only (`MESHCORE_PLANE`): `di/LoraWiring.loraPlaneOf` builds each kind's plane in one call, and MeshCore's is
+Behind `MESHCORE_PLANE` (every build since ADR 2026-11.gsqu's 2026-11-22 amendment): `di/LoraWiring.loraPlaneOf` builds each kind's plane in one call, and MeshCore's is
 `MeshcoreSession` over `MeshcoreGatt` with `MeshcoreTraits` and `MeshcoreHooks` (`meshcorePlane`), injected into the core as a
-`BoardPlane`. A release build constructs no MeshCore child (`builtBoardKinds`).
+`BoardPlane`. A build with it off constructs no MeshCore child (`builtBoardKinds`).
 
 - **What is Knit's.** The board is Knit's alone. `MeshcoreHooks.route` reads the slot and the data type before a byte is
   decoded (the channel key is public): channel data on the board's own Knit slot under `KNIT_DATA_TYPE` is a Knit frame, a
