@@ -69,6 +69,9 @@ document:
   (#347).
 - If you use two relays and your account on one of them had ended, your supporter badge could disappear and
   not come back. Knit now gets the badge from the account that is still active (#358).
+- Pausing the mesh from its notification could leave Bluetooth finding and connecting to nearby phones during
+  the pause, and during every later pause until Knit restarted. Bluetooth now stays off until the pause ends
+  (#292).
 
 ## [2.12.1](https://github.com/getknit/knit/releases/tag/v2.12.1) — 2026-11-21T23:44:00Z
 

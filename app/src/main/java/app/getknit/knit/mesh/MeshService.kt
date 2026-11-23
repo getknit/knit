@@ -113,6 +113,15 @@ class MeshService : LifecycleService() {
     private var pausedUntil: Long? = null
     private var meshRunning = false
 
+    /**
+     * The raw deadline the store last held, as the seed read or [observePause] saw it (main thread). The settings
+     * DataStore emits on a write to any of its keys, so the collector applies a value only when it differs from
+     * this one: between a tap's inline apply and its own write landing, a write to another key (`MeshManager.stop()`
+     * flushes the contribution ledger into the same file) re-emits the old value, and applying it bounced the mesh
+     * through a start and a stop that a Bluetooth start could outlive (#292).
+     */
+    private var storePause: Long? = null
+
     /** The store collector ([observePause]); cancelled by Stop so its own null write cannot restart the mesh. */
     private var pauseJob: Job? = null
 
@@ -291,6 +300,7 @@ class MeshService : LifecycleService() {
         observeStatus()
         warmModelOnFirstPeer()
         powerMonitor.start() // seed power state before the discovery loop first reads it
+        storePause = pausedSeed // the collector's first emission is this same value unless the store moved since
         applyPause(MeshPause.activeDeadline(pausedSeed, clock()))
         // observeStatus may have posted the running text before the seed was applied; say "paused" now.
         if (pausedUntil != null) refreshNotification()
@@ -334,12 +344,16 @@ class MeshService : LifecycleService() {
 
     /**
      * Follow the store: the chat list's Resume and the debug bridge write the key and nothing else, and this
-     * is how the write reaches the radios. A deadline already in the past applies as "not paused".
+     * is how the write reaches the radios. A deadline already in the past applies as "not paused". Only a move
+     * of the key is applied ([storePause]): a re-emission of the value already seen is another key's write, and
+     * may land before the service's own write of a newer inline pause or resume.
      */
     private fun observePause() {
         pauseJob =
             lifecycleScope.launch {
                 settings.meshPausedUntil.collect { raw ->
+                    if (raw == storePause) return@collect
+                    storePause = raw
                     if (applyPause(MeshPause.activeDeadline(raw, clock()))) refreshNotification()
                 }
             }

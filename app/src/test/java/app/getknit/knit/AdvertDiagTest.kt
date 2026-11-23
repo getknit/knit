@@ -563,10 +563,15 @@ class AdvertDiagTest {
     fun dialedByMeIsDroppedWhereverALinksFormIs() {
         // Keyed by link identity: a replaced link (registerLink's prev) and a torn-down one (teardownLink) both drop it, so
         // no successor reports its predecessor's role.
-        // (A sighting's put that lost a race with the teardown is undone with `linkForms.remove(it)`: no link end.)
+        // (A sighting's put that lost a race with the teardown is undone with `linkForms.remove(it)`: no link end.) A link
+        // whose session stopped before its put never reaches `links` and drops its own (`releaseAfterStop`'s framed, #292).
         val removals = Regex("""linkForms\.remove\((\w+)\)""").findAll(transport).map { it.groupValues[1] }.toSet()
-        assertEquals("registerLink's prev, teardownLink's fl, the sighting's undo", setOf("prev", "fl", "it"), removals)
-        for (arg in listOf("prev", "fl")) assertTrue("dialedByMe.remove($arg)", "dialedByMe.remove($arg)" in transport)
+        assertEquals(
+            "registerLink's prev, teardownLink's fl, the sighting's undo, releaseAfterStop's framed",
+            setOf("prev", "fl", "it", "framed"),
+            removals,
+        )
+        for (arg in listOf("prev", "fl", "framed")) assertTrue("dialedByMe.remove($arg)", "dialedByMe.remove($arg)" in transport)
         assertTrue("only a dial registers as dialed", "if (dialStartedAt != null) dialedByMe[framed] = dialKey ?: nodeId" in transport)
         // The diag lambdas are a debug build's alone, and go at stop.
         assertTrue("if (BuildConfig.DEBUG) bindDebugDiags()" in transport)

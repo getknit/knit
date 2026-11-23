@@ -46,7 +46,16 @@ class BleEndOfWindowTest {
     @Test
     fun seesNewcomersFallsAtOnceOnTheOffEdges() {
         val stop = body("override fun stop()")
-        assertTrue("stop() takes the off edge first", stop.trimStart('{').trim().startsWith("newcomersOff("))
+        // Only the start fence's close comes before it (#292), which waits at most for a start body's raise in progress.
+        val afterFence =
+            stop
+                .trimStart('{')
+                .trim()
+                .removePrefix("closeFence()")
+                .substringAfter('\n')
+                .trim()
+        assertTrue("stop() closes the start fence first", stop.trimStart('{').trim().startsWith("closeFence()"))
+        assertTrue("stop() takes the off edge first after the fence", afterFence.startsWith("newcomersOff("))
         val off = source.substringAfter("BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF ->")
         val inline = off.substringBefore("scope.launch")
         assertTrue("the off edge clears it inline, before the teardown launches", "newcomersOff(" in inline)

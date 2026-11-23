@@ -341,6 +341,10 @@ class BluetoothMeshTransport internal constructor(
     // The R3/R4 hook on [claims], registered at start and closed at stop.
     @Volatile private var claimsHook: AutoCloseable? = null
 
+    // The session every raise of the plane runs under (#292): opened by start(), closed first by stop(), read by the
+    // adapter's STATE_ON and by registerLink. Never taken while holding [lock], [servers] or another lock of the plane.
+    private val fence = StartFence()
+
     // The addresses of links closed on this phone's own controller's word (#203), until [checkOrphans] reports their ACL:
     // kept with this phone holding more LE connections than links, the stack is suspect (`bt stack suspect`, for #204).
     private val localCloses = ConcurrentHashMap<String, LocalClose>()
@@ -838,68 +842,88 @@ class BluetoothMeshTransport internal constructor(
         // R3/R4 (ADR 2026-11.264w): an id that can prove itself now closes the unproven link claiming it. On the
         // notifier's thread, so it only schedules.
         claimsHook = claims.onCapable { id -> scope.launch { closeClaimed(id) } }
+        // Synchronously, so a stop() that lands before the body below runs (a notification Pause's stop, start, stop, #292)
+        // closes this very session, and the body raises nothing.
+        val token = fence.open()
         scope.launch {
+            // Every suspending read first: nothing below the fence suspends, so a stop() waits for a raise, never a hop.
             localNodeId = identity.nodeId()
-            mine.set(AdvertOrder.Mine.clear(localNodeId))
-            noLinkSince = elapsed()
-            registerAvailability()
-            registerAclEdges()
-            registerTimeChanges()
-            audioMonitor.start()
-            codedMode = phyMode.first() // before bringUp, so the first advert and scan already follow it
-            blindSwitchOn = blindSwitch.first() // before bringUp, so the first advert is already the switch's form
-            withContext(worker) { sessionHadKey = false } // a session's first own key completes its bring-up
-            advertKeeper.start(elapsed()) // before bringUp, so a refused first start is kept and retried
-            codedKeeper.start(elapsed())
-            // Before bringUp, so the first advert already says it; the collector below moves it from here.
-            awareAdvertised = !awareWontRun.value
-            if (adapter?.isEnabled == true) bringUp() else _health.value = TransportHealth.Unavailable
-            scanJob = scope.launch { scanLoop() }
-            connectJob = scope.launch { connectLoop() }
-            // Re-advertise our epoch once the carried set settles so a peer that now wants our data links to pull it.
-            // Debounced via collectLatest: a newer cue cancels the pending delay, so the advert's data is swapped once
-            // per burst, not once per store-and-forward frame.
-            cueJob =
-                scope.launch {
-                    storeDigest.version.drop(1).collectLatest {
-                        // stretches: a 1.5 s debounce; a late re-advertise only delays a pull cue.
-                        delay(CUE_READVERTISE_DEBOUNCE_MS)
-                        readvertise()
-                    }
+            val mode = phyMode.first()
+            val switchOn = blindSwitch.first()
+            // A session's first own key completes its bring-up; a stale body must not reset the next session's (#292).
+            withContext(worker) { if (fence.isCurrent(token)) sessionHadKey = false }
+            if (!fence.ifLive(token) { raise(mode, switchOn) }) Log.i(TAG, "bt start fenced session=$token (stopped before bring-up)")
+        }
+    }
+
+    /**
+     * The start body's raise (#292): everything that registers, brings the radio up or launches a loop, run inside
+     * [fence]'s `ifLive` for its session, so a stop() that closed it first leaves all of it undone, and a stop() that comes
+     * during it waits for it and then cancels every job it assigned. Nothing here suspends.
+     */
+    @Suppress("LongMethod") // one session's raise, in the order its comments constrain
+    private fun raise(
+        mode: CodedPhyMode,
+        switchOn: Boolean,
+    ) {
+        mine.set(AdvertOrder.Mine.clear(localNodeId))
+        noLinkSince = elapsed()
+        registerAvailability()
+        registerAclEdges()
+        registerTimeChanges()
+        audioMonitor.start()
+        codedMode = mode // before bringUp, so the first advert and scan already follow it
+        blindSwitchOn = switchOn // before bringUp, so the first advert is already the switch's form
+        advertKeeper.start(elapsed()) // before bringUp, so a refused first start is kept and retried
+        codedKeeper.start(elapsed())
+        // Before bringUp, so the first advert already says it; the collector below moves it from here.
+        awareAdvertised = !awareWontRun.value
+        if (adapter?.isEnabled == true) bringUp() else _health.value = TransportHealth.Unavailable
+        scanJob = scope.launch { scanLoop() }
+        connectJob = scope.launch { connectLoop() }
+        // Re-advertise our epoch once the carried set settles so a peer that now wants our data links to pull it.
+        // Debounced via collectLatest: a newer cue cancels the pending delay, so the advert's data is swapped once
+        // per burst, not once per store-and-forward frame.
+        cueJob =
+            scope.launch {
+                storeDigest.version.drop(1).collectLatest {
+                    // stretches: a 1.5 s debounce; a late re-advertise only delays a pull cue.
+                    delay(CUE_READVERTISE_DEBOUNCE_MS)
+                    readvertise()
                 }
-            // FLAG_AWARE (GitHub #44): cleared at once, set after a wall-clock minute of "will run"; each move re-advertises in place.
-            awareJob = scope.launch { AwareFlag.follow(awareWontRun, { awareAdvertised }, ::setAware, elapsedWait::sleep) }
-            powerJob = scope.launch { powerState.state.drop(1).collect { onPowerChange() } }
-            diagJob = scope.launch { diagLoop() }
-            advertJob = scope.launch { advertLoop() }
-            silenceJob = scope.launch { silenceLoop() }
-            startWriterTurns()
-            // A2DP forces the scan to its floor (audio contends the radio); wake the scan loop on any change so
-            // the falling edge (audio stopped) resumes the normal cadence promptly instead of after the floor gap.
-            audioJob = scope.launch { audioMonitor.contended.drop(1).collect { onAudioChange() } }
-            // The board dial holds an arbiter slot; wake the scan on release so it resumes without waiting out the gap.
-            arbiterJob = scope.launch { arbiter.busy.drop(1).collect { wakeScan() } }
-            // Knit coming on screen starts a hunt now (CodedPhyPolicy.hunts); leaving it ends one at the next window, 12 s
-            // on, so the falling edge wakes nothing. Nothing at all while the experiment is off: release never hunts.
-            visibleJob = scope.launch { appVisible.drop(1).filter { it }.collect { if (codedOn()) wakeScan() } }
-            // A new cap re-runs the promotion decision now: a lower one sheds the weakest evictable links.
-            capJob =
-                scope.launch {
-                    linkCap.distinctUntilChanged().collect {
-                        debugCap = it
-                        Log.i(TAG, "bt link cap=${it ?: "default"}")
-                        wake()
-                    }
-                }
-            phyJob = scope.launch { phyMode.distinctUntilChanged().collect { applyPhyMode(it) } }
-            CodedPhyDiag.status = ::codedPhyStatus
-            CodedPhyDiag.setTxPower = ::setCodedTxPower
-            field.sampler(FIELD_SAMPLER, ::fieldSample)
-            if (BuildConfig.DEBUG) bindDebugDiags()
-            sideChannel?.let {
-                it.bind(sideListener)
-                sideJob = scope.launch { sideScanLoop(it) }
             }
+        // FLAG_AWARE (GitHub #44): cleared at once, set after a wall-clock minute of "will run"; each move re-advertises in place.
+        awareJob = scope.launch { AwareFlag.follow(awareWontRun, { awareAdvertised }, ::setAware, elapsedWait::sleep) }
+        powerJob = scope.launch { powerState.state.drop(1).collect { onPowerChange() } }
+        diagJob = scope.launch { diagLoop() }
+        advertJob = scope.launch { advertLoop() }
+        silenceJob = scope.launch { silenceLoop() }
+        startWriterTurns()
+        // A2DP forces the scan to its floor (audio contends the radio); wake the scan loop on any change so
+        // the falling edge (audio stopped) resumes the normal cadence promptly instead of after the floor gap.
+        audioJob = scope.launch { audioMonitor.contended.drop(1).collect { onAudioChange() } }
+        // The board dial holds an arbiter slot; wake the scan on release so it resumes without waiting out the gap.
+        arbiterJob = scope.launch { arbiter.busy.drop(1).collect { wakeScan() } }
+        // Knit coming on screen starts a hunt now (CodedPhyPolicy.hunts); leaving it ends one at the next window, 12 s
+        // on, so the falling edge wakes nothing. Nothing at all while the experiment is off: release never hunts.
+        visibleJob = scope.launch { appVisible.drop(1).filter { it }.collect { if (codedOn()) wakeScan() } }
+        // A new cap re-runs the promotion decision now: a lower one sheds the weakest evictable links.
+        capJob =
+            scope.launch {
+                linkCap.distinctUntilChanged().collect {
+                    debugCap = it
+                    Log.i(TAG, "bt link cap=${it ?: "default"}")
+                    wake()
+                }
+            }
+        phyJob = scope.launch { phyMode.distinctUntilChanged().collect { applyPhyMode(it) } }
+        CodedPhyDiag.status = ::codedPhyStatus
+        CodedPhyDiag.setTxPower = ::setCodedTxPower
+        field.sampler(FIELD_SAMPLER, ::fieldSample)
+        if (BuildConfig.DEBUG) bindDebugDiags()
+        sideChannel?.let {
+            it.bind(sideListener)
+            sideJob = scope.launch { sideScanLoop(it) }
         }
     }
 
@@ -955,23 +979,11 @@ class BluetoothMeshTransport internal constructor(
     }
 
     override fun stop() {
+        closeFence() // first (#292)
         newcomersOff("stop") // at once: a stopped plane watches for nobody, and a window ending late cannot undo it
         claimsHook?.close()
         claimsHook = null
-        scanJob?.cancel()
-        connectJob?.cancel()
-        cueJob?.cancel()
-        awareJob?.cancel()
-        powerJob?.cancel()
-        diagJob?.cancel()
-        audioJob?.cancel()
-        arbiterJob?.cancel()
-        visibleJob?.cancel()
-        capJob?.cancel()
-        phyJob?.cancel()
-        advertJob?.cancel()
-        silenceJob?.cancel()
-        listOf(rotationJob, blindJob, paceJob).forEach { it?.cancel() }
+        cancelSessionJobs()
         CodedPhyDiag.status = null
         CodedPhyDiag.setTxPower = null
         field.sampler(FIELD_SAMPLER, null)
@@ -1013,6 +1025,24 @@ class BluetoothMeshTransport internal constructor(
         _awareCandidatesNear.value = emptySet()
         _awareCandidatesHeard.value = emptySet()
         disarmAtStop() // after the links' ends: nothing watches an ACL once the transport has stopped
+    }
+
+    /** Every loop and collector [raise] launched, cancelled at [stop] (the side scan's with the side channel, after). */
+    private fun cancelSessionJobs() {
+        listOf(scanJob, connectJob, cueJob, awareJob, powerJob, diagJob, audioJob, arbiterJob, visibleJob, capJob, phyJob)
+            .forEach { it?.cancel() }
+        listOf(advertJob, silenceJob, rotationJob, blindJob, paceJob).forEach { it?.cancel() }
+    }
+
+    /**
+     * [stop]'s first step (#292): a start body that has not raised yet never will, and one raising now finishes before the
+     * teardown reads its job handles. The wait is the raise's length, logged past [STOP_WAIT_LOG_MS] for the trial.
+     */
+    private fun closeFence() {
+        val closing = elapsed()
+        fence.close()
+        val waited = elapsed() - closing
+        if (waited > STOP_WAIT_LOG_MS) Log.i(TAG, "bt stop waited ${waited}ms for bring-up")
     }
 
     /**
@@ -4004,7 +4034,12 @@ class BluetoothMeshTransport internal constructor(
         val psm = presence.psmFor(key) ?: return
         val form = snap.form
         val dialKey = DialKeys.dialKey(snap, formKeys::keyFor, device.address)
-        if (!beginConnect(dialKey, DialPlan.InFlight(kind, key, device.address, linkedAtStart = links.containsKey(key)))) return
+        // The session this dial belongs to (#292): a stopped plane dials nobody, and a link this dial makes after a stop is
+        // let go at registration. A connect loop's round can still be running when stop() cancels it.
+        val session = fence.liveToken() ?: return
+        val booked = DialPlan.InFlight(kind, key, device.address, linkedAtStart = links.containsKey(key))
+        if (!beginConnect(dialKey, booked)) return
+        val dial = DialSession(session, booked)
         val rssi = snap.smoothedRssi.toInt()
         Log.i(TAG, BtLines.initiating(key, psm, rssi, audioMonitor.state.value, links.size, noteDial(viaCoded)))
         // A tag dial arms its channel unnamed: the reply's id is unproven (`LinkHandshake.dialTagPlain`). It forgets the GATT
@@ -4015,7 +4050,9 @@ class BluetoothMeshTransport internal constructor(
             val startedAt = elapsed()
             val socket =
                 runCatching { device.createInsecureL2capChannel(psm) }
-                    .getOrElse { t -> return@launch failConnect(dialKey, ConnectFailClassifier.classify(t), startedAt, t, device) }
+                    .getOrElse { t ->
+                        return@launch failConnect(dialKey, ConnectFailClassifier.classify(t), startedAt, t, device, dial = dial)
+                    }
             // Time-box the blocking connect(): on stall, give up this peer's inFlight slot at the timeout so the
             // scan (paused while any connect is in flight) resumes promptly — instead of after connect() finally
             // unwinds. Closing the socket is best-effort only: on some stacks (the API-30 device's Qualcomm
@@ -4031,7 +4068,7 @@ class BluetoothMeshTransport internal constructor(
                     elapsedWait.sleep(timeoutMs)
                     if (settled.compareAndSet(false, true)) {
                         val cause = TimeoutException("connect watchdog ${timeoutMs}ms")
-                        failConnect(dialKey, ConnectFailReason.TIMEOUT, startedAt, cause, device)
+                        failConnect(dialKey, ConnectFailReason.TIMEOUT, startedAt, cause, device, dial = dial)
                     }
                     runCatching { socket.close() } // may block until the native connect unwinds; the slot is already freed
                 }
@@ -4045,7 +4082,7 @@ class BluetoothMeshTransport internal constructor(
             watchdog.cancel()
             if (connectErr != null) {
                 runCatching { socket.close() }
-                failConnect(dialKey, ConnectFailClassifier.classify(connectErr), startedAt, connectErr, device)
+                failConnect(dialKey, ConnectFailClassifier.classify(connectErr), startedAt, connectErr, device, dial = dial)
                 return@launch armUnlinked(device, named) // only if its ACL came up: a refused channel
             }
             val link = BluetoothSocketLink(socket)
@@ -4060,10 +4097,9 @@ class BluetoothMeshTransport internal constructor(
             val refusal = if (form.blinded) tagDialRefusal(dialed, result.cause) else dialRefusal(key, device, dialed, result.cause)
             if (refusal != null || dialed !is LinkHandshake.DialOutcome.Linked) {
                 link.close()
-                countSeal(LinkSealPolicy.dialCount(dialed))
-                // Clear payloads only: GattPayloads.forgetUnsealed keeps a blinded one (a tag dial's, keyed by its handle).
-                forgetUnsealedPayload(device.address, key, sealed, dialed)
-                failConnect(dialKey, ConnectFailReason.HANDSHAKE, startedAt, refusal ?: IllegalStateException("handshake"))
+                noteRefusedDial(session, dialed, device.address, key, sealed)
+                val cause = refusal ?: IllegalStateException("handshake")
+                failConnect(dialKey, ConnectFailReason.HANDSHAKE, startedAt, cause, dial = dial)
                 return@launch armUnlinked(device, named) // a channel that never became a link: a refusal, a failed proof (#142)
             }
             // A clear dial's reply named the id dialed; a tag dial's proved the id it registers under (never the tag).
@@ -4084,10 +4120,35 @@ class BluetoothMeshTransport internal constructor(
                     dialKey = dialKey,
                     form = form,
                     dialedCoded = viaCoded,
+                    session = session,
+                    booked = booked,
                 )
             if (form.blinded) scope.launch(worker) { onTagDialed(framed, form, dialed.reply.told, provenId, key, device.address) }
         }
     }
+
+    /**
+     * A dial's handshake ended short of a link: its seal is counted and a clear GATT payload it was dialed from may be
+     * forgotten ([GattPayloads.forgetUnsealed] keeps a blinded one, a tag dial's, keyed by its handle). Neither for a dial
+     * whose session stopped (#292's review): it counts nothing and forgets nothing the live session reads.
+     */
+    private fun noteRefusedDial(
+        session: Long,
+        dialed: LinkHandshake.DialOutcome,
+        address: String,
+        key: String,
+        sealed: Boolean,
+    ) {
+        if (!fence.isCurrent(session)) return
+        countSeal(LinkSealPolicy.dialCount(dialed))
+        forgetUnsealedPayload(address, key, sealed, dialed)
+    }
+
+    /** A dial's [StartFence] session and the in-flight record it booked (#292): what a failure after a stop releases. */
+    private class DialSession(
+        val session: Long,
+        val booked: DialPlan.InFlight,
+    )
 
     /** How a dial's handshake ended, and what to log for it: what the handshake threw, or the watchdog that cut it. */
     private class DialResult(
@@ -4356,7 +4417,9 @@ class BluetoothMeshTransport internal constructor(
         try {
             while (scope.isActive) {
                 val socket = runCatching { ss.accept() }.getOrNull() ?: break
-                scope.launch(Dispatchers.IO) { superviseAccepted(socket) }
+                // The session the channel arrived in (#292); none (a stop closing this server raced the accept) is never current.
+                val session = fence.liveToken() ?: StartFence.NO_SESSION
+                scope.launch(Dispatchers.IO) { superviseAccepted(socket, session) }
             }
         } finally {
             acceptJobs.remove(ss)
@@ -4382,7 +4445,10 @@ class BluetoothMeshTransport internal constructor(
      * Read, refuse, answer, re-judge, register: one linear flow of early exits, hence the suppressions.
      */
     @Suppress("LongMethod", "ReturnCount", "CyclomaticComplexMethod")
-    private fun superviseAccepted(socket: BluetoothSocket) {
+    private fun superviseAccepted(
+        socket: BluetoothSocket,
+        session: Long,
+    ) {
         val link = BluetoothSocketLink(socket)
         val device = socket.remoteDevice
         // BluetoothSocket has no soTimeout, so bound each read by closing the socket if it stalls: one watchdog per stage.
@@ -4547,7 +4613,18 @@ class BluetoothMeshTransport internal constructor(
         }
         Log.i(TAG, "bt accepted client $clientNodeId (${late.verdict}, ${late.acceptFields})")
         val form = toldForm(hello, proven)
-        val framed = registerLink(clientNodeId, hello.wire, link, answered.link, late.sighted, device, proven = proven, form = form)
+        val framed =
+            registerLink(
+                clientNodeId,
+                hello.wire,
+                link,
+                answered.link,
+                late.sighted,
+                device,
+                proven = proven,
+                form = form,
+                session = session,
+            )
         noteAnswered(framed, form, clientNodeId)
     }
 
@@ -4742,6 +4819,10 @@ class BluetoothMeshTransport internal constructor(
         form: AdvertOrder.Form? = null,
         // Whether our dial went out on the Coded PHY; false for a link the peer dialed.
         dialedCoded: Boolean = false,
+        // The [fence] session the dial began or the channel was accepted in (#292): a link registered outside it is let go.
+        session: Long,
+        // The in-flight record our dial booked; null for a link the peer dialed. A stale release frees only this one.
+        booked: DialPlan.InFlight? = null,
     ): FramedLink {
         val events = LinkEvents(ProvenDialStreak(pending = proven && dialStartedAt != null), dialStartedAt ?: 0L, dialKey)
         val framed =
@@ -4786,15 +4867,26 @@ class BluetoothMeshTransport internal constructor(
         device?.let {
             linkAddresses[framed] = it.address
             linkDevices[framed] = it
-            // The tag evidence is explicit: the tag our dial went to, or the accepted dialer's proven `t` ([form] as passed,
-            // never the presence fallback below), so a blinded charge is refunded only by a link that showed its tag.
-            confirmGattPayload(it.address, nodeId, form?.takeIf { f -> f.blinded }?.advertised, proven)
         }
         (form ?: presence.snapshots(elapsed()).firstOrNull { it.nodeId == nodeId }?.form)?.let { linkForms[framed] = it }
         // The dial path passes both, the accept path neither. Before `links.put`: its `wake()` must find the key.
         if (dialStartedAt != null) dialedByMe[framed] = dialKey ?: nodeId
-        linkStamps.onLinkEvent(nodeId, elapsed())
-        val prev = links.put(nodeId, framed)
+        // The put, and what acts on the peer's shared state with it, only inside the session the dial or accept began in
+        // (#292): a link from a stopped session, or from one before a stop and the next start, never displaces a link the
+        // live session holds. A stop() that closes after the put waits for it, then tears the link down from `links`.
+        var replaced: FramedLink? = null
+        val registered =
+            fence.ifLive(session) {
+                device?.let {
+                    // The tag evidence is explicit: the tag our dial went to, or the accepted dialer's proven `t` ([form] as
+                    // passed, never the presence fallback above), so a blinded charge is refunded only by a link that showed it.
+                    confirmGattPayload(it.address, nodeId, form?.takeIf { f -> f.blinded }?.advertised, proven)
+                }
+                linkStamps.onLinkEvent(nodeId, elapsed())
+                replaced = links.put(nodeId, framed)
+            }
+        if (!registered) return releaseAfterStop(nodeId, framed, device, dialKey, booked)
+        val prev = replaced
         // A fresh stream starts clean: the peer may have restarted with an empty SeenSet. After the put, so a mark the
         // replaced link's reader judged while it still held the id lands before this, never in [framed]'s memo (#331).
         crossings.forget(nodeId)
@@ -4871,8 +4963,16 @@ class BluetoothMeshTransport internal constructor(
         }
         // Success resets the peer's streak; a dialed proven link's only at the responder's first record (264w).
         if (!events.dialStreak.pending) resetStreak(nodeId, dialKey)
-        metrics.onBtLinkEstablished()
         framed.start()
+        // A teardown since the put (a stop() closing the fence after it, an end, a replacement) already ran, and may have
+        // run before the doorbell or the PHY control above was added: those go here, and a gone link is never logged up,
+        // counted or proven (#292's review). The harness reads the last up or down per peer.
+        if (links[nodeId] !== framed) {
+            doorbells.remove(framed)?.close()
+            if (phyControls.remove(framed)?.close() != null) publishLinkPhys()
+            return framed
+        }
+        metrics.onBtLinkEstablished()
         announce(framed, silence)
         refreshNeighbors()
         publishReachable() // a live link ⇒ reachable, even for an inbound peer we never scan-sighted
@@ -4891,6 +4991,35 @@ class BluetoothMeshTransport internal constructor(
             // check but before its `links.put` found nothing to close, and will not tell again (bluetooth-reviewer).
             scope.launch { closeClaimed(nodeId) }
         }
+        return framed
+    }
+
+    /**
+     * [framed]'s session ended before it could be registered (#292): a dial or an accept that ran across a Pause, or
+     * across a stop and the next start. It never reached `links`, so nothing the live session holds is touched: the
+     * entries keyed by [framed] go, [framed] closes (its reader never started: no flap, no backoff, and the peer did
+     * nothing wrong), and only this dial's own booking ([booked]) is released, never a newer session's for the same key.
+     * Nothing armed its ACL at link-up, so it gets the arm a stop gives an unarmed ACL ([disarmAtStop]).
+     */
+    private fun releaseAfterStop(
+        nodeId: String,
+        framed: FramedLink,
+        device: BluetoothDevice?,
+        dialKey: String?,
+        booked: DialPlan.InFlight?,
+    ): FramedLink {
+        Log.i(TAG, "bt link after stop $nodeId (released)")
+        stackEstimates.remove(framed)
+        codedDialed.remove(framed)
+        silences.remove(framed)
+        neverSighted.remove(framed)
+        linkAddresses.remove(framed)
+        linkDevices.remove(framed)
+        linkForms.remove(framed)
+        dialedByMe.remove(framed)
+        framed.close()
+        if (dialKey != null && booked != null) synchronized(lock) { DialBookings.releaseOwn(inFlight, dialKey, booked) }
+        device?.let { armAcl(it, nodeId, isLive = { true }, AclArm.STOP) }
         return framed
     }
 
@@ -5218,7 +5347,10 @@ class BluetoothMeshTransport internal constructor(
         releaseSlot: Boolean = true,
         // The proven id of a link whose end counts as a failed dial; null reads the in-flight record.
         peer: String? = null,
+        // The dial's session and own booking (#292); null for a link's end counted as a failed dial.
+        dial: DialSession? = null,
     ) {
+        if (releasedAfterStop(dialKey, reason, dial)) return
         // A dial that failed before its channel opened may have used a PSM the peer no longer listens on (an iPhone
         // that restarted), so its GATT payload is read again at the next advert. A HELLO refusal says nothing of the
         // PSM (GattPayloads, companion change A3).
@@ -5252,6 +5384,22 @@ class BluetoothMeshTransport internal constructor(
         val dur = elapsed() - startedAt
         Log.w(TAG, BtLines.connectFailed(shown, reason, dur, audioMonitor.state.value, links.size, streak, nextAt - elapsed()), cause)
         forgotTarget?.let { Log.i(TAG, BtLines.targetForgotten(shown, it)) }
+    }
+
+    /**
+     * A dial whose session stopped before it failed (#292): the stop cleared every streak and booking, and the next session
+     * may have booked the same key since. Only this dial's own booking goes; no streak moves, nothing is counted. True
+     * when [dial] was stale and so released; false for a live session's dial or a link's end ([dial] null).
+     */
+    private fun releasedAfterStop(
+        dialKey: String,
+        reason: ConnectFailReason,
+        dial: DialSession?,
+    ): Boolean {
+        if (dial == null || fence.isCurrent(dial.session)) return false
+        synchronized(lock) { DialBookings.releaseOwn(inFlight, dialKey, dial.booked) }
+        Log.i(TAG, "bt dial after stop ${dial.booked.peerKey} failed reason=$reason (released)")
+        return true
     }
 
     /**
@@ -5406,15 +5554,26 @@ class BluetoothMeshTransport internal constructor(
                 when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
                     BluetoothAdapter.STATE_ON -> {
                         Log.i(TAG, "bluetooth adapter on")
-                        scope.launch {
-                            // Clean slate before re-acquiring: resets the scanner/advertiser `active` flags and
-                            // closes any stale server, so bringUp() + the scan loop re-fetch fresh radio handles
-                            // even if a fast off→on bounce skipped the STATE_OFF teardown (a stuck `scanning`
-                            // flag would otherwise make BleScanner.start() short-circuit and never re-acquire).
-                            tearDownRadio()
-                            orphans.clear() // every ACL went with the adapter, and its edges may never have come
-                            bringUp()
-                            wake()
+                        // The session this broadcast lands in (#292): one dispatched before a stop() and run after it, or
+                        // after a later start(), raises nothing. A stopped plane's next start() brings the radio up itself.
+                        val token = fence.liveToken()
+                        if (token == null) {
+                            Log.i(TAG, "bt adapter on ignored (stopped)")
+                        } else {
+                            scope.launch {
+                                val raised =
+                                    fence.ifLive(token) {
+                                        // Clean slate before re-acquiring: resets the scanner/advertiser `active` flags and
+                                        // closes any stale server, so bringUp() + the scan loop re-fetch fresh radio handles
+                                        // even if a fast off→on bounce skipped the STATE_OFF teardown (a stuck `scanning`
+                                        // flag would otherwise make BleScanner.start() short-circuit and never re-acquire).
+                                        tearDownRadio()
+                                        orphans.clear() // every ACL went with the adapter, and its edges may never have come
+                                        bringUp()
+                                        wake()
+                                    }
+                                if (!raised) Log.i(TAG, "bt adapter on ignored (stopped)")
+                            }
                         }
                     }
 
@@ -5892,6 +6051,9 @@ class BluetoothMeshTransport internal constructor(
 
         // A silent link's close (#203) that has not returned by now is logged `bt link close slow`: it holds nothing up.
         private const val CLOSE_SLOW_MS = 5_000L
+
+        // A stop() that waited longer than this for a start body's raise logs `bt stop waited` (#292): the trial's measure.
+        private const val STOP_WAIT_LOG_MS = 1_000L
 
         // The silent-link loop's shortest wait: a link due now was just stepped, and the next look is never a busy loop.
         private const val SILENCE_MIN_LOOK_MS = 1_000L

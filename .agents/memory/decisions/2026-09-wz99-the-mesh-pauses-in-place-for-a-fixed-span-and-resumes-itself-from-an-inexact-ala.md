@@ -104,3 +104,15 @@ Start → service and both radios back within a second).
 *Amendment (2026-11-01, #248).* The windowed resume alarm is an `OnAlarmListener` calling back into the running
 service, not a `startService`, and posts the running text itself, since no start's re-claim follows it. The while-idle
 one stays `getService`: a non-exact while-idle alarm has no listener form. ADR 2026-11.82s7.
+
+*Amendment (2026-11-23, #292).* A Pause tapped in the notification ran the mesh stop, start, stop within about 100 ms
+(7 of 7 taps on a Pixel 5). `observePause` collected `SettingsStore.meshPausedUntil`, a `dataStore.data.map`, which
+emits again on a write to any key of the settings file; `MeshManager.stop()`'s own `ledger.flush()` writes one before
+the tap's write lands, so the collector applied the old null over the inline pause. The collector now applies only a
+move of the key past `storePause`, the raw value it last saw, seeded from the start's own read. The known limit: a
+second writer that puts the old value back within the collector's dispatch latency of the service's own write is
+missed, and no surface can write that fast. The bounce also closed the "Not covered" gap above for Bluetooth, whose
+start body survived the second stop on a Pixel 9 and held two links for the hour: `BluetoothMeshTransport` now opens a
+`StartFence` session per start, raises nothing outside it, closes it first in `stop()`, and releases a link that
+registers after the stop. Wi-Fi Aware's start body keeps the same unfenced shape; its radio paths check `started`.
+Pinned by `MeshServicePauseTest` (another key's write landing before the tap's own) and `StartFenceTest`.

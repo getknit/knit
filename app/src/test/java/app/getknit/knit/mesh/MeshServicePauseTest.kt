@@ -18,11 +18,15 @@ import app.getknit.knit.moderation.MlTextModerator
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -47,13 +51,18 @@ import org.robolectric.shadows.ShadowAlarmManager
  *
  * Same rig as [MeshServiceForegroundReclaimTest], with the pause key on a [MutableStateFlow] the mocked store
  * writes back to (so the service's own writes reach its collector, as the DataStore's would) and the wall
- * clock on a variable the test moves.
+ * clock on a variable the test moves. Like the DataStore's `data`, the key's flow emits again on a write to
+ * any other key ([PrefsFile.writeOtherKey]), and a test can hold the service's own write back ([heldWrite]) to
+ * land another key's write before it (#292).
  */
 @RunWith(AndroidJUnit4::class)
 class MeshServicePauseTest {
     private val app: Application = ApplicationProvider.getApplicationContext()
     private val mesh = FakeMeshController()
-    private val pausedFlow = MutableStateFlow<Long?>(null)
+    private val pauseKey = PrefsFile()
+
+    // Non-null: the next writes of the pause key wait for it before they land.
+    private var heldWrite: CompletableDeferred<Unit>? = null
     private var now = 1_700_000_000_000L
     private lateinit var controller: ServiceController<MeshService>
 
@@ -61,9 +70,10 @@ class MeshServicePauseTest {
     fun setUp() {
         val settings = mockk<SettingsStore>(relaxed = true)
         every { settings.meshEnabled } returns flowOf(true)
-        every { settings.meshPausedUntil } returns pausedFlow
-        coEvery { settings.setMeshPausedUntil(any()) } answers {
-            pausedFlow.value = firstArg()
+        every { settings.meshPausedUntil } returns pauseKey.pausedUntil
+        coEvery { settings.setMeshPausedUntil(any()) } coAnswers {
+            heldWrite?.await()
+            pauseKey.value = firstArg()
             emptyPreferences()
         }
         startKoin {
@@ -129,7 +139,7 @@ class MeshServicePauseTest {
 
         assertEquals(1, mesh.stopCount)
         val until = now + 15 * 60_000L
-        assertEquals(until, pausedFlow.value)
+        assertEquals(until, pauseKey.value)
         val posted = shadowOf(service).lastForegroundNotification!!
         assertEquals(app.getString(R.string.mesh_notification_paused_title), posted.title())
         assertEquals(app.getString(R.string.mesh_notification_paused_until, pausedUntilLabel(app, until, now)), posted.text())
@@ -183,7 +193,7 @@ class MeshServicePauseTest {
         val service = create()
         service.onStartCommand(pause(720), 0, 2)
         assertEquals(0, mesh.stopCount)
-        assertNull(pausedFlow.value)
+        assertNull(pauseKey.value)
         assertTrue(resumeAlarms().isEmpty())
         controller.destroy()
     }
@@ -197,7 +207,7 @@ class MeshServicePauseTest {
         assertEquals(Service.START_STICKY, service.onStartCommand(intent(MeshService.ACTION_RESUME), 0, 3))
 
         assertEquals(2, mesh.startCount)
-        assertNull(pausedFlow.value)
+        assertNull(pauseKey.value)
         assertTrue(resumeAlarms().isEmpty())
         val posted = shadowOf(service).lastForegroundNotification!!
         assertEquals(app.getString(R.string.mesh_notification_title), posted.title())
@@ -233,7 +243,7 @@ class MeshServicePauseTest {
 
     @Test
     fun `created with a deadline ahead comes up paused`() {
-        pausedFlow.value = now + 40 * 60_000L
+        pauseKey.value = now + 40 * 60_000L
         val service = create()
         assertEquals(0, mesh.startCount)
         assertEquals(app.getString(R.string.mesh_notification_paused_title), shadowOf(service).lastForegroundNotification!!.title())
@@ -246,7 +256,7 @@ class MeshServicePauseTest {
 
     @Test
     fun `created with a deadline behind comes up running`() {
-        pausedFlow.value = now - 1
+        pauseKey.value = now - 1
         val service = create()
         assertEquals(1, mesh.startCount)
         assertEquals(app.getString(R.string.mesh_notification_title), shadowOf(service).lastForegroundNotification!!.title())
@@ -263,7 +273,7 @@ class MeshServicePauseTest {
         fire(MeshService.TAG_HEARTBEAT)
 
         assertEquals(2, mesh.startCount)
-        assertNull(pausedFlow.value)
+        assertNull(pauseKey.value)
         assertTrue(resumeAlarms().isEmpty())
         // No start's re-claim follows a listener tick, so the tick posts the running text itself.
         assertEquals(app.getString(R.string.mesh_notification_title), shadowOf(service).lastForegroundNotification!!.title())
@@ -280,7 +290,7 @@ class MeshServicePauseTest {
         service.onStartCommand(intent(MeshService.ACTION_HEAL), 0, 3)
 
         assertEquals(2, mesh.startCount)
-        assertNull(pausedFlow.value)
+        assertNull(pauseKey.value)
         assertTrue(resumeAlarms().isEmpty())
         controller.destroy()
     }
@@ -294,7 +304,7 @@ class MeshServicePauseTest {
         fire(MeshService.TAG_RESUME)
 
         assertEquals(2, mesh.startCount)
-        assertNull(pausedFlow.value)
+        assertNull(pauseKey.value)
         assertTrue(resumeAlarms().isEmpty())
         assertNull("no startService, so no executing-service timer", shadowOf(app).nextStartedService)
         assertEquals(app.getString(R.string.mesh_notification_title), shadowOf(service).lastForegroundNotification!!.title())
@@ -311,7 +321,7 @@ class MeshServicePauseTest {
 
         assertEquals(1, mesh.startCount)
         assertEquals(1, mesh.stopCount)
-        assertEquals(now + 60 * 60_000L, pausedFlow.value)
+        assertEquals(now + 60 * 60_000L, pauseKey.value)
         assertEquals(SystemClock.elapsedRealtime() + 60 * 60_000L, resumeAlarms().first().triggerAtMs)
         controller.destroy()
     }
@@ -325,7 +335,7 @@ class MeshServicePauseTest {
         service.onStartCommand(Intent(app, MeshService::class.java), 0, 3)
 
         assertEquals(2, mesh.startCount)
-        assertNull(pausedFlow.value)
+        assertNull(pauseKey.value)
         controller.destroy()
     }
 
@@ -335,7 +345,7 @@ class MeshServicePauseTest {
         service.onStartCommand(pause(MeshPause.SHORT_MINUTES), 0, 2)
 
         // The chat list's Resume and the debug bridge write the key and nothing else.
-        pausedFlow.value = null
+        pauseKey.value = null
 
         assertEquals(2, mesh.startCount)
         assertTrue(resumeAlarms().isEmpty())
@@ -346,10 +356,70 @@ class MeshServicePauseTest {
     @Test
     fun `a store write of a deadline pauses it`() {
         val service = create()
-        pausedFlow.value = now + 60 * 60_000L
+        pauseKey.value = now + 60 * 60_000L
         assertEquals(1, mesh.stopCount)
         assertEquals(2, resumeAlarms().size)
         assertEquals(app.getString(R.string.mesh_notification_paused_title), shadowOf(service).lastForegroundNotification!!.title())
+        controller.destroy()
+    }
+
+    @Test
+    fun `another key's write landing before the pause's own write does not bounce the mesh`() {
+        val service = create()
+        val idle = { shadowOf(Looper.getMainLooper()).idle() }
+        idle()
+        val write = CompletableDeferred<Unit>().also { heldWrite = it }
+
+        service.onStartCommand(pause(MeshPause.SHORT_MINUTES), 0, 2)
+        idle()
+        assertEquals(1, mesh.stopCount)
+        assertNull(pauseKey.value) // the tap applied inline; its write has not landed
+
+        pauseKey.writeOtherKey() // MeshManager.stop()'s ledger flush, into the same file
+        idle()
+
+        assertEquals(1, mesh.startCount)
+        assertEquals(1, mesh.stopCount)
+        assertEquals(2, resumeAlarms().size)
+
+        write.complete(Unit)
+        idle()
+
+        assertEquals(now + 15 * 60_000L, pauseKey.value)
+        assertEquals(1, mesh.startCount)
+        assertEquals(1, mesh.stopCount)
+        assertEquals(app.getString(R.string.mesh_notification_paused_title), shadowOf(service).lastForegroundNotification!!.title())
+        controller.destroy()
+    }
+
+    @Test
+    fun `another key's write landing before the resume's own write does not bounce the mesh`() {
+        val service = create()
+        val idle = { shadowOf(Looper.getMainLooper()).idle() }
+        service.onStartCommand(pause(MeshPause.SHORT_MINUTES), 0, 2)
+        idle()
+        assertEquals(1, mesh.stopCount)
+        val write = CompletableDeferred<Unit>().also { heldWrite = it }
+
+        service.onStartCommand(intent(MeshService.ACTION_RESUME), 0, 3)
+        idle()
+        assertEquals(2, mesh.startCount)
+        assertEquals(now + 15 * 60_000L, pauseKey.value) // resumed inline; the null has not landed
+
+        pauseKey.writeOtherKey()
+        idle()
+
+        assertEquals(2, mesh.startCount)
+        assertEquals(1, mesh.stopCount)
+        assertTrue(resumeAlarms().isEmpty())
+
+        write.complete(Unit)
+        idle()
+
+        assertNull(pauseKey.value)
+        assertEquals(2, mesh.startCount)
+        assertEquals(1, mesh.stopCount)
+        assertEquals(app.getString(R.string.mesh_notification_title), shadowOf(service).lastForegroundNotification!!.title())
         controller.destroy()
     }
 
@@ -361,11 +431,34 @@ class MeshServicePauseTest {
 
         assertEquals(Service.START_NOT_STICKY, service.onStartCommand(intent(MeshService.ACTION_STOP), 0, 3))
 
-        assertNull(pausedFlow.value)
+        assertNull(pauseKey.value)
         // The collector was cancelled before its own null write could restart the mesh.
         assertEquals(1, mesh.startCount)
         controller.destroy()
         assertEquals(1, mesh.stopCount)
         assertTrue(resumeAlarms().isEmpty())
     }
+}
+
+/**
+ * The settings file as the pause key sees it: each write, to this key or to another, is a new snapshot, and the key's
+ * flow re-emits on every snapshot, as DataStore's `data.map { it[KEY] }` does. A plain [MutableStateFlow] of the key
+ * would hide the re-emission behind its own equality check.
+ */
+private class PrefsFile {
+    private data class Snapshot(
+        val pausedUntil: Long?,
+        val writes: Int,
+    )
+
+    private val data = MutableStateFlow(Snapshot(null, 0))
+
+    val pausedUntil: Flow<Long?> = data.map { it.pausedUntil }
+
+    var value: Long?
+        get() = data.value.pausedUntil
+        set(value) = data.update { Snapshot(value, it.writes + 1) }
+
+    /** A write to another key of the same file (`MeshManager.stop()`'s ledger flush): the pause key is emitted again. */
+    fun writeOtherKey() = data.update { it.copy(writes = it.writes + 1) }
 }

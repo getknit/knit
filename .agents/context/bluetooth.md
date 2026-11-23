@@ -80,6 +80,24 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   constant. `fileMoving` is the blob plane's own 15 s stall rule both ways (`FeedMeter.STALL_MS`, the writer's oversleep
   discounted), not `feed()`'s deadline. Counted only after the flush returned, never a file's bytes, a keepalive or a
   tag; an ended writer reads `NOT_DRAINING`; the signal fires on crossing the line, never from `close()`.
+- **When touching `StartFence`, `BluetoothMeshTransport.start` / `raise` / `stop`, the adapter receiver's `STATE_ON`,
+  `registerLink`'s `session` / `releaseAfterStop`, or where `initiateTo` / `acceptLoop` take their session:** READ ADR
+  2026-09.wz99 (the pause; its "Not covered" is this gap) and #292. A stopped plane stays stopped whatever reaches it after
+  `stop()`. `start()` opens a session token synchronously; its body does every suspending read first, then runs
+  everything that registers, raises or launches inside one `fence.ifLive(token)` with no suspension in it. `stop()` closes
+  the fence as its first statement, so a raise in progress finishes before the teardown reads its job handles (`bt stop
+  waited <ms>ms for bring-up` past 1 s) and a later one never runs (`bt start fenced session=<n>`). `STATE_ON` raises
+  under the token live when the broadcast is handled (`bt adapter on ignored (stopped)`). A dial takes the token before
+  `beginConnect` (none: no dial) and an accept when `accept()` returns. `registerLink` does its `links.put` (with the GATT
+  confirm and the link stamp) inside `fence.ifLive(session)`, so a stale link never displaces one the live session holds,
+  and a stop that closes after the put waits for it and tears the link down from `links`. A stale link never reaches
+  `links`: its own entries go, it closes with no flap and no backoff, only its own booking goes
+  (`DialBookings.releaseOwn`, by identity: `InFlight` is a data class, and a newer session's equal record stays), and its ACL gets the stop's arm (`bt link after stop <id>
+  (released)`). A link `links` no longer holds after `framed.start()` drops its doorbell and PHY control and is never
+  logged up, counted or proven. A dial that fails after its session stopped releases only its own booking, moves no
+  streak, counts no seal and forgets no GATT payload (`bt dial after stop <id> failed reason=<r> (released)`). Nobody calls `ifLive` or `close` while holding `lock`, `servers`, the writer's, the side
+  channel's or `ScanHold`'s lock, and nothing inside a raise suspends, blocks on the main thread or waits for the worker.
+  Tests: `StartFenceTest`, `DialBookingsTest`; the wiring has no JVM rig (device trial owed: the notification Pause on a linked phone).
 - **When touching `BluetoothMeshTransport.superviseAccepted`, `BleAdmissionPolicy`, `teardownLink`, `LinkEvents`,
   `neverSighted`, `LonelyDialPolicy` / `noLinkSince`, or what a held link scores for eviction:** READ ADR
   2026-09.shzv and ADR 2026-09.hj4a. A dialer presence holds is judged by the old tie-break, unchanged — the

@@ -45,7 +45,10 @@ lines.
   the service applies idempotently in place — the service stays foreground, `MeshManager` goes down, every
   surface reads the key through `MeshPause.activeDeadline` — never `MeshTransport.pause` (that is the Wi-Fi
   Direct hand-over) and never a stop-and-restart (an alarm cannot start a foreground service from the
-  background). Every plain start re-claims without resuming; the two resume alarms are inexact and bounded, not
+  background). The store collector (`observePause`) applies only a move of the key past `storePause`, never a
+  re-emission: the settings DataStore emits on every key's write, and one landing between a tap's inline apply
+  and its own write bounced the mesh stop → start → stop (#292). Every plain start re-claims without resuming;
+  the two resume alarms are inexact and bounded, not
   `SCHEDULE_EXACT_ALARM` (the windowed one an in-process listener, `resumeWindowListener` / `onResumeAlarm`, the
   while-idle one a `getService` start — ADR 2026-11.82s7); Stop cancels the store collector before `stopSelf()`. **Stop is sticky** (the
   amendment): `KnitApp`'s route effect and `ON_RESUME` observer both ask `ui/MeshStartPolicy.kt`'s
