@@ -80,8 +80,8 @@ class InboundBurstLabTest {
 
     /**
      * The same burst at a router queued as a phone's is ([MeshLab.PHONE_INBOUND_SLOTS]): every send still returns, what
-     * found the queue full waits on the link instead of being dropped, and once the router moves all of it is handled. The
-     * DM ahead of the burst lands, and its tick crosses.
+     * found the queue full waits on the link instead of being dropped, and once the router moves all of it reaches the
+     * router's queue. The DM ahead of the burst lands, and its tick crosses.
      */
     @Test
     fun aPhoneQueueHoldsWhatFindsItFull() =
@@ -100,10 +100,10 @@ class InboundBurstLabTest {
 
             alice.custodyGate.release()
             lab.assertConverged(listOf(alice, bob), atLeast = DMS) { it.dmWith(if (it === alice) bob else alice) }
-            // Every cue reaches her router: the link holds none back. Under chaos a router reads cues slowly, so this waits
-            // as long as the DM burst's convergence may; what is left after it is at most one queue, which the drain covers.
+            // Every cue reaches her router: the link holds none back. That is the claim, so the scenario ends here and does
+            // not wait out the queue of cues behind the last one: under chaos each cue the router reads costs a lagged
+            // dispatch, and reading a whole phone queue was most of a run (#334).
             lab.await(1, timeoutMs = BURST_AWAIT_MS) { if (alice.transport.inboundHeld == 0L) 1 else 0 }
-            alice.transport.awaitInboundDrained()
         }
 
     /**
@@ -173,14 +173,25 @@ class InboundBurstLabTest {
         /** Hello, its answer, and the one in the gate. */
         const val DMS = 3
 
-        /** Half again what a phone queues: a third of it finds the queue full and waits on the link. */
-        const val PHONE_BURST = 500
+        /** How far [PHONE_BURST] overruns the phone's queue: enough waiting frames that a drop could not hide among them. */
+        const val OVERFLOW = 64
+
+        /**
+         * [OVERFLOW] past what a phone queues: with the DM in the gate holding a slot, more than that many find the queue
+         * full and wait on the link. The claim needs the queue to overflow, not to overflow threefold: under chaos each
+         * cue the router reads costs a lagged dispatch, and the 500 this was took 15 s a run (#334).
+         */
+        const val PHONE_BURST = MeshLab.PHONE_INBOUND_SLOTS + OVERFLOW
 
         /** The router's queue in the DM burst: small, so the burst can overflow it with few sealed DMs. */
         const val BURST_SLOTS = 16
 
-        /** Twice what [BURST_SLOTS] queues, and far below the custody cap. */
-        const val DM_BURST = 2 * BURST_SLOTS
+        /**
+         * Four past what [BURST_SLOTS] queues, and far below the custody cap: with the first DM in the gate holding a slot,
+         * at least four of the DMs behind it wait on the link. Each is sealed, custodied and ticked under chaos's lag, so
+         * the burst stays just past the queue: twice it took 13 s a run (#334).
+         */
+        const val DM_BURST = BURST_SLOTS + 4
 
         /** What [DM_BURST] DMs, each sealed, custodied and ticked, take to converge on a busy runner. */
         const val BURST_AWAIT_MS = 120_000L
