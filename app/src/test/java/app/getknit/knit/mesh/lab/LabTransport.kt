@@ -288,6 +288,13 @@ class LabTransport(
     val digestsReceived: Long get() = digestsIn.get()
 
     /**
+     * How many of [digestsReceived] the manager has handled so far: `onDigest` returned, whether or not the answer it opened
+     * or updated has ended. What a scenario waits on with an answer held open, where [awaitDigestsAnswered] would wait for
+     * the answer's end.
+     */
+    val digestsHandled: Long get() = digestsAnswered.get()
+
+    /**
      * The custody digests peers advertised, counted out as the collector *finishes* each one, as [inbound] counts
      * frames: the manager's `collect { forwardSync.onDigest(…) }` returns from `emit` only once its reply (every
      * frame the peer lacked) is sent. Behind a composite's `merge` the count moves at the manager instead, as

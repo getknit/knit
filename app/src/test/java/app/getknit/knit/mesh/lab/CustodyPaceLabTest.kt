@@ -67,8 +67,7 @@ class CustodyPaceLabTest {
             assertTrue("the load is several rounds: $bytes B", bytes > 2 * ROUND_BYTES)
 
             val before = alice.roundsCut()
-            lab.link(alice, bob)
-            awaitLinkUp(alice, bob)
+            linkUp(alice, bob)
             val rounds = alice.roundsCut() - before
             assertTrue("alice answered $bytes B in $rounds rounds of at most $ROUND_BYTES B", rounds > 1 && rounds >= bytes / ROUND_BYTES)
             val missing = load.toSet() - bob.custodyIds()
@@ -148,8 +147,7 @@ class CustodyPaceLabTest {
 
             // lab-lint: allow direct-disconnect — the held link's cut is the subject, and both ends' departure is awaited next
             alice.transport.disconnect(bob.transport)
-            alice.transport.awaitNeighborsObserved()
-            bob.transport.awaitNeighborsObserved()
+            awaitDeparture(alice, bob)
             alice.serveCustodyRounds()
             assertTrue("the answer was never cut short", alice.metrics.frames().custodyAnswersCutShort > cutShort)
             val held = alice.custodyIds()
@@ -170,8 +168,7 @@ class CustodyPaceLabTest {
             assertTrue("alice credited more than a round bob never got: $creditedBytes B", creditedBytes <= ROUND_BYTES)
 
             val relinked = alice.transport.sent.size
-            lab.link(alice, bob)
-            awaitLinkUp(alice, bob)
+            linkUp(alice, bob)
             val again =
                 alice.transport.sent
                     .drop(relinked)
@@ -206,8 +203,7 @@ class CustodyPaceLabTest {
             lab.await(STACK_ROUNDS) { (alice.roundsCut() - before).toInt() }
             // lab-lint: allow direct-disconnect — an air link, which `unlink` refuses; the cut with rounds in the air is the subject
             alice.transport.disconnect(bob.transport)
-            alice.transport.awaitNeighborsObserved()
-            bob.transport.awaitNeighborsObserved()
+            awaitDeparture(alice, bob)
             alice.serveCustodyRounds()
 
             val delivered =
@@ -223,8 +219,7 @@ class CustodyPaceLabTest {
             )
             assertTrue("rounds were in the air at the cut", load.any { it !in delivered })
 
-            lab.link(alice, bob)
-            awaitLinkUp(alice, bob)
+            linkUp(alice, bob)
             assertTrue(alice.sendDm(bob, "after the cut"))
             lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
         }
@@ -404,8 +399,7 @@ class CustodyPaceLabTest {
 
             val linkedAt = lab.clock.now()
             two.forEach { offers.getValue(it) += linkedAt }
-            lab.link(alice, bob)
-            awaitLinkUp(alice, bob)
+            linkUp(alice, bob)
             val start = lab.clock.now()
             record(linkedAt, linkedAt, start)
 
@@ -492,10 +486,15 @@ class CustodyPaceLabTest {
 
     /**
      * A proven answer survives an unproven claim (the B2 security and blobs reviews). Alice holds three rounds of DMs for
-     * Bob. His proven link's digest starts her answer; then a digest from a link that proved nothing, claiming Bob's id and
-     * listing everything Alice holds, arrives. It is answered and leaves nothing behind (§3, §6): it neither replaces the
-     * digest Bob's rounds are cut from nor tells Alice he holds what he lacks, so Bob still gets every DM for him in the
-     * answer's own rounds, with no re-offer between. Below the cap, so the stores agree.
+     * Bob. His proven link's digest starts her answer, and the link holds what she cuts, so the answer is still open, its
+     * rounds to go, when a digest from a link that proved nothing, claiming Bob's id and listing everything Alice holds,
+     * arrives. It is answered and leaves nothing behind (§3, §6): it neither replaces the digest Bob's rounds are cut from
+     * nor tells Alice he holds what he lacks, so once the link delivers Bob still gets every DM for him in the answer's own
+     * rounds, with no re-offer between. Below the cap, so the stores agree.
+     *
+     * The held round is the sync: the claim once followed the link-up's waits, which for a node with a board returned
+     * before Bob's digest, so the claim came first and the read came with the answer's rounds still being cut (CI job
+     * 14558, `test:mesh-lab-boards`), and which on a plain pipe let the answer end before the claim, so it was never tested.
      */
     @Test
     fun aProvenAnswerSurvivesADigestClaimedOverALinkThatProvedNothing() =
@@ -517,9 +516,15 @@ class CustodyPaceLabTest {
                     .sum()
             assertTrue("the DMs for bob are more than two rounds: $bytes B", bytes > 2 * ROUND_BYTES)
 
-            lab.link(alice, bob)
-            awaitLinkUp(alice, bob)
+            lab.link(alice, bob, arm = { alice.transport.hold(bob.transport) })
+            // Bob's digest has opened Alice's answer: its first round is on the held link, and custody cuts no more into it.
+            lab.await(1) { alice.transport.held(bob.transport).count { WireCodec.decodeEnvelope(it.signed)?.id in dms } }
+            assertTrue("alice's answer to bob ended with the link holding it", alice.transport.answersLive())
+            val handled = alice.transport.digestsReceived
             alice.transport.hearClaimedDigest(bob.nodeId, alice.custodyIds().toList())
+            lab.await(1) { if (alice.transport.digestsHandled > handled) 1 else 0 }
+            assertTrue("the claim ended alice's answer to bob", alice.transport.answersLive())
+            alice.transport.release(bob.transport)
             settle(alice, bob)
             val read = bob.decrypted(bob.dmWith(alice)).map { it.first }.toSet()
             val missing = dms.filterNot { it in read }
@@ -555,8 +560,7 @@ class CustodyPaceLabTest {
             lab.link(alice, bob, arm = { alice.transport.hold(bob.transport) })
             lab.await(1) { alice.transport.held(bob.transport).count { WireCodec.decodeEnvelope(it.signed)?.id in forBob } }
             lab.unlink(alice, bob)
-            lab.link(alice, bob)
-            awaitLinkUp(alice, bob)
+            linkUp(alice, bob)
             val lacking = forBob.toSet() - bob.custodyIds()
             assertTrue("bob lacks ${lacking.size} of the ${forBob.size} DMs for him", lacking.isEmpty())
             val unpinned = sybils.filter { bob.pinned(it.nodeId) == null }.map { it.nodeId.take(6) }
@@ -606,12 +610,38 @@ class CustodyPaceLabTest {
     }
 
     /**
-     * Waits out a link-up's own exchange: both newcomer passes ran (their digests are out), both digests are answered and
-     * their answers ended, and what crossed is handled, the air's included.
+     * Links [a] and [b] over a plain pipe and waits out the link-up's own exchange: both newcomer passes ran (each node was
+     * handed the other's digest), both digests are answered and their answers ended, and what crossed is handled. The
+     * digests are counted, not read off [LabTransport.awaitNeighborsHandled]: for a node with a board that returns before
+     * its manager's pass (the composite re-publishes the link set on a collector of its own), and [settle] then found
+     * nothing handed yet and returned with the exchange still to come (`test:mesh-lab-boards`, CI job 14558).
      */
-    private suspend fun awaitLinkUp(vararg nodes: LabNode) {
+    private suspend fun linkUp(
+        a: LabNode,
+        b: LabNode,
+    ) {
+        val nodes = listOf(a, b)
+        val before = nodes.associateWith { it.transport.digestsReceived }
+        lab.link(a, b)
+        val handed = lab.tryAwait(1) { if (nodes.all { it.transport.digestsReceived > before.getValue(it) }) 1 else 0 }
+        assertTrue(
+            "the link-up's digests never came: ${nodes.map { "${it.name} ${before.getValue(it)}→${it.transport.digestsReceived}" }}",
+            handed,
+        )
         nodes.forEach { it.transport.awaitNeighborsHandled() }
-        settle(*nodes)
+        settle(a, b)
+    }
+
+    /**
+     * Waits until both ends' managers acted on a link [LabTransport.disconnect] cut, as [MeshLab.unlink] does for the links
+     * it may cut: the radios' collectors saw it, and with a board each composite's merged link set, which the manager reads
+     * and which conflates on a collector of its own. Read before that, the answer was not yet lost to the link, and a relink
+     * inside the window was no newcomer to the manager, so no digest crossed (`test:mesh-lab-boards` under chaos).
+     */
+    private suspend fun awaitDeparture(vararg nodes: LabNode) {
+        nodes.forEach { it.transport.awaitNeighborsObserved() }
+        nodes.forEach { it.awaitBoardSawLinks() }
+        nodes.forEach { it.awaitLinksActedOn() }
     }
 
     /**
