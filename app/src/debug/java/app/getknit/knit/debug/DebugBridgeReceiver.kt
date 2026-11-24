@@ -53,6 +53,7 @@ import app.getknit.knit.data.LocalMessageDelete
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.StickerRepository
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
 import app.getknit.knit.data.blob.BlobVerdictEntity
@@ -86,6 +87,7 @@ import app.getknit.knit.data.settings.ReviewPromptStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.settings.TicketKeyStore
 import app.getknit.knit.data.settings.TranscriptStore
+import app.getknit.knit.data.sticker.Sticker
 import app.getknit.knit.data.webp.WebpTranscode
 import app.getknit.knit.demo.DemoCalls
 import app.getknit.knit.di.LIVE_CALLS_WIRED
@@ -236,6 +238,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   when flagged, as the composer does — the room-send half of a video screening trial.
  * - [ACTION_SAVEATT] — the chat's Save into the app's own storage: `--es id <messageId> --es out <path>` writes
  *   the attachment's plaintext there, so [ACTION_SENDIMG] can pick it again (the forward loop, ADR 2026-10.mptm).
+ * - [ACTION_STICKER] — the sticker tray with no UI (ADR 2026-11.rk6d): `--es op list|save|remove|send`. `save --es id
+ *   <messageId>` keeps a sticker row's picture, `remove --es plain <plainHash>` lets it go, `send --es plain <plainHash>
+ *   --es conv <id>` sends a saved or recent one through `ingestPicked` as the tray does.
  * - [ACTION_STATE] — self id/name, transport health, the reachable peer set, and the mesh metrics; add
  *   `--es conv <id>` to also dump that thread's most recent messages (`--ei limit N`, default
  *   [DEFAULT_MESSAGE_LIMIT]) with each message's `received` delivery tick — how "verify receipt" works.
@@ -540,6 +545,10 @@ class DebugBridgeReceiver :
 
                         ACTION_SAVEATT -> {
                             handleSaveAtt(intent)
+                        }
+
+                        ACTION_STICKER -> {
+                            handleSticker(intent)
                         }
 
                         ACTION_STATE -> {
@@ -1060,6 +1069,104 @@ class DebugBridgeReceiver :
     }
 
     /**
+     * The sticker tray with no UI (ADR 2026-11.rk6d), for a trial on a locked phone. `list` reads the Saved and Recent
+     * tabs; `save --es id` saves the sticker a row shows, named as the bubble names it (its learned plaintext hash, or a
+     * room post's own); `remove --es plain` lets one go; `send --es plain --es conv` sends a saved or recent one as
+     * `ChatViewModel.sendSticker` does: the plaintext opened from the named blob, through `ingestPicked` (the identity
+     * this phone holds it by, screened for the room), then `sendChat` with no words. It is not the view model's code: a
+     * refusal here is a reply, never the composer's toast.
+     */
+    private suspend fun handleSticker(intent: Intent): JSONObject {
+        val repo = getKoin().get<StickerRepository>()
+        val me = identity.nodeId()
+
+        fun Sticker.json() =
+            JSONObject()
+                .put("plainHash", plainHash)
+                .put("blobHash", blobHash)
+                .put("keyed", blobKey != null)
+                .put("mime", mime)
+                .put("animated", animated)
+                .put("held", false)
+        return when (intent.getStringExtra(EXTRA_OP) ?: "list") {
+            "list" -> {
+                val saved = repo.observeSaved().first()
+                val recent = repo.observeRecent(me).first()
+                reply("ok", "${saved.size} saved, ${recent.size} recent")
+                    .put("saved", JSONArray(saved.map { it.json().put("held", blobs.exists(it.blobHash)) }))
+                    .put("recent", JSONArray(recent.map { it.json().put("held", blobs.exists(it.blobHash)) }))
+            }
+
+            "save" -> {
+                val id = intent.getStringExtra(EXTRA_ID) ?: return reply("error", "missing 'id' extra")
+                val row = messages.observeMessage(id).first() ?: return reply("error", "no message $id")
+                if (!row.attachmentSticker) return reply("error", "message $id is not a sticker")
+                val hash = row.attachmentHash ?: return reply("error", "message $id has no attachment")
+                val plain =
+                    row.attachmentPlainHash ?: hash.takeIf { row.attachmentKey == null }
+                        ?: return reply("error", "message $id's plaintext name is not learned yet")
+                val sticker = Sticker(plain, hash, row.attachmentKey, row.attachmentMime ?: "image/webp", row.attachmentAnimated)
+                reply("ok", repo.save(sticker, System.currentTimeMillis()).name).put("sticker", sticker.json())
+            }
+
+            "remove" -> {
+                val plain = intent.getStringExtra(EXTRA_PLAIN) ?: return reply("error", "missing 'plain' extra")
+                val blobHash = repo.observeSaved().first().firstOrNull { it.plainHash == plain }?.blobHash
+                val removed = repo.remove(plain)
+                reply("ok", if (removed) "removed" else "not saved")
+                    .put("blobHash", blobHash ?: JSONObject.NULL)
+                    .put("blobHeld", blobHash?.let { blobs.exists(it) } ?: JSONObject.NULL)
+            }
+
+            "send" -> {
+                sendSticker(intent, repo, me)
+            }
+
+            else -> {
+                reply("error", "op is list, save, remove or send")
+            }
+        }
+    }
+
+    private suspend fun sendSticker(
+        intent: Intent,
+        repo: StickerRepository,
+        me: String,
+    ): JSONObject {
+        val plainHash = intent.getStringExtra(EXTRA_PLAIN) ?: return reply("error", "missing 'plain' extra")
+        val conv = intent.getStringExtra(EXTRA_CONV) ?: return reply("error", "missing 'conv' extra")
+        val sticker =
+            (repo.observeSaved().first() + repo.observeRecent(me).first()).firstOrNull { it.plainHash == plainHash }
+                ?: return reply("error", "no saved or recent sticker $plainHash")
+        val stored = blobs.bytes(sticker.blobHash) ?: return reply("error", "sticker bytes ${sticker.blobHash} not held")
+        val key = sticker.blobKey
+        val plain =
+            if (key == null) stored else AttachmentCrypto.open(stored, b64d(key)) ?: return reply("error", "the key does not open it")
+        val isRoom = Conversations.kindFor(conv) == ConversationKind.NEARBY
+        val picked =
+            attachments.ingestPicked(plain, sticker.mime, screen = isRoom) as? AttachmentStore.IngestResult.Success
+                ?: return reply("error", "ingest failed")
+        if (isRoom && picked.flagged) {
+            blobs.deleteIfUnreferenced(picked.ingested.hash)
+            return reply("blocked", "sticker blocked by on-device content filter").put("flagged", true)
+        }
+        val ingested = picked.ingested
+        val sent =
+            when (Conversations.kindFor(conv)) {
+                ConversationKind.NEARBY -> mesh.sendChat("", attachment = ingested, recipientId = null, group = null)
+                ConversationKind.DM -> mesh.sendChat("", attachment = ingested, recipientId = conv)
+                ConversationKind.GROUP -> groups.find(conv)?.let { mesh.sendChat("", attachment = ingested, group = it.toGroupInfo()) }
+                else -> return reply("error", "a sticker goes to the room, a DM or a group: $conv")
+            } == true
+        if (!sent) blobs.deleteIfUnreferenced(ingested.hash)
+        return reply(if (sent) "ok" else "error", if (sent) "sent" else "not sent")
+            .put("conversation", conv)
+            .put("hash", ingested.hash)
+            .put("sticker", ingested.sticker)
+            .put("reused", ingested.reuse?.hash ?: JSONObject.NULL)
+    }
+
+    /**
      * Decodes a WebP (or any image) through the exact `android.graphics.ImageDecoder` path Coil's
      * `AnimatedImageDecoder` uses, and reports whether it's animated + its dimensions — the definitive
      * in-app proof that a muxed animated WebP actually plays. A decode failure surfaces as an error reply.
@@ -1448,6 +1555,8 @@ class DebugBridgeReceiver :
                     .put("attachmentPlainHash", m.attachmentPlainHash ?: JSONObject.NULL)
                     .put("attachmentHeld", m.attachmentHash?.let { blobs.exists(it) } ?: JSONObject.NULL)
                     .put("attachmentAnimated", m.attachmentAnimated)
+                    // Read off the bytes as a sticker's shape (ADR 2026-11.rk6d): drawn without a bubble when alone.
+                    .put("attachmentSticker", m.attachmentSticker)
                     // This phone's NSFW screen (ADR 2026-10.hmfe): the attachment's verdict, null until it is screened,
                     // with its score (a video's highest frame), and a video poster's own verdict, kept on the row.
                     .put("attachmentFlagged", verdict?.flagged ?: JSONObject.NULL)
@@ -5257,6 +5366,7 @@ class DebugBridgeReceiver :
         const val ACTION_SEND = "app.getknit.knit.debug.SEND"
         const val ACTION_SENDIMG = "app.getknit.knit.debug.SENDIMG"
         const val ACTION_SAVEATT = "app.getknit.knit.debug.SAVEATT"
+        const val ACTION_STICKER = "app.getknit.knit.debug.STICKER"
         const val ACTION_STATE = "app.getknit.knit.debug.STATE"
         const val ACTION_STORE = "app.getknit.knit.debug.STORE"
         const val ACTION_REACT = "app.getknit.knit.debug.REACT"
@@ -5367,6 +5477,7 @@ class DebugBridgeReceiver :
         const val EXTRA_FIT = "fit"
         const val EXTRA_RESET_PEER = "reset"
         const val EXTRA_OP = "op"
+        const val EXTRA_PLAIN = "plain"
         const val EXTRA_PEER = "peer"
 
         // The LINK bulk trial: what a run writes unless told, and the most it may.

@@ -97,7 +97,8 @@ the context doc. Read its bullet before you call a result converged or diverged.
 Extras and reply fields: the action's bullet in `.agents/context/debug-bridge.md` under *Headless bridge*.
 
 - **Messaging:** `SEND`, `SENDIMG` (stage the file into app storage with `run-as` first; `--ez file true` for a
-  non-image), `SAVEATT` (Save into app storage, to pick it again), `REACT`,
+  non-image), `SAVEATT` (Save into app storage, to pick it again), `STICKER` (the sticker tray: list, save, remove,
+  send), `REACT`,
   `TYPING`, `READ` (mark read as the chat screen does; the author's `STATE` `readBy` is the oracle), `MKGROUP`, `LEAVE`, `DELETE` (the long-press Delete: rows gone from the chat, custody kept), `PURGE` (clean
   soak traffic off every phone, custody too), `RESETDB` (empty the database, keep
   the identity, profile and settings; pause first).

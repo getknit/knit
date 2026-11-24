@@ -61,6 +61,12 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   when sealed, recording its plaintext name as a real save does). Pair it with `SENDIMG --es path <out>` for the
   save-and-forward loop with no UI. Replies `hash` (the row's), `plainHash`, `bytes`, `mime`; an unheld blob or a
   key that will not open it is an `error`.
+- `…debug.STICKER` — the sticker tray with no UI (ADR 2026-11.rk6d): `--es op list` reads the Saved and Recent tabs
+  (each `plainHash`, `blobHash`, `keyed`, `held`); `save --es id <messageId>` saves the sticker a row shows (an error on a
+  row that is not one, or a sealed one whose plaintext name is not learned yet); `remove --es plain <plainHash>` lets
+  one go (`blobHeld` after); `send --es plain <plainHash> --es conv <id>` sends a saved or recent one as the tray does,
+  through `ingestPicked` (`reused` names the identity it went out under, `sticker` the flag read at ingest). The
+  receiver's oracle is `STATE`'s `attachmentSticker` on the row.
 - `…debug.STATE` — self id/name, transport health, reachable peers, and mesh metrics. Each `transports[]` row carries
   `switchedOff` (Knit has the plane off: the person's Settings switch, `AWARE`, low-power mode or `NANOFF`) and
   `dormant` (Wi-Fi Aware resting, detached, while no phone nearby can use it — GitHub #44, `NANDORM`), and `lowPower`
@@ -70,7 +76,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   carries `via`, the plane it arrived over (our own message: the plane its delivery tick came over; `DirectLink` is a
   contact's direct Internet link). Each row
   with an attachment carries `attachmentHash` (the hash the frame names), `attachmentKeyed` (sealed or not),
-  `attachmentPlainHash`, `attachmentHeld` (the bytes are here) and `attachmentAnimated` — a forward trial compares
+  `attachmentPlainHash`, `attachmentHeld` (the bytes are here), `attachmentAnimated` and `attachmentSticker` (ADR
+  2026-11.rk6d) — a forward trial compares
   the first across rows and reads the fourth instead of the blob store (ADR 2026-10.mptm). `attachmentFlagged` and
   `attachmentScore` are this phone's NSFW verdict on the attachment (null until it is screened; a video's score is its
   highest frame's), and `videoPosterFlagged` the verdict on a video's inline poster, judged on arrival (ADR
