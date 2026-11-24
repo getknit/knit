@@ -94,3 +94,24 @@ The tests that keep this true:
 - `KnitDatabaseMigrationTest` (38 to 39) and `BackupTablesTest`.
 - `ChatViewModelTest`: the tray send's identity, refusal and reply.
 - `ChatScreenContentTest`: no bubble, no viewer, the menu and the tray.
+
+## Amendment (2026-11-23): a sticker gets a light outline on a dark background
+
+**What was observed.** On the lab P7, a Gboard sticker ("Nah, I'm busy", 420 × 420, still, with transparency) has black
+lettering and no border of its own. It was drawn for a light page, and on Knit's dark chat background the words all but
+vanished.
+
+**What changed.** In a dark theme, a sticker is drawn with a 2 dp light outline traced around its own shape
+(`Modifier.stickerOutline`, `stickerOutlineColor` in `ui/chat/StickerMessage.kt`), in the chat and in the tray. The
+content is recorded into one layer and stamped at twelve points on a 2 dp circle into a second layer, which keeps a
+`SrcIn` tint of `onSurface`; the content is then drawn over it. A light theme draws no outline. The theme is read off
+the background the sticker sits on, so a theme Knit chose decides it. A sticker that already carries a white border
+looks unchanged, because the outline hides under it.
+
+The alternatives: a light plate behind every sticker is a bubble again, and boxes the stickers that already have a
+border. Measuring each sticker's ink against the page means a stored verdict that still misjudges mixed stickers.
+
+**What it costs.** Thirteen draws of one recorded layer per sticker on screen, every frame for an animated one. The
+trap: one layer with its tint toggled around the stamps does not work. A layer is drawn with the properties it holds
+when the frame renders, so every stamp came out untinted (the first build on the P7 did exactly that). Verified on the
+P7 by screenshot. There is no unit test: a preview has no sticker bytes to outline.

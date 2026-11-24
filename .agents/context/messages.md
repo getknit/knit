@@ -244,7 +244,8 @@ lines.
   A saved sticker names the blob it came in, never a copy of its bytes (a key-less copy of a sealed one is ADR
   2026-10.mptm's oracle), and the blob collection counts the row: `orphanHashes`, `pinnedOutsideMessages`,
   `dropRefusedGroupPhoto`, `requestBlobCandidates` and `carrierOnlyBlobBytes` change together. Recents are read off this phone's own sends. A
-  tray send goes through `ingestPicked` and `refusalOf`, as a pick does, with no face review. Tests: `StickerShapeTest`,
+  tray send goes through `ingestPicked` and `refusalOf`, as a pick does, with no face review. In a dark theme a sticker
+  gets a light outline (`stickerOutline`, the ADR's 2026-11-23 amendment): two layers, never one tint toggled. Tests: `StickerShapeTest`,
   `StickerRepositoryTest`, `AttachmentStoreIngestTest`'s sticker cases, `InboundPipelineTest`'s, `ChatViewModelTest`'s
   tray cases, `ChatScreenContentTest`'s sticker cases.
 - **When touching `redact/` (`YuNetFaceDetector`, `YuNetDecoder`, `FaceBox`, `FaceDetector`, `Redaction`, `Cover`,

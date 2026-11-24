@@ -227,7 +227,8 @@ private fun StickerCell(
             model = BlobImage(sticker.blobHash, sticker.mime, sticker.blobKey),
             contentDescription = stringResource(R.string.sticker_label),
             contentScale = ContentScale.Fit,
-            modifier = Modifier.fillMaxSize(),
+            // The tray's sheet is dark in a dark theme too: the same outline the chat draws.
+            modifier = Modifier.fillMaxSize().stickerOutline(stickerOutlineColor()),
         )
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
             DropdownMenuItem(

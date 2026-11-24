@@ -1111,7 +1111,12 @@ class DebugBridgeReceiver :
 
             "remove" -> {
                 val plain = intent.getStringExtra(EXTRA_PLAIN) ?: return reply("error", "missing 'plain' extra")
-                val blobHash = repo.observeSaved().first().firstOrNull { it.plainHash == plain }?.blobHash
+                val blobHash =
+                    repo
+                        .observeSaved()
+                        .first()
+                        .firstOrNull { it.plainHash == plain }
+                        ?.blobHash
                 val removed = repo.remove(plain)
                 reply("ok", if (removed) "removed" else "not saved")
                     .put("blobHash", blobHash ?: JSONObject.NULL)
