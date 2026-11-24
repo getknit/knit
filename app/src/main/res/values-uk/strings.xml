@@ -612,6 +612,18 @@
     <string name="chat_voice_desc">Голосове повідомлення, %1$s</string>
     <string name="chat_voice_remove">Видалити голосове повідомлення</string>
     <string name="chat_action_save_voice">Зберегти голосове повідомлення</string>
+    <string name="chat_action_save_sticker">Зберегти стікер</string>
+    <string name="chat_action_remove_sticker">Прибрати зі стікерів</string>
+    <string name="sticker_label">Стікер</string>
+    <string name="sticker_saved">Стікер збережено</string>
+    <string name="sticker_tray_full">Більше стікерів зберегти не можна. Приберіть один, щоб зберегти інший.</string>
+    <string name="sticker_unavailable">Не вдалося надіслати цей стікер.</string>
+    <string name="sticker_tray_title">Стікери</string>
+    <string name="sticker_tab_saved">Збережені</string>
+    <string name="sticker_tab_recent">Нещодавні</string>
+    <string name="sticker_saved_empty">Натисніть і утримуйте стікер у чаті, щоб зберегти його тут.</string>
+    <string name="sticker_recent_empty">Тут з’являться стікери, які ви надсилаєте, зокрема з клавіатури.</string>
+    <string name="sticker_send">Надіслати стікер</string>
     <string name="chat_voice_saved_recordings">Збережено в Recordings/Knit</string>
     <string name="chat_voice_saved_music">Збережено в Music/Knit</string>
     <string name="chat_voice_already_saved">Уже збережено</string>
@@ -863,6 +875,7 @@
     <string name="chat_list_preview_photo">📷 Фото</string>
     <string name="chat_list_preview_video">🎬 Відео</string>
     <string name="chat_list_preview_gif">🎞️ GIF</string>
+    <string name="chat_list_preview_sticker">🏷️ Стікер</string>
     <string name="chat_list_preview_voice">🎤 Голосове повідомлення</string>
     <string name="chat_list_preview_file">📎 %1$s</string>
     <string name="chat_list_preview_link">🔗 Посилання</string>

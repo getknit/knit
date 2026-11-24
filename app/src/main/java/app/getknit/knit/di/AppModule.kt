@@ -36,6 +36,7 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.QuoteVerifier
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.StickerRepository
 import app.getknit.knit.data.ThreadMediaRepository
 import app.getknit.knit.data.backup.BackupWriter
 import app.getknit.knit.data.backup.RestoreStager
@@ -407,6 +408,9 @@ val appModule =
         // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, groupDao, forwardDao, db,
         // savedFileDao.
         single { BlobRepository(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), changes = get()) }
+        // The composer's sticker tray (ADR 2026-11.rk6d): saved stickers name blobs, and BlobRepository lets them go.
+        single { get<KnitDatabase>().stickerDao() }
+        single { StickerRepository(get(), get(), get()) }
         single { GroupRepository(get(), get(), get(), get(), get(), changes = get()) }
         // Store-and-forward custody for DMs, backed by the encrypted forward_store table. Takes the shared
         // StoreDigest (from meshModule) so every carry-store mutation keeps the cue-plane content digest in sync, and the

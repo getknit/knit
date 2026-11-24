@@ -49,6 +49,8 @@ document:
   Phones on an older Knit may take longer to connect to yours.
 - You can now save a voice message to your phone: long-press it and tap Save voice message. It goes to
   Recordings/Knit (Music/Knit on Android 10 and 11) unchanged, and saving it again doesn't make a second copy.
+- Stickers now show without a bubble, a little smaller than a photo. Long-press one to save it, and tap the
+  smiley at the start of the message field to send your saved and recently sent stickers.
 
 ### Changed
 

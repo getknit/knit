@@ -62,6 +62,7 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.TransferPhase
+import app.getknit.knit.data.sticker.Sticker
 import app.getknit.knit.location.GeoPoint
 import app.getknit.knit.location.LocationFix
 import app.getknit.knit.location.LocationPrecision
@@ -73,6 +74,7 @@ import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.VideoInfo
 import app.getknit.knit.notifications.MuteFor
 import app.getknit.knit.ui.theme.KnitTheme
+import kotlinx.coroutines.flow.flowOf
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -142,6 +144,7 @@ class ChatScreenContentTest {
         onOpenMessageDetails: (String) -> Unit = {},
         mutedUntil: Long? = null,
         canMute: Boolean = false,
+        stickers: StickerUi? = null,
     ): @androidx.compose.runtime.Composable () -> Unit =
         {
             KnitTheme {
@@ -195,6 +198,7 @@ class ChatScreenContentTest {
                     canMute = canMute,
                     onMute = { mutePicks += it },
                     onUnmute = { unmutes++ },
+                    stickers = stickers,
                 )
             }
         }
@@ -1287,6 +1291,151 @@ class ChatScreenContentTest {
         compose.onNodeWithTag("chat_send_location").assertDoesNotExist()
         compose.onNodeWithTag("chat_send_large_file").assertDoesNotExist()
         compose.onNodeWithText("Block").assertDoesNotExist()
+    }
+
+    // --- Stickers (ADR 2026-11.rk6d) ---
+
+    private val savedStickers = mutableListOf<Sticker>()
+    private val removedStickers = mutableListOf<String>()
+    private val sentStickers = mutableListOf<Sticker>()
+
+    private fun stickerUi(
+        savedHashes: Set<String> = emptySet(),
+        saved: List<Sticker> = emptyList(),
+        recent: List<Sticker> = emptyList(),
+    ) = StickerUi(
+        actions = StickerActions(savedHashes, onSave = { savedStickers += it }, onRemove = { removedStickers += it }),
+        saved = flowOf(saved),
+        recent = flowOf(recent),
+        onSend = { sentStickers += it },
+    )
+
+    private fun stickerRow(
+        body: String = "",
+        ready: Boolean = true,
+    ) = ChatRow(
+        id = "s1",
+        body = body,
+        mine = false,
+        senderName = "Bob",
+        senderNodeId = "bob",
+        avatarHash = null,
+        sentAt = 1_700_000_000_001L,
+        received = false,
+        attachmentHash = "cipher",
+        attachmentMime = "image/webp",
+        attachmentKey = "a2V5",
+        attachmentReady = ready,
+        attachmentSticker = true,
+        stickerPlainHash = "plain",
+    )
+
+    private val tracked = Sticker(plainHash = "plain", blobHash = "cipher", blobKey = "a2V5", mime = "image/webp", animated = false)
+
+    @Test
+    fun aStickerIsDrawnWithoutABubbleAndATapOpensNoViewer() {
+        compose.setContent(content(input = "", state = ChatUiState(myNodeId = "me", rows = listOf(stickerRow())), stickers = stickerUi()))
+
+        compose.onNodeWithTag("chat_sticker", useUnmergedTree = true).assertExists()
+        compose.onNodeWithTag("chat_sticker_image", useUnmergedTree = true).performClick()
+
+        // The photo viewer is a window of its own: a sticker opens none.
+        compose.onAllNodes(isRoot()).assertCountEquals(1)
+    }
+
+    @Test
+    fun aCaptionedOrArrivingStickerKeepsItsBubble() {
+        compose.setContent(
+            content(
+                input = "",
+                state = ChatUiState(myNodeId = "me", rows = listOf(stickerRow(body = "look"), stickerRow(ready = false).copy(id = "s2"))),
+                stickers = stickerUi(),
+            ),
+        )
+
+        compose.onNodeWithTag("chat_sticker", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithTag("chat_sticker_image", useUnmergedTree = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun theLongPressMenuSavesAStickerAndRemovesASavedOne() {
+        var saved by mutableStateOf(emptySet<String>())
+        // The menu's label follows the tray: rebuilt as the saved set changes, as the screen does.
+        compose.setContent {
+            content(input = "", state = ChatUiState(myNodeId = "me", rows = listOf(stickerRow())), stickers = stickerUi(saved))()
+        }
+
+        compose.onNodeWithTag("chat_sticker_image", useUnmergedTree = true).performTouchInput { longClick() }
+        compose.onNodeWithText("Save sticker").performClick()
+
+        assertEquals(listOf(tracked), savedStickers)
+        compose.onNodeWithTag("chat_message_menu").assertDoesNotExist()
+
+        saved = setOf("plain")
+        compose.onNodeWithTag("chat_sticker_image", useUnmergedTree = true).performTouchInput { longClick() }
+        compose.onNodeWithText("Remove from stickers").performClick()
+
+        assertEquals(listOf("plain"), removedStickers)
+    }
+
+    @Test
+    fun aPhotoOffersNoSaveSticker() {
+        // Everything a sticker has but its shape: a ready picture with a plaintext name, captionless, drawn in its bubble.
+        val photo = stickerRow().copy(attachmentMime = "image/jpeg", attachmentSticker = false)
+        compose.setContent(content(input = "", state = ChatUiState(myNodeId = "me", rows = listOf(photo)), stickers = stickerUi()))
+
+        compose.onNodeWithTag("chat_sticker", useUnmergedTree = true).assertDoesNotExist()
+        // The bubble, by its author's name: a photo with no bytes behind it in a test draws only its placeholder.
+        compose.onNodeWithText("Bob", useUnmergedTree = true).performTouchInput { longClick() }
+
+        compose.onNodeWithTag("chat_message_menu").assertExists()
+        compose.onNodeWithText("Save sticker").assertDoesNotExist()
+    }
+
+    @Test
+    fun theTrayOpensFromTheComposerAndATapSendsWhileItStaysOpen() {
+        compose.setContent(content(input = "", state = ChatUiState(myNodeId = "me"), stickers = stickerUi(saved = listOf(tracked))))
+
+        compose.onNodeWithContentDescription("Stickers").performClick()
+        compose.onNodeWithTag("sticker_tray").assertExists()
+        compose.onNodeWithTag("sticker_cell", useUnmergedTree = true).performClick()
+
+        assertEquals(listOf(tracked), sentStickers)
+        compose.onNodeWithTag("sticker_tray").assertExists()
+        // In the chat's own window, so the keyboard stays up.
+        compose.onAllNodes(isRoot()).assertCountEquals(1)
+    }
+
+    @Test
+    fun anEmptyTraySaysHowToSaveAndWhatRecentHolds() {
+        compose.setContent(content(input = "", state = ChatUiState(myNodeId = "me"), stickers = stickerUi()))
+        compose.onNodeWithContentDescription("Stickers").performClick()
+
+        compose.onNodeWithText("Long-press a sticker in a chat to save it here.").assertExists()
+        compose.onNodeWithTag("sticker_tab_recent").performClick()
+        compose.onNodeWithText("Stickers you send show up here, including ones from your keyboard.").assertExists()
+    }
+
+    @Test
+    fun aRecentStickerCanBeSavedFromTheTray() {
+        compose.setContent(content(input = "", state = ChatUiState(myNodeId = "me"), stickers = stickerUi(recent = listOf(tracked))))
+        compose.onNodeWithContentDescription("Stickers").performClick()
+
+        // Nothing saved yet, so the tray opens on what was sent.
+        compose.onNodeWithTag("sticker_cell", useUnmergedTree = true).performTouchInput { longClick() }
+        compose.onNodeWithText("Save sticker").performClick()
+
+        assertEquals(listOf(tracked), savedStickers)
+        assertTrue(sentStickers.isEmpty())
+    }
+
+    @Test
+    fun theBridgedRoomOffersNoStickers() {
+        compose.setContent(
+            content(input = "", state = ChatUiState(isRoom = false, isBridged = true, myNodeId = "me"), stickers = stickerUi()),
+        )
+
+        compose.onNodeWithContentDescription("Stickers").assertDoesNotExist()
     }
 
     private fun hasPaneTitle(title: String) = SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, title)

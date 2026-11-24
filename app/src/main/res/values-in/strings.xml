@@ -582,6 +582,18 @@
     <string name="chat_voice_desc">Pesan suara, %1$s</string>
     <string name="chat_voice_remove">Hapus pesan suara</string>
     <string name="chat_action_save_voice">Simpan pesan suara</string>
+    <string name="chat_action_save_sticker">Simpan stiker</string>
+    <string name="chat_action_remove_sticker">Hapus dari stiker</string>
+    <string name="sticker_label">Stiker</string>
+    <string name="sticker_saved">Stiker disimpan</string>
+    <string name="sticker_tray_full">Stiker tersimpan Anda sudah penuh. Hapus satu untuk menyimpan yang lain.</string>
+    <string name="sticker_unavailable">Tidak dapat mengirim stiker ini.</string>
+    <string name="sticker_tray_title">Stiker</string>
+    <string name="sticker_tab_saved">Tersimpan</string>
+    <string name="sticker_tab_recent">Terbaru</string>
+    <string name="sticker_saved_empty">Tekan lama stiker di chat untuk menyimpannya di sini.</string>
+    <string name="sticker_recent_empty">Stiker yang Anda kirim muncul di sini, termasuk dari keyboard Anda.</string>
+    <string name="sticker_send">Kirim stiker</string>
     <string name="chat_voice_saved_recordings">Disimpan ke Recordings/Knit</string>
     <string name="chat_voice_saved_music">Disimpan ke Music/Knit</string>
     <string name="chat_voice_already_saved">Sudah disimpan</string>
@@ -818,6 +830,7 @@
     <string name="chat_list_preview_photo">📷 Foto</string>
     <string name="chat_list_preview_video">🎬 Video</string>
     <string name="chat_list_preview_gif">🎞️ GIF</string>
+    <string name="chat_list_preview_sticker">🏷️ Stiker</string>
     <string name="chat_list_preview_voice">🎤 Pesan suara</string>
     <string name="chat_list_preview_file">📎 %1$s</string>
     <string name="chat_list_preview_link">🔗 Tautan</string>

@@ -99,6 +99,8 @@ import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.WifiCalling3
 import androidx.compose.material.icons.outlined.AddReaction
+import androidx.compose.material.icons.outlined.BookmarkAdd
+import androidx.compose.material.icons.outlined.BookmarkRemove
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.NotificationsOff
@@ -578,6 +580,27 @@ fun ChatScreen(
         )
     }
 
+    // A sticker sent as a reply answered it: the reply goes, and the words typed beside it stay (ADR 2026-11.rk6d).
+    LaunchedEffect(Unit) {
+        viewModel.stickerSent.collect { replyingTo = null }
+    }
+    val savedStickerHashes by viewModel.savedStickerHashes.collectAsStateWithLifecycle()
+    // The tray and the long-press Save sticker, where the build wires them. A tap sends with the reply being drafted,
+    // read as it is sent.
+    val stickers =
+        if (viewModel.stickersWired) {
+            remember(savedStickerHashes) {
+                StickerUi(
+                    actions = StickerActions(savedStickerHashes, viewModel::saveSticker, viewModel::removeSticker),
+                    saved = viewModel.savedStickers,
+                    recent = viewModel.recentStickers,
+                    onSend = { sticker -> viewModel.sendSticker(sticker, replyingTo) },
+                )
+            }
+        } else {
+            null
+        }
+
     // Clear the input only once a message is accepted and sent (not when it's blocked for abuse).
     LaunchedEffect(Unit) {
         viewModel.clearInput.collect {
@@ -895,6 +918,7 @@ fun ChatScreen(
             }
         },
         onDismissTranslation = viewModel::dismissTranslation,
+        stickers = stickers,
     )
 
     speechOffer?.let { (hash, key) ->
@@ -1201,12 +1225,18 @@ internal fun ChatScreenContent(
     // content-level tests need not name them.
     pinned: List<PinnedView> = emptyList(),
     onSetPinned: ((messageId: String, pinned: Boolean) -> Unit)? = null,
+    // The sticker tray and the long-press Save sticker (ADR 2026-11.rk6d): null where the tray is not wired, which draws
+    // neither. Defaulted so previews and the content-level tests need not name it.
+    stickers: StickerUi? = null,
 ) {
     var fullscreenImage by remember { mutableStateOf<FullscreenImage?>(null) }
     var fullscreenVideo by remember { mutableStateOf<ChatRow?>(null) }
     // The message the full emoji picker is open for (from the long-press menu's "+"), or null. Saveable so a
     // rotation mid-pick keeps the sheet; hosted here, not in the row, so scrolling can't dispose it.
     var emojiSheetFor by rememberSaveable { mutableStateOf<String?>(null) }
+    // The sticker tray, hosted here rather than in the composer for the emoji sheet's reason: a sheet composed inside a
+    // row that leaves composition dies with it.
+    var stickerTrayOpen by rememberSaveable { mutableStateOf(false) }
     // The message a tapped quote scrolled to, briefly highlighted then cleared (see the LaunchedEffect
     // below and MessageBubble). Null when nothing is highlighted.
     var highlightedMessageId by remember { mutableStateOf<String?>(null) }
@@ -1888,6 +1918,11 @@ internal fun ChatScreenContent(
                                 // no on-device model can screen speech, so it is the one place unscreenable audio is not
                                 // offered. See docs/CONTENT_MODERATION.md.
                                 attachEnabled = !state.isBridged && !state.commonsTextOnly,
+                                // The tray sends pictures, so it is offered where the keyboard's are taken.
+                                onOpenStickers =
+                                    stickers?.takeIf { !state.isBridged && !state.commonsTextOnly }?.let {
+                                        { stickerTrayOpen = true }
+                                    },
                                 voiceEnabled = !state.isRoom && !state.isBridged && !state.commonsTextOnly,
                                 voiceRecording = voiceRecording,
                                 voicePlayback = voicePlayback,
@@ -2157,6 +2192,7 @@ internal fun ChatScreenContent(
                                             onTranslateNotLanguage = onTranslateNotLanguage,
                                             offersTranslate = offersTranslate,
                                             arrival = row.attachmentHash?.let(arrivals::get),
+                                            stickerActions = stickers?.actions,
                                         )
                                     }
                                 }
@@ -2212,6 +2248,10 @@ internal fun ChatScreenContent(
                 },
                 onDismiss = { emojiSheetFor = null },
             )
+        }
+
+        if (stickerTrayOpen && stickers != null) {
+            StickerTraySheet(stickers = stickers, onDismiss = { stickerTrayOpen = false })
         }
 
         if (showEncryptionInfo) {
@@ -3218,7 +3258,12 @@ internal fun MessageBubble(
     // How far this row's attachment has got while its bytes stream in over a nearby link (#115). Defaulted for
     // the @Preview call sites and for every row whose attachment is held or not on its way.
     arrival: ArrivingFile? = null,
+    // The long-press Save sticker / Remove from stickers (ADR 2026-11.rk6d): null where the tray is not wired. Defaulted
+    // for previews.
+    stickerActions: StickerActions? = null,
 ) {
+    // A sticker with nothing beside it is drawn without a bubble (ADR 2026-11.rk6d): the same layout, transparent.
+    val sticker = row.showsAsSticker
     val maxBubbleWidth =
         with(LocalDensity.current) {
             LocalWindowInfo.current.containerSize.width
@@ -3262,8 +3307,9 @@ internal fun MessageBubble(
             0.22f * highlight,
         )
     // The coral that names a person, a mention or a link, as dark as this bubble needs it: light `primary`
-    // makes 4.1:1 on either fill, under the 4.5:1 small text needs (the FTL accessibility pass).
-    val accentText = MaterialTheme.colorScheme.primary.readableOn(bubbleColor)
+    // makes 4.1:1 on either fill, under the 4.5:1 small text needs (the FTL accessibility pass). A sticker's name sits
+    // on the chat's own background.
+    val accentText = MaterialTheme.colorScheme.primary.readableOn(if (sticker) MaterialTheme.colorScheme.background else bubbleColor)
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = if (row.mine) Arrangement.End else Arrangement.Start,
@@ -3327,7 +3373,7 @@ internal fun MessageBubble(
                     ),
             ) {
                 Surface(
-                    color = bubbleColor,
+                    color = if (sticker) Color.Transparent else bubbleColor,
                     contentColor =
                         if (row.mine) {
                             MaterialTheme.colorScheme.onPrimaryContainer
@@ -3347,7 +3393,14 @@ internal fun MessageBubble(
                                 onLongClick = { showPicker = true },
                             ),
                 ) {
-                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Column(
+                        modifier =
+                            if (sticker) {
+                                Modifier.padding(vertical = 2.dp).testTag("chat_sticker")
+                            } else {
+                                Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            },
+                    ) {
                         if (!row.mine && showSenderName) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 PeerNameText(
@@ -3401,27 +3454,39 @@ internal fun MessageBubble(
                             // Collapsed with the bubble: the quoted words are what got it hidden, or ride along
                             // with a hidden body. A tap on a collapsed quote reveals, rather than jumping away.
                             val collapsed = row.moderationFlagged && !revealed
-                            QuotedMessage(
-                                quote = quote,
-                                mine = row.mine,
-                                bubbleColor = bubbleColor,
-                                collapsed = collapsed,
-                                bodyShown = shownBody.isNotBlank(),
-                                onClick =
-                                    when {
-                                        collapsed -> {
-                                            { revealed = true }
-                                        }
+                            // A sticker has no bubble to hold its quote, so the quote brings a piece of one.
+                            Box(
+                                if (sticker) {
+                                    Modifier
+                                        .widthIn(max = STICKER_SIZE * 1.5f)
+                                        .background(bubbleColor, RoundedCornerShape(12.dp))
+                                        .padding(6.dp)
+                                } else {
+                                    Modifier
+                                },
+                            ) {
+                                QuotedMessage(
+                                    quote = quote,
+                                    mine = row.mine,
+                                    bubbleColor = bubbleColor,
+                                    collapsed = collapsed,
+                                    bodyShown = shownBody.isNotBlank(),
+                                    onClick =
+                                        when {
+                                            collapsed -> {
+                                                { revealed = true }
+                                            }
 
-                                        quote.state == QuoteState.Unavailable -> {
-                                            null
-                                        }
+                                            quote.state == QuoteState.Unavailable -> {
+                                                null
+                                            }
 
-                                        else -> {
-                                            { onQuoteClick(quote.messageId) }
-                                        }
-                                    },
-                            )
+                                            else -> {
+                                                { onQuoteClick(quote.messageId) }
+                                            }
+                                        },
+                                )
+                            }
                             Spacer(Modifier.height(4.dp))
                         }
                         if (row.attachmentHash != null) {
@@ -3537,6 +3602,9 @@ internal fun MessageBubble(
                                         onLongClick = { showPicker = true },
                                     )
                                 }
+                            } else if (sticker) {
+                                // No tap: a sticker opens no viewer. The long-press is the bubble's own.
+                                StickerImage(row.attachmentHash, row.attachmentMime, row.attachmentKey, mine = row.mine)
                             } else {
                                 AttachmentImage(
                                     row.attachmentHash,
@@ -3685,7 +3753,20 @@ internal fun MessageBubble(
                             NotRelayedMarker(commons = relayIsCommons, onClick = { onExplainRelay(row.attachmentRelay) })
                         }
                         Row(
-                            modifier = Modifier.align(Alignment.End),
+                            modifier =
+                                Modifier
+                                    .align(Alignment.End)
+                                    .then(
+                                        // Under a sticker the time and tick sit in a pill of their own, read against it.
+                                        if (sticker) {
+                                            Modifier
+                                                .padding(top = 2.dp)
+                                                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
+                                                .padding(horizontal = 6.dp, vertical = 1.dp)
+                                        } else {
+                                            Modifier
+                                        },
+                                    ),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(3.dp),
                         ) {
@@ -3857,6 +3938,17 @@ internal fun MessageBubble(
                                         onSaveVoice(hash, row.attachmentKey, row.attachmentMime, row.sentAt)
                                     }
                                 },
+                        // Save a sticker to the tray, or take it out (ADR 2026-11.rk6d): only on a sticker this phone can name.
+                        stickerSaved = stickerActions?.isSaved(row) == true,
+                        onStickerAction =
+                            stickerActions?.let { actions ->
+                                row.asSticker()?.let { kept ->
+                                    {
+                                        showPicker = false
+                                        if (actions.isSaved(row)) actions.onRemove(kept.plainHash) else actions.onSave(kept)
+                                    }
+                                }
+                            },
                         pinned = pinned,
                         // The opposite of what this bubble shows now: if that is already stale, the write is a no-op.
                         onPinAction =
@@ -4056,6 +4148,9 @@ private fun ReactionPicker(
     translateOffered: () -> Boolean = { true },
     // Save this voice note to the phone: null for anything else, and for a note whose bytes are not here yet.
     onSave: (() -> Unit)? = null,
+    // Save this sticker to the tray, or remove it when [stickerSaved] (ADR 2026-11.rk6d): null on anything else.
+    stickerSaved: Boolean = false,
+    onStickerAction: (() -> Unit)? = null,
     // Pin this message, or unpin it when [pinned] (#42), which also picks the label: null where pins are not wired.
     pinned: Boolean = false,
     onPinAction: (() -> Unit)? = null,
@@ -4147,6 +4242,16 @@ private fun ReactionPicker(
                         icon = Icons.Filled.Download,
                         label = stringResource(R.string.chat_action_save_voice),
                         onClick = onSave,
+                    )
+                }
+                if (onStickerAction != null) {
+                    PickerAction(
+                        icon = if (stickerSaved) Icons.Outlined.BookmarkRemove else Icons.Outlined.BookmarkAdd,
+                        label =
+                            stringResource(
+                                if (stickerSaved) R.string.chat_action_remove_sticker else R.string.chat_action_save_sticker,
+                            ),
+                        onClick = onStickerAction,
                     )
                 }
                 if (onPinAction != null) {
@@ -5041,6 +5146,9 @@ private fun MessageInput(
     onCancelVoice: () -> Unit = {},
     onVoicePlay: (hash: String, key: String?) -> Unit = { _, _ -> },
     onVoiceSeek: (hash: String, positionMs: Int) -> Unit = { _, _ -> },
+    // Opens the sticker tray (ADR 2026-11.rk6d) from a button at the start of the field: null where the tray is not
+    // wired or the thread takes no images, which draws no button.
+    onOpenStickers: (() -> Unit)? = null,
 ) {
     // Capture images committed by the keyboard (Gboard GIFs), drag-and-drop, or paste. The state-based
     // BasicTextField is required here: it advertises the accepted content MIME types to the IME, so the
@@ -5389,12 +5497,14 @@ private fun MessageInput(
                             modifier = Modifier.weight(1f),
                         )
                     } else {
+                        if (onOpenStickers != null) StickerTrayButton(onClick = onOpenStickers)
                         Box(
                             modifier =
                                 Modifier
                                     .weight(1f)
                                     .padding(
-                                        start = 16.dp,
+                                        // The sticker button carries 12dp of inset of its own, as the trailing ones do.
+                                        start = if (onOpenStickers != null) 0.dp else 16.dp,
                                         // The inline buttons carry 12dp of their own inset around the icon,
                                         // so the text only has to clear them rather than keep the full margin.
                                         end = if (showMic || showFile || showTranslate) 4.dp else 16.dp,
@@ -6598,6 +6708,41 @@ fun MessageBubbleEmojiPreview() =
                     avatarHash = null,
                     sentAt = PREVIEW_NOW - 3 * 60_000L,
                     received = false,
+                ),
+            now = PREVIEW_NOW,
+            showSenderName = true,
+            onImageClick = {},
+            onOpenProfile = {},
+            onReact = { _, _ -> },
+            onDelete = {},
+            onBlock = {},
+            onCopy = {},
+        )
+    }
+
+// A sticker without its bubble (ADR 2026-11.rk6d): a preview has no blob bytes, so the square is empty, and the preview
+// shows the frame around it — the name above, the time's pill below and the reaction tucked under.
+@Preview(showBackground = true)
+@Composable
+fun MessageBubbleStickerPreview() =
+    KnitPreview {
+        MessageBubble(
+            row =
+                ChatRow(
+                    id = "m5",
+                    body = "",
+                    mine = false,
+                    senderName = "Ada Lovelace",
+                    senderNodeId = "node-ada",
+                    avatarHash = null,
+                    sentAt = PREVIEW_NOW - 2 * 60_000L,
+                    received = false,
+                    attachmentHash = "h-sticker",
+                    attachmentMime = "image/webp",
+                    attachmentReady = true,
+                    attachmentSticker = true,
+                    stickerPlainHash = "h-sticker",
+                    reactions = listOf(ReactionSummary("😂", 2, mine = false)),
                 ),
             now = PREVIEW_NOW,
             showSenderName = true,

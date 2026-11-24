@@ -182,6 +182,7 @@ object MessageInspection {
             add(InspectRow("attachmentName", m.attachmentName ?: ABSENT))
             add(InspectRow("attachmentSize (declared)", m.attachmentSize?.let(::bytes) ?: ABSENT))
             add(InspectRow("animated", yesNo(m.attachmentAnimated)))
+            add(InspectRow("sticker", yesNo(m.attachmentSticker)))
             m.videoDurationMs?.let { add(InspectRow("video", "${span(it)} · ${m.videoWidth ?: "?"}×${m.videoHeight ?: "?"}")) }
             m.videoPoster?.let { add(InspectRow("videoPoster", "held · flagged ${yesNo(m.videoPosterFlagged)}")) }
             m.voiceDurationMs?.let { add(InspectRow("voiceDurationMs", span(it.toLong()))) }

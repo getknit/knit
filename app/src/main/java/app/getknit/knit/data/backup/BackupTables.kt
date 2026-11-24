@@ -37,6 +37,9 @@ object BackupTables {
             "messages",
             "reactions",
             "pins",
+            // The stickers saved to the composer's tray (ADR 2026-11.rk6d): the user's own collection, naming blobs this
+            // list carries first.
+            "stickers",
             "message_receipts",
             "drafts",
             "scope_configs",

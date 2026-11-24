@@ -734,6 +734,18 @@
     <string name="chat_voice_desc">Voice message, %1$s</string>
     <string name="chat_voice_remove">Remove voice message</string>
     <string name="chat_action_save_voice">Save voice message</string>
+    <string name="chat_action_save_sticker">Save sticker</string>
+    <string name="chat_action_remove_sticker">Remove from stickers</string>
+    <string name="sticker_label">Sticker</string>
+    <string name="sticker_saved">Sticker saved</string>
+    <string name="sticker_tray_full">Your saved stickers are full. Remove one to save another.</string>
+    <string name="sticker_unavailable">Couldn\'t send this sticker.</string>
+    <string name="sticker_tray_title">Stickers</string>
+    <string name="sticker_tab_saved">Saved</string>
+    <string name="sticker_tab_recent">Recent</string>
+    <string name="sticker_saved_empty">Long-press a sticker in a chat to save it here.</string>
+    <string name="sticker_recent_empty">Stickers you send show up here, including ones from your keyboard.</string>
+    <string name="sticker_send">Send sticker</string>
     <string name="chat_voice_saved_recordings">Saved to Recordings/Knit</string>
     <string name="chat_voice_saved_music">Saved to Music/Knit</string>
     <string name="chat_voice_already_saved">Already saved</string>
@@ -1037,6 +1049,7 @@
     <string name="chat_list_preview_photo">📷 Photo</string>
     <string name="chat_list_preview_video">🎬 Video</string>
     <string name="chat_list_preview_gif">🎞️ GIF</string>
+    <string name="chat_list_preview_sticker">🏷️ Sticker</string>
     <string name="chat_list_preview_voice">🎤 Voice message</string>
     <string name="chat_list_preview_file">📎 %1$s</string>
     <string name="chat_list_preview_link">🔗 Link</string>

@@ -114,6 +114,8 @@ data class MessageDetailsUiState(
     val attachmentSize: Long? = null,
     // More than one frame: the body line says "GIF" rather than "Photo".
     val attachmentAnimated: Boolean = false,
+    // A sticker's shape (ADR 2026-11.rk6d): the body line says "Sticker".
+    val attachmentSticker: Boolean = false,
     val attachmentVideo: Boolean = false,
     val moderationFlagged: Boolean = false,
     val mine: Boolean = false,
@@ -285,6 +287,7 @@ class MessageDetailsViewModel(
                         attachmentName = message.attachmentName,
                         attachmentSize = message.attachmentSize,
                         attachmentAnimated = message.attachmentAnimated,
+                        attachmentSticker = message.attachmentSticker,
                         attachmentVideo = message.videoDurationMs != null,
                         moderationFlagged = message.hiddenByFilter(hideSensitive),
                         // Our words only (`writtenBy`): a post a bridged room's board heard sits in our sender column by

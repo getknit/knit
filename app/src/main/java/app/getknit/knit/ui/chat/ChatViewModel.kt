@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.R
@@ -31,6 +32,8 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.PinOutcome
 import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.StickerRepository
+import app.getknit.knit.data.StickerSaveOutcome
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.commons.CommonsEntity
 import app.getknit.knit.data.commons.CommonsRepository
@@ -78,6 +81,7 @@ import app.getknit.knit.data.relay.planeFor
 import app.getknit.knit.data.relay.reachFor
 import app.getknit.knit.data.settings.ChatMutes
 import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.data.sticker.Sticker
 import app.getknit.knit.data.video.VideoEncodePolicy
 import app.getknit.knit.di.FACE_REDACTION_WIRED
 import app.getknit.knit.di.TRANSLATE_WIRED
@@ -326,6 +330,12 @@ data class ChatRow(
     val attachmentMime: String? = null,
     // More than one frame (a GIF): a quote of this message says "GIF" rather than "Photo".
     val attachmentAnimated: Boolean = false,
+    // A sticker's shape, read off the bytes (ADR 2026-11.rk6d): with nothing beside it, drawn without a bubble
+    // ([showsAsSticker]) and offered to the sticker tray.
+    val attachmentSticker: Boolean = false,
+    // The sticker's own name, the hash of its plaintext, which the tray saves it by: a sealed row's
+    // `attachmentPlainHash` once its bytes have opened, a room post's own hash. Null on every other row.
+    val stickerPlainHash: String? = null,
     // Base64 key for an end-to-end-encrypted attachment (null for plaintext/broadcast attachments);
     // passed to the image loader to decrypt the ciphertext blob before decoding.
     val attachmentKey: String? = null,
@@ -420,7 +430,23 @@ data class ChatRow(
     val updateRequest: UpdateRequestRecord? = null,
     // The transfer Send started for [updateRequest], folded into its card (foldAskedTransfers); null until then.
     val askedTransfer: TransferView? = null,
-)
+) {
+    /**
+     * Drawn as a sticker, without a bubble (ADR 2026-11.rk6d): the attachment has a sticker's shape, its bytes are here
+     * and nothing hides it, and the message carries nothing beside it — no words, place, card or file name. A sticker
+     * still arriving, hidden or captioned keeps the bubble.
+     */
+    val showsAsSticker: Boolean
+        get() =
+            attachmentSticker &&
+                attachmentReady &&
+                !attachmentFlagged &&
+                !moderationFlagged &&
+                body.isBlank() &&
+                location == null &&
+                linkCard == null &&
+                attachmentName == null
+}
 
 /**
  * Who said a post on the radio channel, and how it reached this board — the render-time shape of
@@ -831,6 +857,9 @@ class ChatViewModel(
     faces: FaceDetector? = null,
     // The chats the user muted (ADR 2026-11.sp7k): null in a rig that wires none, which offers no Mute.
     mutes: ChatMutes? = null,
+    // The composer's sticker tray (ADR 2026-11.rk6d), local to this phone: null in a rig that wires none, which draws no
+    // tray and offers no Save sticker.
+    private val stickers: StickerRepository? = null,
 ) : ViewModel() {
     // Null by a constant in a build without translation (TRANSLATE_WIRED), so R8 drops every path that reads it.
     private val translation: ChatTranslation? = if (TRANSLATE_WIRED) translation else null
@@ -1238,6 +1267,27 @@ class ChatViewModel(
      */
     private val _clearInput = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val clearInput: SharedFlow<Unit> = _clearInput.asSharedFlow()
+
+    // A sticker sent as a reply was accepted ([sendSticker]): the screen drops the reply it was drafting, and keeps the
+    // draft's words, which the sticker did not take.
+    private val _stickerSent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val stickerSent: SharedFlow<Unit> = _stickerSent.asSharedFlow()
+
+    /** Whether this build wires the sticker tray at all; the screen still hides it where the thread takes no images. */
+    val stickersWired: Boolean = stickers != null
+
+    /** The saved stickers' plain hashes, for the message menu's Save sticker / Remove from stickers choice (ADR 2026-11.rk6d). */
+    val savedStickerHashes: StateFlow<Set<String>> =
+        stickers?.observeSavedHashes()?.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+            ?: MutableStateFlow(emptySet())
+
+    /** The tray's Saved tab, newest saved first; collected only while the tray is open. */
+    val savedStickers: Flow<List<Sticker>> = stickers?.observeSaved() ?: flowOf(emptyList())
+
+    /** The tray's Recent tab: the stickers this phone sent lately, one per picture; collected only while the tray is open. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val recentStickers: Flow<List<Sticker>> =
+        stickers?.let { repo -> myNodeId.filterNotNull().flatMapLatest { repo.observeRecent(it) } } ?: flowOf(emptyList())
 
     /**
      * The rows the window returned, paired with the limit that produced them. The pairing is load-bearing:
@@ -1895,6 +1945,9 @@ class ChatViewModel(
                         attachmentHash = m.attachmentHash,
                         attachmentMime = m.attachmentMime,
                         attachmentAnimated = m.attachmentAnimated,
+                        attachmentSticker = m.attachmentSticker,
+                        stickerPlainHash =
+                            if (m.attachmentSticker) m.attachmentPlainHash ?: m.attachmentHash.takeIf { m.attachmentKey == null } else null,
                         attachmentKey = m.attachmentKey,
                         voiceDurationMs = m.voiceDurationMs,
                         voicePeaks = m.voicePeaks,
@@ -3423,6 +3476,82 @@ class ChatViewModel(
     }
 
     /**
+     * Saves [sticker] to the composer's tray (ADR 2026-11.rk6d) — a bubble's ([asSticker]) or a recent one's — and says
+     * so, or that the tray is full. A second tap that lands before the menu has caught up changes nothing.
+     */
+    fun saveSticker(sticker: Sticker) {
+        val repo = stickers ?: return
+        viewModelScope.launch {
+            when (repo.save(sticker, System.currentTimeMillis())) {
+                StickerSaveOutcome.Saved -> _events.tryEmit(R.string.sticker_saved)
+                StickerSaveOutcome.Full -> _events.tryEmit(R.string.sticker_tray_full)
+                StickerSaveOutcome.AlreadySaved -> Unit
+            }
+        }
+    }
+
+    /** Removes the saved sticker [plainHash] from the tray; its bytes go too unless a message still names them. */
+    fun removeSticker(plainHash: String) {
+        val repo = stickers ?: return
+        viewModelScope.launch { repo.remove(plainHash) }
+    }
+
+    /**
+     * Sends [sticker] from the tray at once, as a message of its own with no words (ADR 2026-11.rk6d), and leaves the
+     * composer's draft and anything staged in it alone. The plaintext is opened from the blob the sticker names and goes
+     * through [AttachmentStore.ingestPicked], so it goes out under the identity this phone already holds it by (ADR
+     * 2026-10.mptm) and is screened in the Nearby room as a pick is, and [refusalOf] refuses it where the composer would.
+     * It takes no Cover faces review: a tray sticker is a picture this phone already sent or received.
+     *
+     * [replyTo] is the reply the composer is drafting, which the sticker answers; [stickerSent] tells the screen to drop
+     * it once the send is accepted. The send guard is the composer's, released when this send ends, accepted or not.
+     */
+    fun sendSticker(
+        sticker: Sticker,
+        replyTo: ReplyRef?,
+    ) {
+        if (stickers == null || isBridged || state.value.commonsStale) return
+        if (_isSending.value) return
+        _isSending.value = true
+        viewModelScope.launch {
+            try {
+                // As [send]: a group thread whose row is gone is never sent as a DM (ADR 2026-10.jbsa).
+                if (Conversations.kindFor(conversationId) == ConversationKind.GROUP && groups.find(conversationId) == null) {
+                    _events.tryEmit(R.string.chat_gone)
+                    return@launch
+                }
+                val plain = export.plaintext(sticker.blobHash, sticker.blobKey)
+                val result = plain?.let { attachments.ingestPicked(it, sticker.mime, screen = isRoom, fitBytes = photoFit()) }
+                if (result !is AttachmentStore.IngestResult.Success) {
+                    _events.tryEmit(R.string.sticker_unavailable)
+                    return@launch
+                }
+                val refusal = refusalOf(result)
+                val sent =
+                    refusal == null &&
+                        route(
+                            body = "",
+                            attachment = result.ingested,
+                            mentions = emptyList(),
+                            replyTo = normalizeSelfAuthor(replyTo),
+                            styles = emptyList(),
+                            declared = DeclaredLangs.NONE,
+                            draftTranslatedFrom = null,
+                        )
+                if (sent) {
+                    if (replyTo != null) _stickerSent.tryEmit(Unit)
+                } else {
+                    // Nothing unsent is kept, as a refused pick keeps nothing.
+                    blobs.deleteIfUnreferenced(result.ingested.hash)
+                    _events.tryEmit(refusal ?: if (isCommons) R.string.chat_commons_not_joined else R.string.sticker_unavailable)
+                }
+            } finally {
+                _isSending.value = false
+            }
+        }
+    }
+
+    /**
      * Removes [messageId] from this device only, through [LocalMessageDelete]: its row, its reactions, its pin, its
      * per-recipient delivery rows, and (if no other message still references it) its content-addressed attachment
      * blob. Sends nothing over the mesh.
@@ -4186,38 +4315,17 @@ class ChatViewModel(
     ) {
         when (result) {
             is AttachmentStore.IngestResult.Success -> {
-                when {
-                    // The Meshtastic room carries one line of text and nothing beside it: `sendPublicPost` takes
-                    // a string, so anything staged here would sit in the composer and then vanish at send. The
-                    // composer already offers no picker and tells the keyboard it takes no images, so what
-                    // reaches this is the share sheet — which lists the room, because sharing *text* into it is
-                    // a fair thing to want. One refusal at the funnel covers every route into it.
-                    isBridged -> {
-                        blobs.deleteIfUnreferenced(result.ingested.hash)
-                        _events.tryEmit(R.string.chat_mesh_text_only)
+                val refusal = refusalOf(result)
+                if (refusal != null) {
+                    // Nothing unsent is kept: the staged blob goes with the refusal.
+                    blobs.deleteIfUnreferenced(result.ingested.hash)
+                    _events.tryEmit(refusal)
+                } else {
+                    // A staged card gives way to whatever the user attached on purpose (one slot).
+                    _pendingAttachment.value?.takeIf { it.link != null && result.ingested.link == null }?.let { card ->
+                        blobs.deleteIfUnreferenced(card.hash)
                     }
-
-                    // A commons whose relay takes no attachments for it (S-7.4-5): the bytes would have no way there.
-                    state.value.commonsTextOnly -> {
-                        blobs.deleteIfUnreferenced(result.ingested.hash)
-                        _events.tryEmit(R.string.chat_commons_text_only)
-                    }
-
-                    isRoom && result.flagged -> {
-                        // Hard block in the broadcast room, the one scope that screens; drop the unsent blob.
-                        blobs.deleteIfUnreferenced(result.ingested.hash)
-                        _events.tryEmit(
-                            if (result.ingested.video != null) R.string.moderation_video_blocked else R.string.moderation_image_blocked,
-                        )
-                    }
-
-                    else -> {
-                        // A staged card gives way to whatever the user attached on purpose (one slot).
-                        _pendingAttachment.value?.takeIf { it.link != null && result.ingested.link == null }?.let { card ->
-                            blobs.deleteIfUnreferenced(card.hash)
-                        }
-                        _pendingAttachment.value = result.ingested
-                    }
+                    _pendingAttachment.value = result.ingested
                 }
             }
 
@@ -4226,6 +4334,36 @@ class ChatViewModel(
             }
         }
     }
+
+    /**
+     * Why this thread takes no [result], as the message to show, or null when it may be sent. Shared by the composer's
+     * staging ([stage]) and the sticker tray's send ([sendSticker]), so neither door skips a refusal.
+     */
+    @StringRes
+    private fun refusalOf(result: AttachmentStore.IngestResult.Success): Int? =
+        when {
+            // The Meshtastic room carries one line of text and nothing beside it: `sendPublicPost` takes a string, so
+            // anything staged here would sit in the composer and then vanish at send. The composer already offers no
+            // picker and tells the keyboard it takes no images, so what reaches this is the share sheet — which lists the
+            // room, because sharing *text* into it is a fair thing to want. One refusal at the funnel covers every route.
+            isBridged -> {
+                R.string.chat_mesh_text_only
+            }
+
+            // A commons whose relay takes no attachments for it (S-7.4-5): the bytes would have no way there.
+            state.value.commonsTextOnly -> {
+                R.string.chat_commons_text_only
+            }
+
+            // Hard block in the broadcast room, the one scope that screens.
+            isRoom && result.flagged -> {
+                if (result.ingested.video != null) R.string.moderation_video_blocked else R.string.moderation_image_blocked
+            }
+
+            else -> {
+                null
+            }
+        }
 
     /**
      * Starts recording a voice note. Returns false when the microphone couldn't be opened — held by a call

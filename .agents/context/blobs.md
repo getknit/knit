@@ -198,7 +198,8 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   stranger's roster alone. Anything else (a frame for somebody else, a request group naming a third member) goes by the
   carrier rules, even under a Bluetooth limit, and a blob only held rows name counts toward the carrier budget and is
   evicted as carrier bytes. That drop keeps every orphan-sweep guard (our own avatar, which never counts, a blob stored
-  this process, a group photo), re-reads acceptance just before it and the rows inside its write. The
+  this process, a group photo, a saved sticker, ADR 2026-11.rk6d), re-reads acceptance just before it and the rows
+  inside its write. The
   echo declines a held hash (`EchoDeclined`) after reading custody too, and wants any group photo under
   `FileIntake.MAX_AVATAR_BYTES`; its per-hash memo lasts one `ROUND_MS` and the collector clears it, the re-arm never
   reads it. The spool drops a held hash from its candidates without settling it. The fast-only verdict comes from the

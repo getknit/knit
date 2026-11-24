@@ -16,7 +16,8 @@ import app.getknit.knit.mesh.NotificationLabels
  *
  * [size] is appended when it is known — a file's declared byte count. An image or a voice note carries none,
  * and the line simply ends after the name rather than inventing one. An image with more than one frame
- * ([MessageEntity.attachmentAnimated]) reads "GIF" rather than "Photo".
+ * ([MessageEntity.attachmentAnimated]) reads "GIF" rather than "Photo", and one with a sticker's shape
+ * ([MessageEntity.attachmentSticker], ADR 2026-11.rk6d) reads "Sticker", animated or not.
  *
  * The mirror of this logic without a `Context` lives in `InboundPipeline.attachmentPreview` (that layer is
  * deliberately Android-light, `rules/mesh.md`, and reads these strings through [notificationLabels]) and the two
@@ -34,6 +35,7 @@ fun attachmentPreview(
         message.attachmentSize,
         animated = message.attachmentAnimated,
         video = message.videoDurationMs != null,
+        sticker = message.attachmentSticker,
     )
 
 /**
@@ -74,6 +76,7 @@ fun attachmentLabel(
     size: Long? = null,
     animated: Boolean = false,
     video: Boolean = false,
+    sticker: Boolean = false,
 ): String {
     val label =
         when (attachmentKindOf(mime, name, video)) {
@@ -86,7 +89,13 @@ fun attachmentLabel(
             }
 
             AttachmentKind.Photo -> {
-                context.getString(if (animated) R.string.chat_list_preview_gif else R.string.chat_list_preview_photo)
+                context.getString(
+                    when {
+                        sticker -> R.string.chat_list_preview_sticker
+                        animated -> R.string.chat_list_preview_gif
+                        else -> R.string.chat_list_preview_photo
+                    },
+                )
             }
 
             AttachmentKind.File -> {

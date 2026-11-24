@@ -7,8 +7,9 @@ import androidx.room3.Query
 import androidx.room3.Upsert
 import kotlinx.coroutines.flow.Flow
 
-// A data-access interface: one method per query, so the count naturally exceeds detekt's interface limit.
-@Suppress("TooManyFunctions")
+// A data-access interface: one method per query, so the count naturally exceeds detekt's interface and size limits;
+// splitting the table's queries across DAOs would relocate them, not clarify them.
+@Suppress("TooManyFunctions", "LargeClass")
 @Dao
 interface MessageDao :
     BridgedRoomQueries,
@@ -367,6 +368,10 @@ interface MessageDao :
      */
     @Query("UPDATE messages SET attachmentAnimated = 1 WHERE attachmentHash = :hash AND attachmentAnimated = 0")
     suspend fun markAttachmentAnimated(hash: String)
+
+    /** Records that the attachment [hash] has a sticker's shape, as [markAttachmentAnimated] does for frames (ADR 2026-11.rk6d). */
+    @Query("UPDATE messages SET attachmentSticker = 1 WHERE attachmentHash = :hash AND attachmentSticker = 0")
+    suspend fun markAttachmentSticker(hash: String)
 
     /**
      * The identity this phone already sends a file under, found by the hash of the bytes about to go out (ADR

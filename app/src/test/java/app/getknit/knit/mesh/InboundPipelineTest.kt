@@ -5058,6 +5058,45 @@ class InboundPipelineTest {
         }
 
     @Test
+    fun aPulledStickerMarksItsRowsOnceOpenedAndAPhotoDoesNot() =
+        runTest {
+            // The recipient's half of a sticker's bubble-less look (ADR 2026-11.rk6d): read off the landed bytes, after
+            // the seal is opened, from the same header the sender read at ingest.
+            val rig = Rig(backgroundScope)
+
+            fun vp8x(
+                flags: Int,
+                edge: Int,
+            ): ByteArray {
+                val less = edge - 1
+                val size = byteArrayOf((less and 0xFF).toByte(), (less shr 8).toByte(), 0)
+                return "RIFF".toByteArray() + ByteArray(4) + "WEBPVP8X".toByteArray() + byteArrayOf(10, 0, 0, 0, flags.toByte(), 0, 0, 0) +
+                    size + size
+            }
+            val sealed = AttachmentCrypto.seal(vp8x(flags = 0x10, edge = 512))
+            coEvery { rig.messages.attachmentMimeForHash("dm-sticker") } returns "image/webp"
+            coEvery { rig.messages.attachmentKeyForHash("dm-sticker") } returns b64(sealed.key)
+            coEvery { rig.blobs.bytes("dm-sticker") } returns sealed.blob
+            // Transparent, but a photo's size: a cut-out drawn as the picture it is.
+            coEvery { rig.messages.attachmentMimeForHash("cut-out") } returns "image/webp"
+            coEvery { rig.messages.attachmentKeyForHash("cut-out") } returns null
+            coEvery { rig.blobs.bytes("cut-out") } returns vp8x(flags = 0x10, edge = 1280)
+            // Opaque: a GIF made a WebP.
+            coEvery { rig.messages.attachmentMimeForHash("opaque") } returns "image/webp"
+            coEvery { rig.messages.attachmentKeyForHash("opaque") } returns null
+            coEvery { rig.blobs.bytes("opaque") } returns vp8x(flags = 0x02, edge = 480)
+
+            rig.pipeline.onObtained("dm-sticker")
+            rig.pipeline.onObtained("cut-out")
+            rig.pipeline.onObtained("opaque")
+
+            coVerify(exactly = 1) { rig.messages.markAttachmentSticker("dm-sticker") }
+            coVerify(exactly = 0) { rig.messages.markAttachmentSticker("cut-out") }
+            coVerify(exactly = 0) { rig.messages.markAttachmentSticker("opaque") }
+            coVerify(exactly = 1) { rig.messages.markAttachmentAnimated("opaque") }
+        }
+
+    @Test
     fun aPulledSealedAttachmentLearnsItsPlaintextNameAndARowlessOneDoesNot() =
         runTest {
             // What a later forward of the file finds it by (ADR 2026-10.mptm): its plaintext's own hash, recorded the

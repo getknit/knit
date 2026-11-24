@@ -38,6 +38,7 @@ import java.io.File
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
+@Suppress("LargeClass") // one SUT's doors over one real-codec rig, as ChatViewModelTest
 class AttachmentStoreIngestTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val blobs = mockk<BlobRepository>(relaxed = true)
@@ -212,6 +213,64 @@ class AttachmentStoreIngestTest {
                 }
             val result = success(store.ingest(png, "image/png"))
             assertEquals("image/webp", result.ingested.mime)
+        }
+
+    /** A [size] square PNG, transparent but for an opaque disc in its middle, as a keyboard's sticker; or opaque throughout. */
+    private fun stickerPng(
+        size: Int,
+        transparent: Boolean = true,
+    ): ByteArray =
+        ByteArrayOutputStream().use { out ->
+            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            bitmap.eraseColor(if (transparent) Color.TRANSPARENT else Color.WHITE)
+            android.graphics.Canvas(bitmap).drawCircle(
+                size / 2f,
+                size / 2f,
+                size / 3f,
+                android.graphics.Paint().apply { color = Color.rgb(220, 90, 60) },
+            )
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            out.toByteArray()
+        }
+
+    @Test
+    fun aKeyboardStickerLeavesAsATransparentWebpMarkedASticker() =
+        runTest {
+            val result = success(store.ingest(stickerPng(512), "image/png"))
+            val (mime, bytes) = stored.getValue(result.ingested.hash)
+
+            assertEquals("image/webp", mime)
+            // ADR 2026-11.rk6d: the flag is read off the stored bytes, which the recipient reads the same way.
+            assertTrue(result.ingested.sticker)
+            assertTrue(StickerShape.isSticker(bytes))
+        }
+
+    @Test
+    fun anOpaquePictureOrOnePastTheStickerCanvasIsNotASticker() =
+        runTest {
+            // A PNG decodes with an alpha channel, so it leaves as a WebP; with no transparent pixel the encoder writes
+            // no alpha, and the header says so.
+            val opaque = success(store.ingest(stickerPng(512, transparent = false), "image/png"))
+            assertEquals("image/webp", opaque.ingested.mime)
+            assertFalse(opaque.ingested.sticker)
+            assertFalse(StickerShape.isSticker(stored.getValue(opaque.ingested.hash).second))
+
+            val large = success(store.ingest(stickerPng(1024), "image/png"))
+            assertEquals("image/webp", large.ingested.mime)
+            assertFalse("a 1024 px cut-out is drawn as the picture it is", large.ingested.sticker)
+        }
+
+    @Test
+    fun aStickerThePhoneHoldsIsResentAsASticker() =
+        runTest {
+            val first = success(store.ingest(stickerPng(512), "image/png"))
+            val bytes = stored.getValue(first.ingested.hash).second
+            coEvery { identities.find(sha256Hex(bytes)) } returns held(plainHash = sha256Hex(bytes), mime = "image/webp")
+
+            val again = success(store.ingestPicked(bytes, "image/webp"))
+
+            assertTrue(again.ingested.reuse != null)
+            assertTrue(again.ingested.sticker)
         }
 
     @Test

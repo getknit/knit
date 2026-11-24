@@ -582,6 +582,18 @@
     <string name="chat_voice_desc">语音消息，%1$s</string>
     <string name="chat_voice_remove">移除语音消息</string>
     <string name="chat_action_save_voice">保存语音消息</string>
+    <string name="chat_action_save_sticker">保存贴纸</string>
+    <string name="chat_action_remove_sticker">从贴纸中移除</string>
+    <string name="sticker_label">贴纸</string>
+    <string name="sticker_saved">已保存贴纸</string>
+    <string name="sticker_tray_full">已保存的贴纸已满。移除一个后才能保存新的贴纸。</string>
+    <string name="sticker_unavailable">无法发送此贴纸。</string>
+    <string name="sticker_tray_title">贴纸</string>
+    <string name="sticker_tab_saved">已保存</string>
+    <string name="sticker_tab_recent">最近</string>
+    <string name="sticker_saved_empty">在聊天中长按贴纸，即可保存到这里。</string>
+    <string name="sticker_recent_empty">你发送的贴纸会显示在这里，包括来自键盘的贴纸。</string>
+    <string name="sticker_send">发送贴纸</string>
     <string name="chat_voice_saved_recordings">已保存到 Recordings/Knit</string>
     <string name="chat_voice_saved_music">已保存到 Music/Knit</string>
     <string name="chat_voice_already_saved">已保存过</string>
@@ -818,6 +830,7 @@
     <string name="chat_list_preview_photo">📷 照片</string>
     <string name="chat_list_preview_video">🎬 视频</string>
     <string name="chat_list_preview_gif">🎞️ GIF</string>
+    <string name="chat_list_preview_sticker">🏷️ 贴纸</string>
     <string name="chat_list_preview_voice">🎤 语音消息</string>
     <string name="chat_list_preview_file">📎 %1$s</string>
     <string name="chat_list_preview_link">🔗 链接</string>

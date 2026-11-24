@@ -91,6 +91,8 @@ class AttachmentStore(
      *
      * [animated] rides along for [voice]'s reason: an image with more than one frame ([AnimatedImage]), read
      * off the exact bytes stored here so the sender's "GIF" label agrees with the one the recipient derives.
+     * [sticker] is the same for a sticker's shape ([StickerShape], ADR 2026-11.rk6d): the chat draws it without a
+     * bubble on both ends.
      *
      * [reuse] is the identity the bytes already go by when this pick is a file the phone holds (ADR
      * 2026-10.mptm): [hash] is then its plaintext, and the send goes out under [reuse] rather than a fresh seal.
@@ -105,6 +107,7 @@ class AttachmentStore(
         val sizeBytes: Int = 0,
         val link: LinkCard? = null,
         val animated: Boolean = false,
+        val sticker: Boolean = false,
         val sourceHash: String? = null,
         val reuse: AttachmentIdentities.Held? = null,
         val video: VideoInfo? = null,
@@ -237,6 +240,7 @@ class AttachmentStore(
                 name = name.takeUnless { image },
                 sizeBytes = plain.size,
                 animated = held.animated,
+                sticker = image && StickerShape.isSticker(plain),
                 sourceHash = bytesHash.takeIf { it != held.plainHash },
                 reuse = held,
             ),
@@ -607,7 +611,13 @@ class AttachmentStore(
         val hash = sha256(bytes)
         blobs.insert(hash, mime, bytes)
         return IngestResult.Success(
-            Ingested(hash, mime, sizeBytes = bytes.size, animated = AnimatedImage.isAnimated(bytes)),
+            Ingested(
+                hash,
+                mime,
+                sizeBytes = bytes.size,
+                animated = AnimatedImage.isAnimated(bytes),
+                sticker = StickerShape.isSticker(bytes),
+            ),
             flagged,
         )
     }

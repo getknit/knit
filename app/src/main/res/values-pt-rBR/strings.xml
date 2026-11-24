@@ -602,6 +602,18 @@
     <string name="chat_voice_desc">Mensagem de voz, %1$s</string>
     <string name="chat_voice_remove">Remover mensagem de voz</string>
     <string name="chat_action_save_voice">Salvar mensagem de voz</string>
+    <string name="chat_action_save_sticker">Salvar figurinha</string>
+    <string name="chat_action_remove_sticker">Remover das figurinhas</string>
+    <string name="sticker_label">Figurinha</string>
+    <string name="sticker_saved">Figurinha salva</string>
+    <string name="sticker_tray_full">Não cabem mais figurinhas salvas. Remova uma para salvar outra.</string>
+    <string name="sticker_unavailable">Não foi possível enviar essa figurinha.</string>
+    <string name="sticker_tray_title">Figurinhas</string>
+    <string name="sticker_tab_saved">Salvas</string>
+    <string name="sticker_tab_recent">Recentes</string>
+    <string name="sticker_saved_empty">Toque e segure uma figurinha em uma conversa para salvá-la aqui.</string>
+    <string name="sticker_recent_empty">As figurinhas que você envia aparecem aqui, inclusive as do teclado.</string>
+    <string name="sticker_send">Enviar figurinha</string>
     <string name="chat_voice_saved_recordings">Salva em Recordings/Knit</string>
     <string name="chat_voice_saved_music">Salva em Music/Knit</string>
     <string name="chat_voice_already_saved">Já foi salva</string>
@@ -848,6 +860,7 @@
     <string name="chat_list_preview_photo">📷 Foto</string>
     <string name="chat_list_preview_video">🎬 Vídeo</string>
     <string name="chat_list_preview_gif">🎞️ GIF</string>
+    <string name="chat_list_preview_sticker">🏷️ Figurinha</string>
     <string name="chat_list_preview_voice">🎤 Mensagem de voz</string>
     <string name="chat_list_preview_file">📎 %1$s</string>
     <string name="chat_list_preview_link">🔗 Link</string>

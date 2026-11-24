@@ -235,6 +235,18 @@ lines.
   it and every APNG (Android cannot play one) is composited at the output size into an animated WebP, and
   `identityFor` prefers an animated row so a send flattened before #133 is not reused. Tests: `AnimatedFramesTest`; on
   an emulator `WebpTranscodeInstrumentedTest`.
+- **When touching stickers — `StickerShape`, `messages.attachmentSticker` / `MessageDao.markAttachmentSticker`,
+  `Ingested.sticker`, `InboundPipeline.deriveImageShape`, `ChatRow.showsAsSticker` / `stickerPlainHash` / `asSticker`,
+  `ui/chat/StickerMessage.kt` / `StickerTray.kt` (`StickerUi`, `StickerActions`, `StickerTraySheet`), the `stickers`
+  table (`data/sticker/StickerEntity`, `StickerDao`), `StickerRepository`, or `ChatViewModel.sendSticker` /
+  `saveSticker` / `refusalOf`:** READ ADR 2026-11.rk6d. A sticker is read off its bytes on both ends (a WebP with
+  alpha, at most 512 px), never a wire field; one with nothing beside it is drawn without a bubble and opens no viewer.
+  A saved sticker names the blob it came in, never a copy of its bytes (a key-less copy of a sealed one is ADR
+  2026-10.mptm's oracle), and the blob collection counts the row: `orphanHashes`, `pinnedOutsideMessages`,
+  `dropRefusedGroupPhoto`, `requestBlobCandidates` and `carrierOnlyBlobBytes` change together. Recents are read off this phone's own sends. A
+  tray send goes through `ingestPicked` and `refusalOf`, as a pick does, with no face review. Tests: `StickerShapeTest`,
+  `StickerRepositoryTest`, `AttachmentStoreIngestTest`'s sticker cases, `InboundPipelineTest`'s, `ChatViewModelTest`'s
+  tray cases, `ChatScreenContentTest`'s sticker cases.
 - **When touching `redact/` (`YuNetFaceDetector`, `YuNetDecoder`, `FaceBox`, `FaceDetector`, `Redaction`, `Cover`,
   `FaceRedaction`), `ui/redact/` (`RedactReviewScreenContent`, `ViewTransform`, `FaceSearch`, `PhotoReview`),
   `SettingsStore.coverFacesEnabled`, `AttachmentStore.pictureOf` / `displayName`, `ChatViewModel.pendingReview` / `review` /

@@ -302,6 +302,9 @@ class MessageRepository(
     /** Marks attachment [hash] animated on every row naming it — the "GIF" label's locally-derived flag. */
     suspend fun markAttachmentAnimated(hash: String) = dao.markAttachmentAnimated(hash)
 
+    /** Marks every row naming [hash] as a sticker ([StickerShape], ADR 2026-11.rk6d). */
+    suspend fun markAttachmentSticker(hash: String) = dao.markAttachmentSticker(hash)
+
     /**
      * Attachments stored rows name but the store lacks, each with the sender of the earliest such row and every row
      * naming it, for `BluetoothFetchGate` to fold ([me] is this node, ADR 2026-10.js2p).

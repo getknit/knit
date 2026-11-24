@@ -16,6 +16,7 @@ import app.getknit.knit.R
 import app.getknit.knit.TextLimits
 import app.getknit.knit.call.CallKind
 import app.getknit.knit.call.CallManager
+import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.FileTypes
@@ -28,6 +29,8 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.PinOutcome
 import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.StickerRepository
+import app.getknit.knit.data.StickerSaveOutcome
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.draft.Draft
 import app.getknit.knit.data.draft.DraftRepository
@@ -54,6 +57,7 @@ import app.getknit.knit.data.relay.RelayReach
 import app.getknit.knit.data.settings.ChatMutes
 import app.getknit.knit.data.settings.FakeChatMutes
 import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.data.sticker.Sticker
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.legal.repoFile
@@ -362,6 +366,7 @@ class ChatViewModelTest {
         loraRooms: Flow<Map<BoardKind, LoraFacts>>? = null,
         faces: FaceDetector? = null,
         mutes: ChatMutes? = null,
+        stickers: StickerRepository? = null,
     ) = ChatViewModel(
         conversationId,
         messages,
@@ -402,6 +407,7 @@ class ChatViewModelTest {
         meshcoreSharesPosition = meshcoreSharesFlow,
         faces = faces,
         mutes = mutes,
+        stickers = stickers,
     )
 
     // --- Per-chat mute (ADR 2026-11.sp7k) --------------------------------------------------------------------------------
@@ -6201,6 +6207,169 @@ class ChatViewModelTest {
             advanceUntilIdle()
             assertNull("OK acknowledged it", vm.freeUploadOffer.value)
             assertEquals(mapOf(host to true), consent.value)
+        }
+
+    // --- The sticker tray (ADR 2026-11.rk6d) -----------------------------------------------------------------------------
+
+    /**
+     * A sticker this phone holds as the tray names it, and the bytes it opens to. Key-less, as a room post is: a sealed
+     * one is opened on `Dispatchers.Default` (`AttachmentExport.plaintext`), which the test clock cannot wait for, and
+     * the opening is that class's own to test.
+     */
+    private fun heldSticker(): Pair<Sticker, ByteArray> {
+        val plain = "RIFF".toByteArray() + ByteArray(4) + "WEBPVP8X".toByteArray() + ByteArray(18).also { it[4] = 0x10 }
+        coEvery { blobs.bytes("cipher") } returns plain
+        return Sticker("plain", "cipher", blobKey = null, mime = "image/webp", animated = false) to plain
+    }
+
+    @Test
+    fun aTraySendGoesOutAloneUnderTheHeldIdentityAnswersTheReplyAndSkipsTheFaceReview() =
+        runTest {
+            stubDm(BOB)
+            // A DM: no group row (the relaxed mock would hand back one, and route the send as a group's).
+            coEvery { groups.find(BOB) } returns null
+            val (sticker, plain) = heldSticker()
+            val held =
+                AttachmentIdentities.Held(
+                    hash = "cipher",
+                    key = sticker.blobKey,
+                    mime = "image/webp",
+                    animated = false,
+                    plainHash = "plain",
+                )
+            val ingested = AttachmentStore.Ingested(hash = "plain", mime = "image/webp", sticker = true, reuse = held)
+            val opened = slot<ByteArray>()
+            coEvery { attachments.ingestPicked(capture(opened), "image/webp", false, any()) } returns
+                AttachmentStore.IngestResult.Success(ingested, flagged = false)
+            val vm = vm(conversationId = BOB, stickers = mockk(relaxed = true))
+            // A photo already staged in the composer, which the sticker leaves where it is. Staged before Cover faces is
+            // on, so the pick takes no review.
+            val pick = Uri.parse("content://images/9")
+            val staged = AttachmentStore.Ingested(hash = "staged", mime = "image/jpeg")
+            coEvery { attachments.ingest(pick, any()) } returns AttachmentStore.IngestResult.Success(staged, flagged = false)
+            vm.attach(pick)
+            advanceUntilIdle()
+            assertEquals(staged, vm.pendingAttachment.value)
+            coverFacesFlow.value = true
+            val sent = mutableListOf<Unit>()
+            val cleared = mutableListOf<Unit>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.stickerSent.collect { sent += it } }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.clearInput.collect { cleared += it } }
+            val reply = ReplyRef(messageId = "m1", authorId = BOB, author = "Bob", snippet = "lunch?")
+
+            vm.sendSticker(sticker, reply)
+            advanceUntilIdle()
+
+            // The plaintext the blob opens to, through the pick door that finds the identity it is held under.
+            assertArrayEquals(plain, opened.captured)
+            val chat = mesh.sentChats.single()
+            assertEquals("", chat.text)
+            assertEquals(ingested, chat.attachment)
+            assertEquals(BOB, chat.recipientId)
+            assertEquals(reply, chat.replyTo)
+            // The reply it answered goes; the draft beside it is not the sticker's to clear.
+            assertEquals(1, sent.size)
+            assertTrue(cleared.isEmpty())
+            assertEquals(staged, vm.pendingAttachment.value)
+            assertFalse("the send guard stuck", vm.isSending.value)
+        }
+
+    @Test
+    fun aStickerRowIsNamedByItsPlaintextOnlyWhereThisPhoneKnowsIt() =
+        runTest {
+            // The name the tray saves a sticker by (ADR 2026-11.rk6d): a sealed row's learned plaintext hash, a room post's
+            // own hash; a sealed row whose plaintext is not yet learned has none, and so offers no Save.
+            stubDm(BOB)
+            sizesFlow.value = mapOf("c1" to 10, "c2" to 10, "room" to 10, "photo" to 10)
+
+            fun sticker(
+                id: String,
+                hash: String,
+            ) = msg(senderId = BOB, id = id, conversationId = BOB, body = "", attachmentHash = hash)
+                .copy(attachmentMime = "image/webp", attachmentSticker = true)
+            messagesFlow.value =
+                listOf(
+                    sticker("learned", "c1").copy(attachmentKey = "a2V5", attachmentPlainHash = "plain"),
+                    sticker("unlearned", "c2").copy(attachmentKey = "a2V5"),
+                    sticker("keyless", "room"),
+                    sticker("photo", "photo").copy(attachmentSticker = false),
+                )
+            val vm = vm(conversationId = BOB)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+
+            fun nameOf(id: String) =
+                vm.state.value.rows
+                    .single { it.id == id }
+                    .stickerPlainHash
+            assertEquals("plain", nameOf("learned"))
+            assertNull(nameOf("unlearned"))
+            assertEquals("room", nameOf("keyless"))
+            assertNull(nameOf("photo"))
+            assertTrue(
+                vm.state.value.rows
+                    .single { it.id == "keyless" }
+                    .showsAsSticker,
+            )
+        }
+
+    @Test
+    fun aFlaggedStickerIsBlockedInTheRoomAndItsStagedCopyGoes() =
+        runTest {
+            val (sticker, _) = heldSticker()
+            coEvery { attachments.ingestPicked(any(), any(), true, any()) } returns
+                AttachmentStore.IngestResult.Success(AttachmentStore.Ingested(hash = "plain", mime = "image/webp"), flagged = true)
+            val vm = vm(stickers = mockk(relaxed = true)) // the Nearby room, the one scope that screens
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+
+            vm.sendSticker(sticker, replyTo = null)
+            advanceUntilIdle()
+
+            assertTrue(mesh.sentChats.isEmpty())
+            assertEquals(listOf(R.string.moderation_image_blocked), events)
+            coVerify { blobs.deleteIfUnreferenced("plain") }
+            assertFalse(vm.isSending.value)
+        }
+
+    @Test
+    fun aStickerWhoseBytesAreGoneSaysSoAndSendsNothing() =
+        runTest {
+            stubDm(BOB)
+            val (sticker, _) = heldSticker()
+            coEvery { blobs.bytes("cipher") } returns null
+            val vm = vm(conversationId = BOB, stickers = mockk(relaxed = true))
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+
+            vm.sendSticker(sticker, replyTo = null)
+            advanceUntilIdle()
+
+            assertTrue(mesh.sentChats.isEmpty())
+            assertEquals(listOf(R.string.sticker_unavailable), events)
+            coVerify(exactly = 0) { attachments.ingestPicked(any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun savingAStickerSaysSoAndAFullTraySaysWhy() =
+        runTest {
+            val (sticker, _) = heldSticker()
+            val repo = mockk<StickerRepository>(relaxed = true)
+            coEvery { repo.save(sticker, any()) } returnsMany
+                listOf(StickerSaveOutcome.Saved, StickerSaveOutcome.AlreadySaved, StickerSaveOutcome.Full)
+            val vm = vm(stickers = repo)
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+
+            repeat(3) {
+                vm.saveSticker(sticker)
+                advanceUntilIdle()
+            }
+            vm.removeSticker("plain")
+            advanceUntilIdle()
+
+            assertEquals(listOf(R.string.sticker_saved, R.string.sticker_tray_full), events)
+            coVerify(exactly = 1) { repo.remove("plain") }
         }
 }
 

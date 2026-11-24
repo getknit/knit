@@ -602,6 +602,18 @@
     <string name="chat_voice_desc">Nota de voz, %1$s</string>
     <string name="chat_voice_remove">Quitar nota de voz</string>
     <string name="chat_action_save_voice">Guardar nota de voz</string>
+    <string name="chat_action_save_sticker">Guardar sticker</string>
+    <string name="chat_action_remove_sticker">Quitar de stickers</string>
+    <string name="sticker_label">Sticker</string>
+    <string name="sticker_saved">Sticker guardado</string>
+    <string name="sticker_tray_full">Ya no caben más stickers guardados. Quita uno para guardar otro.</string>
+    <string name="sticker_unavailable">No se pudo enviar este sticker.</string>
+    <string name="sticker_tray_title">Stickers</string>
+    <string name="sticker_tab_saved">Guardados</string>
+    <string name="sticker_tab_recent">Recientes</string>
+    <string name="sticker_saved_empty">Mantén presionado un sticker en un chat para guardarlo aquí.</string>
+    <string name="sticker_recent_empty">Aquí aparecen los stickers que envías, también los de tu teclado.</string>
+    <string name="sticker_send">Enviar sticker</string>
     <string name="chat_voice_saved_recordings">Se guardó en Recordings/Knit</string>
     <string name="chat_voice_saved_music">Se guardó en Music/Knit</string>
     <string name="chat_voice_already_saved">Ya se guardó</string>
@@ -848,6 +860,7 @@
     <string name="chat_list_preview_photo">📷 Foto</string>
     <string name="chat_list_preview_video">🎬 Video</string>
     <string name="chat_list_preview_gif">🎞️ GIF</string>
+    <string name="chat_list_preview_sticker">🏷️ Sticker</string>
     <string name="chat_list_preview_voice">🎤 Nota de voz</string>
     <string name="chat_list_preview_file">📎 %1$s</string>
     <string name="chat_list_preview_link">🔗 Enlace</string>

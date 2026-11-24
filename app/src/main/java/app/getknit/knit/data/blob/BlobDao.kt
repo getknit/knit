@@ -50,11 +50,12 @@ interface BlobDao {
     suspend fun sizes(hashes: List<String>): List<BlobSize>
 
     /**
-     * Blob hashes referenced by no message attachment, no peer avatar, no group photo, and no carried
-     * store-and-forward frame. The caller must still exclude the device's own-avatar hash (it lives in
-     * DataStore, not a table) before deleting. The forward_store clause is what makes a carrier's custodied
-     * image blob durable — held (not reclaimed as an orphan) for as long as the frame that references it is
-     * carried, so it survives to a late joiner.
+     * Blob hashes referenced by no message attachment, no peer avatar, no group photo, no carried
+     * store-and-forward frame and no saved sticker. The caller must still exclude the device's own-avatar hash
+     * (it lives in DataStore, not a table) before deleting. The forward_store clause is what makes a carrier's
+     * custodied image blob durable — held (not reclaimed as an orphan) for as long as the frame that references
+     * it is carried, so it survives to a late joiner. The stickers clause keeps a saved sticker's bytes after the
+     * message that brought them is gone (ADR 2026-11.rk6d).
      */
     @Query(
         "SELECT hash FROM blobs WHERE " +
@@ -62,7 +63,8 @@ interface BlobDao {
             "hash NOT IN (SELECT avatarHash FROM peers WHERE avatarHash IS NOT NULL) AND " +
             "hash NOT IN (SELECT photoHash FROM groups WHERE photoHash IS NOT NULL) AND " +
             "hash NOT IN (SELECT photoShownHash FROM groups WHERE photoShownHash IS NOT NULL) AND " +
-            "hash NOT IN (SELECT attachmentHash FROM forward_store WHERE attachmentHash IS NOT NULL)",
+            "hash NOT IN (SELECT attachmentHash FROM forward_store WHERE attachmentHash IS NOT NULL) AND " +
+            "hash NOT IN (SELECT blobHash FROM stickers)",
     )
     suspend fun orphanHashes(): List<String>
 
@@ -71,18 +73,21 @@ interface BlobDao {
      * no local `messages` row (our own sends and delivered messages are uncapped, kept via that message ref).
      * Bounds the altruistic carrier-only footprint; `length(bytes)` reads the row-header length varint, so it
      * does not decrypt the BLOB. Because these blobs are NOT folded into the content digest, this budget is a
-     * purely *local* knob and need not match across nodes (unlike the frame quotas).
+     * purely *local* knob and need not match across nodes (unlike the frame quotas). A saved sticker's bytes are the
+     * person's own, not carrier bytes, while a carried frame also names them (ADR 2026-11.rk6d).
      */
     @Query(
         "SELECT COALESCE(SUM(length(bytes)), 0) FROM blobs WHERE " +
             "hash IN (SELECT attachmentHash FROM forward_store WHERE attachmentHash IS NOT NULL) AND " +
-            "hash NOT IN (SELECT attachmentHash FROM messages WHERE attachmentHash IS NOT NULL)",
+            "hash NOT IN (SELECT attachmentHash FROM messages WHERE attachmentHash IS NOT NULL) AND " +
+            "hash NOT IN (SELECT blobHash FROM stickers)",
     )
     suspend fun carrierOnlyBlobBytes(): Long
 
     /**
      * The blobs a row in one of the [requests] conversations (those the caller found not accepted) names, that no row of
-     * [me]'s and no tapped row names, and that no avatar or group photo names (#282, ADR 2026-11.qu98): the candidates
+     * [me]'s and no tapped row names, and that no avatar, group photo or saved sticker names (#282, ADR 2026-11.qu98; a
+     * sticker the user saved from a request is theirs to keep, ADR 2026-11.rk6d): the candidates
      * for request-only bytes. Whether *every* row naming one is a request's is the caller's check
      * (`BlobRepository.requestOnlyBlobs`): [requests] is bound once here, so a caller can split a long list into chunks
      * under SQLite's variable cap. `length(bytes)` as in [carrierOnlyBlobBytes]; `carried` when a frame pins it.
@@ -95,7 +100,8 @@ interface BlobDao {
             "(o.senderId = :me OR o.attachmentFetchApproved = 1)) " +
             "AND b.hash NOT IN (SELECT avatarHash FROM peers WHERE avatarHash IS NOT NULL) " +
             "AND b.hash NOT IN (SELECT photoHash FROM groups WHERE photoHash IS NOT NULL) " +
-            "AND b.hash NOT IN (SELECT photoShownHash FROM groups WHERE photoShownHash IS NOT NULL)",
+            "AND b.hash NOT IN (SELECT photoShownHash FROM groups WHERE photoShownHash IS NOT NULL) " +
+            "AND b.hash NOT IN (SELECT blobHash FROM stickers)",
     )
     suspend fun requestBlobCandidates(
         requests: List<String>,

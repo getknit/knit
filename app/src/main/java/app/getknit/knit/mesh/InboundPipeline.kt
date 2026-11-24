@@ -17,6 +17,7 @@ import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.QuoteVerifier
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.StickerShape
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.group.GroupEntity
@@ -5301,7 +5302,7 @@ class InboundPipeline(
      * ([app.getknit.knit.mesh.protocol.AttachmentName]), so it is safe to draw.
      *
      * Only the MIME can speak for a GIF here: the notification fires before the blob is pulled, so the frames
-     * that make an animated WebP a GIF ([deriveAnimation]) are not in hand yet, and it reads as a photo.
+     * that make an animated WebP a GIF ([deriveImageShape]) are not in hand yet, and it reads as a photo.
      */
     private fun attachmentPreview(
         content: ChatContent,
@@ -6233,7 +6234,7 @@ class InboundPipeline(
         screenHeldAttachment(hash, key, mime)
         deriveVoiceMeta(hash, key, mime)
         deriveVideoMeta(hash, key, mime)
-        deriveAnimation(hash, key, mime)
+        deriveImageShape(hash, key, mime)
         identities.notePlain(hash)
     }
 
@@ -6336,13 +6337,14 @@ class InboundPipeline(
     }
 
     /**
-     * If the row names a held blob as an image whose container can animate ([mime]), count its frames and mark
-     * every row that references it — the recipient's half of the "GIF" label, read off the same bytes the sender
-     * read at ingest ([AnimatedImage]), so it costs no wire field. Decrypts with [key] as [deriveVoiceMeta] does;
-     * a no-op for a still image, anything else, and a blob no row claims. Never throws: a GIF we could not read
-     * is labelled a photo, not a dropped delivery.
+     * If the row names a held blob as an image whose container can animate ([mime]), count its frames and read its
+     * header, and mark every row that references it — the recipient's half of the "GIF" label ([AnimatedImage]) and
+     * of a sticker's bubble-less look ([StickerShape], ADR 2026-11.rk6d), read off the same bytes the sender read at
+     * ingest, so neither costs a wire field. Decrypts with [key] as [deriveVoiceMeta] does, once for both; a no-op for
+     * anything else and a blob no row claims. Never throws: a GIF or a sticker we could not read is drawn as a photo,
+     * not a dropped delivery.
      */
-    private suspend fun deriveAnimation(
+    private suspend fun deriveImageShape(
         hash: String,
         key: String?,
         mime: String?,
@@ -6352,7 +6354,8 @@ class InboundPipeline(
             val stored = blobs.bytes(hash) ?: return
             val image = if (key == null) stored else AttachmentCrypto.open(stored, b64d(key)) ?: return
             if (AnimatedImage.isAnimated(image)) messages.markAttachmentAnimated(hash)
-        }.onFailure { Log.w(TAG, "animation check failed: ${it.javaClass.simpleName}") }
+            if (StickerShape.isSticker(image)) messages.markAttachmentSticker(hash)
+        }.onFailure { Log.w(TAG, "image shape check failed: ${it.javaClass.simpleName}") }
     }
 
     internal companion object {

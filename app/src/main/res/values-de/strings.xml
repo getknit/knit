@@ -592,6 +592,18 @@
     <string name="chat_voice_desc">Sprachnachricht, %1$s</string>
     <string name="chat_voice_remove">Sprachnachricht entfernen</string>
     <string name="chat_action_save_voice">Sprachnachricht speichern</string>
+    <string name="chat_action_save_sticker">Sticker speichern</string>
+    <string name="chat_action_remove_sticker">Aus Stickern entfernen</string>
+    <string name="sticker_label">Sticker</string>
+    <string name="sticker_saved">Sticker gespeichert</string>
+    <string name="sticker_tray_full">Du kannst keine weiteren Sticker speichern. Entferne einen, um einen anderen zu speichern.</string>
+    <string name="sticker_unavailable">Dieser Sticker konnte nicht gesendet werden.</string>
+    <string name="sticker_tray_title">Sticker</string>
+    <string name="sticker_tab_saved">Gespeichert</string>
+    <string name="sticker_tab_recent">Zuletzt</string>
+    <string name="sticker_saved_empty">Halte einen Sticker in einem Chat gedrückt, um ihn hier zu speichern.</string>
+    <string name="sticker_recent_empty">Sticker, die du sendest, erscheinen hier – auch die von deiner Tastatur.</string>
+    <string name="sticker_send">Sticker senden</string>
     <string name="chat_voice_saved_recordings">In Recordings/Knit gespeichert</string>
     <string name="chat_voice_saved_music">In Music/Knit gespeichert</string>
     <string name="chat_voice_already_saved">Bereits gespeichert</string>
@@ -833,6 +845,7 @@
     <string name="chat_list_preview_photo">📷 Foto</string>
     <string name="chat_list_preview_video">🎬 Video</string>
     <string name="chat_list_preview_gif">🎞️ GIF</string>
+    <string name="chat_list_preview_sticker">🏷️ Sticker</string>
     <string name="chat_list_preview_voice">🎤 Sprachnachricht</string>
     <string name="chat_list_preview_file">📎 %1$s</string>
     <string name="chat_list_preview_link">🔗 Link</string>

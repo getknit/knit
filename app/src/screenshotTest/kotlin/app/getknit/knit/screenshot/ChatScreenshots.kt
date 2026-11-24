@@ -31,6 +31,7 @@ import app.getknit.knit.ui.chat.MessageBubbleMineReadPreview
 import app.getknit.knit.ui.chat.MessageBubbleMineViaInternetPreview
 import app.getknit.knit.ui.chat.MessageBubbleNotRelayedLockedPreview
 import app.getknit.knit.ui.chat.MessageBubblePhotoArrivingPreview
+import app.getknit.knit.ui.chat.MessageBubbleStickerPreview
 import app.getknit.knit.ui.chat.MessageBubbleTheirsPreview
 import app.getknit.knit.ui.chat.MessageBubbleTheirsViaInternetPreview
 import app.getknit.knit.ui.chat.MessageBubbleTranslatedPreview
@@ -49,6 +50,8 @@ import app.getknit.knit.ui.chat.ReactionRowPreview
 import app.getknit.knit.ui.chat.StagedLinkTilePreview
 import app.getknit.knit.ui.chat.StagedLocationTileFailedPreview
 import app.getknit.knit.ui.chat.StagedLocationTileReadyPreview
+import app.getknit.knit.ui.chat.StickerTrayEmptyPreview
+import app.getknit.knit.ui.chat.StickerTraySavedPreview
 import app.getknit.knit.ui.chat.SystemNoticePreview
 import app.getknit.knit.ui.chat.TapToDownloadBluetoothOnlyPreview
 import app.getknit.knit.ui.chat.TapToDownloadFilePreview
@@ -131,6 +134,11 @@ fun MessageBubbleVoiceTapToDownload() = MessageBubbleVoiceTapToDownloadPreview()
 @ComponentShots
 @Composable
 fun MessageBubbleEmoji() = MessageBubbleEmojiPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun MessageBubbleSticker() = MessageBubbleStickerPreview()
 
 @PreviewTest
 @ComponentShots
@@ -304,6 +312,16 @@ fun MessageDetailsScreenEmpty() = MessageDetailsScreenEmptyPreview()
 @ScreenShots
 @Composable
 fun MessageDetailsScreenDirectLink() = MessageDetailsScreenDirectLinkPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun StickerTrayEmpty() = StickerTrayEmptyPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun StickerTraySaved() = StickerTraySavedPreview()
 
 @PreviewTest
 @ComponentShots

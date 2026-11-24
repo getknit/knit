@@ -1389,12 +1389,55 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 38 to 39 keeps every message, calls none a sticker and adds an empty stickers table`() =
+        runTest {
+            helper.createDatabase(38).use { c ->
+                c.execSQL(
+                    INSERT_V21.replace(
+                        ") ",
+                        ", originNode, replyCheck, replyToFlagged, attachmentFetchApproved, videoPosterFlagged, " +
+                            "translationFlagged, translationGuessed, sealedConfirmed, attachmentHash, attachmentMime) ",
+                    ) +
+                        "VALUES ('m1','me','peer-1','',1,1,0,'[]',0,0,0,0,0,0,0,-1,0,0,0,0,0,0,0,'h-sticker','image/webp')",
+                )
+            }
+            helper.runMigrationsAndValidate(39, listOf(KnitMigrations.MIGRATION_38_39)).use { c ->
+                c.prepare("SELECT attachmentHash, attachmentSticker FROM messages WHERE id = 'm1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("h-sticker", s.getText(0))
+                    // ADR 2026-11.rk6d: the flag is read off the bytes, which SQL cannot, so nothing is backfilled.
+                    assertEquals(0L, s.getLong(1))
+                    assertFalse(s.step())
+                }
+                c.prepare("SELECT COUNT(*) FROM stickers").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("no build before this saved one", 0L, s.getLong(0))
+                }
+                // The writers' shapes: a landed sticker marked on its row, then saved to the tray under its plaintext.
+                c.execSQL("UPDATE messages SET attachmentSticker = 1 WHERE attachmentHash = 'h-sticker'")
+                c.execSQL(
+                    "INSERT INTO stickers (plainHash, blobHash, blobKey, mime, animated, savedAt) " +
+                        "VALUES ('p-sticker', 'h-sticker', 'a2V5', 'image/webp', 0, 5)",
+                )
+                c.prepare("SELECT id FROM messages WHERE attachmentSticker = 1 ORDER BY sentAt DESC").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("m1", s.getText(0))
+                }
+                c.prepare("SELECT blobHash, blobKey FROM stickers WHERE plainHash = 'p-sticker'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("h-sticker", s.getText(0))
+                    assertEquals("a2V5", s.getText(1))
+                }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 38
+        const val CURRENT_VERSION = 39
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

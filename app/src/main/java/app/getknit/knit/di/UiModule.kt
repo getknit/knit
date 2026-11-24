@@ -14,6 +14,7 @@ import app.getknit.knit.data.LocalMessageDelete
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.StickerRepository
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.forward.ForwardRepository
@@ -168,6 +169,7 @@ val uiModule =
                     },
                 faces = if (FACE_REDACTION_WIRED) get<FaceDetector>() else null,
                 mutes = get<ChatMutes>(),
+                stickers = get<StickerRepository>(),
             )
         }
         viewModel {

@@ -70,6 +70,8 @@ import app.getknit.knit.data.scopeanchor.DmScopeAnchorEntity
 import app.getknit.knit.data.scopeconfig.ScopeConfigDao
 import app.getknit.knit.data.scopeconfig.ScopeConfigEntity
 import app.getknit.knit.data.scopeconfig.SpoolDeclaredEntity
+import app.getknit.knit.data.sticker.StickerDao
+import app.getknit.knit.data.sticker.StickerEntity
 import net.zetetic.database.sqlcipher.SQLiteGlobal
 import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
 
@@ -77,7 +79,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 38
+internal const val KNIT_DB_SCHEMA_VERSION = 39
 
 @Database(
     entities = [
@@ -95,7 +97,7 @@ internal const val KNIT_DB_SCHEMA_VERSION = 38
         PinEntity::class, LoraDirectSeenEntity::class, PhotoRefusalEntity::class,
         OwnPresenceKeyEntity::class, PeerPresenceKeyEntity::class, LinkOwedResetEntity::class,
         DmScopeAnchorEntity::class, ReadMarkEntity::class,
-        MeshcoreSetupEntity::class,
+        MeshcoreSetupEntity::class, StickerEntity::class,
     ],
     // v1: frozen launch baseline. The pre-1.0 alpha schema churn (the old destructive v2…v22 bumps that
     //     rode the wire/crypto breaks) is collapsed; docs/WIRE_COMPAT.md keeps the historical break record.
@@ -315,6 +317,11 @@ internal const val KNIT_DB_SCHEMA_VERSION = 38
     //     One reaction tag, written with the row. Local only, carried in a backup with the row; null on existing rows.
     //     Its own version because lab phones run v37; fold v33–v38 into the next release's single bump. Migrated by
     //     KnitMigrations.MIGRATION_37_38.
+    // v39: `messages.attachmentSticker` and its `(attachmentSticker, sentAt)` index, the image attachment read off its
+    //     bytes as a sticker, and one `stickers` table, the stickers saved to the composer's tray, each naming the blob
+    //     it was saved from (ADR 2026-11.rk6d). The column is local only and carried in a backup with its row; the table
+    //     is carried too, as pins are. False and empty on arrival, not backfilled. Its own version because lab phones
+    //     run v38; fold v33–v39 into the next release's single bump. Migrated by KnitMigrations.MIGRATION_38_39.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
@@ -374,6 +381,8 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun readMarkDao(): ReadMarkDao
 
     abstract fun meshcoreSetupDao(): MeshcoreSetupDao
+
+    abstract fun stickerDao(): StickerDao
 
     companion object {
         /** The schema version the annotation above declares, for code that must compare against it. */

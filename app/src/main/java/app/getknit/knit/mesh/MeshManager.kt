@@ -2509,6 +2509,7 @@ class MeshManager(
                     voiceDurationMs = attachment?.voice?.durationMs,
                     voicePeaks = attachment?.voice?.peaks,
                     attachmentAnimated = attachment?.animated == true,
+                    attachmentSticker = attachment?.sticker == true,
                     // The room's hash already is the plaintext's, so only the picker's own bytes are worth a
                     // column: they are how the same original, picked again, finds this post (ADR 2026-10.mptm).
                     attachmentSourceHash = attachment?.sourceHash,
@@ -2582,6 +2583,7 @@ class MeshManager(
                         ?.toLong(),
                 // Read off the frames at ingest, and by the recipient off the same bytes when they land.
                 attachmentAnimated = attachment?.animated == true,
+                attachmentSticker = attachment?.sticker == true,
                 // The plaintext's own name beside the ciphertext's, and the picker's bytes when ingest changed them:
                 // what a later forward or repeat of this file finds it by (ADR 2026-10.mptm). A key-less forward of a
                 // room picture already names its plaintext, so it records none.
@@ -7331,6 +7333,7 @@ class MeshManager(
                 attachmentName = attachment?.name,
                 attachmentSize = size,
                 attachmentAnimated = attachment?.animated == true,
+                attachmentSticker = attachment?.sticker == true,
                 // What a later forward or repeat of this file finds it by (ADR 2026-10.mptm), as the sealed path keeps.
                 attachmentPlainHash = attachment?.hash?.takeIf { sealedAttachment?.key != null },
                 attachmentSourceHash = attachment?.sourceHash,

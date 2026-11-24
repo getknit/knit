@@ -32,6 +32,7 @@ class AttachmentLabelsTest {
         name: String? = null,
         size: Long? = null,
         animated: Boolean = false,
+        sticker: Boolean = false,
         videoMs: Long? = null,
         moderation: Int = MessageEntity.MODERATION_NONE,
         replyToFlagged: Boolean = false,
@@ -45,6 +46,7 @@ class AttachmentLabelsTest {
         attachmentName = name,
         attachmentSize = size,
         attachmentAnimated = animated,
+        attachmentSticker = sticker,
         videoDurationMs = videoMs,
         moderation = moderation,
         replyToFlagged = replyToFlagged,
@@ -88,6 +90,19 @@ class AttachmentLabelsTest {
             messagePreview(context, message(hash = "h", mime = "image/webp", animated = true), false),
         )
         assertEquals("", messagePreview(context, message(body = "   "), hideFlagged = false))
+    }
+
+    @Test
+    fun aStickerIsCalledOneAnimatedOrNot() {
+        // ADR 2026-11.rk6d: a sticker's shape names it ahead of its frames.
+        assertEquals(
+            string(R.string.chat_list_preview_sticker),
+            messagePreview(context, message(hash = "h", mime = "image/webp", sticker = true), false),
+        )
+        assertEquals(
+            string(R.string.chat_list_preview_sticker),
+            messagePreview(context, message(hash = "h", mime = "image/webp", animated = true, sticker = true), false),
+        )
     }
 
     @Test

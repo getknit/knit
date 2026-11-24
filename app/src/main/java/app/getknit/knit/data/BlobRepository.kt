@@ -17,6 +17,7 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.peer.PeerDao
 import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.data.sticker.StickerDao
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
@@ -47,6 +48,8 @@ class BlobRepository(
     private val holders: AttachmentHolderDao,
     // The photos refused over their ceiling (#234), kept beside the verdicts (ADR 2026-11.4ckq).
     private val refusals: PhotoRefusalDao = db.photoRefusalDao(),
+    // The stickers saved to the composer's tray, each a reference that keeps its blob (ADR 2026-11.rk6d).
+    private val stickers: StickerDao = db.stickerDao(),
     // Every store and delete names its hash, for the debug build's USB control feed (`attachment.held`).
     private val changes: DataChangeSink = DataChangeSink.NONE,
 ) {
@@ -273,6 +276,7 @@ class BlobRepository(
             if (messages.countByAttachmentHash(hash) > 0) return@withWriteTransaction
             if (peers.countByAvatarHash(hash) > 0) return@withWriteTransaction
             if (forward.countByAttachmentHash(hash) > 0) return@withWriteTransaction
+            if (stickers.countByBlobHash(hash) > 0) return@withWriteTransaction
             dropBytes(hash)
         }
     }
@@ -343,9 +347,12 @@ class BlobRepository(
         own: String?,
     ): Boolean = hash == own || hash in storedThisProcess
 
-    /** Whether a peer's avatar, a group's photo (decided or shown) or a carried frame names [hash]. */
+    /** Whether a peer's avatar, a group's photo (decided or shown), a carried frame or a saved sticker names [hash]. */
     private suspend fun pinnedOutsideMessages(hash: String): Boolean =
-        peers.countByAvatarHash(hash) > 0 || groups.countByPhotoHash(hash) > 0 || forward.countByAttachmentHash(hash) > 0
+        peers.countByAvatarHash(hash) > 0 ||
+            groups.countByPhotoHash(hash) > 0 ||
+            forward.countByAttachmentHash(hash) > 0 ||
+            stickers.countByBlobHash(hash) > 0
 
     /** Whether every message row naming [hash] is a held request's: in one of [requests], not [me]'s, not tapped. */
     private suspend fun namedOnlyByRequests(

@@ -602,6 +602,18 @@
     <string name="chat_voice_desc">Message vocal, %1$s</string>
     <string name="chat_voice_remove">Retirer le message vocal</string>
     <string name="chat_action_save_voice">Enregistrer le message vocal</string>
+    <string name="chat_action_save_sticker">Enregistrer l’autocollant</string>
+    <string name="chat_action_remove_sticker">Retirer des autocollants</string>
+    <string name="sticker_label">Autocollant</string>
+    <string name="sticker_saved">Autocollant enregistré</string>
+    <string name="sticker_tray_full">Vous ne pouvez plus enregistrer d’autocollants. Retirez-en un pour en enregistrer un autre.</string>
+    <string name="sticker_unavailable">Impossible d’envoyer cet autocollant.</string>
+    <string name="sticker_tray_title">Autocollants</string>
+    <string name="sticker_tab_saved">Enregistrés</string>
+    <string name="sticker_tab_recent">Récents</string>
+    <string name="sticker_saved_empty">Appuyez de manière prolongée sur un autocollant dans une discussion pour l’enregistrer ici.</string>
+    <string name="sticker_recent_empty">Les autocollants que vous envoyez s’affichent ici, y compris ceux de votre clavier.</string>
+    <string name="sticker_send">Envoyer l’autocollant</string>
     <string name="chat_voice_saved_recordings">Enregistré dans Recordings/Knit</string>
     <string name="chat_voice_saved_music">Enregistré dans Music/Knit</string>
     <string name="chat_voice_already_saved">Déjà enregistré</string>
@@ -848,6 +860,7 @@
     <string name="chat_list_preview_photo">📷 Photo</string>
     <string name="chat_list_preview_video">🎬 Vidéo</string>
     <string name="chat_list_preview_gif">🎞️ GIF</string>
+    <string name="chat_list_preview_sticker">🏷️ Autocollant</string>
     <string name="chat_list_preview_voice">🎤 Message vocal</string>
     <string name="chat_list_preview_file">📎 %1$s</string>
     <string name="chat_list_preview_link">🔗 Lien</string>

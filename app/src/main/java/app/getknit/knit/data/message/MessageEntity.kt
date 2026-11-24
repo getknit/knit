@@ -126,6 +126,9 @@ import java.util.Base64
  *
  * `attachmentHash` is indexed for the reads keyed by it on the inbound path (ADR 2026-10.js2p): a delivery judges
  * its attachment's fetch over every row naming the hash (`MessageDao.attachmentFetchRowsFor`).
+ *
+ * `(attachmentSticker, sentAt)` finds the sticker tray's recents (ADR 2026-11.rk6d) without walking the table: the few
+ * sticker rows are read newest first out of the index.
  */
 @Entity(
     tableName = "messages",
@@ -136,6 +139,7 @@ import java.util.Base64
         Index(value = ["replyToId", "replyCheck"]),
         Index(value = ["attachmentHash"]),
         Index(value = ["meshcoreTag"]),
+        Index(value = ["attachmentSticker", "sentAt"]),
     ],
 )
 data class MessageEntity(
@@ -217,6 +221,15 @@ data class MessageEntity(
      * else, so false — also the value while a received blob is still on its way — is always a safe answer.
      */
     val attachmentAnimated: Boolean = false,
+    /**
+     * The image attachment has a sticker's shape — a WebP with transparency, no larger than a sticker's canvas
+     * ([app.getknit.knit.data.StickerShape], ADR 2026-11.rk6d) — so the chat draws it without a bubble, offers to
+     * save it, and the chat list calls it a sticker. **Local only**, derived from the bytes exactly as
+     * [attachmentAnimated] is: the sender at ingest, the recipient once the blob lands, so false is also the value
+     * while a received blob is on its way. Indexed with [sentAt] for the sticker tray's recents, which read only
+     * this phone's own sends.
+     */
+    val attachmentSticker: Boolean = false,
     /**
      * The SHA-256 of a **sealed** attachment's plaintext — the name the same bytes go by in the room, where an
      * attachment is addressed by its plaintext. Null on a key-less row, whose [attachmentHash] already is that

@@ -208,6 +208,7 @@ private fun MessageSummary(state: MessageDetailsUiState) {
                             state.attachmentSize,
                             animated = state.attachmentAnimated,
                             video = state.attachmentVideo,
+                            sticker = state.attachmentSticker,
                         )
                     }
 

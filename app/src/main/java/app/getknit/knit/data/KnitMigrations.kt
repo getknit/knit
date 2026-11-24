@@ -857,6 +857,28 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v38 → v39 (ADR 2026-11.rk6d): `messages.attachmentSticker` and its `(attachmentSticker, sentAt)` index — the image
+     * attachment has a sticker's shape, read off its bytes — and one empty `stickers` table, the stickers saved to the
+     * composer's tray. Both local only. False on every existing row and not backfilled: the flag is read off the bytes,
+     * which SQL cannot, so a sticker received before this build keeps looking like a photo. Its own version, as v33 to
+     * v38 were: fold them all into the next release's single bump. The SQL must stay byte-equivalent to what Room
+     * generates for `app/schemas/**/39.json`.
+     */
+    val MIGRATION_38_39 =
+        object : Migration(38, 39) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `attachmentSticker` INTEGER NOT NULL DEFAULT 0")
+                connection.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_messages_attachmentSticker_sentAt` ON `messages` (`attachmentSticker`, `sentAt`)",
+                )
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `stickers` (`plainHash` TEXT NOT NULL, `blobHash` TEXT NOT NULL, `blobKey` TEXT, " +
+                        "`mime` TEXT NOT NULL, `animated` INTEGER NOT NULL, `savedAt` INTEGER NOT NULL, PRIMARY KEY(`plainHash`))",
+                )
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -897,5 +919,6 @@ object KnitMigrations {
             MIGRATION_35_36,
             MIGRATION_36_37,
             MIGRATION_37_38,
+            MIGRATION_38_39,
         )
 }
