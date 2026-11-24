@@ -3953,6 +3953,74 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun withCoverFacesOnAStickerTheKeyboardInsertedGoesAsItIsWithNoReview() =
+        runTest {
+            // A drawing from the keyboard's library goes as a tray sticker does, with no review (ADR 2026-11.rk6d).
+            coverFacesFlow.value = true
+            val uri = Uri.parse("content://keyboard/sticker")
+            coEvery { attachments.isVideo(uri) } returns false
+            coEvery { attachments.pictureOf(uri) } returns AttachmentStore.Picture.STILL
+            coEvery { attachments.isStickerSource(uri) } returns true
+            val ingested = AttachmentStore.Ingested(hash = "sloth", mime = "image/webp", sticker = true)
+            coEvery { attachments.ingest(uri, false, any()) } returns AttachmentStore.IngestResult.Success(ingested, flagged = false)
+            val vm = vm("bob", faces = oneFace)
+
+            vm.attach(uri, fromKeyboard = true)
+            advanceUntilIdle()
+
+            assertEquals("sloth", vm.pendingAttachment.value?.hash)
+            assertNull(vm.pendingReview.value)
+        }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun withCoverFacesOnAKeyboardStickerTheIngestDoesNotWriteAsOneIsReviewedAfterAll() =
+        runTest {
+            // The source's header said sticker but the still door wrote an opaque picture (an alpha the decoder
+            // dropped, or other bytes on the second open): the staged blob goes, and the review opens. Its provider is
+            // gone here, so the review drops it with a word.
+            coverFacesFlow.value = true
+            Robolectric.buildContentProvider(PresentDocuments::class.java).create("gone")
+            val uri = Uri.parse("content://gone/not-a-sticker")
+            coEvery { attachments.isVideo(uri) } returns false
+            coEvery { attachments.pictureOf(uri) } returns AttachmentStore.Picture.STILL
+            coEvery { attachments.isStickerSource(uri) } returns true
+            val ingested = AttachmentStore.Ingested(hash = "opaque", mime = "image/jpeg", sticker = false)
+            coEvery { attachments.ingest(uri, false, any()) } returns AttachmentStore.IngestResult.Success(ingested, flagged = false)
+            val vm = vm("bob", faces = oneFace)
+            val said = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.attach(uri, fromKeyboard = true)
+
+            assertEquals(R.string.redact_unreadable, said.await())
+            assertNull(vm.pendingAttachment.value)
+            coVerify { blobs.deleteIfUnreferenced("opaque") }
+        }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun withCoverFacesOnAPictureIsReviewedUnlessItIsBothFromTheKeyboardAndStickerShaped() =
+        runTest {
+            // Either alone opens the review: the keyboard's clipboard chip pastes screenshots, and a sticker-shaped pick
+            // can be a person cut out of a photo. Each provider is gone, so the review drops it with a word.
+            coverFacesFlow.value = true
+            Robolectric.buildContentProvider(PresentDocuments::class.java).create("gone")
+            for ((fromKeyboard, stickerShaped) in listOf(true to false, false to true)) {
+                val uri = Uri.parse("content://gone/keyboard-$fromKeyboard-sticker-$stickerShaped")
+                coEvery { attachments.isVideo(uri) } returns false
+                coEvery { attachments.pictureOf(uri) } returns AttachmentStore.Picture.STILL
+                coEvery { attachments.isStickerSource(uri) } returns stickerShaped
+                val vm = vm("bob", faces = oneFace)
+                val said = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+                vm.attach(uri, fromKeyboard = fromKeyboard)
+
+                assertEquals("keyboard $fromKeyboard, sticker $stickerShaped", R.string.redact_unreadable, said.await())
+            }
+            coVerify(exactly = 0) { attachments.ingest(any<Uri>(), any(), any()) }
+        }
+
+    @Test
     fun withCoverFacesOnAnAnimationGoesAsItIsWithANotice() =
         runTest {
             coverFacesFlow.value = true

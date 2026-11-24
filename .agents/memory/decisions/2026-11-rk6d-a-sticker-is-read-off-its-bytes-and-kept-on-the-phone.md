@@ -115,3 +115,35 @@ border. Measuring each sticker's ink against the page means a stored verdict tha
 trap: one layer with its tint toggled around the stamps does not work. A layer is drawn with the properties it holds
 when the frame renders, so every stamp came out untinted (the first build on the P7 did exactly that). Verified on the
 P7 by screenshot. There is no unit test: a preview has no sticker bytes to outline.
+
+## Amendment (2026-11-23): a 640 px edge, and a keyboard's sticker skips the face review
+
+**What was observed.** On the lab phones, an Emoji Kitchen mash-up sent from the P9 arrived on the P7 as a photo. Its
+bytes were a WebP with alpha and an ICC profile on a 534 × 534 canvas, 22 px past the 512 px edge. With Cover faces on,
+the Gboard sloth sticker (420 × 420) opened the face review before it was sent, because every still picture through the
+photo door does.
+
+**What changed.**
+
+- `StickerShape.STICKER_MAX_EDGE` is 640 px. It takes the 512 px canvas WhatsApp and Telegram publish, Emoji Kitchen's
+  534 px and Apple's large Messages sticker (618 px). Messages received before the change keep the look they were given.
+- A still picture the keyboard inserted whose bytes have a sticker's shape is attached with no Cover faces review, as a
+  tray send is. The composer's content receiver says whether the keyboard sent it (`TransferableContent.Source.Keyboard`,
+  carried as `ReceivedImage.fromKeyboard` to `ChatViewModel.attach`), and `AttachmentStore.isStickerSource` reads the
+  source's first 4 KiB before the ingest: `isSticker`'s WebP, or a PNG with an alpha channel or a `tRNS` chunk before
+  the first `IDAT`, no larger than the edge. Both must hold. The keyboard alone also pastes screenshots from its
+  clipboard chip, and a sticker-shaped pick, paste or drag from elsewhere can be a person cut out of a photo. A head cut
+  short, or a `tRNS` past the bytes read, opens the review. The bytes the ingest writes are asked again
+  (`Ingested.sticker`). If they are not a sticker, the staged blob goes and the review opens after all. That covers an
+  alpha the header claims and the decoder drops, an opaque picture in an RGBA file (the encoder may leave out an alpha
+  that hides nothing), and a provider that serves other bytes on its second open. The maintainer chose this over two
+  alternatives: running the detector and skipping only when it found no face, or reviewing every keyboard sticker.
+
+Nothing on the keyboard's side names its sticker tab. Gboard commits stickers, Emoji Kitchen, GIFs and clipboard images
+through the same `commitContent` call and one content provider, and other keyboards differ, so the bytes decide.
+
+**What it costs.** A sticker Gboard makes from the person's own photo goes out uncovered when it is 640 px or smaller and
+transparent. That is the sticker the person chose from their keyboard, and a larger cut-out is still reviewed. The tests:
+`StickerShapeTest` (the PNG read, cut-short heads and a lying chunk length), and `ChatViewModelTest`'s three Cover faces
+cases (the keyboard's sticker goes as it is, either signal alone is reviewed, and a sticker the ingest does not write as
+one is reviewed after all).

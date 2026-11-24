@@ -319,6 +319,14 @@ class AttachmentStore(
         }
 
     /**
+     * Whether [uri]'s bytes have a sticker's shape before they are ingested ([StickerShape.isStickerSource]), read off
+     * its first [HEAD_BYTES]; false when it cannot be opened. Asked only of a still picture the keyboard inserted, to
+     * spare it the Cover faces review (ADR 2026-11.rk6d).
+     */
+    suspend fun isStickerSource(uri: Uri): Boolean =
+        withContext(Dispatchers.IO) { readHead(uri)?.let(StickerShape::isStickerSource) == true }
+
+    /**
      * Whether a pick from the photo picker or the share sheet is a video, which takes [ingestVideo] rather than the
      * image door: the provider's type when it names one, else the container's own signature
      * ([FileTypes.videoMimeOf]) read off the first bytes.

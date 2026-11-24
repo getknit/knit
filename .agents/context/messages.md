@@ -239,12 +239,15 @@ lines.
   `Ingested.sticker`, `InboundPipeline.deriveImageShape`, `ChatRow.showsAsSticker` / `stickerPlainHash` / `asSticker`,
   `ui/chat/StickerMessage.kt` / `StickerTray.kt` (`StickerUi`, `StickerActions`, `StickerTraySheet`), the `stickers`
   table (`data/sticker/StickerEntity`, `StickerDao`), `StickerRepository`, or `ChatViewModel.sendSticker` /
-  `saveSticker` / `refusalOf`:** READ ADR 2026-11.rk6d. A sticker is read off its bytes on both ends (a WebP with
-  alpha, at most 512 px), never a wire field; one with nothing beside it is drawn without a bubble and opens no viewer.
+  `saveSticker` / `refusalOf`, `StickerShape.isStickerSource` / `AttachmentStore.isStickerSource`, or `ReceivedImage`:**
+  READ ADR 2026-11.rk6d. A sticker is read off its bytes on both ends (a WebP with
+  alpha, at most 640 px), never a wire field; one with nothing beside it is drawn without a bubble and opens no viewer.
   A saved sticker names the blob it came in, never a copy of its bytes (a key-less copy of a sealed one is ADR
   2026-10.mptm's oracle), and the blob collection counts the row: `orphanHashes`, `pinnedOutsideMessages`,
   `dropRefusedGroupPhoto`, `requestBlobCandidates` and `carrierOnlyBlobBytes` change together. Recents are read off this phone's own sends. A
-  tray send goes through `ingestPicked` and `refusalOf`, as a pick does, with no face review. In a dark theme a sticker
+  tray send goes through `ingestPicked` and `refusalOf`, as a pick does, with no face review; so does a sticker the
+  keyboard inserted, and only when both the keyboard (`ReceivedImage.fromKeyboard`) and the source's bytes
+  (`isStickerSource`) say so (the ADR's 640 px amendment). In a dark theme a sticker
   gets a light outline (`stickerOutline`, the ADR's 2026-11-23 amendment): two layers, never one tint toggled. Tests: `StickerShapeTest`,
   `StickerRepositoryTest`, `AttachmentStoreIngestTest`'s sticker cases, `InboundPipelineTest`'s, `ChatViewModelTest`'s
   tray cases, `ChatScreenContentTest`'s sticker cases.
@@ -268,7 +271,7 @@ lines.
   no detector ran, never an empty list. A cover is one opaque colour on a copy, the average of what it hides (`Cover.fillColor`), encoded at `AttachmentStore`'s own
   q85 so it passes through; the review screen draws what will be sent. With Cover faces on, every door a still photo
   comes through opens the review first, a direct transfer's included (sent as a covered copy in the cache, at the chat
-  photo's size), and a photo that will not decode, or is cut short (`decodeWholeOriented`), is dropped, never sent
+  photo's size), except a sticker sent from the tray or inserted by the keyboard (ADR 2026-11.rk6d), and a photo that will not decode, or is cut short (`decodeWholeOriented`), is dropped, never sent
   uncovered. Tests: `ImageDecodeWholeTest`, `YuNetDecoderTest`, `RedactionTest`,
   `ViewTransformTest`, `FaceRedactionTest`, `RedactReviewScreenContentTest`, `PhotoReviewTest`, `ChatViewModelTest`'s
   cover-faces cases; on an emulator

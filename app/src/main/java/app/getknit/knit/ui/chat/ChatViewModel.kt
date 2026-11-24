@@ -3623,11 +3623,15 @@ class ChatViewModel(
      * Ingests a picked or keyboard-inserted image and stages it in the input bar. A decode failure is
      * silently ignored, as before — the picture is still sitting in the picker, so there is nothing to
      * explain. A URI [outsideUris] refuses (one naming Knit's own files, from a paste or a keyboard) is never
-     * read, and is dropped as quietly.
+     * read, and is dropped as quietly. [fromKeyboard] says the keyboard inserted it, which spares a sticker the Cover
+     * faces review ([attachPicture]).
      */
-    fun attach(uri: Uri) {
+    fun attach(
+        uri: Uri,
+        fromKeyboard: Boolean = false,
+    ) {
         if (!outsideUris.admits(uri)) return
-        viewModelScope.launch { attachPicture(uri, shared = false, sharedType = null) }
+        viewModelScope.launch { attachPicture(uri, shared = false, sharedType = null, fromKeyboard = fromKeyboard) }
     }
 
     /**
@@ -3653,35 +3657,78 @@ class ChatViewModel(
 
     /**
      * [attach]'s and [attachShared]'s door: the video encode for a video, else the image ingest. With Cover faces on,
-     * a still photo opens the review first (ADR 2026-10.whkk).
+     * a still photo opens the review first (ADR 2026-10.whkk), except a sticker the keyboard inserted (ADR 2026-11.rk6d).
      */
     private suspend fun attachPicture(
         uri: Uri,
         shared: Boolean,
         sharedType: String?,
+        fromKeyboard: Boolean = false,
     ) {
         val video = attachments.isVideo(uri)
-        if (FACE_REDACTION_WIRED && settings.coverFacesEnabled.first()) {
-            // This is the photo door: anything here that is neither a video nor an animation is reviewed, even a
-            // pick that could not be told apart, so a picture can never slip past uncovered. One that will not
-            // decode is dropped by [review], never sent.
-            val moving = video || attachments.pictureOf(uri) == AttachmentStore.Picture.MOVING
-            if (!moving) {
-                review { decodeWholeOriented(context, uri, PHOTO_MAX_DIMENSION) }
-                return
-            }
-            _events.tryEmit(R.string.redact_motion_not_covered)
-        }
+        val gate = faceGate(uri, video, fromKeyboard)
+        if (gate == FaceGate.Reviewed) return
         if (video) {
             attachVideo(uri)
             return
         }
         val result = attachments.ingest(uri, screen = isRoom, fitBytes = photoFit())
+        // The source's header said sticker; the bytes the still door wrote must say so too, or the picture is reviewed
+        // after all: an alpha the header claims and the decoder drops, an opaque picture in an RGBA file, or a provider
+        // that served other bytes the second time it was opened.
+        if (gate == FaceGate.Spared && result is AttachmentStore.IngestResult.Success && !result.ingested.sticker) {
+            blobs.deleteIfUnreferenced(result.ingested.hash)
+            review { decodeWholeOriented(context, uri, PHOTO_MAX_DIMENSION) }
+            return
+        }
         val unreadable = (result as? AttachmentStore.IngestResult.Failed)?.reason == AttachmentStore.IngestResult.Reason.Unreadable
         if (shared && unreadable && sharedType?.startsWith("video/") == true) {
             _events.tryEmit(R.string.chat_video_unreadable)
         } else {
             stage(result, notifyFailure = shared)
+        }
+    }
+
+    /** What Cover faces makes of a picture at [attachPicture]'s door. */
+    private enum class FaceGate {
+        /** Sent as it is: Cover faces is off, or the picture moves (with the notice). */
+        Open,
+
+        /** The review is open; nothing more is done here. */
+        Reviewed,
+
+        /** A sticker the keyboard inserted, sent with no review if the ingest writes a sticker too. */
+        Spared,
+    }
+
+    /**
+     * Opens the review for a still picture while Cover faces is on (ADR 2026-10.whkk). This is the photo door: anything
+     * here that is neither a video nor an animation is reviewed, even a pick that could not be told apart, so a picture
+     * can never slip past uncovered. One that will not decode is dropped by [review], never sent. The one exception is a
+     * sticker the keyboard inserted (ADR 2026-11.rk6d): a drawing from its library goes as it is, as a tray send does.
+     * Both are asked, the keyboard and the bytes: the keyboard alone also pastes screenshots, and a sticker-shaped pick
+     * or paste from elsewhere can be a person cut out of a photo.
+     */
+    private suspend fun faceGate(
+        uri: Uri,
+        video: Boolean,
+        fromKeyboard: Boolean,
+    ): FaceGate {
+        if (!FACE_REDACTION_WIRED || !settings.coverFacesEnabled.first()) return FaceGate.Open
+        return when {
+            video || attachments.pictureOf(uri) == AttachmentStore.Picture.MOVING -> {
+                _events.tryEmit(R.string.redact_motion_not_covered)
+                FaceGate.Open
+            }
+
+            fromKeyboard && attachments.isStickerSource(uri) -> {
+                FaceGate.Spared
+            }
+
+            else -> {
+                review { decodeWholeOriented(context, uri, PHOTO_MAX_DIMENSION) }
+                FaceGate.Reviewed
+            }
         }
     }
 

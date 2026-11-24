@@ -26,6 +26,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.content.MediaType
 import androidx.compose.foundation.content.ReceiveContentListener
+import androidx.compose.foundation.content.TransferableContent
 import androidx.compose.foundation.content.consume
 import androidx.compose.foundation.content.contentReceiver
 import androidx.compose.foundation.content.hasMediaType
@@ -798,7 +799,7 @@ fun ChatScreen(
         onCancelTransfer = viewModel::cancelTransfer,
         onRetryTransfer = viewModel::retryTransfer,
         onClearAttachment = viewModel::clearAttachment,
-        onReceiveImage = viewModel::attach,
+        onReceiveImage = { viewModel.attach(it.uri, fromKeyboard = it.fromKeyboard) },
         onTyping = viewModel::onUserTyping,
         onDraftChanged = viewModel::onDraftChanged,
         draftTranslate =
@@ -1127,7 +1128,7 @@ internal fun ChatScreenContent(
     // A DM's peer update (ADR 2026-11.29m7): the hint, the request band and the staged cards; nothing by default.
     peerUpdate: PeerUpdateUi = PeerUpdateUi(),
     onClearAttachment: () -> Unit,
-    onReceiveImage: (Uri) -> Unit,
+    onReceiveImage: (ReceivedImage) -> Unit,
     onTyping: (String) -> Unit,
     // Every edit of the draft, so a link in it can grow a preview card; defaulted for the @Preview and test call sites.
     onDraftChanged: (Draft) -> Unit = {},
@@ -5066,6 +5067,15 @@ private fun MeshOriginLine(
     )
 }
 
+/**
+ * A picture the composer's field took in: from the keyboard ([fromKeyboard]: Gboard's stickers, GIFs and clipboard
+ * chips), a paste, or a drag. The keyboard spares a sticker the Cover faces review (ADR 2026-11.rk6d).
+ */
+class ReceivedImage(
+    val uri: Uri,
+    val fromKeyboard: Boolean,
+)
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageInput(
@@ -5099,7 +5109,7 @@ private fun MessageInput(
     onRefreshLocation: () -> Unit = {},
     onOpenLocationSettings: () -> Unit = {},
     onClearAttachment: () -> Unit,
-    onReceiveImage: (Uri) -> Unit,
+    onReceiveImage: (ReceivedImage) -> Unit,
     onSend: () -> Unit,
     onTyping: (String) -> Unit = {},
     onDraftChanged: (Draft) -> Unit = {},
@@ -5171,7 +5181,13 @@ private fun MessageInput(
                         transferableContent.consume { item ->
                             val uri = item.uri
                             if (uri != null) {
-                                onReceiveImage(uri)
+                                onReceiveImage(
+                                    ReceivedImage(
+                                        uri,
+                                        fromKeyboard =
+                                            transferableContent.source == TransferableContent.Source.Keyboard,
+                                    ),
+                                )
                                 true
                             } else {
                                 false
