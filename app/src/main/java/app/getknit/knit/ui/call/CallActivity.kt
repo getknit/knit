@@ -48,11 +48,13 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.outlined.ClosedCaptionDisabled
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.LinkOff
+import androidx.compose.material.icons.outlined.RecordVoiceOver
 import androidx.compose.material.icons.outlined.Sensors
 import androidx.compose.material.icons.outlined.SignalCellularAlt1Bar
 import androidx.compose.material.icons.outlined.SignalCellularAlt2Bar
@@ -61,6 +63,8 @@ import androidx.compose.material.icons.outlined.WifiCalling3
 import androidx.compose.material.icons.outlined.WifiTethering
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconToggleButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.IconToggleButton
@@ -89,6 +93,7 @@ import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -289,6 +294,7 @@ class CallActivity :
             }
         }
         val talk by (walkie?.talk ?: NO_TALK).collectAsState()
+        val handsFree by (walkie?.handsFree ?: NO_HANDS_FREE).collectAsState()
         val link by (walkie?.link ?: NO_LINK).collectAsState()
         val routing by system.routing.collectAsState()
         val lines by (transcriber?.lines ?: NO_LINES).collectAsState()
@@ -327,6 +333,8 @@ class CallActivity :
             onTalk = { lifecycleScope.launch { walkie?.press() } },
             onTalkSend = { lifecycleScope.launch { walkie?.release() } },
             onTalkCancel = { lifecycleScope.launch { walkie?.cancel() } },
+            handsFree = handsFree,
+            onHandsFree = { on -> lifecycleScope.launch { walkie?.setHandsFree(on, state?.id) } },
             walkieStats = walkieStats.takeIf { walkieUp },
             // No card with transcripts switched off, nor while the model is absent once its offer was closed.
             transcript =
@@ -425,6 +433,7 @@ private val RingReach = 40.dp
 private val ActionSize = 72.dp
 private val TalkSize = 120.dp
 private val NO_TALK = MutableStateFlow<Talk>(Talk.Idle())
+private val NO_HANDS_FREE = MutableStateFlow(false)
 private val NO_LINK = MutableStateFlow<TalkLink?>(null)
 private val NO_LINES = MutableStateFlow<List<TranscriptLine>>(emptyList())
 private val NO_MODEL = MutableStateFlow<SttModelState>(SttModelState.Absent)
@@ -474,6 +483,9 @@ internal fun CallScreen(
     onTalk: () -> Unit = {},
     onTalkSend: () -> Unit = {},
     onTalkCancel: () -> Unit = {},
+    // Whether the walkie sends on the voice (C-3.11-11), and its switch.
+    handsFree: Boolean = false,
+    onHandsFree: (Boolean) -> Unit = {},
     walkieStats: WalkieStats? = null,
     quality: Quality? = null,
     // The microphone's health (C-3.13-13): a dead or silenced one is the note the screen shows first.
@@ -574,7 +586,20 @@ internal fun CallScreen(
                     }
                 }
                 if (walkieUp) {
-                    WalkieControls(state, name, talk, link, routing, onHangUp, onRoute, onTalk, onTalkSend, onTalkCancel)
+                    WalkieControls(
+                        state,
+                        name,
+                        talk,
+                        link,
+                        routing,
+                        onHangUp,
+                        onRoute,
+                        onTalk,
+                        onTalkSend,
+                        onTalkCancel,
+                        handsFree,
+                        onHandsFree,
+                    )
                 } else {
                     Controls(
                         state,
@@ -949,8 +974,8 @@ private fun Controls(
 
 /**
  * A connected walkie session's controls (§3.11): whether a burst can reach the peer, where the last one stands, why
- * this is a walkie when a live call dropped to one, and the hold-to-talk button between the hang-up and where its
- * audio goes (§3.13).
+ * this is a walkie when a live call dropped to one, the Hands-free switch (C-3.11-11), and the hold-to-talk button
+ * between the hang-up and where its audio goes (§3.13).
  */
 @Composable
 private fun WalkieControls(
@@ -964,6 +989,8 @@ private fun WalkieControls(
     onTalk: () -> Unit,
     onTalkSend: () -> Unit,
     onTalkCancel: () -> Unit,
+    handsFree: Boolean,
+    onHandsFree: (Boolean) -> Unit,
 ) {
     TalkEndHaptic(talk)
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -981,7 +1008,9 @@ private fun WalkieControls(
             Spacer(Modifier.height(8.dp))
         }
         Text(talkLine(talk, name), style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(12.dp))
+        HandsFreeChip(handsFree, onHandsFree)
+        Spacer(Modifier.height(12.dp))
         // The talk button takes the centre a call screen gives its red hang-up; the hang-up steps aside to the start.
         // Each label's first line on one baseline, so a label that wraps (a translation of "Hold to talk") grows
         // downwards and the buttons above stay level at their bottoms.
@@ -990,13 +1019,37 @@ private fun WalkieControls(
                 CallAction(stringResource(R.string.call_action_end), Icons.Filled.CallEnd, HangUpRed, onHangUp)
             }
             Box(Modifier.weight(1f).alignByBaseline(), contentAlignment = Alignment.BottomCenter) {
-                TalkButton(recording = talk is Talk.Recording, onTalk, onTalkSend, onTalkCancel)
+                TalkButton(recording = talk is Talk.Recording, handsFree, onTalk, onTalkSend, onTalkCancel)
             }
             Box(Modifier.weight(1f).alignByBaseline(), contentAlignment = Alignment.BottomCenter) {
                 AudioRouteButton(routing, onRoute)
             }
         }
     }
+}
+
+/**
+ * Hands-free (C-3.11-11): on, the walkie sends whenever the user speaks, with no button held; off at the start of every
+ * call. A filter chip, so it reads as a mode of the button below and TalkBack announces it on and off.
+ */
+@Composable
+private fun HandsFreeChip(
+    on: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
+    FilterChip(
+        selected = on,
+        onClick = { onToggle(!on) },
+        label = { Text(stringResource(R.string.call_talk_hands_free)) },
+        leadingIcon = {
+            Icon(
+                if (on) Icons.Filled.RecordVoiceOver else Icons.Outlined.RecordVoiceOver,
+                contentDescription = null,
+                modifier = Modifier.size(FilterChipDefaults.IconSize),
+            )
+        },
+        modifier = Modifier.heightIn(min = 48.dp).testTag("call_hands_free"),
+    )
 }
 
 /**
@@ -1010,12 +1063,14 @@ private fun TalkEndHaptic(talk: Talk) {
     var before by remember { mutableStateOf(talk) }
     LaunchedEffect(talk) {
         if (before is Talk.Recording && talk is Talk.Sending) {
-            haptics.performHapticFeedback(
-                when (talk.cue) {
-                    TalkCue.RELEASED -> HapticFeedbackType.Confirm
-                    TalkCue.CAPPED -> HapticFeedbackType.Reject
-                },
-            )
+            when (talk.cue) {
+                TalkCue.RELEASED -> haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+
+                TalkCue.CAPPED -> haptics.performHapticFeedback(HapticFeedbackType.Reject)
+
+                // Hands-free (C-3.11-11): the voice ended it, with the phone perhaps on a table; nothing to feel.
+                TalkCue.VOX -> Unit
+            }
         }
         before = talk
     }
@@ -1087,6 +1142,18 @@ private fun talkLine(
             stringResource(R.string.call_talk_hearing, name)
         }
 
+        // Hands-free and quiet: what the last burst came to when it did not go, else that the next will.
+        is Talk.Listening -> {
+            stringResource(
+                when (talk.note) {
+                    Talk.Note.NO_MIC -> R.string.call_talk_no_mic
+                    Talk.Note.NOT_SENT -> R.string.call_talk_not_sent
+                    Talk.Note.NO_LINK -> R.string.call_talk_no_link
+                    else -> R.string.call_talk_listening
+                },
+            )
+        }
+
         is Talk.Idle if talk.note == Talk.Note.CAPPED -> {
             stringResource(R.string.call_talk_capped, (WalkiePolicy.MAX_BURST_MS / 1_000).toInt())
         }
@@ -1111,11 +1178,13 @@ private fun talkLine(
 
 /**
  * Held, it records; let go, it sends, wherever the finger has wandered meanwhile; a gesture the system cancels drops
- * the burst. TalkBack gets both as actions.
+ * the burst. TalkBack gets both as actions. Hands-free (C-3.11-11), the voice ends a burst, so its label never says to
+ * let go: a hold still talks.
  */
 @Composable
 private fun TalkButton(
     recording: Boolean,
+    handsFree: Boolean,
     onTalk: () -> Unit,
     onTalkSend: () -> Unit,
     onTalkCancel: () -> Unit,
@@ -1158,7 +1227,7 @@ private fun TalkButton(
                 Icon(Icons.Filled.Mic, contentDescription = null, modifier = Modifier.size(48.dp))
             }
         }
-        ButtonLabel(if (recording) stringResource(R.string.call_talk_release) else hold)
+        ButtonLabel(if (recording && !handsFree) stringResource(R.string.call_talk_release) else hold)
     }
 }
 
@@ -1542,6 +1611,7 @@ private fun PreviewCall(
     degraded: Boolean = false,
     talk: Talk = Talk.Idle(),
     link: TalkLink? = null,
+    handsFree: Boolean = false,
     walkieStats: WalkieStats? = null,
     quality: Quality? = null,
     caller: CallerContext? = null,
@@ -1581,6 +1651,7 @@ private fun PreviewCall(
         clock = { PREVIEW_NOW },
         talk = talk,
         link = link,
+        handsFree = handsFree,
         walkieStats = walkieStats,
         quality = quality,
         caller = caller,
@@ -1789,6 +1860,18 @@ fun CallScreenDroppedPreview() = PreviewCall(CallPhase.Ended, reason = CallPaylo
 @Preview(name = "Walkie, degraded, dark", widthDp = 411, heightDp = 891, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun CallScreenWalkiePreview() = PreviewCall(CallPhase.Connected, walkie = true, degraded = true, talk = Talk.Recording(4_200, 0.6f))
+
+// Hands-free armed (C-3.11-11), nothing being said: the next voice opens a burst.
+@Preview(name = "Walkie, hands-free listening", widthDp = 411, heightDp = 891)
+@Preview(name = "Walkie, hands-free listening, dark", widthDp = 411, heightDp = 891, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun CallScreenWalkieHandsFreePreview() = PreviewCall(CallPhase.Connected, walkie = true, handsFree = true, talk = Talk.Listening())
+
+// Hands-free, the voice sending a burst.
+@Preview(name = "Walkie, hands-free talking", widthDp = 411, heightDp = 891)
+@Composable
+fun CallScreenWalkieHandsFreeTalkingPreview() =
+    PreviewCall(CallPhase.Connected, walkie = true, handsFree = true, talk = Talk.Recording(2_400, 0.5f))
 
 @Preview(name = "Walkie, not linked", widthDp = 411, heightDp = 891)
 @Preview(name = "Walkie, not linked, dark", widthDp = 411, heightDp = 891, uiMode = Configuration.UI_MODE_NIGHT_YES)

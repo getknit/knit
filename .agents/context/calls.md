@@ -82,6 +82,16 @@ lines.
   ends with a `TalkCue` on the speaker's phone alone — the call screen's haptic on the step from `Talk.Recording` to
   `Talk.Sending`, and at the limit `CallTone.TALK_CAPPED`, played after the recorder stops (79yb's fourteenth amendment).
   The platform Opus codec under `TalkRecorder` and `TalkPlayer` is tested on an emulator by `WalkieOpusInstrumentedTest`.
+  **Before touching hands-free — `call/Vox.kt` (`VoxGate`, `VoxPolicy`, `VoxSensitivity`, `SpeechFloor`),
+  `TalkRecorder.monitor` / `Monitor` / `Burst` / `Take` / `adopt`, `WalkieTalk.setHandsFree` / `handsFree`,
+  `Talk.Listening`, `TalkCue.VOX`, `CallPreferenceStore.voxSensitivity` (`calls_vox_sensitivity`), the call screen's
+  Hands-free chip, `CallService`'s Mute for an armed walkie or `…debug.CALL --es op vox`:** READ ADR 2026-11.rd8y and
+  `docs/VOICE_CALLS.md` C-3.11-11 — armed per call and never carried into the next; an energy gate over `TalkGain`'s
+  own floor (shared, so `TalkGainTest` pins both); a burst is sent only once it holds 200 ms of speech, so a false
+  trigger costs no radio byte; the gate never opens or learns while the peer's burst plays or for 500 ms after; a
+  burst at 30 s rolls into the next with no cue; a press takes the armed microphone, or the hands-free burst it lands
+  on; nothing on the wire. The recorder's one capture loop owns every encoder and answers other threads at its next
+  frame; the walkie's commit runs on that thread and never waits (`tryLock`, `LATER`).
   **Before touching `call/CaptureHealth` (`CaptureProfile`, `CapturePolicy`, `CaptureWatch`), `ui/call/CaptureTap`,
   the audio module in `WebRtcCallMedia`, `call/TalkCapture` or the `call_capture_` keys:** READ ADR 2026-10.kw29 (and
   79yb's thirteenth amendment: the walkie's phone microphone follows the same profile) and `docs/VOICE_CALLS.md`

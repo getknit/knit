@@ -345,6 +345,8 @@
     <string name="call_talk_release">Loslassen</string>
     <string name="call_talk_action_start">Sprechen starten</string>
     <string name="call_talk_action_send">Beenden und senden</string>
+    <string name="call_talk_hands_free">Sprachaktivierung</string>
+    <string name="call_talk_listening">Hört zu. Sprich einfach.</string>
     <string name="call_walkie_pill">Walkie-Talkie · Mesh</string>
     <string name="call_caller_locked">Entsperren, um die letzten Nachrichten zu sehen</string>
     <string name="call_caller_you">Du</string>
@@ -397,6 +399,8 @@
     <string name="call_notif_unreachable">Gerade nicht erreichbar</string>
     <string name="call_notif_unproven">Warten auf Antwort vom anderen Smartphone</string>
     <string name="call_notif_walkie">Walkie-Talkie</string>
+    <string name="call_notif_walkie_hands_free">Walkie-Talkie · Sprachaktivierung, sendet, sobald du sprichst</string>
+    <string name="call_notif_walkie_hands_free_muted">Walkie-Talkie · Sprachaktivierung, stumm</string>
     <string name="call_notif_voice_muted">Sprachanruf · stumm</string>
     <string name="call_notif_voice">Sprachanruf</string>
     <string name="call_diag_title">Anrufdiagnose</string>
@@ -996,6 +1000,11 @@
     <string name="call_settings_full_screen_off">Anrufe können nicht auf dem Sperrbildschirm klingeln und kommen als Benachrichtigung an. Aktiviere „Vollbildbenachrichtigungen zulassen“ für Knit.</string>
     <string name="call_settings_prefer_mesh_title">Mesh-Anrufe bevorzugen</string>
     <string name="call_settings_prefer_mesh_subtitle">Die Anruftaste in einem Chat startet einen Mesh-Anruf. Live-Anrufe findest du dann im Menü des Chats.</string>
+    <string name="call_settings_vox_title">Empfindlichkeit der Sprachaktivierung</string>
+    <string name="call_settings_vox_subtitle">Wie leise eine Stimme sein darf, damit ein Mesh-Anruf mit Sprachaktivierung trotzdem zu senden beginnt. Höher nimmt auch mehr Hintergrundgeräusche auf.</string>
+    <string name="call_settings_vox_low">Niedrig</string>
+    <string name="call_settings_vox_medium">Mittel</string>
+    <string name="call_settings_vox_high">Hoch</string>
     <string name="call_settings_transcripts_title">Transkripte und Untertitel</string>
     <string name="call_settings_transcripts_subtitle">Wandelt englische Sprache auf diesem Smartphone in Text um: Walkie-Talkie-Durchsagen beim Abspielen, Live-Anrufe, wenn du CC aktivierst, und Sprachnachrichten, wenn du auf „Transkribieren“ tippst. Der Text wird nie gesendet.</string>
     <string name="call_settings_speech_model_title">Sprachmodell</string>

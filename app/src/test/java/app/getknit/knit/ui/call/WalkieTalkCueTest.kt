@@ -8,8 +8,10 @@ import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.call.CallPhase
 import app.getknit.knit.call.CallState
@@ -25,7 +27,8 @@ import org.robolectric.annotation.GraphicsMode
 /**
  * How a walkie burst spoken ends, as the speaker feels it (docs/VOICE_CALLS.md C-3.11-5): a tick as the button is let
  * go, a firmer buzz when the burst ran to its limit with the button still held, and a status line that says the limit
- * stopped it.
+ * stopped it. Hands-free (C-3.11-11): a burst the voice ended is not felt, the screen says it listens, and its switch
+ * says which way it was flipped.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -43,6 +46,8 @@ class WalkieTalkCueTest {
             }
         }
     private var talk by mutableStateOf<Talk>(Talk.Recording(elapsedMs = 12_000, level = 0.4f))
+    private var handsFree by mutableStateOf(false)
+    private val flipped = mutableListOf<Boolean>()
 
     private fun render(first: Talk) {
         talk = first
@@ -71,6 +76,8 @@ class WalkieTalkCueTest {
                         onRoute = {},
                         clock = { 0L },
                         talk = talk,
+                        handsFree = handsFree,
+                        onHandsFree = { flipped += it },
                     )
                 }
             }
@@ -107,5 +114,35 @@ class WalkieTalkCueTest {
         render(Talk.Sending(TalkCue.CAPPED))
         step(Talk.Idle(Talk.Note.SENT))
         compose.runOnIdle { assertEquals(emptyList<HapticFeedbackType>(), felt) }
+    }
+
+    @Test
+    fun aHandsFreeBurstTheVoiceEndedIsNotFeltAndTheScreenListensOn() {
+        handsFree = true
+        render(Talk.Recording(elapsedMs = 3_000, level = 0.4f))
+        step(Talk.Sending(TalkCue.VOX))
+        step(Talk.Listening(Talk.Note.SENT))
+        compose.onNodeWithText("Listening. Just talk.").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(emptyList<HapticFeedbackType>(), felt) }
+    }
+
+    // Listening, a burst that did not go still says so, rather than that the phone listens.
+    @Test
+    fun aHandsFreeBurstThatDidNotGoSaysSo() {
+        handsFree = true
+        render(Talk.Listening(Talk.Note.NO_LINK))
+        compose.onNodeWithText("Not linked, so that one didn't go").assertIsDisplayed()
+    }
+
+    @Test
+    fun theHandsFreeSwitchFlipsEachWay() {
+        render(Talk.Idle())
+        compose.onNodeWithText("Hands-free").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf(true), flipped)
+            handsFree = true
+        }
+        compose.onNodeWithText("Hands-free").assertIsSelected().performClick()
+        compose.runOnIdle { assertEquals(listOf(true, false), flipped) }
     }
 }

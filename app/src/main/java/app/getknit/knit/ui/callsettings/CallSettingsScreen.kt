@@ -61,6 +61,7 @@ import app.getknit.knit.call.OwnIceServers
 import app.getknit.knit.call.ProbeResult
 import app.getknit.knit.call.ProbeVerdict
 import app.getknit.knit.call.SttModelState
+import app.getknit.knit.call.VoxSensitivity
 import app.getknit.knit.data.settings.CallIntake
 import app.getknit.knit.di.CALLS_WIRED
 import app.getknit.knit.ui.call.mb
@@ -70,6 +71,7 @@ import app.getknit.knit.ui.fullScreenCalls
 import app.getknit.knit.ui.openFullScreenCallSettings
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.rememberOnResume
+import app.getknit.knit.ui.settings.ChoiceRow
 import org.koin.androidx.compose.koinViewModel
 
 /**
@@ -90,6 +92,7 @@ fun CallSettingsScreen(
     val transcripts by viewModel.transcripts.collectAsStateWithLifecycle()
     val intake by viewModel.intake.collectAsStateWithLifecycle()
     val preferMesh by viewModel.preferMesh.collectAsStateWithLifecycle()
+    val voxSensitivity by viewModel.voxSensitivity.collectAsStateWithLifecycle()
     val context = LocalContext.current
     // The route exists only where calls are wired (`CALL_SETTINGS_WIRED` is `CALLS_WIRED`); re-read on every resume,
     // since the switch lives on a system page.
@@ -120,6 +123,8 @@ fun CallSettingsScreen(
         choosesFirstCall = viewModel.choosesFirstCall,
         preferMesh = preferMesh,
         onTogglePreferMesh = viewModel::setPreferMesh,
+        voxSensitivity = voxSensitivity,
+        onVoxSensitivity = viewModel::setVoxSensitivity,
         loaded = loaded,
         snackbarHostState = snackbarHostState,
         onBack = onBack,
@@ -157,6 +162,9 @@ internal fun CallSettingsScreenContent(
     choosesFirstCall: Boolean = live && walkie,
     preferMesh: Boolean = false,
     onTogglePreferMesh: (Boolean) -> Unit = {},
+    // "Hands-free sensitivity" (C-3.11-11): shown where mesh calls are wired.
+    voxSensitivity: VoxSensitivity = VoxSensitivity.DEFAULT,
+    onVoxSensitivity: (VoxSensitivity) -> Unit = {},
     loaded: Boolean = true,
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
     onToggleRelayAll: (Boolean) -> Unit = {},
@@ -212,6 +220,22 @@ internal fun CallSettingsScreenContent(
                     enabled = preferMesh,
                     onToggle = onTogglePreferMesh,
                     modifier = Modifier.testTag("call_settings_prefer_mesh"),
+                )
+            }
+            if (walkie) {
+                HorizontalDivider()
+                ChoiceRow(
+                    title = stringResource(R.string.call_settings_vox_title),
+                    subtitle = stringResource(R.string.call_settings_vox_subtitle),
+                    choices =
+                        listOf(
+                            VoxSensitivity.LOW to R.string.call_settings_vox_low,
+                            VoxSensitivity.MEDIUM to R.string.call_settings_vox_medium,
+                            VoxSensitivity.HIGH to R.string.call_settings_vox_high,
+                        ),
+                    selected = voxSensitivity,
+                    onSelect = onVoxSensitivity,
+                    modifier = Modifier.testTag("call_settings_vox"),
                 )
             }
             if (live) {
@@ -575,6 +599,7 @@ fun CallSettingsScreenIncomingPreview() =
             intake = CallIntake(live = false, walkie = true),
             fullScreen = false,
             preferMesh = true,
+            voxSensitivity = VoxSensitivity.HIGH,
         )
     }
 

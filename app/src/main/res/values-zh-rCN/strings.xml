@@ -338,6 +338,8 @@
     <string name="call_talk_release">松开发送</string>
     <string name="call_talk_action_start">开始讲话</string>
     <string name="call_talk_action_send">停止并发送</string>
+    <string name="call_talk_hands_free">声控发送</string>
+    <string name="call_talk_listening">正在聆听，直接说话即可。</string>
     <string name="call_walkie_pill">对讲 · Mesh</string>
     <string name="call_caller_locked">解锁即可查看最近的消息</string>
     <string name="call_caller_you">你</string>
@@ -389,6 +391,8 @@
     <string name="call_notif_unreachable">暂时无法联系到对方</string>
     <string name="call_notif_unproven">正在等待对方的手机响应</string>
     <string name="call_notif_walkie">对讲</string>
+    <string name="call_notif_walkie_hands_free">对讲 · 声控发送，说话即发送</string>
+    <string name="call_notif_walkie_hands_free_muted">对讲 · 声控发送，已静音</string>
     <string name="call_notif_voice_muted">语音通话 · 已静音</string>
     <string name="call_notif_voice">语音通话</string>
     <string name="call_diag_title">通话诊断</string>
@@ -980,6 +984,11 @@
     <string name="call_settings_full_screen_off">来电无法在锁屏上响铃，只会以通知形式出现。请为 Knit 开启“允许全屏通知”。</string>
     <string name="call_settings_prefer_mesh_title">优先使用 Mesh 通话</string>
     <string name="call_settings_prefer_mesh_subtitle">聊天中的通话按钮会发起 Mesh 通话。实时通话移至聊天的菜单中。</string>
+    <string name="call_settings_vox_title">声控发送灵敏度</string>
+    <string name="call_settings_vox_subtitle">开启声控发送后，在 Mesh 通话中多小的声音也能开始发送。灵敏度越高，也会拾取更多背景噪音。</string>
+    <string name="call_settings_vox_low">低</string>
+    <string name="call_settings_vox_medium">中</string>
+    <string name="call_settings_vox_high">高</string>
     <string name="call_settings_transcripts_title">转写和字幕</string>
     <string name="call_settings_transcripts_subtitle">在这部手机上将英语语音转为文字：对讲内容在播放时转写，实时通话在你开启 CC 后转写，语音消息在你点按“转写”时转写。这些文字绝不会发送出去。</string>
     <string name="call_settings_speech_model_title">语音模型</string>

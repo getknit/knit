@@ -1,7 +1,6 @@
 package app.getknit.knit.call
 
 import kotlin.math.abs
-import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -15,7 +14,7 @@ import kotlin.math.sqrt
  *
  * Slow up, fast down: the gain falls at once toward a loud frame's need and rises at most [RISE_DB_PER_FRAME] per frame
  * of speech, so it settles near the loud syllables instead of pumping the quiet ones up. It holds between words, where
- * a frame is not speech: within 12 dB of the quietest frame of the last 2 s (the noise floor, which a steady hum
+ * a frame is not speech: within 12 dB of the quietest frame of the last 2 s ([SpeechFloor], which a steady hum
  * becomes), or under [MIN_SPEECH_DB]. A limiter keeps every frame's peak under [CEILING_DB]. It is kept across bursts,
  * one per microphone, so a session's second burst starts where the first left off.
  *
@@ -36,9 +35,7 @@ class TalkGain {
         private set
 
     // The latest frames' RMS, for the noise floor: the quietest of them.
-    private val recent = DoubleArray(FLOOR_FRAMES)
-    private var filled = 0
-    private var next = 0
+    private val floor = SpeechFloor()
     private var applied = dbToGain(INITIAL_GAIN_DB)
 
     /** Starts a burst's tallies; the gain and the noise floor carry over. */
@@ -47,10 +44,15 @@ class TalkGain {
         limited = 0
     }
 
-    /** Applies the gain to the [size] bytes of [pcm]: one frame. */
+    /**
+     * Applies the gain to the [size] bytes of [pcm]: one frame. Unless it may [learn] from it, the frame neither steers
+     * the gain nor joins the noise floor: a hands-free walkie's microphone hears the peer's burst from the loudspeaker
+     * too (C-3.11-11).
+     */
     fun apply(
         pcm: ByteArray,
         size: Int,
+        learn: Boolean = true,
     ) {
         val samples = size / BYTES
         if (samples == 0) return
@@ -61,8 +63,8 @@ class TalkGain {
             sumSquares += s.toDouble() * s
             peak = max(peak, abs(s))
         }
-        val rmsDb = toDb(sqrt(sumSquares / samples) / FULL_SCALE)
-        track(rmsDb)
+        val rmsDb = SpeechFloor.toDb(sqrt(sumSquares / samples) / FULL_SCALE)
+        if (learn) track(rmsDb)
         val limit = if (peak == 0) Double.MAX_VALUE else dbToGain(CEILING_DB) * FULL_SCALE / peak
         val target = dbToGain(gainDb)
         val end = min(target, limit)
@@ -81,13 +83,7 @@ class TalkGain {
 
     // A frame well over the noise floor steers the gain; anything else leaves it be.
     private fun track(rmsDb: Double) {
-        recent[next] = rmsDb
-        next = (next + 1) % FLOOR_FRAMES
-        filled = min(filled + 1, FLOOR_FRAMES)
-        var floorDb = rmsDb
-        for (i in 0 until filled) floorDb = min(floorDb, recent[i])
-        val speech = rmsDb >= MIN_SPEECH_DB && rmsDb >= floorDb + SPEECH_OVER_FLOOR_DB
-        if (!speech) return
+        if (!floor.take(rmsDb, SPEECH_OVER_FLOOR_DB, MIN_SPEECH_DB)) return
         speechDb = max(speechDb ?: rmsDb, rmsDb)
         val wanted = (TARGET_DB - rmsDb).coerceIn(0.0, MAX_GAIN_DB)
         gainDb =
@@ -123,18 +119,12 @@ class TalkGain {
         const val MIN_SPEECH_DB = -55.0
 
         private const val SPEECH_OVER_FLOOR_DB = 12.0
-
-        // 2 s of 20 ms frames: longer than the gap between words, shorter than a room's change.
-        private const val FLOOR_FRAMES = 100
         private const val FULL_SCALE = 32_768.0
         private const val BYTES = 2
         private const val BYTE = 0xFF
         private const val BYTE_BITS = 8
         private const val DB_PER_DECADE = 20.0
-        private const val SILENT_DB = -120.0
 
         private fun dbToGain(db: Double): Double = 10.0.pow(db / DB_PER_DECADE)
-
-        private fun toDb(level: Double): Double = if (level <= 0.0) SILENT_DB else DB_PER_DECADE * log10(level)
     }
 }

@@ -338,6 +338,8 @@
     <string name="call_talk_release">Lepas untuk kirim</string>
     <string name="call_talk_action_start">Mulai bicara</string>
     <string name="call_talk_action_send">Berhenti dan kirim</string>
+    <string name="call_talk_hands_free">Aktivasi suara</string>
+    <string name="call_talk_listening">Mendengarkan. Bicara saja.</string>
     <string name="call_walkie_pill">Walkie-talkie · mesh</string>
     <string name="call_caller_locked">Buka kunci untuk melihat pesan terakhir Anda</string>
     <string name="call_caller_you">Anda</string>
@@ -389,6 +391,8 @@
     <string name="call_notif_unreachable">Tidak dapat dijangkau saat ini</string>
     <string name="call_notif_unproven">Menunggu respons dari ponselnya</string>
     <string name="call_notif_walkie">Walkie-talkie</string>
+    <string name="call_notif_walkie_hands_free">Walkie-talkie · aktivasi suara, mengirim saat Anda bicara</string>
+    <string name="call_notif_walkie_hands_free_muted">Walkie-talkie · aktivasi suara, dibisukan</string>
     <string name="call_notif_voice_muted">Panggilan suara · dibisukan</string>
     <string name="call_notif_voice">Panggilan suara</string>
     <string name="call_diag_title">Diagnostik panggilan</string>
@@ -980,6 +984,11 @@
     <string name="call_settings_full_screen_off">Panggilan tidak bisa berdering di layar kunci: panggilan masuk sebagai notifikasi. Aktifkan “Izinkan notifikasi layar penuh” untuk Knit.</string>
     <string name="call_settings_prefer_mesh_title">Utamakan panggilan mesh</string>
     <string name="call_settings_prefer_mesh_subtitle">Tombol panggilan di chat melakukan panggilan mesh. Panggilan live pindah ke menu chat.</string>
+    <string name="call_settings_vox_title">Sensitivitas aktivasi suara</string>
+    <string name="call_settings_vox_subtitle">Seberapa pelan suara yang masih bisa mulai mengirim di panggilan mesh saat aktivasi suara aktif. Makin tinggi, makin banyak suara latar yang ikut tertangkap.</string>
+    <string name="call_settings_vox_low">Rendah</string>
+    <string name="call_settings_vox_medium">Sedang</string>
+    <string name="call_settings_vox_high">Tinggi</string>
     <string name="call_settings_transcripts_title">Transkrip dan teks</string>
     <string name="call_settings_transcripts_subtitle">Ubah ucapan bahasa Inggris menjadi teks di ponsel ini: potongan walkie-talkie saat diputar, panggilan live saat Anda mengaktifkan CC, dan pesan suara saat Anda mengetuk Transkripsikan. Teksnya tidak pernah dikirim.</string>
     <string name="call_settings_speech_model_title">Model ucapan</string>

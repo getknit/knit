@@ -352,6 +352,8 @@
     <string name="call_talk_release">Solte para enviar</string>
     <string name="call_talk_action_start">Começar a falar</string>
     <string name="call_talk_action_send">Parar e enviar</string>
+    <string name="call_talk_hands_free">Ativação por voz</string>
+    <string name="call_talk_listening">Ouvindo. É só falar.</string>
     <string name="call_walkie_pill">Walkie-talkie · mesh</string>
     <string name="call_caller_locked">Desbloqueie para ver suas últimas mensagens</string>
     <string name="call_caller_you">Você</string>
@@ -405,6 +407,8 @@
     <string name="call_notif_unreachable">Não dá para alcançar a pessoa agora</string>
     <string name="call_notif_unproven">Aguardando o celular da pessoa responder</string>
     <string name="call_notif_walkie">Walkie-talkie</string>
+    <string name="call_notif_walkie_hands_free">Walkie-talkie · ativação por voz, envia quando você fala</string>
+    <string name="call_notif_walkie_hands_free_muted">Walkie-talkie · ativação por voz, no mudo</string>
     <string name="call_notif_voice_muted">Chamada de voz · no mudo</string>
     <string name="call_notif_voice">Chamada de voz</string>
     <string name="call_diag_title">Diagnóstico da chamada</string>
@@ -1012,6 +1016,11 @@
     <string name="call_settings_full_screen_off">As chamadas não podem tocar na tela de bloqueio: elas chegam como notificação. Ative \"Permitir notificações em tela cheia\" para o Knit.</string>
     <string name="call_settings_prefer_mesh_title">Preferir chamadas pela mesh</string>
     <string name="call_settings_prefer_mesh_subtitle">O botão de chamada numa conversa faz uma chamada pela mesh. As chamadas ao vivo vão para o menu da conversa.</string>
+    <string name="call_settings_vox_title">Sensibilidade da ativação por voz</string>
+    <string name="call_settings_vox_subtitle">O quão baixa uma voz pode ser e ainda começar a enviar numa chamada pela mesh com a ativação por voz ligada. Mais alta também capta mais ruído de fundo.</string>
+    <string name="call_settings_vox_low">Baixa</string>
+    <string name="call_settings_vox_medium">Média</string>
+    <string name="call_settings_vox_high">Alta</string>
     <string name="call_settings_transcripts_title">Transcrições e legendas</string>
     <string name="call_settings_transcripts_subtitle">Transforma a fala em inglês em texto neste celular: trechos de walkie-talkie enquanto tocam, chamadas ao vivo quando você ativa o CC e mensagens de voz quando você toca em Transcrever. O texto nunca é enviado.</string>
     <string name="call_settings_speech_model_title">Modelo de fala</string>

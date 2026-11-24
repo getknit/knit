@@ -333,6 +333,7 @@ carries; never renumber an old one.
 | [2026-11.p6dk](decisions/2026-11-p6dk-a-received-mention-is-highlighted-only-under-a-name-the-reader-gives-that-person.md) | A received mention is highlighted only under a name the reader gives that person | mentions, names |
 | [2026-11.pk9u](decisions/2026-11-pk9u-chat-menus.md) | Chat menus, sheets and confirmations draw in the chat's own window | ui |
 | [2026-11.qu98](decisions/2026-11-qu98-a-message-request-s-attachments-wait-for-acceptance.md) | a message request's attachments wait for acceptance | blobs, messages, security |
+| [2026-11.rd8y](decisions/2026-11-rd8y-a-walkie-call-can-send-hands-free-on-the-voice.md) | A walkie call can send hands-free on the voice | calls, voice |
 | [2026-11.rk6d](decisions/2026-11-rk6d-a-sticker-is-read-off-its-bytes-and-kept-on-the-phone.md) | A sticker is read off its bytes and kept on the phone | attachments, ui, data |
 | [2026-11.sfms](decisions/2026-11-sfms-a-reset-the-replacement-floor-refuses-is-re-opened-when-the-floor-ends.md) | A reset the replacement floor refuses is re-opened when the floor ends | crypto, pfs, recovery |
 | [2026-11.sp7k](decisions/2026-11-sp7k-per-chat-mute-is-a-local-notification-gate.md) | Per-chat mute is a local notification gate | notifications, messages |

@@ -9,6 +9,7 @@ import app.getknit.knit.call.ProbeVerdict
 import app.getknit.knit.call.SttModel
 import app.getknit.knit.call.SttModelState
 import app.getknit.knit.call.TurnServer
+import app.getknit.knit.call.VoxSensitivity
 import app.getknit.knit.data.settings.CallPreferenceStore
 import app.getknit.knit.data.settings.OwnIceStore
 import app.getknit.knit.data.settings.SettingsStore
@@ -52,7 +53,12 @@ class CallSettingsViewModelTest {
         }
     private val transcriptStore = mockk<TranscriptStore>(relaxed = true) { every { enabled } returns transcriptsOn }
     private val preferMesh = MutableStateFlow(false)
-    private val preference = mockk<CallPreferenceStore>(relaxed = true).also { every { it.preferMesh } returns preferMesh }
+    private val voxSensitivity = MutableStateFlow(VoxSensitivity.DEFAULT)
+    private val preference =
+        mockk<CallPreferenceStore>(relaxed = true).also {
+            every { it.preferMesh } returns preferMesh
+            every { it.voxSensitivity } returns voxSensitivity
+        }
 
     private var probed: Pair<List<String>, TurnServer?>? = null
     private var probeAnswer: ProbeResult? = ProbeResult(ProbeVerdict.Reached, ProbeVerdict.AuthFailed)
@@ -250,6 +256,20 @@ class CallSettingsViewModelTest {
             vm.setPreferMesh(true)
             advanceUntilIdle()
             coVerify { preference.setPreferMesh(true) }
+        }
+
+    /** "Hands-free sensitivity" (C-3.11-11) reads the store and writes through. */
+    @Test
+    fun theHandsFreeSensitivityReadsAndWritesThrough() =
+        runTest {
+            val vm = vm(walkie = true)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.voxSensitivity.collect {} }
+            assertEquals(VoxSensitivity.MEDIUM, vm.voxSensitivity.value)
+            voxSensitivity.value = VoxSensitivity.LOW
+            assertEquals(VoxSensitivity.LOW, vm.voxSensitivity.value)
+            vm.setVoxSensitivity(VoxSensitivity.HIGH)
+            advanceUntilIdle()
+            coVerify { preference.setVoxSensitivity(VoxSensitivity.HIGH) }
         }
 
     @Test

@@ -10,19 +10,28 @@ import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import app.getknit.knit.call.CaptureHealth
 import app.getknit.knit.call.CaptureProfile
+import app.getknit.knit.call.SpeechFloor
 import app.getknit.knit.call.TalkCapture
 import app.getknit.knit.call.TalkGain
 import app.getknit.knit.call.TalkPcmTap
+import app.getknit.knit.call.VoxGate
+import app.getknit.knit.call.VoxPolicy
+import app.getknit.knit.call.VoxSensitivity
 import app.getknit.knit.call.WalkiePolicy
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 
 /**
@@ -35,10 +44,21 @@ import kotlin.math.abs
  * besides.
  *
  * One burst at a time: `WalkieTalk` calls [start], [stop] and [cancel] under its lock. The capture loop runs on one IO
- * coroutine, which alone feeds and drains the encoder and releases both at its end.
+ * coroutine, which alone reads the microphone and feeds, drains and releases every encoder; what other threads ask of it
+ * is answered at its next 20 ms frame.
  *
- * [nextFrom] is the debug bridge's stand-in for a voice: the next burst reads that file of raw PCM, paced as the
- * microphone would deliver it, so a trial can send the same known sentence every time (the transcript, C-3.11-9).
+ * Hands-free (C-3.11-11), [monitor] keeps the microphone open between bursts and runs every frame, after the gain,
+ * through a [VoxGate]. A burst the gate opens starts [VoxPolicy.PRE_ROLL_MS] back, out of a ring of the latest frames,
+ * and is encoded at once but handed to the walkie ([Monitor.commit]) only once it is speech enough to send; one that ends
+ * before is dropped, unsent. At [WalkiePolicy.MAX_BURST_MS] still speaking, it ends and the next opens on the next frame,
+ * so a long turn loses nothing. A press on the armed monitor takes its microphone, and a press during a hands-free
+ * burst being sent takes the burst over ([adopt]). The frames heard while the peer's burst may be on the loudspeaker
+ * ([Monitor.hearing]) teach neither the gain nor the gate. A run of exact zeros on the call path teaches the fallback as
+ * a burst does, and the monitor moves to the headset's microphone, or off it, between bursts.
+ *
+ * [nextFrom] is the debug bridge's stand-in for a voice: the next burst, or the next monitor until the file ends, reads
+ * that file of raw PCM, paced as the microphone would deliver it, so a trial can send the same known sentence every time
+ * (the transcript, C-3.11-9).
  *
  * [tap] sees each read of PCM before it goes to the encoder, so the transcript can write out what was spoken as the
  * model hears it without Opus (C-3.11-9); a tap that throws costs the transcript, never the burst.
@@ -53,13 +73,53 @@ internal class TalkRecorder(
     private val capture: CaptureHealth? = null,
     private val muted: () -> Boolean = { false },
 ) {
-    private var job: Job? = null
+    /**
+     * One burst's encoding, as the walkie holds it: its Opus [packets] as the encoder makes them, closed once its last is
+     * out, and [ended]: true when its tail went out, false when it was dropped. [vox]: the gate opened it (C-3.11-11).
+     */
+    class Burst internal constructor(
+        val vox: Boolean,
+    ) {
+        internal val channel = Channel<ByteArray>(Channel.UNLIMITED)
+        internal val done = CompletableDeferred<Boolean>()
 
-    @Volatile
-    private var stopping = false
+        val packets: ReceiveChannel<ByteArray> get() = channel
 
+        val ended: Deferred<Boolean> get() = done
+    }
+
+    /** What the walkie answers when a hands-free burst is speech enough to send (C-3.11-11). */
+    enum class Take {
+        /** Sent: the walkie streams its packets from now. */
+        ACCEPTED,
+
+        /** Not yet (a burst before it is still ending): asked again at the next frame. */
+        LATER,
+
+        /** Never: it is dropped unsent. */
+        REFUSED,
+    }
+
+    /** The armed microphone's way to the walkie (C-3.11-11). Read on the capture thread, so nothing here suspends. */
+    interface Monitor {
+        /** Whether a headset has the call's audio now (§3.13): the monitor moves to its microphone between bursts. */
+        fun headset(): Boolean
+
+        fun sensitivity(): VoxSensitivity
+
+        /** Whether the peer's burst may be on the loudspeaker now: the gate stays shut and learns nothing meanwhile. */
+        fun hearing(): Boolean
+
+        /** The gate found [burst] speech enough to send. */
+        fun commit(burst: Burst): Take
+
+        /** The microphone was lost: the monitor has ended. */
+        fun lost()
+    }
+
+    // The capture loop running now: a press's alone, or the armed monitor's.
     @Volatile
-    private var dropping = false
+    private var loop: Loop? = null
 
     @Volatile
     private var startedAt = 0L
@@ -88,24 +148,36 @@ internal class TalkRecorder(
     @Volatile
     var applyGain = true
 
-    /** The source the last burst's microphone opened with; null before one, or for a burst read from [nextFrom]. */
+    /** The source the last microphone opened with; null before one, or for a burst read from [nextFrom]. */
     @Volatile
     var lastSource: Int? = null
         private set
 
     /**
-     * What the last burst's microphone had: `on`, `off` (not asked for), `call path` (its source runs the phone's own),
+     * What the last microphone had: `on`, `off` (not asked for), `call path` (its source runs the phone's own),
      * `unavailable` or `refused`; null before one.
      */
     @Volatile
     var suppressor: String? = null
         private set
 
-    /** Raw 16 kHz mono 16-bit little-endian PCM the next burst reads in place of the microphone, once. */
+    /** Raw 16 kHz mono 16-bit little-endian PCM the next burst, or the next monitor, reads in place of the microphone, once. */
     @Volatile
     var nextFrom: File? = null
 
-    /** Milliseconds since [start], or 0 when not recording. */
+    /** Whether the armed monitor holds the microphone (C-3.11-11). */
+    val monitoring: Boolean get() = loop?.monitor != null
+
+    /** The hands-free gate's state now, for the debug bridge; null with no monitor. */
+    val gateState: VoxGate.State? get() = loop?.gate?.state
+
+    /** Hands-free bursts the gate opened, and of them those it sent, dropped unsent, and rolled over at the limit. */
+    val voxOpened = AtomicInteger()
+    val voxCommitted = AtomicInteger()
+    val voxDropped = AtomicInteger()
+    val voxRolled = AtomicInteger()
+
+    /** Milliseconds since the burst being recorded began, or 0 when none is. */
     fun elapsedMs(): Long = startedAt.let { if (it == 0L) 0L else System.currentTimeMillis() - it }
 
     /** The loudest sample since the last call, 0f..1f, for the live meter. */
@@ -116,106 +188,452 @@ internal class TalkRecorder(
     }
 
     /**
-     * Begins a burst, handing each Opus packet to [onPacket] on the capture thread; false when the microphone is busy.
-     * [headset]: a headset has the call's audio (§3.13), so the burst is spoken into its microphone.
+     * Begins a pressed burst; null when the microphone is busy or the encoder would not open. [headset]: a headset has
+     * the call's audio (§3.13), so the burst is spoken into its microphone. With the monitor armed, the press takes the
+     * monitor's microphone, and the gate stands aside until it ends; a hands-free burst not yet sent gives way to it.
      */
-    fun start(
-        headset: Boolean,
-        onPacket: (ByteArray) -> Unit,
-    ): Boolean {
-        if (job != null) return false
+    suspend fun start(headset: Boolean): Burst? {
+        loop?.let { running ->
+            return if (running.monitor != null) running.ask(null) { Command.Press(it) } else null
+        }
         lastSource = null
-        val record = nextFrom?.also { nextFrom = null }?.let(::openFile) ?: openRecord(headset) ?: return false
+        val input = nextFrom?.also { nextFrom = null }?.let(::openFile) ?: openRecord(headset) ?: return null
+        return pressOn(input, headset)
+    }
+
+    // A press's own loop on [input], with its encoder; null, and [input] closed, where either is refused.
+    private fun pressOn(
+        input: Capture,
+        headset: Boolean,
+    ): Burst? {
         val codec = openEncoder()
-        if (codec == null) {
-            record.close()
+        val press = Loop(input, headset, monitor = null)
+        val burst = Burst(vox = false)
+        if (codec != null) press.attach(Encoding(burst, codec, accepted = true, held = null))
+        if (codec != null && launch(press)) return burst
+        runCatching { codec?.release() }
+        input.close()
+        return null
+    }
+
+    /** Ends [burst]: its last packets are flushed out of the encoder and handed on before this returns. */
+    suspend fun stop(burst: Burst) = end(burst, keep = true)
+
+    /** Ends [burst] without its tail. */
+    suspend fun cancel(burst: Burst) = end(burst, keep = false)
+
+    /**
+     * A press takes over the hands-free [burst] being sent: the gate stands aside, so the burst ends on [stop] and never on
+     * a silence. False when it is no longer the one being sent.
+     */
+    suspend fun adopt(burst: Burst): Boolean = loop?.takeIf { it.monitor != null }?.ask(false) { Command.Adopt(burst, it) } ?: false
+
+    /**
+     * Arms the microphone for hands-free bursts (C-3.11-11): it stays open, every frame goes through a [VoxGate], and a
+     * burst the gate finds speech enough to send goes to [monitor]. False when the microphone is busy or would not open.
+     */
+    fun monitor(monitor: Monitor): Boolean {
+        if (loop != null) return false
+        lastSource = null
+        val headset = monitor.headset()
+        val input = nextFrom?.also { nextFrom = null }?.let(::openFile) ?: openRecord(headset) ?: return false
+        if (!launch(Loop(input, headset, monitor))) {
+            input.close()
             return false
         }
-        stopping = false
-        dropping = false
-        peak = 0
-        startedAt = System.currentTimeMillis()
-        val gain = gains.getValue(headset).also { it.newBurst() }
-        job = scope.launch(Dispatchers.IO) { pump(record, codec, gain, headset, onPacket) }
         return true
     }
 
-    /** Ends the burst; its last packets are flushed out of the encoder and handed on before this returns. */
-    suspend fun stop() = end(drop = false)
-
-    /** Ends the burst without its tail. */
-    suspend fun cancel() = end(drop = true)
-
-    private suspend fun end(drop: Boolean) {
-        dropping = drop
-        stopping = true
-        job?.join()
-        job = null
-        startedAt = 0L
+    /** Disarms the microphone; a hands-free burst being sent ends with its tail. */
+    suspend fun unmonitor() {
+        val running = loop?.takeIf { it.monitor != null } ?: return
+        running.ask(Unit) { Command.Quit(it) }
+        running.job?.join()
     }
 
-    // The capture loop: 20 ms of PCM in, whatever packets the encoder has out, until a stop; then the flush.
-    @Suppress("LoopWithTooManyJumpStatements") // a failed read or a refused queue ends the burst, an empty read skips
-    private fun pump(
-        record: Capture,
-        codec: MediaCodec,
-        gain: TalkGain,
-        headset: Boolean,
-        onPacket: (ByteArray) -> Unit,
+    private suspend fun end(
+        burst: Burst,
+        keep: Boolean,
     ) {
-        val pcm = ByteArray(FRAME_BYTES)
-        val info = MediaCodec.BufferInfo()
+        val running = loop ?: return
+        running.ask(Unit) { Command.End(burst, keep, it) }
+        // A press's own loop closes the microphone as it ends; the next press waits for that.
+        if (running.monitor == null) running.job?.join()
+    }
+
+    // One loop at a time, claimed atomically: a press and an arming that race both find the other's.
+    private fun launch(running: Loop): Boolean {
+        synchronized(this) {
+            if (loop != null) return false
+            loop = running
+        }
+        running.job = scope.launch(Dispatchers.IO) { running.run() }
+        return true
+    }
+
+    /** What the capture loop is asked from other threads, answered at its next frame (or at once, once it has ended). */
+    private sealed interface Command {
+        class Press(
+            val reply: CompletableDeferred<Burst?>,
+        ) : Command
+
+        class End(
+            val burst: Burst,
+            val keep: Boolean,
+            val reply: CompletableDeferred<Unit>,
+        ) : Command
+
+        class Adopt(
+            val burst: Burst,
+            val reply: CompletableDeferred<Boolean>,
+        ) : Command
+
+        class Quit(
+            val reply: CompletableDeferred<Unit>,
+        ) : Command
+    }
+
+    /** A burst's encoder, its timestamps, and (a hands-free burst not yet sent) whether it is speech and its PCM so far. */
+    private class Encoding(
+        val burst: Burst,
+        val codec: MediaCodec,
+        var accepted: Boolean,
+        var held: MutableList<ByteArray>?,
+    ) {
+        var committed = false
         var ptsUs = 0L
-        val level = BurstLevel()
-        try {
-            while (!stopping) {
-                val n = record.read(pcm, 0, pcm.size)
-                if (n < 0) break
-                if (n == 0) continue
-                level.read(pcm, n, gain)
-                tapped(pcm, n)
-                if (!queue(codec, pcm, n, ptsUs, 0)) break
-                ptsUs += n / PCM_BYTES * US_PER_S / WalkiePolicy.SAMPLE_RATE
-                drain(codec, info, onPacket, untilEnd = false)
+    }
+
+    /**
+     * One capture loop on one IO coroutine, which alone reads [input] and feeds, drains and releases every encoder: a
+     * press's, which ends with its burst, or the armed monitor's, which runs every frame through [gate] and attaches an
+     * encoder only while a burst wants one.
+     */
+    private inner class Loop(
+        var input: Capture,
+        var headset: Boolean,
+        val monitor: Monitor?,
+    ) {
+        val gate = monitor?.let { VoxGate() }
+        var job: Job? = null
+        private val commands = ArrayDeque<Command>()
+        private var alive = true
+        private var quit: Command.Quit? = null
+        private val info = MediaCodec.BufferInfo()
+
+        // The latest frames, for a hands-free burst to open with (VoxPolicy.PRE_ROLL_MS).
+        private val ring = ArrayDeque<ByteArray>()
+        private var encoding: Encoding? = null
+
+        // An encoder made ready between bursts, so a burst opens without the encoder's start on the capture thread;
+        // tried once a burst, not every frame, where the phone refuses one.
+        private var spare: MediaCodec? = null
+        private var spareFailed = false
+
+        // What the microphone gave a press's loop, before the gain, for a dead call path; a monitor's run of zeros.
+        private var samples = 0L
+        private var burstPeak = 0
+        private var zeros = 0L
+        private var frames = 0
+
+        @Volatile
+        var reopen = false
+
+        /** Asks the loop for [make]'s answer, or [dead] once it has ended. */
+        suspend fun <T> ask(
+            dead: T,
+            make: (CompletableDeferred<T>) -> Command,
+        ): T {
+            val reply = CompletableDeferred<T>()
+            val command = make(reply)
+            synchronized(this) {
+                if (!alive) return dead
+                commands.addLast(command)
             }
-            if (!dropping && queue(codec, pcm, 0, ptsUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)) {
-                drain(codec, info, onPacket, untilEnd = true)
+            return reply.await()
+        }
+
+        fun attach(e: Encoding) {
+            encoding = e
+            gains.getValue(headset).newBurst()
+            peak = 0
+            startedAt = System.currentTimeMillis()
+        }
+
+        @Suppress("LoopWithTooManyJumpStatements") // a quit or an ended press, a lost microphone, or an input that ended
+        fun run() {
+            val pcm = ByteArray(FRAME_BYTES)
+            try {
+                while (true) {
+                    if (!obey()) break
+                    if (monitor != null && !moveMicrophone()) break
+                    val n = input.read(pcm, 0, pcm.size)
+                    if (n < 0 && !readOn()) break
+                    if (n > 0) frame(pcm, n)
+                }
+            } catch (
+                @Suppress("TooGenericExceptionCaught") e: Exception,
+            ) {
+                // The platform codec and the capture throw what they like; either way the burst ends with what went out.
+                Log.w(TAG, "walkie capture ended: ${e.javaClass.simpleName}: ${e.message}")
+            } finally {
+                close()
             }
-        } catch (
-            @Suppress("TooGenericExceptionCaught") e: Exception,
+        }
+
+        // The input ended: an armed monitor's file gives way to the microphone; anything else ends the loop.
+        private fun readOn(): Boolean = input is PacedFile && monitor != null && reopenOn(headset)
+
+        // Answers what was asked since the last frame; false once the loop is to end.
+        private fun obey(): Boolean {
+            while (true) {
+                val command = synchronized(this) { commands.removeFirstOrNull() } ?: return true
+                when (command) {
+                    is Command.Press -> {
+                        command.reply.complete(press())
+                    }
+
+                    is Command.Adopt -> {
+                        val e = encoding?.takeIf { it.burst === command.burst && it.accepted }
+                        if (e != null) gate?.hold()
+                        command.reply.complete(e != null)
+                    }
+
+                    is Command.End -> {
+                        val ours = encoding?.burst === command.burst
+                        if (ours) {
+                            end(keep = command.keep)
+                            gate?.release()
+                        }
+                        command.reply.complete(Unit)
+                        if (ours && monitor == null) return false
+                    }
+
+                    is Command.Quit -> {
+                        quit = command
+                        return false
+                    }
+                }
+            }
+        }
+
+        // A press on the armed monitor: it takes the microphone; a hands-free burst not yet sent is dropped for it.
+        private fun press(): Burst? {
+            encoding?.let { e ->
+                if (e.accepted) return null
+                end(keep = false)
+            }
+            val codec = takeEncoder() ?: return null
+            gate?.hold()
+            return Burst(vox = false).also { attach(Encoding(it, codec, accepted = true, held = null)) }
+        }
+
+        // Between bursts only: onto a headset's microphone or off it (§3.13), or onto the fallback a dead path taught.
+        private fun moveMicrophone(): Boolean {
+            if (encoding != null) return true
+            val m = monitor ?: return true
+            val want = if (++frames % ROUTE_CHECK_FRAMES == 0) m.headset() else headset
+            if (!reopen && want == headset) return true
+            reopen = false
+            return reopenOn(want)
+        }
+
+        private fun reopenOn(want: Boolean): Boolean {
+            end(keep = true)
+            input.close()
+            // None opened: the loop ends, and its close tells the walkie.
+            val next = openRecord(want) ?: return false
+            input = next
+            headset = want
+            zeros = 0L
+            ring.clear()
+            gate?.release()
+            return true
+        }
+
+        private fun frame(
+            pcm: ByteArray,
+            n: Int,
         ) {
-            // The platform codec and the capture throw what they like; either way the burst ends with what went out.
-            Log.w(TAG, "walkie capture ended: ${e.javaClass.simpleName}: ${e.message}")
-        } finally {
-            // What the gain made of the burst, for tuning it against a call's level on the phones.
+            val raw = peakOf(pcm, n)
+            val hearing = monitor?.hearing() == true
+            val gain = gains.getValue(headset)
+            // Off, the gain still reads the frame (on a copy) so its log line says what the microphone gave.
+            if (applyGain) gain.apply(pcm, n, learn = !hearing) else gain.apply(pcm.copyOf(n), n, learn = !hearing)
+            peak = maxOf(peak, if (applyGain) peakOf(pcm, n) else raw)
+            val frame = pcm.copyOf(n)
+            val g = gate
+            if (g == null) {
+                samples += n / PCM_BYTES
+                burstPeak = maxOf(burstPeak, raw)
+                feed(frame)
+                return
+            }
+            val m = monitor ?: return
+            watchDead(raw, n, hearing)
+            g.sensitivity = m.sensitivity()
+            act(g.frame(SpeechFloor.rmsDb(frame, n), hearing, muted()), frame)
+            offer()
+            ring.addLast(frame)
+            while (ring.size > VoxPolicy.RING_FRAMES) ring.removeFirst()
+            if (encoding == null && spare == null && !spareFailed) spare = openEncoder().also { spareFailed = it == null }
+        }
+
+        // What the gate said of [frame]: open a burst on it with its pre-roll, mark it speech, end it, or roll over.
+        private fun act(
+            action: VoxGate.Action,
+            frame: ByteArray,
+        ) {
+            when (action) {
+                is VoxGate.Action.Open -> {
+                    open(committed = false)
+                    ring.takeLast(action.preRoll).forEach(::feed)
+                    feed(frame)
+                }
+
+                VoxGate.Action.Commit -> {
+                    encoding?.committed = true
+                    feed(frame)
+                }
+
+                is VoxGate.Action.Close -> {
+                    end(keep = action.kept)
+                }
+
+                VoxGate.Action.Roll -> {
+                    voxRolled.incrementAndGet()
+                    end(keep = true)
+                    open(committed = true)
+                    feed(frame)
+                }
+
+                VoxGate.Action.None -> {
+                    feed(frame)
+                }
+            }
+        }
+
+        // A hands-free burst opens: an encoder, and (for the debug build's own line) its PCM held until it is sent.
+        private fun open(committed: Boolean) {
+            val codec = takeEncoder() ?: return
+            voxOpened.incrementAndGet()
+            attach(Encoding(Burst(vox = true), codec, accepted = false, held = tap?.let { mutableListOf() }))
+            encoding?.committed = committed
+        }
+
+        private fun takeEncoder(): MediaCodec? = spare?.also { spare = null } ?: openEncoder()
+
+        // A hands-free burst that is speech asks the walkie, at every frame until it answers.
+        private fun offer() {
+            val e = encoding ?: return
+            val m = monitor ?: return
+            if (!e.burst.vox || e.accepted || !e.committed) return
+            when (m.commit(e.burst)) {
+                Take.ACCEPTED -> {
+                    e.accepted = true
+                    voxCommitted.incrementAndGet()
+                    e.held?.forEach { tapped(it, it.size) }
+                    e.held = null
+                }
+
+                // Asked again at the next frame.
+                Take.LATER -> {}
+
+                Take.REFUSED -> {
+                    end(keep = false)
+                    gate?.release()
+                }
+            }
+        }
+
+        // One frame into the burst being recorded, if one is.
+        private fun feed(frame: ByteArray) {
+            val e = encoding ?: return
+            if (e.accepted) tapped(frame, frame.size) else e.held?.add(frame)
+            if (!queue(e.codec, frame, frame.size, e.ptsUs, 0)) {
+                end(keep = true)
+                return
+            }
+            e.ptsUs += frame.size / PCM_BYTES * US_PER_S / WalkiePolicy.SAMPLE_RATE
+            drain(e.codec, info, { e.burst.channel.trySend(it) }, untilEnd = false)
+        }
+
+        // Ends the burst being recorded: its tail flushed out where [keep] and the walkie took it, else dropped.
+        private fun end(keep: Boolean) {
+            val e = encoding ?: return
+            encoding = null
+            spareFailed = false
+            startedAt = 0L
+            val kept = keep && e.accepted
+            if (e.burst.vox && !e.accepted) voxDropped.incrementAndGet()
+            try {
+                if (kept && queue(e.codec, ByteArray(0), 0, e.ptsUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)) {
+                    drain(e.codec, info, { e.burst.channel.trySend(it) }, untilEnd = true)
+                }
+            } catch (
+                @Suppress("TooGenericExceptionCaught") x: Exception,
+            ) {
+                Log.w(TAG, "walkie encoder flush failed: ${x.javaClass.simpleName}: ${x.message}")
+            } finally {
+                runCatching { e.codec.stop() }
+                runCatching { e.codec.release() }
+                e.burst.channel.close()
+                e.burst.done.complete(kept)
+            }
+            if (e.accepted) logGain()
+        }
+
+        // C-3.13-13 on the armed microphone: a second of exact zeros on the call path, not muted, silenced or the peer's.
+        private fun watchDead(
+            raw: Int,
+            n: Int,
+            hearing: Boolean,
+        ) {
+            val mic = input as? Microphone ?: return
+            if (raw > 0 || hearing || muted()) {
+                zeros = 0L
+                return
+            }
+            zeros += n / PCM_BYTES
+            if (!TalkCapture.deadMicrophone(mic.source, headset, zeros, 0) || mic.silenced()) return
+            zeros = 0L
+            val health = capture ?: return
+            Log.w(TAG, "walkie in: armed source ${mic.source} captured only zeros; the phone's microphone takes the fallback")
+            scope.launch {
+                health.learnedSilent()
+                reopen = true
+            }
+        }
+
+        private fun logGain() {
+            val gain = gains.getValue(headset)
             val heard = gain.speechDb?.let { "speech at %.0f dBFS".format(Locale.ROOT, it) } ?: "no speech"
             val off = if (applyGain) "" else " (off, not applied)"
             Log.i(TAG, "walkie gain: $heard, gain %+.1f dB%s, %d frame(s) limited".format(Locale.ROOT, gain.gainDb, off, gain.limited))
-            deadRoute(record, headset, level.samples, level.peak)
-            record.close()
-            runCatching { codec.stop() }
-            runCatching { codec.release() }
         }
-    }
 
-    // What the microphone gave over a burst, before the gain, for a dead call path; and the gain, applied or only read.
-    private inner class BurstLevel {
-        var samples = 0L
-            private set
-        var peak = 0
-            private set
-
-        fun read(
-            pcm: ByteArray,
-            size: Int,
-            gain: TalkGain,
-        ) {
-            val loudest = peakOf(pcm, size)
-            peak = maxOf(peak, loudest)
-            samples += size / PCM_BYTES
-            // Off, the gain still reads the burst (on a copy) so its log line says what the microphone gave.
-            if (applyGain) gain.apply(pcm, size) else gain.apply(pcm.copyOf(size), size)
-            this@TalkRecorder.peak = maxOf(this@TalkRecorder.peak, if (applyGain) peakOf(pcm, size) else loudest)
+        private fun close() {
+            runCatching { end(keep = true) }
+            runCatching { spare?.release() }
+            spare = null
+            if (monitor == null) deadRoute(input, headset, samples, burstPeak)
+            input.close()
+            synchronized(this) {
+                alive = false
+                for (command in commands) {
+                    when (command) {
+                        is Command.Press -> command.reply.complete(null)
+                        is Command.Adopt -> command.reply.complete(false)
+                        is Command.End -> command.reply.complete(Unit)
+                        is Command.Quit -> command.reply.complete(Unit)
+                    }
+                }
+                commands.clear()
+            }
+            synchronized(this@TalkRecorder) { if (loop === this) loop = null }
+            // An armed microphone that ended unasked (a lost route, a failed read, a throw) disarms the walkie.
+            if (quit == null) monitor?.lost()
+            quit?.reply?.complete(Unit)
         }
     }
 
@@ -371,7 +789,8 @@ internal class TalkRecorder(
                         WalkiePolicy.SAMPLE_RATE,
                         AudioFormat.CHANNEL_IN_MONO,
                         AudioFormat.ENCODING_PCM_16BIT,
-                        maxOf(min, FRAME_BYTES * BUFFER_FRAMES),
+                        // Half a second: the capture thread may pause while an encoder starts, and the frames wait.
+                        maxOf(min, FRAME_BYTES * RECORD_FRAMES),
                     )
                 }.getOrNull() ?: continue
             if (record.state == AudioRecord.STATE_INITIALIZED) {
@@ -463,6 +882,10 @@ internal class TalkRecorder(
         // 20 ms of 16 kHz mono PCM: one Opus frame's worth.
         const val FRAME_BYTES = WalkiePolicy.SAMPLE_RATE / 50 * PCM_BYTES
         const val BUFFER_FRAMES = 4
+        const val RECORD_FRAMES = 25
+
+        // How often the armed monitor asks whether a headset has the call: every half second.
+        const val ROUTE_CHECK_FRAMES = 25
         const val US_PER_S = 1_000_000L
         const val NS_PER_S = 1_000_000_000L
         const val NS_PER_MS = 1_000_000L

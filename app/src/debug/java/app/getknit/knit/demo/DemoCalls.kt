@@ -289,9 +289,9 @@ object DemoCalls {
         ) {
             val tag = TalkWire.tagOf(call.id)
             val b = bursts++
-            val packets = Channel<ByteArray>(Channel.UNLIMITED)
             val recorder = TalkRecorder(scope).also { it.nextFrom = pcm }
-            if (!recorder.start(headset = false) { packets.trySend(it) }) {
+            val take = recorder.start(headset = false)
+            if (take == null) {
                 Log.w(TAG, "peer $id: the encoder would not open")
                 return
             }
@@ -307,12 +307,11 @@ object DemoCalls {
                         val bytes = TalkWire.encode(tag, TalkChunk(b = b, q = q++, a = audio, e = end))
                         screen.onTalk(id, bytes, sentAt = System.currentTimeMillis(), frameBytes = bytes.size + SEAL_BYTES)
                     }
-                    for (packet in packets) chunker.add(packet)?.let { out(it, end = false) }
+                    for (packet in take.packets) chunker.add(packet)?.let { out(it, end = false) }
                     out(chunker.flush(), end = true)
                 }
             delay(pcm.length() / PCM_BYTES_PER_MS + 300)
-            recorder.stop()
-            packets.close()
+            recorder.stop(take)
             sender.join()
         }
     }

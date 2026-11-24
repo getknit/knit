@@ -11,12 +11,16 @@ import androidx.test.rule.GrantPermissionRule
 import app.getknit.knit.call.BurstPcm
 import app.getknit.knit.call.OpusPackets
 import app.getknit.knit.call.SttPolicy
+import app.getknit.knit.call.VoxPolicy
+import app.getknit.knit.call.VoxSensitivity
 import app.getknit.knit.call.WalkiePolicy
 import app.getknit.knit.data.AudioFixtures
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -40,7 +44,8 @@ import java.util.Collections
  * The first case speaks a known tone through [TalkRecorder.nextFrom], the debug bridge's stand-in for a voice, so what
  * [TalkPlayer] decodes can be held against what went in: the same pitch, the same length, at the walkie's bit rate,
  * every packet one 20 ms Opus frame and, where the encoder offers constant bitrate, one size (§2.7: a chunk's size must
- * say nothing about what was said). The second records from the microphone itself.
+ * say nothing about what was said). The second records from the microphone itself. The third arms the microphone
+ * hands-free (C-3.11-11) on a file of two utterances and a click.
  *
  *     ./gradlew :app:pixel7api33DebugAndroidTest \
  *         -Pandroid.testInstrumentationRunnerArguments.class=app.getknit.knit.ui.call.WalkieOpusInstrumentedTest
@@ -75,11 +80,15 @@ class WalkieOpusInstrumentedTest {
                 nextFrom = pcm
             }
         val packets = Collections.synchronizedList(mutableListOf<ByteArray>())
-        assertTrue("the Opus encoder opened", recorder.start(headset = false) { packets += it })
+        val take = checkNotNull(runBlocking { recorder.start(headset = false) }) { "the Opus encoder would not open" }
+        val collector = scope.launch { for (packet in take.packets) packets += packet }
         // The file is read at the microphone's pace; once a packet per 20 ms of the tone has come out it is read through,
         // and stop() flushes the encoder and joins the capture, so the wait only has to cover the reading.
         awaitPackets(packets, BURST_MS / FRAME_MS)
-        runBlocking { recorder.stop() }
+        runBlocking {
+            recorder.stop(take)
+            collector.join()
+        }
 
         val burst = packets.toList()
         assertOneFrameEach(burst)
@@ -122,9 +131,13 @@ class WalkieOpusInstrumentedTest {
         assertTrue("a microphone", context.packageManager.hasSystemFeature(PackageManager.FEATURE_MICROPHONE))
         val recorder = TalkRecorder(scope)
         val packets = Collections.synchronizedList(mutableListOf<ByteArray>())
-        assertTrue("the microphone and the Opus encoder opened", recorder.start(headset = false) { packets += it })
+        val take = checkNotNull(runBlocking { recorder.start(headset = false) }) { "the microphone or the Opus encoder would not open" }
+        val collector = scope.launch { for (packet in take.packets) packets += packet }
         awaitPackets(packets, MIC_PACKETS)
-        runBlocking { recorder.stop() }
+        runBlocking {
+            recorder.stop(take)
+            collector.join()
+        }
 
         assertNotNull("a source opened", recorder.lastSource)
         Log.i(TAG, "microphone: source ${recorder.lastSource}, noise suppressor ${recorder.suppressor}, ${packets.size} packets")
@@ -156,6 +169,65 @@ class WalkieOpusInstrumentedTest {
             }
         }
         return audio.drain()
+    }
+
+    /**
+     * Hands-free (C-3.11-11) on the real encoder: an armed microphone fed two utterances 2 s apart, then a 100 ms click,
+     * hands the walkie exactly two bursts, each its utterance with its pre-roll before and its hang after, and drops
+     * the click unsent.
+     */
+    @Test
+    fun handsFreeSendsEachUtteranceAsItsOwnBurstAndDropsAClick() {
+        val quiet = { ms: Int -> AudioFixtures.tone(rate = WalkiePolicy.SAMPLE_RATE, toneMs = 0, totalMs = ms) }
+        val voice = { ms: Int -> AudioFixtures.tone(rate = WalkiePolicy.SAMPLE_RATE, toneMs = ms, totalMs = ms, level = LEVEL) }
+        val speech =
+            quiet(1_000) + voice(UTTERANCE_MS) + quiet(2_000) + voice(UTTERANCE_MS) + quiet(2_000) + voice(CLICK_MS) + quiet(3_000)
+        val pcm = File(dir, "utterances.pcm").apply { writeBytes(littleEndian(speech)) }
+        val recorder = TalkRecorder(scope).apply { nextFrom = pcm }
+        // Each burst sent, its packets, and the collector draining them.
+        val bursts = Collections.synchronizedList(mutableListOf<Triple<TalkRecorder.Burst, MutableList<ByteArray>, Job>>())
+        val armed =
+            recorder.monitor(
+                object : TalkRecorder.Monitor {
+                    override fun headset() = false
+
+                    override fun sensitivity() = VoxSensitivity.MEDIUM
+
+                    override fun hearing() = false
+
+                    override fun commit(burst: TalkRecorder.Burst): TalkRecorder.Take {
+                        val packets = Collections.synchronizedList(mutableListOf<ByteArray>())
+                        bursts += Triple(burst, packets, scope.launch { for (packet in burst.packets) packets += packet })
+                        return TalkRecorder.Take.ACCEPTED
+                    }
+
+                    override fun lost() = Unit
+                },
+            )
+        assertTrue("the armed monitor opened", armed)
+        val deadline = System.currentTimeMillis() + AWAIT_MS
+        // A copy to read: the capture thread adds to the list meanwhile.
+        while (recorder.voxDropped.get() < 1 || bursts.toList().any { !it.first.ended.isCompleted }) {
+            assertTrue(
+                "after $AWAIT_MS ms: ${recorder.voxOpened.get()} opened, ${bursts.size} sent, ${recorder.voxDropped.get()} dropped",
+                System.currentTimeMillis() < deadline,
+            )
+            Thread.sleep(POLL_MS)
+        }
+        runBlocking { recorder.unmonitor() }
+
+        assertEquals("bursts sent", 2, bursts.size)
+        assertEquals("the click, dropped", 1, recorder.voxDropped.get())
+        assertEquals("bursts opened", 3, recorder.voxOpened.get())
+        for ((take, packets, collector) in bursts.toList()) {
+            assertTrue("a sent burst ends with its tail", runBlocking { take.ended.await() })
+            // A burst over is not its collector done: the last packets may still be on their way into the list.
+            runBlocking { collector.join() }
+            assertOneFrameEach(packets.toList())
+            // The utterance, its pre-roll before and its hang after, give or take the encoder's ramp and flush.
+            val expected = ((VoxPolicy.PRE_ROLL_MS + UTTERANCE_MS + VoxPolicy.HANG_MS) / FRAME_MS).toInt()
+            assertTrue("${packets.size} packets, about $expected", packets.size in expected - 10..expected + 10)
+        }
     }
 
     private fun awaitPackets(
@@ -195,6 +267,8 @@ class WalkieOpusInstrumentedTest {
         const val FRAME_MS = 20
         const val LEVEL = 0.3
         const val MIC_PACKETS = 75
+        const val UTTERANCE_MS = 1_500
+        const val CLICK_MS = 100
         const val MAX_PACKET = 255
         const val DECODE_CAP_MS = 10_000L
         const val PLAY_BUDGET_MS = 30_000L

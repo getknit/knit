@@ -37,6 +37,7 @@ import app.getknit.knit.call.TurnSource
 import app.getknit.knit.call.TurnTargets
 import app.getknit.knit.call.VoiceNoteSpeech
 import app.getknit.knit.call.VoiceNoteTranscriber
+import app.getknit.knit.call.VoxSensitivity
 import app.getknit.knit.call.WalkieRoute
 import app.getknit.knit.call.WalkieTranscriber
 import app.getknit.knit.data.MessageRepository
@@ -46,6 +47,7 @@ import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.data.settings.CallIntake
+import app.getknit.knit.data.settings.CallPreferenceStore
 import app.getknit.knit.data.settings.CallTombStore
 import app.getknit.knit.data.settings.CaptureStore
 import app.getknit.knit.data.settings.IncomingCallStore
@@ -553,6 +555,9 @@ private fun Module.walkieGraph() {
         )
     }
     single {
+        // The Calls screen's "Hands-free sensitivity" (C-3.11-11), read at every frame the armed microphone hears.
+        val voxSensitivity =
+            get<CallPreferenceStore>().voxSensitivity.stateIn(get<CoroutineScope>(), SharingStarted.Eagerly, VoxSensitivity.DEFAULT)
         WalkieTalk(
             calls = get(),
             recorder = get(),
@@ -573,11 +578,15 @@ private fun Module.walkieGraph() {
             transcript = if (STT_WIRED) get<WalkieTranscriber>() else null,
             field = fieldLog(),
             cue = walkieCue(ToneGeneratorPlayer(get<CoroutineScope>(), log = { line -> Log.w(TAG, line) })),
+            sensitivity = voxSensitivity.let { flow -> { flow.value } },
         )
     }
 }
 
-/** The tone a spoken burst ends with (C-3.11-5): none when the user lets go, two beeps when it ran to its limit. */
+/**
+ * The tone a spoken burst ends with (C-3.11-5): none when the user lets go or the voice ends it (C-3.11-11), two beeps
+ * when it ran to its limit.
+ */
 private fun walkieCue(tones: TonePlayer): (TalkCue) -> Unit = { how -> if (how == TalkCue.CAPPED) tones.play(CallTone.TALK_CAPPED) }
 
 /**

@@ -8,6 +8,7 @@ import app.getknit.knit.call.ProbeResult
 import app.getknit.knit.call.SttModelState
 import app.getknit.knit.call.StunServers
 import app.getknit.knit.call.TurnUrls
+import app.getknit.knit.call.VoxSensitivity
 import app.getknit.knit.data.settings.CallIntake
 import app.getknit.knit.data.settings.CallPreferenceStore
 import app.getknit.knit.data.settings.IncomingCallStore
@@ -173,6 +174,11 @@ class CallSettingsViewModel(
     val preferMesh: StateFlow<Boolean> =
         (preference?.preferMesh ?: flowOf(false)).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
+    /** "Hands-free sensitivity" (C-3.11-11): shown where mesh calls are wired, the default until the store's first read. */
+    val voxSensitivity: StateFlow<VoxSensitivity> =
+        (preference?.voxSensitivity ?: flowOf(VoxSensitivity.DEFAULT))
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), VoxSensitivity.DEFAULT)
+
     private val draft = MutableStateFlow(CallServerDraft())
     private val testing = MutableStateFlow(false)
     private val result = MutableStateFlow<ProbeResult?>(null)
@@ -237,6 +243,11 @@ class CallSettingsViewModel(
     fun setPreferMesh(value: Boolean) {
         val store = preference ?: return
         viewModelScope.launch { store.setPreferMesh(value) }
+    }
+
+    fun setVoxSensitivity(value: VoxSensitivity) {
+        val store = preference ?: return
+        viewModelScope.launch { store.setVoxSensitivity(value) }
     }
 
     fun setRelayAll(value: Boolean) {

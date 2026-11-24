@@ -352,6 +352,8 @@
     <string name="call_talk_release">Relâcher pour envoyer</string>
     <string name="call_talk_action_start">Commencer à parler</string>
     <string name="call_talk_action_send">Arrêter et envoyer</string>
+    <string name="call_talk_hands_free">Activation vocale</string>
+    <string name="call_talk_listening">À l’écoute. Parlez, tout simplement.</string>
     <string name="call_walkie_pill">Walkie-talkie · mesh</string>
     <string name="call_caller_locked">Déverrouillez pour voir vos derniers messages</string>
     <string name="call_caller_you">Vous</string>
@@ -405,6 +407,8 @@
     <string name="call_notif_unreachable">Impossible de joindre cette personne pour le moment</string>
     <string name="call_notif_unproven">En attente de la réponse de son téléphone</string>
     <string name="call_notif_walkie">Walkie-talkie</string>
+    <string name="call_notif_walkie_hands_free">Walkie-talkie · activation vocale, envoie dès que vous parlez</string>
+    <string name="call_notif_walkie_hands_free_muted">Walkie-talkie · activation vocale, micro coupé</string>
     <string name="call_notif_voice_muted">Appel vocal · micro coupé</string>
     <string name="call_notif_voice">Appel vocal</string>
     <string name="call_diag_title">Diagnostic de l’appel</string>
@@ -1012,6 +1016,11 @@
     <string name="call_settings_full_screen_off">Les appels ne peuvent pas sonner sur l’écran de verrouillage : ils arrivent sous forme de notification. Activez « Autoriser les notifications en plein écran » pour Knit.</string>
     <string name="call_settings_prefer_mesh_title">Préférer les appels par le mesh</string>
     <string name="call_settings_prefer_mesh_subtitle">Le bouton d’appel d’une discussion lance un appel par le mesh. Les appels en direct passent dans le menu de la discussion.</string>
+    <string name="call_settings_vox_title">Sensibilité de l’activation vocale</string>
+    <string name="call_settings_vox_subtitle">À quel point une voix peut être faible et lancer quand même l’envoi dans un appel par le mesh avec l’activation vocale. Plus élevée, elle capte aussi davantage de bruit de fond.</string>
+    <string name="call_settings_vox_low">Faible</string>
+    <string name="call_settings_vox_medium">Moyenne</string>
+    <string name="call_settings_vox_high">Élevée</string>
     <string name="call_settings_transcripts_title">Transcriptions et sous-titres</string>
     <string name="call_settings_transcripts_subtitle">Convertir la parole en anglais en texte, sur ce téléphone : les messages walkie-talkie pendant leur lecture, les appels en direct quand vous activez CC, et les messages vocaux quand vous appuyez sur Transcrire. Le texte n’est jamais envoyé.</string>
     <string name="call_settings_speech_model_title">Modèle vocal</string>

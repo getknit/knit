@@ -51,6 +51,9 @@ document:
   Recordings/Knit (Music/Knit on Android 10 and 11) unchanged, and saving it again doesn't make a second copy.
 - Stickers now show without a bubble, a little smaller than a photo. Long-press one to save it, and tap the
   smiley at the start of the message field to send your saved and recently sent stickers.
+- Mesh calls now have a Hands-free switch. While it is on, your phone sends whenever you speak, without holding
+  the talk button. It starts off in every call, and Settings › Calls › Hands-free sensitivity sets how quiet a
+  voice can be and still send.
 
 ### Changed
 

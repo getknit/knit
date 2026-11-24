@@ -84,9 +84,10 @@ enum class TalkLink {
  * How a burst this phone spoke ended, as the speaker feels and hears it (C-3.11-5): [RELEASED], a light tick as the
  * button is let go; [CAPPED], the burst ran to [WalkiePolicy.MAX_BURST_MS] with the button still held, so a firmer
  * buzz and a short double beep tell a speaker who may still be talking that the rest was not sent. Nothing reaches the
- * peer.
+ * peer. [VOX], a hands-free burst the voice ended (C-3.11-11): nothing is felt or heard, since the phone may be away
+ * from the hand and its microphone is still listening for the next.
  */
-enum class TalkCue { RELEASED, CAPPED }
+enum class TalkCue { RELEASED, CAPPED, VOX }
 
 /** A walkie session's numbers (§3.11). */
 object WalkiePolicy {

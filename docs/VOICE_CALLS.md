@@ -847,8 +847,8 @@ its media (`REASON_MEDIA`).
   amendment). The speaker feels each burst end: a light haptic when the button is let go (`TalkCue.RELEASED`), and when
   the burst reaches 30 s with the button still held, a firmer one and a short double beep on the voice-call stream
   (`TalkCue.CAPPED`, `CallTone.TALK_CAPPED`), played once the microphone has stopped, so it is never part of the burst.
-  The status line then says the limit stopped it. Nothing about the cue reaches the peer. The phone's own
-  microphone follows the live call's capture profile (C-3.13-12, `call/TalkCapture`): on the standard profile it
+  The status line then says the limit stopped it. Nothing about the cue reaches the peer. Hands-free, a burst the
+  voice ended has no cue, and one at 30 s rolls into the next (C-3.11-11). The phone's own microphone follows the live call's capture profile (C-3.13-12, `call/TalkCapture`): on the standard profile it
   records from `VOICE_COMMUNICATION`, the phone's call-tuned path with its own suppression and gain, then
   `VOICE_RECOGNITION`, then `MIC`; on the fallback from `VOICE_RECOGNITION`, then `MIC`. A burst from the phone's
   `VOICE_COMMUNICATION` that is 1 s or more of exact zeros, not muted or silenced by the system, moves the phone to the
@@ -1011,6 +1011,35 @@ its media (`REASON_MEDIA`).
     count on either plane, and the whole of a burst with no report in time. The listener's loss is only what it can
     see: the chunks it skipped, and one for each burst whose last chunk never came, so it is a floor. Its gaps are the
     silences mid-burst, where the player ran out of audio before the next chunk came.
+- **C-3.11-11** A walkie session can send hands-free (VOX, ADR 2026-11.rd8y): with the call screen's Hands-free
+  switch on (`WalkieTalk.setHandsFree`), the phone sends while the user speaks, with no button held. Nothing about it
+  is on the wire: a hands-free burst is an ordinary burst (C-3.11-5 to C-3.11-10), and the peer cannot tell.
+  - **Armed per call.** The switch is off at the start of every session and never carried into the next. Armed, the
+    microphone stays open for the session (`TalkRecorder.monitor`), under the call's microphone service, so it sends
+    with the screen off, and the call's notification says so (and, muted, that it is). Disarming, a hang-up or a lost
+    microphone closes it, and the switch goes off with it.
+  - **The gate** (`call/Vox.kt`, `VoxGate`). Each 20 ms frame, after the gain stage, is speech when it is a margin over
+    the quietest frame of the last 2 s (`SpeechFloor`, the floor the gain stage uses) and at least a least level. The
+    Calls screen's "Hands-free sensitivity" sets both (`CallPreferenceStore.voxSensitivity`, Medium by default):
+    Low 18 dB over the floor and −40 dBFS, Medium 12 dB and −48 dBFS, High 8 dB and −55 dBFS. 60 ms of unbroken speech
+    opens a burst, which starts with up to 300 ms of the audio before that speech. 800 ms without speech ends it.
+  - **Sent only once it is speech.** An open burst is encoded at once but goes to the session, takes a burst number
+    and holds playback only once it holds 200 ms of speech. One that ends before then is dropped, and nothing of it
+    reaches a radio.
+  - **The peer's voice.** While a burst of the peer's is open in the player, and for 500 ms after it plays out, the
+    gate does not open and neither it nor the gain stage learns from the frames. A burst not yet sent is dropped when
+    the peer's starts. A sent one holds playback as a pressed one does (C-3.11-7). The pre-roll reaches back no
+    further than the last such frame.
+  - **The limit.** A hands-free burst that reaches 30 s still speaking ends with its last chunk, and the next opens
+    on the next frame, so nothing said is lost. No cue is felt or heard for a burst the voice ended, and none plays
+    while the microphone is armed (`TalkCue.VOX`).
+  - **A press and a mute.** A press on the armed microphone records as ever, and the gate stands aside until the lift.
+    A press during a hands-free burst takes that burst over, and it then ends on the lift. A muted call (the
+    notification, which shows Mute for an armed walkie, or Telecom's) opens no burst, and ends one being sent.
+  - **The microphone.** The armed capture follows C-3.11-5's sources and noise suppressor, and moves to or off a
+    headset's microphone between bursts. A second of exact zeros on the phone's call path, not muted, silenced or
+    during the peer's burst, teaches the fallback (C-3.13-13), and the capture reopens on it.
+  - **Activity.** Only a burst that went out counts toward the 10 min hang-up, so an armed, quiet session still ends.
 
 ### 3.12 Call records in the thread
 
@@ -1148,6 +1177,11 @@ servers a call would use, and never the username or password of an own server.
     opens on the fallback.
   - The caller's tones (C-3.13-14): `CallTonesTest` for which step plays what, an end heard once, and the sync cutting
     a tone when the call moves on.
+  - Hands-free (C-3.11-11): `VoxGateTest` for the attack, the pre-roll, the commit and the drop, the hang, the roll at
+    the limit, the peer's voice, a mute, a press, a hum and the three sensitivities; `TalkGainTest` unchanged over the
+    shared floor; `CallPreferenceStoreTest`, `CallSettingsViewModelTest` and `CallSettingsScreenContentTest` for the
+    sensitivity; `WalkieTalkCueTest` for the switch, the listening line and a burst the voice ended; and
+    `WalkieOpusInstrumentedTest`'s two utterances and a click through the real encoder.
   - A phone that may not host (C-3.10-1, ADR 2026-10.w3dw): `DirectHostGuardTest`, `DirectWifiLeaseTest` and
     `DirectCallPathTest`'s non-hosting caller.
   - Stale `OFFER` → missed call; `CANCEL` before `OFFER` → no alert.

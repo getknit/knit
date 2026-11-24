@@ -443,6 +443,10 @@
     <!-- TalkBack's two actions on the hold-to-talk button. -->
     <string name="call_talk_action_start">Start talking</string>
     <string name="call_talk_action_send">Stop and send</string>
+    <!-- The walkie screen's switch for voice-operated talk (VOX): while on, the phone sends whenever you speak, no button held. -->
+    <string name="call_talk_hands_free">Hands-free</string>
+    <!-- Hands-free is on and nothing is being said: the next thing you say is sent. -->
+    <string name="call_talk_listening">Listening. Just talk.</string>
     <string name="call_walkie_pill">Walkie-talkie · mesh</string>
     <string name="call_caller_locked">Unlock to see your last messages</string>
     <string name="call_caller_you">You</string>
@@ -506,6 +510,9 @@
     <string name="call_notif_unreachable">Can\'t reach them right now</string>
     <string name="call_notif_unproven">Waiting for their phone to respond</string>
     <string name="call_notif_walkie">Walkie-talkie</string>
+    <!-- A walkie call with Hands-free on: the microphone is open and sends whenever the user speaks. -->
+    <string name="call_notif_walkie_hands_free">Walkie-talkie · hands-free, sends when you speak</string>
+    <string name="call_notif_walkie_hands_free_muted">Walkie-talkie · hands-free, muted</string>
     <string name="call_notif_voice_muted">Voice call · muted</string>
     <string name="call_notif_voice">Voice call</string>
     <!-- The call screen's diagnostics card (CallDiagnostics). Its values are a technical readout and stay as measured. -->
@@ -1226,6 +1233,12 @@
     <string name="call_settings_full_screen_off">Calls can\'t ring on the lock screen: they arrive as a notification. Turn on \"Allow full screen notifications\" for Knit.</string>
     <string name="call_settings_prefer_mesh_title">Prefer mesh calls</string>
     <string name="call_settings_prefer_mesh_subtitle">The call button in a chat places a mesh call. Live calls move to the chat\'s menu.</string>
+    <!-- How readily a mesh call's Hands-free switch starts sending on a voice. -->
+    <string name="call_settings_vox_title">Hands-free sensitivity</string>
+    <string name="call_settings_vox_subtitle">How quiet a voice can be and still start sending in a mesh call with Hands-free on. Higher also picks up more background noise.</string>
+    <string name="call_settings_vox_low">Low</string>
+    <string name="call_settings_vox_medium">Medium</string>
+    <string name="call_settings_vox_high">High</string>
     <string name="call_settings_transcripts_title">Transcripts and captions</string>
     <string name="call_settings_transcripts_subtitle">Turn English speech into text on this phone: walkie-talkie bursts as they play, live calls when you turn on CC, and voice messages when you tap Transcribe. The text is never sent.</string>
     <string name="call_settings_speech_model_title">Speech model</string>

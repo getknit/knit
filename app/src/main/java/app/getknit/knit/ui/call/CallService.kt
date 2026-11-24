@@ -24,6 +24,9 @@ import app.getknit.knit.call.CallPhase
 import app.getknit.knit.call.CallRouting
 import app.getknit.knit.call.CallState
 import app.getknit.knit.call.SystemCallSync
+import app.getknit.knit.di.WALKIE_WIRED
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import org.koin.core.component.KoinComponent
@@ -37,7 +40,8 @@ import org.koin.core.component.inject
  * when the call ends.
  *
  * Its notification is the way back to a call the user left: the ongoing CallStyle with the peer's face, where the call
- * stands (the timer once connected), Hang up, Mute (a live call's only) and one route action — onto the loudspeaker,
+ * stands (the timer once connected), Hang up, Mute (a live call's, or a walkie's while hands-free holds its microphone
+ * open, C-3.11-11) and one route action — onto the loudspeaker,
  * or off it to the headset or the earpiece ([CallAudioPolicy.notificationTarget]) — each naming what a tap will do. It
  * is posted again on every change of [CallManager.state] and of the route, so those always show the call as it is.
  * While the call is on the earpiece it also holds the [ProximityLock], so the screen goes dark at the ear wherever the
@@ -49,6 +53,11 @@ class CallService :
     private val calls: CallManager by inject()
     private val system: SystemCallSync by inject()
     private val faces: CallFaces by inject()
+
+    // Whether the walkie is hands-free (C-3.11-11): its microphone is then open, and Mute holds its gate shut.
+    private val handsFree: StateFlow<Boolean> by lazy {
+        (if (WALKIE_WIRED) getKoin().getOrNull<WalkieTalk>()?.handsFree else null) ?: MutableStateFlow(false)
+    }
     private val proximity by lazy { ProximityLock(this) }
     private var watching = false
 
@@ -59,11 +68,11 @@ class CallService :
     ): Int {
         super.onStartCommand(intent, flags, startId)
         // First, always: a started foreground service that stops before claiming the state is a crash.
-        claim(calls.state.value, null, system.routing.value)
+        claim(calls.state.value, null, system.routing.value, handsFree.value)
         if (!watching) {
             watching = true
             lifecycleScope.launch {
-                combine(calls.state, system.routing, ::Pair).collect { (state, routing) ->
+                combine(calls.state, system.routing, handsFree, ::Triple).collect { (state, routing, free) ->
                     if (state == null || state.phase == CallPhase.Ended) {
                         proximity.end()
                         ServiceCompat.stopForeground(this@CallService, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -71,7 +80,7 @@ class CallService :
                     } else {
                         // The screen goes dark at the ear while the call is on the earpiece (C-3.13-11).
                         proximity.hold(CallAudioPolicy.screenOffNearEar(state, routing))
-                        claim(state, faces.of(state.peerId), routing)
+                        claim(state, faces.of(state.peerId), routing, free)
                     }
                 }
             }
@@ -88,6 +97,7 @@ class CallService :
         state: CallState?,
         face: CallFace?,
         routing: CallRouting?,
+        handsFree: Boolean,
     ) {
         val id = state?.id.orEmpty()
         val person = face?.person ?: Person.Builder().setName(getString(R.string.call_notif_unnamed)).build()
@@ -96,7 +106,7 @@ class CallService :
                 .Builder(this, CallNotifications.CHANNEL_STATUS)
                 .setSmallIcon(R.drawable.ic_stat_mesh)
                 .setContentTitle(face?.name ?: getString(R.string.call_notif_unnamed))
-                .setContentText(textOf(state))
+                .setContentText(textOf(state, handsFree))
                 .setCategory(NotificationCompat.CATEGORY_CALL)
                 .setOngoing(true)
                 .setSilent(true)
@@ -115,8 +125,9 @@ class CallService :
                         setShowWhen(true)
                         setUsesChronometer(true)
                     }
-                    // A walkie session has no live microphone to mute (§3.11); its audio has a route as a call's does.
-                    if (state != null && !state.walkie) {
+                    // A walkie session has no live microphone to mute (§3.11) until hands-free holds one open (C-3.11-11);
+                    // its audio has a route as a call's does.
+                    if (state != null && (!state.walkie || handsFree)) {
                         addAction(
                             action(
                                 if (state.muted) R.drawable.ic_call_mic else R.drawable.ic_call_mic_off,
@@ -177,13 +188,16 @@ class CallService :
             ).build()
     }
 
-    private fun textOf(state: CallState?): String =
+    private fun textOf(
+        state: CallState?,
+        handsFree: Boolean,
+    ): String =
         getString(
             when (state?.phase) {
                 CallPhase.Calling -> callingText(state)
                 CallPhase.Ringing -> R.string.call_status_ringing
                 CallPhase.Connecting -> R.string.call_status_connecting
-                CallPhase.Connected -> connectedText(state)
+                CallPhase.Connected -> connectedText(state, handsFree)
                 CallPhase.Reconnecting -> R.string.call_status_reconnecting
                 else -> R.string.call_notif_unnamed
             },
@@ -198,9 +212,15 @@ class CallService :
             else -> R.string.call_status_calling
         }
 
+    /** A connected call; an armed walkie's says its microphone sends on the voice (C-3.11-11), wherever the screen is. */
     @StringRes
-    private fun connectedText(state: CallState): Int =
+    private fun connectedText(
+        state: CallState,
+        handsFree: Boolean,
+    ): Int =
         when {
+            state.walkie && handsFree && state.muted -> R.string.call_notif_walkie_hands_free_muted
+            state.walkie && handsFree -> R.string.call_notif_walkie_hands_free
             state.walkie -> R.string.call_notif_walkie
             state.muted -> R.string.call_notif_voice_muted
             else -> R.string.call_notif_voice

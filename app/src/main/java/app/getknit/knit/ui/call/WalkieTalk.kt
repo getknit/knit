@@ -14,6 +14,8 @@ import app.getknit.knit.call.TalkQueue
 import app.getknit.knit.call.TalkReport
 import app.getknit.knit.call.TalkRoute
 import app.getknit.knit.call.TalkWire
+import app.getknit.knit.call.VoxPolicy
+import app.getknit.knit.call.VoxSensitivity
 import app.getknit.knit.call.WalkieMeter
 import app.getknit.knit.call.WalkiePolicy
 import app.getknit.knit.call.WalkieStats
@@ -22,13 +24,11 @@ import app.getknit.knit.call.fieldEvent
 import app.getknit.knit.fieldlog.FieldEvent
 import app.getknit.knit.fieldlog.FieldRecorder
 import app.getknit.knit.fieldlog.TalkDirection
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -51,6 +51,11 @@ import java.util.concurrent.atomic.AtomicInteger
 /** Where the talk button stands; [Idle.note] is what the last press came to. */
 internal sealed interface Talk {
     data class Idle(
+        val note: Note? = null,
+    ) : Talk
+
+    /** Hands-free is armed (C-3.11-11) and nothing is being said: the next voice opens a burst; [note] as [Idle]'s. */
+    data class Listening(
         val note: Note? = null,
     ) : Talk
 
@@ -128,6 +133,11 @@ internal enum class TalkPath(
  *
  * Half duplex at this end: talking holds whatever is playing, and what arrives meanwhile plays after the release.
  *
+ * Hands-free (C-3.11-11, [setHandsFree]), the microphone stays open for the session and the recorder's gate opens a
+ * burst on the voice and ends it on a silence; each goes out exactly as a pressed one. It is armed per call, never
+ * carried into the next. While the peer's burst plays, and [VoxPolicy.ECHO_GUARD_MS] after, the gate stays shut: the
+ * loudspeaker is not the user. A press still talks, and a press during a hands-free burst takes it over.
+ *
  * Lives as long as the process (a Koin single, started with the call surfaces), so a session keeps talking with the call
  * screen off; `CallService` holds the microphone's foreground state meanwhile.
  *
@@ -156,8 +166,10 @@ internal class WalkieTalk(
     private val transcript: WalkieTranscriber? = null,
     private val field: FieldRecorder = FieldRecorder.NONE,
     // How a burst spoken ended (C-3.11-5), as a tone on this phone; the call screen adds the haptic. Called with the
-    // microphone already stopped, so the tone is never part of the burst.
+    // microphone already stopped, so the tone is never part of the burst, and never while hands-free listens on.
     private val cue: (TalkCue) -> Unit = {},
+    // The Calls screen's "Hands-free sensitivity" (C-3.11-11), read at every frame the armed microphone hears.
+    private val sensitivity: () -> VoxSensitivity = { VoxSensitivity.DEFAULT },
 ) {
     private val _talk = MutableStateFlow<Talk>(Talk.Idle())
     val talk: StateFlow<Talk> = _talk.asStateFlow()
@@ -184,14 +196,20 @@ internal class WalkieTalk(
     // Whether chunks going out now go through a relay beside the radios at the session's own word.
     private fun castToo(): Boolean = route?.castToo == true
 
-    /** The burst being spoken: its bytes on their way to [streamer], and whether its end sends ([kept]) or drops it. */
+    /**
+     * The burst being spoken: number [burst], the recorder's [take] of it (its packets on their way to [streamer], and
+     * whether its end sends or drops it), and whether a press took a hands-free one over ([adopted]).
+     */
     private class Outgoing(
         val burst: Int,
-        val ticker: Job,
-        val bytes: Channel<ByteArray>,
-        val kept: CompletableDeferred<Boolean>,
-        val streamer: Deferred<Talk.Note>,
-    )
+        val take: TalkRecorder.Burst,
+    ) {
+        lateinit var ticker: Job
+        lateinit var streamer: Deferred<Talk.Note>
+        var adopted = false
+
+        val vox: Boolean get() = take.vox
+    }
 
     // The recorder is single-threaded; every press, release and cancel takes this.
     private val lock = Mutex()
@@ -202,6 +220,45 @@ internal class WalkieTalk(
 
     @Volatile
     private var lastActivity = 0L
+
+    private val _handsFree = MutableStateFlow(false)
+
+    /** Whether hands-free is armed in this session (C-3.11-11); off at the start of every call. */
+    val handsFree: StateFlow<Boolean> = _handsFree.asStateFlow()
+
+    // Arming and disarming take this, apart from the talk lock, which a hands-free burst takes from the capture thread.
+    private val armLock = Mutex()
+
+    // Whether this phone's talking holds the player, and whether the peer's burst is open in it and when one last
+    // played out: the armed gate's guard against the loudspeaker (VoxPolicy.ECHO_GUARD_MS).
+    @Volatile
+    private var talking = false
+
+    @Volatile
+    private var playing = false
+
+    @Volatile
+    private var playedOutAt = 0L
+
+    // The armed microphone's way back here; the recorder calls it on the capture thread.
+    private val monitor =
+        object : TalkRecorder.Monitor {
+            override fun headset(): Boolean = this@WalkieTalk.headset()
+
+            override fun sensitivity(): VoxSensitivity = this@WalkieTalk.sensitivity()
+
+            override fun hearing(): Boolean = !talking && (playing || clock() - playedOutAt < VoxPolicy.ECHO_GUARD_MS)
+
+            override fun commit(burst: TalkRecorder.Burst): TalkRecorder.Take = this@WalkieTalk.commit(burst)
+
+            override fun lost() {
+                scope.launch {
+                    log("walkie: hands-free microphone lost; disarmed")
+                    armLock.withLock { _handsFree.value = false }
+                    lock.withLock { if (outgoing == null && _talk.value is Talk.Listening) _talk.value = Talk.Idle(Talk.Note.NO_MIC) }
+                }
+            }
+        }
 
     private val _link = MutableStateFlow<TalkLink?>(null)
 
@@ -267,92 +324,207 @@ internal class WalkieTalk(
         return path.label + if (holding && path == TalkPath.WIFI_AWARE) " · held" else ""
     }
 
-    /** Starts a burst; false when no walkie session is connected, or the microphone would not open. */
+    /**
+     * Starts a burst; false when no walkie session is connected, or the microphone would not open. During a hands-free
+     * burst, the press takes it over (C-3.11-11): it then ends on the lift, not on a silence.
+     */
     suspend fun press(): Boolean =
         lock.withLock {
-            if (outgoing != null) return@withLock false
+            outgoing?.let { o ->
+                if (!o.vox || o.adopted || !recorder.adopt(o.take)) return@withLock false
+                o.adopted = true
+                log("walkie: a press took hands-free burst ${o.burst} over")
+                return@withLock true
+            }
             val call = calls.state.value?.takeIf(::isSession) ?: return@withLock false
             // Half duplex: what plays waits for the release.
             hold(true)
-            val bytes = Channel<ByteArray>(Channel.UNLIMITED)
             val b = burst
             // Open before the microphone, whose first read comes on its own thread.
             transcript?.begin(b, mine = true)
-            if (!recorder.start(headset()) { bytes.trySend(it) }) {
+            val take = recorder.start(headset())
+            if (take == null) {
                 transcript?.abandon(mine = true)
                 hold(false)
-                _talk.value = Talk.Idle(Talk.Note.NO_MIC)
+                _talk.value = rest(Talk.Note.NO_MIC)
                 return@withLock false
             }
             burst++
-            lastActivity = clock()
-            val kept = CompletableDeferred<Boolean>()
-            val streamer = scope.async(Dispatchers.Default) { stream(call, b, bytes, kept) }
-            val ticker =
-                scope.launch {
-                    while (true) {
-                        val elapsed = recorder.elapsedMs()
-                        if (elapsed >= WalkiePolicy.MAX_BURST_MS) {
-                            scope.launch { release(TalkCue.CAPPED) }
-                            break
-                        }
-                        _talk.value = Talk.Recording(elapsed, recorder.amplitude())
-                        delay(TICK_MS)
-                    }
-                }
-            outgoing = Outgoing(b, ticker, bytes, kept, streamer)
+            begin(call, b, take)
             true
         }
 
     /**
-     * Ends the burst: its last chunk goes out, unless it ended before its first did. [how] is the user letting go, or the
-     * burst reaching [WalkiePolicy.MAX_BURST_MS] while the button is still held.
+     * Arms the microphone for hands-free bursts in the connected walkie session [callId] (C-3.11-11), or disarms it; false
+     * when it would not arm: no such session (a tap from a call that has ended never arms the next), a burst holding the
+     * microphone, or a microphone that would not open.
      */
-    suspend fun release(how: TalkCue = TalkCue.RELEASED) {
+    suspend fun setHandsFree(
+        on: Boolean,
+        callId: String?,
+    ): Boolean {
+        if (!on) {
+            disarm()
+            return true
+        }
+        val armed =
+            armLock.withLock {
+                if (_handsFree.value) return@withLock true
+                if (calls.state.value
+                        ?.takeIf(::isSession)
+                        ?.id != callId
+                ) {
+                    return@withLock false
+                }
+                // Not while a burst holds the microphone: the press, and its loop, come first.
+                if (lock.withLock { outgoing != null || !recorder.monitor(monitor) }) return@withLock false
+                _handsFree.value = true
+                log("walkie: hands-free armed at ${sensitivity().name.lowercase()} sensitivity")
+                true
+            }
+        lock.withLock {
+            val now = _talk.value
+            if (outgoing == null && now is Talk.Idle) _talk.value = if (armed) Talk.Listening(now.note) else Talk.Idle(Talk.Note.NO_MIC)
+        }
+        return armed
+    }
+
+    private suspend fun disarm() {
+        armLock.withLock {
+            recorder.unmonitor()
+            if (_handsFree.value) log("walkie: hands-free disarmed")
+            _handsFree.value = false
+        }
+        lock.withLock {
+            val now = _talk.value
+            if (outgoing == null && now is Talk.Listening) _talk.value = Talk.Idle(now.note)
+        }
+    }
+
+    /**
+     * The recorder's gate found a hands-free burst speech enough to send (C-3.11-11). On the capture thread, so it never
+     * waits: a press or a release under way, or the burst before this one still ending, asks it to ask again.
+     */
+    private fun commit(take: TalkRecorder.Burst): TalkRecorder.Take {
+        if (!lock.tryLock()) return TalkRecorder.Take.LATER
+        try {
+            if (!_handsFree.value) return TalkRecorder.Take.REFUSED
+            val call = calls.state.value?.takeIf(::isSession) ?: return TalkRecorder.Take.REFUSED
+            if (outgoing != null) return TalkRecorder.Take.LATER
+            hold(true)
+            val b = burst++
+            // Open before the recorder hands the held audio to the tap, right after this returns.
+            transcript?.begin(b, mine = true)
+            val o = begin(call, b, take)
+            scope.launch {
+                take.ended.await()
+                release(TalkCue.VOX, only = o)
+            }
+            return TalkRecorder.Take.ACCEPTED
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    // A burst [take] numbered [b] begins streaming to [call]'s peer; under the talk lock, without waiting.
+    private fun begin(
+        call: CallState,
+        b: Int,
+        take: TalkRecorder.Burst,
+    ): Outgoing {
+        lastActivity = clock()
+        val o = Outgoing(b, take)
+        o.streamer = scope.async(Dispatchers.Default) { stream(call, b, take.packets, take.ended, take.vox) }
+        o.ticker = scope.launch { tick(o) }
+        outgoing = o
+        return o
+    }
+
+    // The burst's time and level for the screen; a pressed burst, or one a press took over, is stopped at its limit.
+    private suspend fun tick(o: Outgoing) {
+        while (true) {
+            val elapsed = recorder.elapsedMs()
+            // A hands-free burst rolls over at its limit in the recorder, with nothing lost.
+            if (elapsed >= WalkiePolicy.MAX_BURST_MS && (!o.vox || o.adopted)) {
+                scope.launch { release(TalkCue.CAPPED, only = o) }
+                break
+            }
+            _talk.value = Talk.Recording(elapsed, recorder.amplitude())
+            delay(TICK_MS)
+        }
+    }
+
+    /**
+     * Ends the burst: its last chunk goes out, unless it ended before its first did. [how] is the user letting go, or the
+     * burst reaching [WalkiePolicy.MAX_BURST_MS] while the button is still held. A lift never ends a hands-free burst no
+     * press took over: the voice does.
+     */
+    suspend fun release(how: TalkCue = TalkCue.RELEASED) = release(how, only = null)
+
+    private suspend fun release(
+        how: TalkCue,
+        only: Outgoing?,
+    ) {
         val o =
             lock.withLock {
                 val o = outgoing ?: return
+                if (only != null && o !== only) return
+                if (only == null && o.vox && !o.adopted) return
                 outgoing = null
                 o.ticker.cancel()
                 _talk.value = Talk.Sending(how)
                 // Joins the drain, so every byte recorded has reached the streamer before its channel closes.
-                recorder.stop()
+                recorder.stop(o.take)
                 // Every sample spoken has been through the tap: sent or not, the model hears it.
                 transcript?.end(o.burst, mine = true)
                 o
             }
-        // After the stop: the microphone never takes the tone into the burst.
-        runCatching { cue(how) }.onFailure { log("walkie: cue $how not played: ${it.javaClass.simpleName}") }
-        o.bytes.close()
-        o.kept.complete(true)
+        // After the stop: the microphone never takes the tone into the burst, and an armed one is still open.
+        if (!recorder.monitoring) {
+            runCatching { cue(how) }.onFailure { log("walkie: cue $how not played: ${it.javaClass.simpleName}") }
+        }
         val note = o.streamer.await()
-        hold(false)
-        lastActivity = clock()
-        _talk.value = Talk.Idle(if (how == TalkCue.CAPPED && note == Talk.Note.SENT) Talk.Note.CAPPED else note)
+        settle(if (how == TalkCue.CAPPED && note == Talk.Note.SENT) Talk.Note.CAPPED else note)
     }
 
-    /** Drops the burst being spoken; a peer already hearing it is told it ended. */
-    suspend fun cancel() {
+    /** Drops the burst being spoken; a peer already hearing it is told it ended. Never a hands-free one no press took. */
+    suspend fun cancel() = drop(force = false)
+
+    private suspend fun drop(force: Boolean) {
         val o =
             lock.withLock {
                 val o = outgoing ?: return@withLock null
+                if (!force && o.vox && !o.adopted) return@withLock null
                 outgoing = null
                 o.ticker.cancel()
-                recorder.cancel()
+                recorder.cancel(o.take)
                 transcript?.abandon(mine = true)
                 o
             }
         if (o != null) {
-            o.bytes.close()
-            o.kept.complete(false)
             o.streamer.await()
-            hold(false)
+            settle(null)
+        } else {
+            lock.withLock { if (outgoing == null) _talk.value = rest() }
         }
-        _talk.value = Talk.Idle()
     }
+
+    // A burst is out: unless the next began meanwhile (a hands-free one rolls over at once), the player goes on.
+    private suspend fun settle(note: Talk.Note?) {
+        lock.withLock {
+            lastActivity = clock()
+            if (outgoing != null) return
+            hold(false)
+            _talk.value = rest(note)
+        }
+    }
+
+    // The button at rest, armed or not.
+    private fun rest(note: Talk.Note? = null): Talk = if (_handsFree.value) Talk.Listening(note) else Talk.Idle(note)
 
     // Talking holds the player, and the meter's reckoning of what it has left to play with it.
     private fun hold(on: Boolean) {
+        talking = on
         player.hold(on)
         meter.held(on, clock())
     }
@@ -360,7 +532,8 @@ internal class WalkieTalk(
     private fun isSession(state: CallState): Boolean = state.walkie && state.phase == CallPhase.Connected
 
     private suspend fun idle() {
-        cancel()
+        disarm()
+        drop(force = true)
         _talk.value = Talk.Idle()
     }
 
@@ -373,6 +546,7 @@ internal class WalkieTalk(
         b: Int,
         packets: ReceiveChannel<ByteArray>,
         kept: Deferred<Boolean>,
+        vox: Boolean,
     ): Talk.Note {
         val chunker = TalkChunker()
         val tag = TalkWire.tagOf(call.id)
@@ -414,7 +588,8 @@ internal class WalkieTalk(
         awaitReport(b, chunks = q, delivered = delivered)
         recordOut(call.peerId, chunks = q, audioMs = chunker.totalMs, sent = delivered)
         log(
-            "walkie: burst $b of ${chunker.totalMs}ms to ${call.peerId} in $q chunks ($bytesOut B before the seal), $delivered sealed, " +
+            "walkie: ${burstWord(vox)} $b of ${chunker.totalMs}ms to ${call.peerId} in $q chunks " +
+                "($bytesOut B before the seal), $delivered sealed, " +
                 "via ${pathTo(call.peerId) ?: "?"}; " +
                 "cut>sent ms ${timings.joinToString(
                     " ",
@@ -425,6 +600,9 @@ internal class WalkieTalk(
         meter.burstSent()
         return Talk.Note.SENT
     }
+
+    // A burst's log name: a hands-free one says so (C-3.11-11).
+    private fun burstWord(vox: Boolean): String = if (vox) "hands-free burst" else "burst"
 
     // Burst [b] is judged by the peer's report of it, or its absence (C-3.11-10); a burst nothing took has nothing to judge.
     private fun awaitReport(
@@ -457,6 +635,8 @@ internal class WalkieTalk(
 
     /** One connected session with [call]'s peer: play what it streams, hang up when it goes quiet. */
     private suspend fun session(call: CallState) {
+        // Hands-free is armed per call (C-3.11-11), never carried into the next.
+        disarm()
         burst = 0
         lastActivity = clock()
         meter.reset()
@@ -514,20 +694,24 @@ internal class WalkieTalk(
                         skipped = queue.skipped
                         burstSkipped = if (step.first) skippedNow else burstSkipped + skippedNow
                         if (step.first) {
+                            playing = true
                             playedAt = clock()
                             arrivals[step.burst]?.minOrNull()?.let { meter.started(it, playedAt) }
-                            if (_talk.value is Talk.Idle) _talk.value = Talk.Hearing
+                            if (_talk.value.let { it is Talk.Idle || it is Talk.Listening }) _talk.value = Talk.Hearing
                             transcript?.begin(step.burst)
                         }
                         meter.played(step.audio, step.first, clock())
                         withContext(Dispatchers.IO) { player.play(OpusPackets.split(step.audio), step.first, step.last) }
                         if (step.last) {
+                            // Played out: the armed gate's guard runs from here.
+                            playedOutAt = clock()
+                            playing = false
                             // Played out: every sample has been through the tap, so the burst is whole.
                             transcript?.end(step.burst)
                             logHeard(step.burst, arrivals.remove(step.burst).orEmpty(), playedAt, burstSkipped, step.cutShort)
                             heard.incrementAndGet()
                             meter.burstHeard()
-                            if (_talk.value == Talk.Hearing) _talk.value = Talk.Idle()
+                            if (_talk.value == Talk.Hearing) _talk.value = rest()
                         }
                         lost.addAndGet(skippedNow)
                         meter.skipped(skippedNow)
@@ -551,9 +735,10 @@ internal class WalkieTalk(
                 while (true) take(inbox.tryReceive().getOrNull() ?: break)
             }
         } finally {
+            playing = false
             player.close()
             transcript?.abandon()
-            if (_talk.value == Talk.Hearing) _talk.value = Talk.Idle()
+            if (_talk.value == Talk.Hearing) _talk.value = rest()
         }
     }
 

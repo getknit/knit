@@ -359,6 +359,8 @@
     <string name="call_talk_release">Відпустіть, щоб надіслати</string>
     <string name="call_talk_action_start">Почати говорити</string>
     <string name="call_talk_action_send">Зупинити й надіслати</string>
+    <string name="call_talk_hands_free">Голосова активація</string>
+    <string name="call_talk_listening">Мікрофон слухає. Просто говоріть.</string>
     <string name="call_walkie_pill">Рація · mesh</string>
     <string name="call_caller_locked">Розблокуйте, щоб побачити останні повідомлення</string>
     <string name="call_caller_you">Ви</string>
@@ -413,6 +415,8 @@
     <string name="call_notif_unreachable">Зараз немає зв’язку</string>
     <string name="call_notif_unproven">Чекаємо відповіді від телефона співрозмовника</string>
     <string name="call_notif_walkie">Рація</string>
+    <string name="call_notif_walkie_hands_free">Рація · голосова активація, надсилає, коли ви говорите</string>
+    <string name="call_notif_walkie_hands_free_muted">Рація · голосова активація, мікрофон вимкнено</string>
     <string name="call_notif_voice_muted">Голосовий дзвінок · мікрофон вимкнено</string>
     <string name="call_notif_voice">Голосовий дзвінок</string>
     <string name="call_diag_title">Діагностика дзвінка</string>
@@ -1028,6 +1032,11 @@
     <string name="call_settings_full_screen_off">Дзвінки не можуть з’являтися на заблокованому екрані: вони приходять як сповіщення. Увімкніть для Knit «Дозволити сповіщення на весь екран».</string>
     <string name="call_settings_prefer_mesh_title">Віддавати перевагу дзвінкам через mesh</string>
     <string name="call_settings_prefer_mesh_subtitle">Кнопка дзвінка в чаті здійснює дзвінок через mesh. Дзвінки наживо переходять у меню чату.</string>
+    <string name="call_settings_vox_title">Чутливість голосової активації</string>
+    <string name="call_settings_vox_subtitle">Наскільки тихим може бути голос, щоб у дзвінку через mesh з голосовою активацією почалося надсилання. Вища чутливість також вловлює більше фонового шуму.</string>
+    <string name="call_settings_vox_low">Низька</string>
+    <string name="call_settings_vox_medium">Середня</string>
+    <string name="call_settings_vox_high">Висока</string>
     <string name="call_settings_transcripts_title">Розшифровки та субтитри</string>
     <string name="call_settings_transcripts_subtitle">Перетворення англійського мовлення на текст на цьому телефоні: фрагменти рації під час відтворення, дзвінки наживо, коли ви вмикаєте субтитри, і голосові повідомлення, коли ви натискаєте «Розшифрувати». Текст нікуди не надсилається.</string>
     <string name="call_settings_speech_model_title">Модель мовлення</string>

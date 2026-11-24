@@ -18,6 +18,7 @@ import app.getknit.knit.call.OwnIceServers
 import app.getknit.knit.call.ProbeResult
 import app.getknit.knit.call.ProbeVerdict
 import app.getknit.knit.call.SttModelState
+import app.getknit.knit.call.VoxSensitivity
 import app.getknit.knit.ui.theme.KnitTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -49,6 +50,9 @@ class CallSettingsScreenContentTest {
         onRemoveSpeechModel: () -> Unit = {},
         fullScreen: Boolean? = null,
         onOpenFullScreenSettings: () -> Unit = {},
+        walkie: Boolean = false,
+        voxSensitivity: VoxSensitivity = VoxSensitivity.DEFAULT,
+        onVoxSensitivity: (VoxSensitivity) -> Unit = {},
     ) {
         compose.setContent {
             KnitTheme {
@@ -67,6 +71,9 @@ class CallSettingsScreenContentTest {
                     onRemoveSpeechModel = onRemoveSpeechModel,
                     fullScreen = fullScreen,
                     onOpenFullScreenSettings = onOpenFullScreenSettings,
+                    walkie = walkie,
+                    voxSensitivity = voxSensitivity,
+                    onVoxSensitivity = onVoxSensitivity,
                 )
             }
         }
@@ -207,6 +214,22 @@ class CallSettingsScreenContentTest {
         for (tag in serverRows + "call_settings_save") {
             compose.onNodeWithTag(tag).assertDoesNotExist()
         }
+    }
+
+    // Hands-free (docs/VOICE_CALLS.md C-3.11-11): its sensitivity, where mesh calls are wired, and nowhere else.
+    @Test
+    fun theHandsFreeSensitivityShowsWithMeshCallsAndPicks() {
+        var picked: VoxSensitivity? = null
+        render(CallSettingsUiState(), walkie = true, onVoxSensitivity = { picked = it })
+        compose.onNodeWithTag("call_settings_vox").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.call_settings_vox_high)).performScrollTo().performClick()
+        assertEquals(VoxSensitivity.HIGH, picked)
+    }
+
+    @Test
+    fun theHandsFreeSensitivityIsAbsentWithoutMeshCalls() {
+        render(CallSettingsUiState(), walkie = false)
+        compose.onNodeWithTag("call_settings_vox").assertDoesNotExist()
     }
 
     // The walkie transcripts (docs/VOICE_CALLS.md C-3.11-9): their switch, and the speech model they need.

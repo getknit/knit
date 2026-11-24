@@ -40,6 +40,7 @@ import app.getknit.knit.call.SystemCallSync
 import app.getknit.knit.call.TranscriptLine
 import app.getknit.knit.call.TurnRanking
 import app.getknit.knit.call.VoiceNoteSpeech
+import app.getknit.knit.call.VoxSensitivity
 import app.getknit.knit.call.WalkieStats
 import app.getknit.knit.call.WalkieTranscriber
 import app.getknit.knit.contacts.DirectContacts
@@ -79,6 +80,7 @@ import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.photoFitBytes
 import app.getknit.knit.data.settings.AwareSwitch
 import app.getknit.knit.data.settings.BadgeStore
+import app.getknit.knit.data.settings.CallPreferenceStore
 import app.getknit.knit.data.settings.KnitBoardSetup
 import app.getknit.knit.data.settings.LowPowerSwitch
 import app.getknit.knit.data.settings.ModelLoadJournal
@@ -196,6 +198,7 @@ import app.getknit.knit.usbcontrol.UsbControlBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.toList
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -212,7 +215,6 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.SecureRandom
 import java.util.Locale
-import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * Debug-only ADB "bridge" that lets an automation agent drive the app headlessly — originating a chat
@@ -3599,6 +3601,13 @@ class DebugBridgeReceiver :
      * the bursts `sent` and `heard` (played to their end), the chunks `chunksOut`, `chunksIn` and `lost` (skipped as
      * never come), and `link`: DIRECT, MESH or NONE, the link a chunk to the peer would take (null outside a walkie).
      *
+     * Hands-free (C-3.11-11): `vox --ez on true|false [--es sensitivity low|medium|high] [--es pcm <file>]` arms or
+     * disarms the walkie's microphone in the connected session, as the call screen's switch does; `sensitivity` is
+     * stored, as the Calls screen's row does; `pcm` feeds the armed microphone that raw 16 kHz mono s16le file in place
+     * of the voice until it ends (then the microphone), so a trial sends the same speech and pauses every time. `state`'s
+     * `walkie` block carries `vox`: `armed`, the gate's state, and the bursts the gate `opened`, sent (`committed`),
+     * `dropped` unsent and `rolled` over at the limit (process-lifetime).
+     *
      * The audio route (§3.13): `audio [--es to speaker|earpiece|wired|bluetooth]` moves the call's audio to the first
      * route of that kind the system offers (none named: just reports), and `state` carries `audio`: the route Telecom
      * has the call on (`current`, null until it says) and every route it offers (`available`), each `kind`/`name`/`key`.
@@ -3680,6 +3689,35 @@ class DebugBridgeReceiver :
                     "ok",
                     "talked ${ms}ms: ${walkie.talk.value}",
                 ).put("sent", walkie.sent.get()).put("chunksOut", walkie.chunksOut.get())
+            }
+
+            "vox" -> {
+                val walkie = getKoin().getOrNull<WalkieTalk>() ?: return reply("error", "this build wires no walkie")
+                val recorder = getKoin().get<TalkRecorder>()
+                intent.getStringExtra("sensitivity")?.let { name ->
+                    val pick = VoxSensitivity.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
+                    getKoin().get<CallPreferenceStore>().setVoxSensitivity(pick ?: return reply("error", "unknown sensitivity '$name'"))
+                }
+                if (intent.hasExtra("on")) {
+                    val on = intent.getBooleanExtra("on", true)
+                    val pcm = intent.getStringExtra("pcm")?.let(::File)
+                    if (pcm != null && !pcm.canRead()) return reply("error", "can't read $pcm")
+                    // Only an arming takes the file: one already armed would leave it for the next press.
+                    val arming = on && !walkie.handsFree.value
+                    if (arming && pcm != null) recorder.nextFrom = pcm
+                    val armed =
+                        walkie.setHandsFree(
+                            on,
+                            getKoin()
+                                .get<CallManager>()
+                                .state.value
+                                ?.id,
+                        )
+                    // Unread, the file never stands in for the next press's voice.
+                    if (arming && pcm != null && recorder.nextFrom === pcm) recorder.nextFrom = null
+                    if (!armed) return reply("error", "no walkie session, a burst holds the microphone, or it would not open")
+                }
+                return reply("ok", "hands-free ${if (walkie.handsFree.value) "armed" else "off"}").put("vox", voxJson(walkie, recorder))
             }
 
             "ns" -> {
@@ -3939,6 +3977,7 @@ class DebugBridgeReceiver :
                         .put("chunksOut", it.chunksOut.get())
                         .put("chunksIn", it.chunksIn.get())
                         .put("lost", it.lost.get())
+                        .put("vox", voxJson(it, getKoin().get<TalkRecorder>()))
                         .put("stats", walkieStatsJson(it.stats()))
                         .put(
                             "transcript",
@@ -4199,19 +4238,20 @@ class DebugBridgeReceiver :
         val recorder = getKoin().get<TalkRecorder>()
         val player = getKoin().get<TalkPlayer>()
         val transcript = getKoin().get<WalkieTranscriber>()
-        val packets = ConcurrentLinkedQueue<ByteArray>()
         transcript.reset()
         transcript.begin(LOOP_BURST, mine = true)
         recorder.nextFrom = file
-        if (!recorder.start(headset = false) { packets.add(it) }) {
+        val take = recorder.start(headset = false)
+        if (take == null) {
             transcript.abandon(mine = true)
             return
         }
         delay(file.length() / PCM_BYTES_PER_MS + TALK_PCM_TAIL_MS)
-        recorder.stop()
+        recorder.stop(take)
+        val packets = take.packets.toList()
         transcript.end(LOOP_BURST, mine = true)
         transcript.begin(LOOP_BURST)
-        withContext(Dispatchers.IO) { player.play(packets.toList(), first = true, last = true) }
+        withContext(Dispatchers.IO) { player.play(packets, first = true, last = true) }
         transcript.end(LOOP_BURST)
     }
 
@@ -4302,6 +4342,19 @@ class DebugBridgeReceiver :
             val shorts = buffer.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
             ShortArray(shorts.remaining()).also(shorts::get)
         }.getOrNull()
+
+    // Hands-free (C-3.11-11): whether it is armed, the gate's state, and its bursts (process-lifetime).
+    private fun voxJson(
+        walkie: WalkieTalk,
+        recorder: TalkRecorder,
+    ): JSONObject =
+        JSONObject()
+            .put("armed", walkie.handsFree.value)
+            .put("gate", recorder.gateState?.name ?: JSONObject.NULL)
+            .put("opened", recorder.voxOpened.get())
+            .put("committed", recorder.voxCommitted.get())
+            .put("dropped", recorder.voxDropped.get())
+            .put("rolled", recorder.voxRolled.get())
 
     /** The walkie's diagnostics card as numbers (§3.11): what `CallActivity` draws, null where not yet measured. */
     private fun walkieStatsJson(s: WalkieStats): JSONObject =
