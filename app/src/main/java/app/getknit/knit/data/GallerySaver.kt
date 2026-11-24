@@ -2,6 +2,8 @@ package app.getknit.knit.data
 
 import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
@@ -10,10 +12,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Exports a content-addressed attachment out of the app's encrypted blob store and into the public
- * gallery at `Pictures/Knit`, so received images can be saved like in Signal. Uses [MediaStore] with
- * scoped storage (`RELATIVE_PATH` + `IS_PENDING`, both API 29+), which needs no runtime storage
- * permission and no FileProvider on minSdk 29.
+ * Exports a content-addressed attachment out of the app's encrypted blob store and into public shared storage:
+ * pictures to `Pictures/Knit`, videos to `Movies/Knit`, voice notes to `Recordings/Knit` (`Music/Knit` before Android
+ * 12). Uses [MediaStore] with scoped storage (`RELATIVE_PATH` + `IS_PENDING`, both API 29+), which needs no runtime
+ * storage permission and no FileProvider on minSdk 29.
  *
  * Kept separate from [AttachmentStore] (which owns ingest into the `blobs` table) because exporting to
  * shared storage is a distinct concern.
@@ -21,6 +23,9 @@ import kotlinx.coroutines.withContext
 class GallerySaver(
     private val context: Context,
 ) {
+    /** What a voice-note save did: [VoiceSave.AlreadySaved] wrote nothing, because the copy is already there. */
+    enum class VoiceSave { Saved, AlreadySaved, Failed }
+
     /**
      * Writes [bytes] (a blob's decrypted image, identified by content [hash] and [mime]) into
      * `Pictures/Knit` as `knit-<hash>.<ext>`. Returns true on success.
@@ -32,36 +37,17 @@ class GallerySaver(
         bytes: ByteArray,
         hash: String,
         mime: String,
-    ): Boolean =
-        withContext(Dispatchers.IO) {
-            if (bytes.isEmpty() || !mime.startsWith("image/")) return@withContext false
-            val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "jpg"
-            val values =
-                ContentValues().apply {
-                    put(MediaStore.Images.Media.DISPLAY_NAME, "knit-$hash.$ext")
-                    put(MediaStore.Images.Media.MIME_TYPE, mime)
-                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Knit")
-                    // Hide the row until the bytes are fully written, then flip it visible below.
-                    put(MediaStore.Images.Media.IS_PENDING, 1)
-                }
-            val resolver = context.contentResolver
-            val uri =
-                resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                    ?: return@withContext false
-            val written =
-                runCatching {
-                    resolver.openOutputStream(uri)?.use { out -> out.write(bytes) }
-                        ?: error("null output stream for $uri")
-                }.onFailure { Log.w(TAG, "Failed writing knit-$hash.$ext to gallery", it) }.isSuccess
-            if (!written) {
-                runCatching { resolver.delete(uri, null, null) } // drop the orphaned pending row
-                return@withContext false
-            }
-            values.clear()
-            values.put(MediaStore.Images.Media.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
-            true
-        }
+    ): Boolean {
+        if (bytes.isEmpty() || !mime.startsWith("image/")) return false
+        val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "jpg"
+        return insert(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            bytes,
+            "knit-$hash.$ext",
+            mime,
+            "${Environment.DIRECTORY_PICTURES}/Knit",
+        )
+    }
 
     /**
      * Writes a decrypted short video (ADR 2026-10.hmfe) into `Movies/Knit` as `knit-<hash>.mp4`, the
@@ -71,37 +57,111 @@ class GallerySaver(
         bytes: ByteArray,
         hash: String,
         mime: String,
+    ): Boolean {
+        if (bytes.isEmpty() || !mime.startsWith("video/")) return false
+        val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "mp4"
+        return insert(
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            bytes,
+            "knit-$hash.$ext",
+            mime,
+            "${Environment.DIRECTORY_MOVIES}/Knit",
+        )
+    }
+
+    /**
+     * Writes a decrypted voice note (ADR 034's 2026-11-23 amendment) into [voiceFolder] as [displayName], the
+     * [MediaStore.Audio] sibling of [saveToPictures]. Audio only, for the same reason that one takes images only.
+     *
+     * A copy already there under the same name is [VoiceSave.AlreadySaved] and nothing is written: the name is built
+     * from the note alone, so a second tap would otherwise make a second file. An app always sees the rows it put in
+     * MediaStore, without a permission, which is all this query asks. A copy the user deleted or renamed is not
+     * there, and a new one is written.
+     */
+    suspend fun saveVoice(
+        bytes: ByteArray,
+        displayName: String,
+        mime: String,
+    ): VoiceSave {
+        if (bytes.isEmpty() || !mime.startsWith("audio/")) return VoiceSave.Failed
+        val collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        if (held(collection, displayName, voiceFolder)) return VoiceSave.AlreadySaved
+        return if (insert(collection, bytes, displayName, mime, voiceFolder)) VoiceSave.Saved else VoiceSave.Failed
+    }
+
+    /** Whether a row of ours named [displayName] already sits in [folder] of [collection]. */
+    private suspend fun held(
+        collection: Uri,
+        displayName: String,
+        folder: String,
     ): Boolean =
         withContext(Dispatchers.IO) {
-            if (bytes.isEmpty() || !mime.startsWith("video/")) return@withContext false
-            val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "mp4"
+            runCatching {
+                context.contentResolver
+                    .query(
+                        collection,
+                        arrayOf(MediaStore.MediaColumns._ID),
+                        "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} = ?",
+                        // MediaStore keeps a relative path with its trailing slash.
+                        arrayOf(displayName, "$folder/"),
+                        null,
+                    )?.use { it.count > 0 } ?: false
+            }.onFailure { Log.w(TAG, "Couldn't look for $displayName in $folder", it) }.getOrDefault(false)
+        }
+
+    /**
+     * Inserts [bytes] into [collection] as [displayName] under [relativePath], hidden (`IS_PENDING`) until they are
+     * fully written, then flipped visible. A failed write drops the orphaned pending row. Returns true on success.
+     */
+    private suspend fun insert(
+        collection: Uri,
+        bytes: ByteArray,
+        displayName: String,
+        mime: String,
+        relativePath: String,
+    ): Boolean =
+        withContext(Dispatchers.IO) {
             val values =
                 ContentValues().apply {
-                    put(MediaStore.Video.Media.DISPLAY_NAME, "knit-$hash.$ext")
-                    put(MediaStore.Video.Media.MIME_TYPE, mime)
-                    put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/Knit")
-                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                    // Hide the row until the bytes are fully written, then flip it visible below.
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
                 }
             val resolver = context.contentResolver
             val uri =
-                resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                    ?: return@withContext false
+                runCatching { resolver.insert(collection, values) }
+                    .onFailure { Log.w(TAG, "Couldn't add $displayName to $relativePath", it) }
+                    .getOrNull() ?: return@withContext false
             val written =
                 runCatching {
                     resolver.openOutputStream(uri)?.use { out -> out.write(bytes) }
                         ?: error("null output stream for $uri")
-                }.onFailure { Log.w(TAG, "Failed writing knit-$hash.$ext to Movies", it) }.isSuccess
+                }.onFailure { Log.w(TAG, "Failed writing $displayName to $relativePath", it) }.isSuccess
             if (!written) {
-                runCatching { resolver.delete(uri, null, null) }
+                runCatching { resolver.delete(uri, null, null) } // drop the orphaned pending row
                 return@withContext false
             }
             values.clear()
-            values.put(MediaStore.Video.Media.IS_PENDING, 0)
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
             true
         }
 
-    private companion object {
-        const val TAG = "GallerySaver"
+    companion object {
+        private const val TAG = "GallerySaver"
+
+        /**
+         * Whether a saved voice note goes to `Recordings/Knit`: from Android 12, the first release whose audio
+         * collection takes a Recordings folder (music players skip it). Before it, `Music/Knit`.
+         */
+        val voiceInRecordings: Boolean
+            get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+
+        /** Where a saved voice note goes ([voiceInRecordings]). */
+        val voiceFolder: String
+            get() =
+                if (voiceInRecordings) "${Environment.DIRECTORY_RECORDINGS}/Knit" else "${Environment.DIRECTORY_MUSIC}/Knit"
     }
 }

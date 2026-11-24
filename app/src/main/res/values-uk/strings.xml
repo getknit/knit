@@ -611,6 +611,11 @@
     <string name="chat_voice_loading">Голосове з’явиться, щойно пристрій із ним буде на зв’язку</string>
     <string name="chat_voice_desc">Голосове повідомлення, %1$s</string>
     <string name="chat_voice_remove">Видалити голосове повідомлення</string>
+    <string name="chat_action_save_voice">Зберегти голосове повідомлення</string>
+    <string name="chat_voice_saved_recordings">Збережено в Recordings/Knit</string>
+    <string name="chat_voice_saved_music">Збережено в Music/Knit</string>
+    <string name="chat_voice_already_saved">Уже збережено</string>
+    <string name="chat_voice_save_failed">Не вдалося зберегти голосове повідомлення</string>
     <string name="chat_attach_location">Надіслати своє місцезнаходження</string>
     <string name="chat_location_finding">Визначаємо ваше місцезнаходження…</string>
     <string name="chat_location_accuracy">Точність до %1$s</string>

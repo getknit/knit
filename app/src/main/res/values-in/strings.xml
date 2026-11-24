@@ -581,6 +581,11 @@
     <string name="chat_voice_loading">Pesan suara muncul setelah perangkat yang menyimpannya dapat dijangkau</string>
     <string name="chat_voice_desc">Pesan suara, %1$s</string>
     <string name="chat_voice_remove">Hapus pesan suara</string>
+    <string name="chat_action_save_voice">Simpan pesan suara</string>
+    <string name="chat_voice_saved_recordings">Disimpan ke Recordings/Knit</string>
+    <string name="chat_voice_saved_music">Disimpan ke Music/Knit</string>
+    <string name="chat_voice_already_saved">Sudah disimpan</string>
+    <string name="chat_voice_save_failed">Tidak dapat menyimpan pesan suara itu</string>
     <string name="chat_attach_location">Kirim lokasi Anda</string>
     <string name="chat_location_finding">Mencari lokasi Anda…</string>
     <string name="chat_location_accuracy">Akurat hingga %1$s</string>

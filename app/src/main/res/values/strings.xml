@@ -733,6 +733,11 @@
     <string name="chat_voice_loading">Voice message appears once a device that has it is reachable</string>
     <string name="chat_voice_desc">Voice message, %1$s</string>
     <string name="chat_voice_remove">Remove voice message</string>
+    <string name="chat_action_save_voice">Save voice message</string>
+    <string name="chat_voice_saved_recordings">Saved to Recordings/Knit</string>
+    <string name="chat_voice_saved_music">Saved to Music/Knit</string>
+    <string name="chat_voice_already_saved">Already saved</string>
+    <string name="chat_voice_save_failed">Couldn\'t save that voice message</string>
     <!-- Location sharing: the composer's pin reads the phone's position once, between the tap and the send -->
     <string name="chat_attach_location">Send your location</string>
     <string name="chat_location_finding">Finding your location…</string>

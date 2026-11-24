@@ -591,6 +591,11 @@
     <string name="chat_voice_loading">Die Sprachnachricht erscheint, sobald ein Gerät erreichbar ist, das sie hat</string>
     <string name="chat_voice_desc">Sprachnachricht, %1$s</string>
     <string name="chat_voice_remove">Sprachnachricht entfernen</string>
+    <string name="chat_action_save_voice">Sprachnachricht speichern</string>
+    <string name="chat_voice_saved_recordings">In Recordings/Knit gespeichert</string>
+    <string name="chat_voice_saved_music">In Music/Knit gespeichert</string>
+    <string name="chat_voice_already_saved">Bereits gespeichert</string>
+    <string name="chat_voice_save_failed">Diese Sprachnachricht konnte nicht gespeichert werden</string>
     <string name="chat_attach_location">Standort senden</string>
     <string name="chat_location_finding">Dein Standort wird ermittelt…</string>
     <string name="chat_location_accuracy">Auf %1$s genau</string>

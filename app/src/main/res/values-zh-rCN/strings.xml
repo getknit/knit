@@ -581,6 +581,11 @@
     <string name="chat_voice_loading">能连接到存有这条语音消息的设备时，它就会显示</string>
     <string name="chat_voice_desc">语音消息，%1$s</string>
     <string name="chat_voice_remove">移除语音消息</string>
+    <string name="chat_action_save_voice">保存语音消息</string>
+    <string name="chat_voice_saved_recordings">已保存到 Recordings/Knit</string>
+    <string name="chat_voice_saved_music">已保存到 Music/Knit</string>
+    <string name="chat_voice_already_saved">已保存过</string>
+    <string name="chat_voice_save_failed">无法保存该语音消息</string>
     <string name="chat_attach_location">发送你的位置</string>
     <string name="chat_location_finding">正在获取你的位置…</string>
     <string name="chat_location_accuracy">精确到 %1$s</string>

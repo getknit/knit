@@ -601,6 +601,11 @@
     <string name="chat_voice_loading">Le message vocal apparaîtra dès qu’un appareil qui le détient sera joignable</string>
     <string name="chat_voice_desc">Message vocal, %1$s</string>
     <string name="chat_voice_remove">Retirer le message vocal</string>
+    <string name="chat_action_save_voice">Enregistrer le message vocal</string>
+    <string name="chat_voice_saved_recordings">Enregistré dans Recordings/Knit</string>
+    <string name="chat_voice_saved_music">Enregistré dans Music/Knit</string>
+    <string name="chat_voice_already_saved">Déjà enregistré</string>
+    <string name="chat_voice_save_failed">Impossible d’enregistrer ce message vocal</string>
     <string name="chat_attach_location">Envoyer votre position</string>
     <string name="chat_location_finding">Recherche de votre position…</string>
     <string name="chat_location_accuracy">Précision de %1$s</string>

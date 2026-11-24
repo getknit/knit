@@ -189,6 +189,12 @@ device from a known signal and checks what comes out against it:
   pixels, a transparent PNG becomes a WebP that keeps its alpha, a GIF a smaller animated WebP. The HEIC is
   `assets/codec/camera-sideways.heic`, written by `scripts/gen-heic-fixture.py` with the turn in EXIF and no `irot`
   box, as Samsung and Xiaomi cameras write it.
+- `data.GallerySaverInstrumentedTest`: the gallery and voice-note saves through the device's own MediaProvider (ADR 034's
+  2026-11-23 amendment): a note encoded by the phone's AAC encoder lands in `Recordings/Knit` (`Music/Knit` before
+  Android 12) as its own bytes under the name it was given, a second save finds it and writes nothing, a copy deleted
+  is written again, and a picture still lands in `Pictures/Knit` through the insert they share. Each name carries the
+  run's own id and the rows are deleted after. Device Farm's default matrix holds Android 10 and 11 phones beside 12
+  and later, so one unseeded run reads both folders on OEM MediaProviders.
 - `data.webp.WebpTranscodeInstrumentedTest`: a GIF (`Movie`) and an APNG (`AnimatedFrames`, the compositor) become an
   animated WebP that `ImageDecoder` plays at its size and play count and whose first frame it draws, and every later
   frame, decoded out of the app's own demux, shows the source frame's colour (`AnimationFixtures`, which writes the GIF

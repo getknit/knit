@@ -601,6 +601,11 @@
     <string name="chat_voice_loading">A mensagem de voz aparece quando um aparelho que a tenha estiver ao alcance</string>
     <string name="chat_voice_desc">Mensagem de voz, %1$s</string>
     <string name="chat_voice_remove">Remover mensagem de voz</string>
+    <string name="chat_action_save_voice">Salvar mensagem de voz</string>
+    <string name="chat_voice_saved_recordings">Salva em Recordings/Knit</string>
+    <string name="chat_voice_saved_music">Salva em Music/Knit</string>
+    <string name="chat_voice_already_saved">Já foi salva</string>
+    <string name="chat_voice_save_failed">Não foi possível salvar essa mensagem de voz</string>
     <string name="chat_attach_location">Enviar sua localização</string>
     <string name="chat_location_finding">Buscando sua localização…</string>
     <string name="chat_location_accuracy">Precisão de %1$s</string>

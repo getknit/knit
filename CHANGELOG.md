@@ -47,6 +47,8 @@ document:
 - Your phone's Bluetooth signal no longer carries a fixed Knit ID that someone nearby could use to follow it
   from place to place. It now sends a code that changes regularly, and only your contacts can tell it is you.
   Phones on an older Knit may take longer to connect to yours.
+- You can now save a voice message to your phone: long-press it and tap Save voice message. It goes to
+  Recordings/Knit (Music/Knit on Android 10 and 11) unchanged, and saving it again doesn't make a second copy.
 
 ### Changed
 

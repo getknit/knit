@@ -28,6 +28,7 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.PinOutcome
 import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.draft.Draft
 import app.getknit.knit.data.draft.DraftRepository
 import app.getknit.knit.data.emoji.RecentReactions
@@ -155,6 +156,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.time.ZoneId
 import java.util.concurrent.TimeUnit
 
 /**
@@ -4498,6 +4500,120 @@ class ChatViewModelTest {
             advanceUntilIdle()
 
             coVerify { gallerySaver.saveToPictures(any(), "h", "image/jpeg") }
+        }
+
+    /**
+     * #34: a voice note saves as its own decrypted bytes, under the name [AttachmentExport.voiceFileName] gives it, and
+     * the toast names the folder. A save teaches a sealed note its plaintext name, as a picture's does (ADR 2026-10.mptm).
+     */
+    @Test
+    fun savingASealedVoiceNoteExportsItsPlaintextUnderItsOwnName() =
+        runTest {
+            val plain = byteArrayOf(0xFF.toByte(), 0xF1.toByte(), 1, 2, 3)
+            val sealed = AttachmentCrypto.seal(plain)
+            val sentAt = 1_795_442_712_000L
+            coEvery { blobs.bytes("ct") } returns sealed.blob
+            coEvery { messages.attachmentKeyWantingPlain("ct") } returns b64(sealed.key)
+            coEvery { gallerySaver.saveVoice(any(), any(), any()) } returns GallerySaver.VoiceSave.Saved
+            val vm = vm()
+            // Subscribed before the act: the save decrypts on Dispatchers.Default, off the test scheduler.
+            val toast = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.saveVoice("ct", b64(sealed.key), "audio/aac", sentAt)
+
+            // Robolectric runs SDK 36, past Android 12: the note goes to Recordings, and the toast says so.
+            assertEquals(R.string.chat_voice_saved_recordings, toast.await())
+            val exported = slot<ByteArray>()
+            val name = slot<String>()
+            coVerify { gallerySaver.saveVoice(capture(exported), capture(name), "audio/aac") }
+            assertArrayEquals("saved the decrypted note, not the stored ciphertext", plain, exported.captured)
+            assertEquals(AttachmentExport.voiceFileName("ct", sentAt, ZoneId.systemDefault(), "aac"), name.captured)
+            coVerify(exactly = 1) { messages.setAttachmentPlainHash("ct", sha256Hex(plain)) }
+        }
+
+    /** A key-less voice note's stored bytes are already its plaintext, and go out untouched. */
+    @Test
+    fun savingAKeylessVoiceNoteExportsTheStoredBytes() =
+        runTest {
+            val aac = byteArrayOf(0xFF.toByte(), 0xF1.toByte(), 9, 8, 7)
+            coEvery { blobs.bytes("h") } returns aac
+            coEvery { gallerySaver.saveVoice(any(), any(), any()) } returns GallerySaver.VoiceSave.Saved
+            val vm = vm()
+            val toast = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.saveVoice("h", null, "audio/aac", 0L)
+            toast.await()
+
+            val exported = slot<ByteArray>()
+            coVerify { gallerySaver.saveVoice(capture(exported), any(), "audio/aac") }
+            assertArrayEquals(aac, exported.captured)
+            coVerify(exactly = 0) { messages.setAttachmentPlainHash(any(), any()) }
+        }
+
+    /** A key that doesn't open the note fails the save rather than exporting the ciphertext as audio. */
+    @Test
+    fun savingAVoiceNoteWithAKeyThatDoesNotOpenItFailsInsteadOfExportingCiphertext() =
+        runTest {
+            val sealed = AttachmentCrypto.seal(byteArrayOf(1, 2, 3, 4, 5))
+            coEvery { blobs.bytes("ct") } returns sealed.blob
+            val vm = vm()
+            val toast = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.saveVoice("ct", b64(ByteArray(32)), "audio/aac", 0L)
+
+            // The toast is the save's last step, so nothing it skipped can still be on its way.
+            assertEquals(R.string.chat_voice_save_failed, toast.await())
+            coVerify(exactly = 0) { gallerySaver.saveVoice(any(), any(), any()) }
+        }
+
+    /** #34: a note already in the folder says so, and the saver is what decided nothing more was written. */
+    @Test
+    fun savingAVoiceNoteAlreadySavedSaysSo() =
+        runTest {
+            coEvery { blobs.bytes("h") } returns byteArrayOf(1, 2, 3)
+            coEvery { gallerySaver.saveVoice(any(), any(), any()) } returns GallerySaver.VoiceSave.AlreadySaved
+            val vm = vm()
+            val toast = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.saveVoice("h", null, "audio/aac", 0L)
+
+            assertEquals(R.string.chat_voice_already_saved, toast.await())
+        }
+
+    /**
+     * The row's MIME is the sender's: an audio type off the save's list (a playlist here, which a music player would
+     * follow to the sender's server) is refused before anything is decrypted or written.
+     */
+    @Test
+    fun aVoiceNoteUnderAnUnlistedAudioTypeIsNotSaved() =
+        runTest {
+            coEvery { blobs.bytes("h") } returns "http://example.invalid/x\n".toByteArray()
+            val vm = vm()
+            val toast = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+
+            vm.saveVoice("h", null, "audio/x-mpegurl", 0L)
+
+            assertEquals(R.string.chat_voice_save_failed, toast.await())
+            coVerify(exactly = 0) { gallerySaver.saveVoice(any(), any(), any()) }
+        }
+
+    /** A picked audio file sent as a voice note keeps its own type; a row with no audio type saves as a recorded note. */
+    @Test
+    fun aVoiceNoteSavesUnderTheRowsAudioTypeElseARecordedNotes() =
+        runTest {
+            coEvery { blobs.bytes("h") } returns byteArrayOf(1, 2, 3)
+            coEvery { gallerySaver.saveVoice(any(), any(), any()) } returns GallerySaver.VoiceSave.Saved
+            val vm = vm()
+
+            val first = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+            vm.saveVoice("h", null, "audio/ogg", 0L)
+            first.await()
+            coVerify { gallerySaver.saveVoice(any(), any(), "audio/ogg") }
+
+            val second = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
+            vm.saveVoice("h", null, null, 0L)
+            second.await()
+            coVerify { gallerySaver.saveVoice(any(), any(), VoiceAudio.MIME) }
         }
 
     @Test

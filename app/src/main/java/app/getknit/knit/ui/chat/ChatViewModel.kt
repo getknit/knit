@@ -4370,6 +4370,19 @@ class ChatViewModel(
     }
 
     /**
+     * Saves a held voice note to `Recordings/Knit` (`Music/Knit` before Android 12) and toasts the result:
+     * [AttachmentExport.saveVoice]. [sentAt] is the row's, which names the file.
+     */
+    fun saveVoice(
+        hash: String,
+        key: String?,
+        mime: String?,
+        sentAt: Long,
+    ) {
+        viewModelScope.launch { _events.tryEmit(export.saveVoice(hash, key, mime, sentAt)) }
+    }
+
+    /**
      * Exports the attachment blob [hash] to the public `Pictures/Knit` folder and toasts the result:
      * [AttachmentExport.savePicture], which says why [key] and [mime] are the tapped row's.
      */

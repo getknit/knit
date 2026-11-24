@@ -82,6 +82,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LinkOff
@@ -860,6 +861,7 @@ fun ChatScreen(
         onSaveAttachment = viewModel::saveAttachment,
         onLoadVideo = viewModel::videoBytes,
         onSaveVideo = viewModel::saveVideo,
+        onSaveVoice = viewModel::saveVoice,
         onLoadOlder = viewModel::loadOlder,
         onRowsSeen = viewModel::onRowsSeen,
         onRevealMessage = viewModel::revealMessage,
@@ -1146,6 +1148,8 @@ internal fun ChatScreenContent(
     // A held video's plaintext for the player, and its save (ADR 2026-10.hmfe); defaulted for previews and tests.
     onLoadVideo: suspend (hash: String, key: String?) -> ByteArray? = { _, _ -> null },
     onSaveVideo: (hash: String, key: String?, mime: String?) -> Unit = { _, _, _ -> },
+    // A held voice note's save, from its long-press menu (ADR 034's 2026-11-23 amendment); defaulted likewise.
+    onSaveVoice: (hash: String, key: String?, mime: String?, sentAt: Long) -> Unit = { _, _, _, _ -> },
     // Closes the room's relay notice for good. Defaulted so previews and the content tests that never
     // render a dismissable notice need not name it.
     onDismissRelayNotice: () -> Unit = {},
@@ -2078,6 +2082,7 @@ internal fun ChatScreenContent(
                                             onImageClick = { fullscreenImage = it },
                                             onVideoClick = { fullscreenVideo = it },
                                             onSaveFile = onSaveFile,
+                                            onSaveVoice = onSaveVoice,
                                             onDownloadAttachment = onDownloadAttachment,
                                             onOpenProfile = onOpenProfile,
                                             onReact = onReact,
@@ -3160,6 +3165,8 @@ internal fun MessageBubble(
     // Saving a file attachment through the storage picker; defaulted so the @Preview call sites and the
     // content tests need no extra wiring.
     onSaveFile: (hash: String, key: String?, name: String?, mime: String?) -> Unit = { _, _, _, _ -> },
+    // The long-press Save on a voice note whose bytes are here; defaulted likewise.
+    onSaveVoice: (hash: String, key: String?, mime: String?, sentAt: Long) -> Unit = { _, _, _, _ -> },
     // "Tap to download" on a large attachment only Bluetooth could bring (ADR 2026-10.js2p); defaulted likewise.
     onDownloadAttachment: (hash: String) -> Unit = {},
     onOpenProfile: (nodeId: String) -> Unit,
@@ -3840,6 +3847,16 @@ internal fun MessageBubble(
                                 null
                             },
                         translateOffered = { translateOffered.value },
+                        // A voice note whose bytes are here leaves as its own file (ADR 034's 2026-11-23 amendment).
+                        onSave =
+                            row.attachmentHash
+                                ?.takeIf { row.attachmentReady && VoiceAudio.isVoice(row.attachmentMime) }
+                                ?.let { hash ->
+                                    {
+                                        showPicker = false
+                                        onSaveVoice(hash, row.attachmentKey, row.attachmentMime, row.sentAt)
+                                    }
+                                },
                         pinned = pinned,
                         // The opposite of what this bubble shows now: if that is already stale, the write is a no-op.
                         onPinAction =
@@ -4006,10 +4023,10 @@ private fun QuotedMessage(
 /**
  * Floating menu shown just above a long-pressed bubble: a "Reply" action, a row of quick-reaction emoji,
  * an optional "Copy text" action ([onCopy] is null for messages with no copyable text), an optional "Translate"
- * ([onTranslate]), an optional "Pin message" / "Unpin message" ([onPinAction]), a "Message info"
- * action ([onDetails]) opening the per-message details screen, an optional "Block user" action ([onBlock]
- * is null for your own messages), and an always-present "Delete message" action that removes the message
- * from this device only. Up to seven rows, so the menu is kept inside the window ([pickerPosition]).
+ * ([onTranslate]), an optional "Save voice message" ([onSave]), an optional "Pin message" / "Unpin message"
+ * ([onPinAction]), a "Message info" action ([onDetails]) opening the per-message details screen, an optional "Block
+ * user" action ([onBlock] is null for your own messages), and an always-present "Delete message" action that removes
+ * the message from this device only. Up to eight rows, so the menu is kept inside the window ([pickerPosition]).
  */
 @Composable
 private fun ReactionPicker(
@@ -4037,6 +4054,8 @@ private fun ReactionPicker(
     // opens, often in the frame its in-window layer first composes, and a value passed down to this picker that changes
     // in that frame never reaches what the layer drew ([MessageMenu]): Translate stayed hidden on every phone.
     translateOffered: () -> Boolean = { true },
+    // Save this voice note to the phone: null for anything else, and for a note whose bytes are not here yet.
+    onSave: (() -> Unit)? = null,
     // Pin this message, or unpin it when [pinned] (#42), which also picks the label: null where pins are not wired.
     pinned: Boolean = false,
     onPinAction: (() -> Unit)? = null,
@@ -4123,6 +4142,13 @@ private fun ReactionPicker(
                         onClick = onTranslate,
                     )
                 }
+                if (onSave != null) {
+                    PickerAction(
+                        icon = Icons.Filled.Download,
+                        label = stringResource(R.string.chat_action_save_voice),
+                        onClick = onSave,
+                    )
+                }
                 if (onPinAction != null) {
                     PickerAction(
                         icon = Icons.Outlined.PushPin,
@@ -4167,7 +4193,7 @@ private fun ReactionPicker(
 
 /**
  * Where the long-press menu goes: centred over the bubble and above it, or below it when it would clip the top of the
- * window, and in both cases moved back inside the window's edges. A tall menu (up to seven rows) under a tall bubble
+ * window, and in both cases moved back inside the window's edges. A tall menu (up to eight rows) under a tall bubble
  * near the top of a small phone would otherwise run off the bottom and hide Block and Delete. A menu taller than the
  * window keeps its top on screen.
  */
@@ -4186,7 +4212,7 @@ internal fun pickerPosition(
 }
 
 /**
- * One full-width row of the long-press menu: leading icon + label. Extracted because the menu holds up to seven
+ * One full-width row of the long-press menu: leading icon + label. Extracted because the menu holds up to eight
  * of these and the only differences are the icon, the label and whether it is destructive ([tint]).
  */
 @Composable

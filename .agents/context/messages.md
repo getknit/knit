@@ -178,6 +178,16 @@ lines.
   copy the user saved it to (a persisted read grant on the picker's document, recorded by blob hash) and never
   from the blob store (ADR 029); a copy that is gone is forgotten and the picker comes back. A risky file is
   only ever saved. The table is device-local — never in a backup — and goes with its blob in the GC.
+- **When touching a voice note's save — `AttachmentExport.saveVoice` / `voiceFileName`, `GallerySaver.saveVoice` /
+  `VoiceSave` / `voiceInRecordings` / `voiceFolder`, `AttachmentExport.voiceSaveType`, `ChatViewModel.saveVoice`, or
+  `ReactionPicker`'s `onSave`:** READ
+  ADR 034's 2026-11-23 amendment (and ADR 029). Offered only while the bytes are held; written as held, never
+  transcoded, under a type and extension from `voiceSaveType`'s fixed list (the sender's MIME never picks them, and
+  any other `audio/*` is refused), to `Recordings/Knit` (`Music/Knit` before Android 12) through MediaStore with no permission. The name is
+  the note's time and its hash's first eight hex, never the sender's name, and holds only digits and hex whatever the
+  peer sent; a row of ours by that name already in the folder is "Already saved" and nothing is written. The picture
+  and video saves share its insert. Tests: `VoiceFileNameTest`, `VoiceSaveTypeTest`, `ChatViewModelTest`'s voice-save
+  cases, `VoiceNoteSaveMenuTest`; on an emulator `GallerySaverInstrumentedTest`.
 - **When touching `data/search/`, `messages_fts` / `MessageFtsEntity`, `ui/search/`, the chat route's
   `messageId` argument, or the shared list rules in `ui/ConversationTitles.kt` / `ui/contacts/ContactUniverse.kt`:**
   READ ADR 2026-09.wdfz (the FTS4 index: one bounded `MATCH` read, the `term*` builder, the rowid and

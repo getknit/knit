@@ -8,7 +8,7 @@ topics: [attachments, ui, audio]
 
 # ADR 034 — A voice note is an ordinary attachment with an audio MIME
 
-Status: Accepted (2026-08-23)
+Status: Accepted (2026-08-23); amended 2026-11-23 (below: a voice note can be saved to the phone).
 
 Voice notes ship with **no wire change, no crypto change, and no custody change**. Everything below the
 ingest seam was already content-type-blind: the `blobs` table, `AttachmentCrypto`, `BlobExchange`,
@@ -102,3 +102,45 @@ null rather than throwing or hanging; plus the three normalisation rules above),
 columns null), `KnitDatabaseMigrationTest` (4 → 5). `VoiceAudio.peaks` needs a real
 platform decoder and is covered on-device, not by a Robolectric shadow that would only assert a stub was
 called. Moderation gap: `docs/CONTENT_MODERATION.md` §7; wire precedent: `docs/WIRE_COMPAT.md`.
+
+## Amendment 2026-11-23 — a voice note can be saved to the phone
+
+A voice note could only be played, in memory. GitHub #34 asked to keep one outside the chat, in a folder the file
+manager reaches, at its own quality, offline, with a confirmation and no second copy when saved twice. Pictures already
+left through `Pictures/Knit` and videos through `Movies/Knit`; files through the storage picker (ADR 2026-09.7ad3).
+
+1. **"Save voice message" in the bubble's long-press menu**, offered only while the note's bytes are on the phone
+   (`row.attachmentReady`), own notes and received ones alike. A request's note is never fetched, so never offered
+   (ADR 2026-11.qu98); a voice note carries no screening verdict to gate on (point 4 above). The media screen's Files
+   tab still opens the chat for a voice message.
+2. **The bytes go out as held**, decrypted and never transcoded (`AttachmentExport.saveVoice`), so a recorded note is
+   an `.aac` ADTS stream, which the Files app, VLC and desktop players play. A picked file sent as a note keeps its
+   format only when that format is on a fixed list (`AttachmentExport.voiceSaveType`: AAC, M4A, MP3, Ogg and Opus,
+   WAV, FLAC, AMR), written under Knit's own MIME and extension for it; any other `audio/*` the sender declared is
+   refused. The row's MIME is the sender's, and the MIME and extension a save writes decide how MediaStore scans the
+   file and which app opens it: `audio/x-mpegurl` would have landed as an `.m3u` playlist a music player follows to
+   the sender's server, `audio/midi` as a `.mid`. So the platform's MIME map is never asked. A sealed note's save
+   teaches its identity its plaintext, as a picture's does (ADR 2026-10.mptm). Like every door out, it writes nothing
+   of Knit's own (ADR 029).
+3. **`Recordings/Knit` from Android 12, `Music/Knit` before it** (`GallerySaver.voiceInRecordings` /
+   `voiceFolder`), through MediaStore's audio collection with no permission. Android 10 and 11 refuse a Recordings
+   folder there, so their notes sit with music, where a music player lists them; from Android 12 players skip them.
+   `Download/Knit` was the other choice: one folder on every version, but a music player lists the notes there too.
+   The storage picker was refused because it asks on every save.
+4. **The name is built from the note alone**: `knit-voice-<yyyyMMdd-HHmmss>-<8 hex>.<ext>`, the note's time in the
+   phone's zone and its blob hash's first eight characters (`AttachmentExport.voiceFileName`). It never names the
+   sender: shared storage is readable by any app granted audio access. Both inputs are a peer's, so the name holds
+   only digits and hex: a hash whose head is not lowercase hex is named by its own SHA-256, and a time outside the
+   years 2000 to 9999 (the sender's clock, unchecked) drops the stamp.
+5. **A second save writes nothing.** `GallerySaver.saveVoice` looks for its own row of that name in the folder first
+   and answers "Already saved". An app sees the rows it inserted without a permission, so a copy the user deleted or
+   renamed is written again. The limit, accepted: after a reinstall or a data clear the app no longer owns its old
+   rows, cannot see them, and MediaStore names the new copy with a " (1)".
+
+The picture and video saves now share the one MediaStore insert the voice save uses, which also stops an insert the
+provider refuses from throwing into the caller. Guards: `VoiceFileNameTest` (the name's shape whatever the inputs), `VoiceSaveTypeTest` (only the listed formats),
+`ChatViewModelTest`'s voice-save cases (plaintext out, a wrong key fails without exporting, "Already saved", the
+row's type), `VoiceNoteSaveMenuTest` (offered when held, not while arriving) and, on an emulator,
+`GallerySaverInstrumentedTest` (the folder, the bytes, the second save, a deleted copy, a picture still in
+`Pictures/Knit`). Device trial owed: save a received note on a phone running Android 12 or later and on one running
+10 or 11, play it from the Files app, and save it twice.

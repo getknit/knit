@@ -601,6 +601,11 @@
     <string name="chat_voice_loading">La nota de voz aparecerá cuando haya a tu alcance un dispositivo que la tenga</string>
     <string name="chat_voice_desc">Nota de voz, %1$s</string>
     <string name="chat_voice_remove">Quitar nota de voz</string>
+    <string name="chat_action_save_voice">Guardar nota de voz</string>
+    <string name="chat_voice_saved_recordings">Se guardó en Recordings/Knit</string>
+    <string name="chat_voice_saved_music">Se guardó en Music/Knit</string>
+    <string name="chat_voice_already_saved">Ya se guardó</string>
+    <string name="chat_voice_save_failed">No se pudo guardar esa nota de voz</string>
     <string name="chat_attach_location">Enviar tu ubicación</string>
     <string name="chat_location_finding">Buscando tu ubicación…</string>
     <string name="chat_location_accuracy">Precisión de %1$s</string>
