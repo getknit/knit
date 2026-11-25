@@ -48,9 +48,10 @@ app/release/*
 # Private working area: marketing masters (see above) + personal files — kept out of the public repo.
 .private/
 
-# Bytecode cache from `scripts/*.py` — `scripts/adr.py` is importable (a one-shot script
-# or a test can `from adr import ...`), and importing it writes one of these.
-scripts/__pycache__/
+# Python bytecode caches, at any depth — importing `scripts/adr.py` or a skill's helper module
+# (e.g. the machine-translation skill's `scripts/common.py`) writes one of these.
+__pycache__/
+*.py[cod]
 
 # Qodana scan output (report HTML + SARIF) and its multi-GB engine cache. The BASELINE,
 # qodana.sarif.json at the repo root, is deliberately NOT ignored — it is committed so a run reports
