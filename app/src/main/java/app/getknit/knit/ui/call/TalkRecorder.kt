@@ -10,7 +10,6 @@ import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import app.getknit.knit.call.CaptureHealth
 import app.getknit.knit.call.CaptureProfile
-import app.getknit.knit.call.SpeechFloor
 import app.getknit.knit.call.TalkCapture
 import app.getknit.knit.call.TalkGain
 import app.getknit.knit.call.TalkPcmTap
@@ -18,6 +17,7 @@ import app.getknit.knit.call.VoxGate
 import app.getknit.knit.call.VoxPolicy
 import app.getknit.knit.call.VoxSensitivity
 import app.getknit.knit.call.WalkiePolicy
+import app.getknit.knit.call.take
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -47,13 +47,14 @@ import kotlin.math.abs
  * coroutine, which alone reads the microphone and feeds, drains and releases every encoder; what other threads ask of it
  * is answered at its next 20 ms frame.
  *
- * Hands-free (C-3.11-11), [monitor] keeps the microphone open between bursts and runs every frame, after the gain,
- * through a [VoxGate]. A burst the gate opens starts [VoxPolicy.PRE_ROLL_MS] back, out of a ring of the latest frames,
+ * Hands-free (C-3.11-11), [monitor] keeps the microphone open between bursts and runs every frame's level, before the
+ * gain, through a [VoxGate]. A burst the gate opens starts [VoxPolicy.PRE_ROLL_MS] back, out of a ring of the latest frames,
  * and is encoded at once but handed to the walkie ([Monitor.commit]) only once it is speech enough to send; one that ends
  * before is dropped, unsent. At [WalkiePolicy.MAX_BURST_MS] still speaking, it ends and the next opens on the next frame,
  * so a long turn loses nothing. A press on the armed monitor takes its microphone, and a press during a hands-free
  * burst being sent takes the burst over ([adopt]). The frames heard while the peer's burst may be on the loudspeaker
- * ([Monitor.hearing]) teach neither the gain nor the gate. A run of exact zeros on the call path teaches the fallback as
+ * ([Monitor.hearing]) teach neither the gain nor the gate, and the gain learns only while a burst is sent or a press
+ * holds the microphone ([VoxGate.steersGain]). A run of exact zeros on the call path teaches the fallback as
  * a burst does, and the monitor moves to the headset's microphone, or off it, between bursts.
  *
  * [nextFrom] is the debug bridge's stand-in for a voice: the next burst, or the next monitor until the file ends, reads
@@ -457,12 +458,11 @@ internal class TalkRecorder(
         ) {
             val raw = peakOf(pcm, n)
             val hearing = monitor?.hearing() == true
-            val gain = gains.getValue(headset)
+            val g = gate
             // Off, the gain still reads the frame (on a copy) so its log line says what the microphone gave.
-            if (applyGain) gain.apply(pcm, n, learn = !hearing) else gain.apply(pcm.copyOf(n), n, learn = !hearing)
+            val level = gains.getValue(headset).take(pcm, n, g, hearing, applyGain)
             peak = maxOf(peak, if (applyGain) peakOf(pcm, n) else raw)
             val frame = pcm.copyOf(n)
-            val g = gate
             if (g == null) {
                 samples += n / PCM_BYTES
                 burstPeak = maxOf(burstPeak, raw)
@@ -472,7 +472,7 @@ internal class TalkRecorder(
             val m = monitor ?: return
             watchDead(raw, n, hearing)
             g.sensitivity = m.sensitivity()
-            act(g.frame(SpeechFloor.rmsDb(frame, n), hearing, muted()), frame)
+            act(g.frame(level, hearing, muted()), frame)
             offer()
             ring.addLast(frame)
             while (ring.size > VoxPolicy.RING_FRAMES) ring.removeFirst()

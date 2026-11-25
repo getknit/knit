@@ -6,16 +6,17 @@ import kotlin.math.sqrt
 
 /**
  * How readily a hands-free walkie opens a burst on a voice (docs/VOICE_CALLS.md C-3.11-11): a frame is speech when it
- * is [marginDb] over the noise floor and at least [minDb], both on the level after `TalkGain`, which brings speech
- * toward −18 dBFS on every microphone path. The Calls screen's "Hands-free sensitivity"; [MEDIUM] by default.
+ * is [marginDb] over the noise floor and at least [minDb], both on the microphone's own level, before `TalkGain`. Not
+ * after it: the gain rises on what it hears, and a gate judged on its output grew more sensitive the longer a session
+ * ran (ADR 2026-11.rd8y's trial). The Calls screen's "Hands-free sensitivity"; [MEDIUM] by default.
  */
 enum class VoxSensitivity(
     val marginDb: Double,
     val minDb: Double,
 ) {
-    LOW(marginDb = 18.0, minDb = -40.0),
-    MEDIUM(marginDb = 12.0, minDb = -48.0),
-    HIGH(marginDb = 8.0, minDb = -55.0),
+    LOW(marginDb = 18.0, minDb = -38.0),
+    MEDIUM(marginDb = 12.0, minDb = -46.0),
+    HIGH(marginDb = 8.0, minDb = -54.0),
     ;
 
     companion object {
@@ -46,20 +47,29 @@ object VoxPolicy {
     /** After the peer's burst plays out, the gate stays shut this long: the loudspeaker's tail is not the user's voice. */
     const val ECHO_GUARD_MS = 500L
 
+    /**
+     * The gate's noise floor is this low share of the last 2 s, not its quietest frame: one dip in an uneven noise
+     * (a rustle, the phone handled) would drag the floor far under the room, and the room over it would read as speech.
+     * Low enough that a talker's pauses, a tenth of the frames, still set it.
+     */
+    const val FLOOR_QUANTILE = 0.1
+
     /** Frames of audio the capture keeps for a burst to open with: the pre-roll and the attack before it. */
     const val RING_FRAMES = ((PRE_ROLL_MS + ATTACK_MS) / FRAME_MS).toInt()
 }
 
 /**
- * The noise floor under a microphone and whether a frame stands out of it as speech: the quietest frame of the last
+ * The noise floor under a microphone and whether a frame stands out of it as speech: the [quantile] of the last
  * [frames] (2 s of 20 ms frames: longer than the gap between words, shorter than a room's change), so a steady hum
- * becomes the floor. Shared by `TalkGain`, which steers only on speech, and [VoxGate], which opens on it. Pure; not
- * thread-safe.
+ * becomes the floor. At 0, the quietest frame, with the frame judged among them. Shared by `TalkGain`, which steers only
+ * on speech (its quietest frame), and [VoxGate], which opens on it ([VoxPolicy.FLOOR_QUANTILE]). Pure; not thread-safe.
  */
 class SpeechFloor(
     private val frames: Int = FRAMES,
+    private val quantile: Double = 0.0,
 ) {
     private val recent = DoubleArray(frames)
+    private val sorted = DoubleArray(frames)
     private var filled = 0
     private var next = 0
 
@@ -80,10 +90,17 @@ class SpeechFloor(
         rmsDb: Double,
         marginDb: Double,
         minDb: Double,
-    ): Boolean {
-        var floorDb = rmsDb
-        for (i in 0 until filled) floorDb = min(floorDb, recent[i])
-        return rmsDb >= minDb && rmsDb >= floorDb + marginDb
+    ): Boolean = rmsDb >= minDb && rmsDb >= floorDb(rmsDb) + marginDb
+
+    private fun floorDb(rmsDb: Double): Double {
+        if (quantile <= 0.0 || filled == 0) {
+            var floorDb = rmsDb
+            for (i in 0 until filled) floorDb = min(floorDb, recent[i])
+            return floorDb
+        }
+        recent.copyInto(sorted, endIndex = filled)
+        sorted.sort(0, filled)
+        return sorted[(quantile * (filled - 1)).toInt()]
     }
 
     companion object {
@@ -112,6 +129,25 @@ class SpeechFloor(
 
         internal fun toDb(level: Double): Double = if (level <= 0.0) SILENT_DB else DB_PER_DECADE * log10(level)
     }
+}
+
+/**
+ * Gains one 20 ms frame of the microphone and returns its level before the gain, which is what [VoxGate.frame] judges
+ * (C-3.11-11). The gain learns only while [gate] sends or a press holds the microphone ([VoxGate.steersGain]), or with
+ * no gate, a press alone; never from the peer's voice ([hearing]). Judged after a gain that learned from the whole room,
+ * the gate grew more sensitive all session (ADR 2026-11.rd8y's trial). Unless [applied], the gain reads a copy and [pcm]
+ * stays as the microphone gave it.
+ */
+fun TalkGain.take(
+    pcm: ByteArray,
+    size: Int,
+    gate: VoxGate?,
+    hearing: Boolean,
+    applied: Boolean = true,
+): Double {
+    val level = SpeechFloor.rmsDb(pcm, size)
+    apply(if (applied) pcm else pcm.copyOf(size), size, learn = !hearing && (gate == null || gate.steersGain))
+    return level
 }
 
 /**
@@ -155,6 +191,12 @@ class VoxGate(
 
     enum class State { SHUT, OPEN, SENDING, HELD }
 
+    /**
+     * Whether the frame the gate is about to take may steer `TalkGain`: only while a burst is sent or a press holds the
+     * microphone, as a press alone did. Learning from the whole room, the gain climbed on its noise all session.
+     */
+    val steersGain: Boolean get() = state == State.SENDING || state == State.HELD
+
     /** Read at every frame, so the Calls screen's choice takes at once. */
     @Volatile
     var sensitivity: VoxSensitivity = VoxSensitivity.DEFAULT
@@ -162,7 +204,7 @@ class VoxGate(
     var state = State.SHUT
         private set
 
-    private val floor = SpeechFloor()
+    private val floor = SpeechFloor(quantile = VoxPolicy.FLOOR_QUANTILE)
 
     // While shut: the speech frames in a row so far, and the frames since the gate last shut or heard the peer.
     private var attack = 0
@@ -174,7 +216,10 @@ class VoxGate(
     private var speechMs = 0L
     private var silentMs = 0L
 
-    /** Takes one frame at [rmsDb]; [hearing]: the peer's burst may be on the loudspeaker; [muted]: the call is muted. */
+    /**
+     * Takes one frame at [rmsDb], the microphone's level before the gain; [hearing]: the peer's burst may be on the
+     * loudspeaker; [muted]: the call is muted.
+     */
     fun frame(
         rmsDb: Double,
         hearing: Boolean,

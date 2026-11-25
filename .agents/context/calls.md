@@ -86,8 +86,10 @@ lines.
   `TalkRecorder.monitor` / `Monitor` / `Burst` / `Take` / `adopt`, `WalkieTalk.setHandsFree` / `handsFree`,
   `Talk.Listening`, `TalkCue.VOX`, `CallPreferenceStore.voxSensitivity` (`calls_vox_sensitivity`), the call screen's
   Hands-free chip, `CallService`'s Mute for an armed walkie or `…debug.CALL --es op vox`:** READ ADR 2026-11.rd8y and
-  `docs/VOICE_CALLS.md` C-3.11-11 — armed per call and never carried into the next; an energy gate over `TalkGain`'s
-  own floor (shared, so `TalkGainTest` pins both); a burst is sent only once it holds 200 ms of speech, so a false
+  `docs/VOICE_CALLS.md` C-3.11-11 — armed per call and never carried into the next; an energy gate on the level before
+  `TalkGain`, over a tenth-percentile `SpeechFloor` (the gain keeps its quietest-frame floor, so `TalkGainTest` pins
+  it), and the gain learns only while a burst is sent or pressed (`VoxGate.steersGain`, wired in `TalkGain.take`): judged after a gain that
+  learned from the whole room, the gate grew more sensitive all session; a burst is sent only once it holds 200 ms of speech, so a false
   trigger costs no radio byte; the gate never opens or learns while the peer's burst plays or for 500 ms after; a
   burst at 30 s rolls into the next with no cue; a press takes the armed microphone, or the hands-free burst it lands
   on; nothing on the wire. The recorder's one capture loop owns every encoder and answers other threads at its next

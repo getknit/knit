@@ -42,6 +42,17 @@ voice.
 - **No wire change.** A hands-free burst is an ordinary burst: the same chunks, reports and casts. A receiver cannot
   tell, and needs nothing new.
 
+**Amended 2026-11-25 (the first trial):** P9 armed, P7 on the same desk. Seven of ten bursts held no words, for two
+reasons. The gain learned from every frame the armed microphone heard, so the room's noise lifted it from +10 to
++17 dB in two minutes, and a gate judged after it admitted raw noise about 10 dB under what the gain itself counts as
+speech. P7's loudspeaker also played each burst back into P9's microphone, each echo a little quieter, three deep. So
+the gate now judges the microphone's own level, before `TalkGain`, with the least levels restated for it (Low −38,
+Medium −46, High −54 dBFS). Armed, the gain learns only while a burst is sent or the button is held
+(`VoxGate.steersGain`). The gate's floor is the tenth percentile of the last 2 s, not its quietest frame, so one dip in
+an uneven noise does not drag it under the room. An echo from another phone in the same room is not the loudspeaker
+this phone knows, so a trial keeps the phones apart, or one on a headset. A flat microphone path (a headset's) may
+want High.
+
 Rejected:
 
 - **A model's voice detector.** Moonshine's Silero detector sits inside the transcriber behind a 142 MB download, and

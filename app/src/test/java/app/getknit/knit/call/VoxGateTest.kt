@@ -2,8 +2,13 @@ package app.getknit.knit.call
 
 import app.getknit.knit.call.VoxGate.Action
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.PI
+import kotlin.math.pow
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 /** A hands-free walkie's gate (docs/VOICE_CALLS.md C-3.11-11): when a burst opens, is sent, ends and rolls over. */
 class VoxGateTest {
@@ -168,6 +173,76 @@ class VoxGateTest {
         assertEquals(VoxGate.State.SHUT, gate.state)
     }
 
+    // A rustle's one quiet frame is not the room's floor: over it, the room itself read as speech (the first trial).
+    @Test
+    fun aDipInAnUnevenNoiseDoesNotBecomeTheFloor() {
+        val gate = VoxGate()
+        val noise = listOf(-42.0, -44.0, -40.0, -43.0, -41.0)
+        val actions = List(SECOND * 10) { gate.step(if (it % 25 == 24) -75.0 else noise[it % noise.size]) }
+        assertTrue(actions.all { it == Action.None })
+        assertEquals(VoxGate.State.SHUT, gate.state)
+    }
+
+    // Learning from the room, the gain climbed on its noise all session (the first trial).
+    @Test
+    fun theGainLearnsOnlyFromWhatIsSentOrPressed() {
+        val gate = VoxGate()
+        gate.run(QUIET, SECOND)
+        assertFalse(gate.steersGain)
+        gate.run(SPEECH, ATTACK)
+        assertEquals(VoxGate.State.OPEN, gate.state)
+        assertFalse(gate.steersGain)
+        gate.run(SPEECH, COMMIT)
+        assertEquals(VoxGate.State.SENDING, gate.state)
+        assertTrue(gate.steersGain)
+        gate.run(QUIET, HANG)
+        assertFalse(gate.steersGain)
+        gate.hold()
+        assertTrue(gate.steersGain)
+        gate.release()
+        assertFalse(gate.steersGain)
+    }
+
+    // A talker who pauses on just over a tenth of the frames still sets the floor: the burst never ends mid-turn.
+    @Test
+    fun aTurnWithFewPausesStaysOpen() {
+        val gate = VoxGate()
+        gate.run(QUIET, SECOND)
+        val actions = List(SECOND * 10) { gate.step(if (it % 8 == 7) QUIET else SPEECH) }
+        assertTrue(actions.none { it is Action.Close || it == Action.Roll })
+        assertEquals(VoxGate.State.SENDING, gate.state)
+    }
+
+    // The first trial: the gate judged the level after a gain that learned from the whole room, so the room's noise
+    // lifted the gain all session and the gate opened on the room. Through TalkGain.take, neither happens.
+    @Test
+    fun theRoomNeitherLiftsTheGainNorOpensTheGateThroughIt() {
+        val gain = TalkGain()
+        val gate = VoxGate()
+        val noise = listOf(-52.0, -50.0, -54.0, -51.0, -53.0)
+        val room = { i: Int -> if (i % 20 == 19) -80.0 else noise[i % noise.size] }
+        val feed = { db: Double -> gate.through(gain, db) }
+        repeat(SECOND * 2) { feed(room(it)) }
+        val said = List(SECOND) { feed(if (it % 5 == 0) room(it) else -25.0) }
+        assertTrue(said.any { it == Action.Commit })
+        val after = List(SECOND * 2) { feed(room(it)) }
+        assertEquals(Action.Close(kept = true), after.last { it is Action.Close })
+        val settled = gain.gainDb
+        val late = List(SECOND * 30) { feed(room(it)) }
+        assertTrue(late.all { it == Action.None })
+        assertEquals(settled, gain.gainDb, 0.0)
+    }
+
+    // Under Medium's least level as the microphone gives it, over it after the gain's 12 dB start: it stays shut.
+    @Test
+    fun theGateJudgesTheLevelBeforeTheGain() {
+        val gain = TalkGain()
+        val gate = VoxGate()
+        repeat(SECOND) { gate.through(gain, QUIET) }
+        assertTrue(List(SECOND) { gate.through(gain, -50.0) }.all { it == Action.None })
+        assertEquals(VoxGate.State.SHUT, gate.state)
+    }
+
     @Test
     fun sensitivityMovesTheMarginOverTheFloor() {
         // 10 dB over a hum: High's 8 dB margin opens on it, Medium's 12 does not.
@@ -216,7 +291,26 @@ class VoxGateTest {
         muted: Boolean = false,
     ): List<Action> = List(frames) { step(db, hearing, muted) }
 
+    // A frame at [db] through the gain as the armed microphone's are, then the gate.
+    private fun VoxGate.through(
+        gain: TalkGain,
+        db: Double,
+    ): Action = frame(gain.take(pcmAt(db), FRAME_BYTES, this, hearing = false), hearing = false, muted = false)
+
+    // One 20 ms frame of a 16 kHz sine at [db] dBFS RMS.
+    private fun pcmAt(db: Double): ByteArray {
+        val amplitude = 10.0.pow(db / 20.0) * sqrt(2.0) * 32_768.0
+        val pcm = ByteArray(FRAME_BYTES)
+        for (i in 0 until FRAME_BYTES / 2) {
+            val s = (amplitude * sin(2 * PI * 440.0 * i / 16_000.0)).toInt()
+            pcm[i * 2] = s.toByte()
+            pcm[i * 2 + 1] = (s shr 8).toByte()
+        }
+        return pcm
+    }
+
     private companion object {
+        const val FRAME_BYTES = 640
         const val QUIET = -70.0
         const val HUM = -40.0
         const val SPEECH = -20.0

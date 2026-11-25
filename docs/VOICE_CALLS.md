@@ -1018,11 +1018,14 @@ its media (`REASON_MEDIA`).
     microphone stays open for the session (`TalkRecorder.monitor`), under the call's microphone service, so it sends
     with the screen off, and the call's notification says so (and, muted, that it is). Disarming, a hang-up or a lost
     microphone closes it, and the switch goes off with it.
-  - **The gate** (`call/Vox.kt`, `VoxGate`). Each 20 ms frame, after the gain stage, is speech when it is a margin over
-    the quietest frame of the last 2 s (`SpeechFloor`, the floor the gain stage uses) and at least a least level. The
-    Calls screen's "Hands-free sensitivity" sets both (`CallPreferenceStore.voxSensitivity`, Medium by default):
-    Low 18 dB over the floor and −40 dBFS, Medium 12 dB and −48 dBFS, High 8 dB and −55 dBFS. 60 ms of unbroken speech
-    opens a burst, which starts with up to 300 ms of the audio before that speech. 800 ms without speech ends it.
+  - **The gate** (`call/Vox.kt`, `VoxGate`). Each 20 ms frame, at the microphone's own level before the gain stage,
+    is speech when it is a margin over the noise floor and at least a least level. The floor is the tenth percentile of
+    the last 2 s (`SpeechFloor`, the gain stage's own, which takes the quietest frame), so one dip in an uneven noise
+    does not drag it under the room. The Calls screen's "Hands-free sensitivity" sets both
+    (`CallPreferenceStore.voxSensitivity`, Medium by default): Low 18 dB over the floor and −38 dBFS, Medium 12 dB and
+    −46 dBFS, High 8 dB and −54 dBFS. 60 ms of unbroken speech opens a burst, which starts with up to 300 ms of the
+    audio before that speech. 800 ms without speech ends it. Armed, the gain stage learns only while a burst is sent or
+    the button is held (`VoxGate.steersGain`), as with the button alone.
   - **Sent only once it is speech.** An open burst is encoded at once but goes to the session, takes a burst number
     and holds playback only once it holds 200 ms of speech. One that ends before then is dropped, and nothing of it
     reaches a radio.
@@ -1178,7 +1181,8 @@ servers a call would use, and never the username or password of an own server.
   - The caller's tones (C-3.13-14): `CallTonesTest` for which step plays what, an end heard once, and the sync cutting
     a tone when the call moves on.
   - Hands-free (C-3.11-11): `VoxGateTest` for the attack, the pre-roll, the commit and the drop, the hang, the roll at
-    the limit, the peer's voice, a mute, a press, a hum and the three sensitivities; `TalkGainTest` unchanged over the
+    the limit, the peer's voice, a mute, a press, a hum, a dip in an uneven noise, a turn with few pauses, what steers
+    the gain, the gain and the gate together over a room's noise (`TalkGain.take`) and the three sensitivities; `TalkGainTest` unchanged over the
     shared floor; `CallPreferenceStoreTest`, `CallSettingsViewModelTest` and `CallSettingsScreenContentTest` for the
     sensitivity; `WalkieTalkCueTest` for the switch, the listening line and a burst the voice ended; and
     `WalkieOpusInstrumentedTest`'s two utterances and a click through the real encoder.
