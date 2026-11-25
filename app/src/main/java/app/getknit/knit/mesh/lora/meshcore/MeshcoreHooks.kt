@@ -30,6 +30,7 @@ import app.getknit.knit.mesh.lora.MeshcoreRenameResult
 import app.getknit.knit.mesh.lora.OutboundFrame
 import app.getknit.knit.mesh.lora.PacketRoute
 import app.getknit.knit.mesh.lora.PlaneCore
+import app.getknit.knit.mesh.lora.PreBootStamp
 import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.lora.ProvisionResult
 import app.getknit.knit.mesh.lora.PublicPostEnded
@@ -123,8 +124,12 @@ internal class MeshcoreHooks(
     /** The hold the pacer was last given ([applyLaw]), so a sample that changes nothing wakes nothing. Under [lock]. */
     private var heldUntil: Long? = null
 
-    /** The band's duty, as the last Ready read it off the frequency ([LoraBand]); the strictest before one. Under [lock]. */
-    private var dutyPercent: Double = MeshcoreTraits.fallbackDutyPercent
+    /**
+     * The band's duty the law judges by, as the last Ready read it off the frequency ([MeshcoreTraits.lawDutyPercent]), or
+     * null before one or for a band the table cannot place: then the law gives no verdict and holds nothing (lora-reviewer,
+     * 2026-11-24) — the strictest fallback is the ledger's allowance only. Under [lock].
+     */
+    private var dutyPercent: Double? = null
 
     /** Whether the last verdict held every frame: for the edge's log line and count. Under [lock]. */
     private var lawHolding = false
@@ -219,7 +224,7 @@ internal class MeshcoreHooks(
     /** The band's law as it stands now: the MeshCore dump's `law` block and the plane's face. */
     fun lawState(): MeshcoreLawState =
         synchronized(lock) {
-            val verdict = law.verdict(dutyPercent, wallClock())
+            val verdict = dutyPercent?.let { law.verdict(it, wallClock()) }
             MeshcoreLawState(
                 dutyPercent = dutyPercent,
                 trailingTxSecs = verdict?.trailingTxSecs,
@@ -626,8 +631,8 @@ internal class MeshcoreHooks(
     /**
      * The board identified itself: the law's ring is for this board from now. The board before it keeps its ring among the
      * others, so a rebind back finds it; this board's own kept or restored ring is applied, else the law starts empty —
-     * which bounds the hour from the counter since boot, so on a 1 % band a board up for long can be held up to an hour at
-     * its first connection (a cost the 5a-2 amendment records). The old board's hold goes with it.
+     * and counts only what it sees rise from its first sample on, so a first connection to a board that has transmitted
+     * for hours starts at zero (the maintainer's decision, 2026-11-24). The old board's hold goes with it.
      */
     override fun onIdentified(publicKey: ByteArray) {
         ownKey = publicKey.copyOf()
@@ -664,7 +669,8 @@ internal class MeshcoreHooks(
         val freq = detail?.freqKhz
         val duty = if (radio != null && freq != null) MeshcoreTraits.dutyPolicy(freq, radio.bandwidthHz) else null
         if (radio != null && duty != null) core.airtime.onRadio(radio, duty) else core.airtime.forgetRadio()
-        synchronized(lock) { dutyPercent = duty?.dutyCyclePercent ?: MeshcoreTraits.fallbackDutyPercent }
+        val lawDuty = if (radio != null && freq != null) MeshcoreTraits.lawDutyPercent(freq, radio.bandwidthHz) else null
+        synchronized(lock) { dutyPercent = lawDuty }
         applyLaw()
         // The taught set cut to this board's capacity before the Ready reconcile reads it, and the core's offers with it.
         val moved = capacity != detail?.contactCapacity
@@ -709,10 +715,12 @@ internal class MeshcoreHooks(
         // holding those.
         val edge =
             synchronized(lock) {
-                val verdict = law.verdict(dutyPercent, wallClock())
+                val verdict = dutyPercent?.let { law.verdict(it, wallClock()) }
                 val until =
                     if (verdict?.holding == true) now + (verdict.releaseInSecs ?: MeshcoreDutyLaw.SPACING_SECS) * MS_PER_SECOND else null
-                val edge = verdict?.let(::lawEdge)
+                // No verdict (a band retuned off the table, nothing known any more) lifts a hold too: its clear is logged, so
+                // every `lora law hold` a trial greps is followed by a `lora law clear`.
+                val edge = if (verdict != null) lawEdge(verdict) else "lora law clear duty=$dutyPercent".takeIf { lawHolding }
                 if (verdict?.holding == true && !lawHolding) counters.lawHolds.incrementAndGet()
                 lawHolding = verdict?.holding == true
                 if (holdMoved(until, heldUntil)) {
@@ -1018,12 +1026,33 @@ internal class MeshcoreHooks(
 
         private const val ATT_HEADER_BYTES = 3
 
+        /**
+         * A persisted ring back as the law's state: [MeshcoreLawStamp.preBootTerms], each to its own deadline, or the single
+         * term a build before them wrote. A pre-boot term without [MeshcoreLawStamp.preBootObserved] was built
+         * under the rule before 2026-11-24, its unseen gap counted as spent (a replugged US 915 board's 3,601 s), and is
+         * dropped: the law holds only on air Knit observed. Such a term lapsed within the hour anyway; the ring's own
+         * samples are observations under either rule and are kept.
+         */
         private fun stateOf(stamp: MeshcoreLawStamp): MeshcoreDutyLaw.State =
             MeshcoreDutyLaw.State(
                 samples = stamp.samples.map { MeshcoreDutyLaw.Sample(it.uptimeSecs, it.txAirSecs, it.bootWall) },
-                preBoot =
-                    stamp.preBootTxSecs?.let { tx ->
-                        stamp.preBootUntilWall?.let { MeshcoreDutyLaw.PreBoot(tx, it) }
+                preBoots =
+                    when {
+                        !stamp.preBootObserved -> {
+                            emptyList()
+                        }
+
+                        stamp.preBootTerms.isNotEmpty() -> {
+                            stamp.preBootTerms.map { MeshcoreDutyLaw.PreBoot(it.txSecs, it.untilWall) }
+                        }
+
+                        else -> {
+                            listOfNotNull(
+                                stamp.preBootTxSecs?.let { tx ->
+                                    stamp.preBootUntilWall?.let { MeshcoreDutyLaw.PreBoot(tx, it) }
+                                },
+                            )
+                        }
                     },
             )
 
@@ -1034,15 +1063,19 @@ internal class MeshcoreHooks(
             MeshcoreLawStamp(
                 board = board,
                 samples = state.samples.map { LawSampleStamp(it.uptimeSecs, it.txAirSecs, it.bootWallMs) },
-                preBootTxSecs = state.preBoot?.txSecs,
-                preBootUntilWall = state.preBoot?.untilWallMs,
+                // An older build reads the single term: the latest-deadline one, an under-count it may hold on.
+                preBootTxSecs = state.preBoots.maxByOrNull { it.untilWallMs }?.txSecs,
+                preBootUntilWall = state.preBoots.maxByOrNull { it.untilWallMs }?.untilWallMs,
+                preBootObserved = state.preBoots.isNotEmpty(),
+                preBootTerms = state.preBoots.map { PreBootStamp(it.txSecs, it.untilWallMs) },
             )
     }
 }
 
 /** The duty law as the MeshCore dump shows it: the band's duty, the trailing hour's bound against its limit, the hold. */
 internal data class MeshcoreLawState(
-    val dutyPercent: Double,
+    /** The band's duty the law judges by; null before a Ready placed the band, or for a band no row holds. */
+    val dutyPercent: Double?,
     val trailingTxSecs: Long?,
     val limitSecs: Double?,
     val holding: Boolean,

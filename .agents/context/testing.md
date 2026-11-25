@@ -355,7 +355,8 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `StockMeshcoreNode` posts plain `name: text` on slot 0 under any name (it waits for a free packet: a burst past the
   board's pool is refused and never airs). Await a heard post at `LabNode.meshcorePostsHandled` (the pipeline returned),
   since a duplicate writes and notifies nothing. Take a board away with `LabNode.meshcoreOutOfRange`, never `powered =
-  false` across a calendar jump: a reboot's pre-boot term holds the pacer for up to an hour. A mirror room takes no
+  false` across a calendar jump: a reboot carries the old boot's observed hour as a pre-boot term, which holds the pacer
+  for up to an hour wherever that air reaches the band's duty. A mirror room takes no
   receipts, so its own rows fail the oracle's tick leg: run the oracle on Nearby over a link. And on a node with a board,
   `awaitAcquainted` does not wait for its manager's link-up pass to finish: a frame count read right after a meeting can
   still move from that pass, so compare what crossed or what a node without a board originated. `MeshcoreForgetLabTest`

@@ -1182,9 +1182,10 @@ bandwidth (the whole channel inside a row; the strictest row it is in; `STRICTES
 and before any band is known), the allowance reads it, and `MeshcoreDutyLaw` holds every Knit frame while the board's
 own trailing-hour `tx_air` — every client's sends, our acks and PATH returns, any repeats — reaches it. The law's clock
 is the board's uptime, so it survives an app restart (its ring is the state to persist), not a board reboot (a sample
-whose uptime or counter fell, or whose boot time moved, starts it again, the old boot's hour and the unseen stretch up to the
-reboot carried on the wall clock as a pre-boot term for an hour); with no baseline an hour old it bounds the hour
-from the counter since boot, so a restart never hands out a fresh hour. The brake (`MeshcoreAirRing`) is Δ(`rx_air` +
+whose uptime or counter fell, or whose boot time moved, starts it again). It counts only the `tx_air` rise between samples
+Knit took (ADR 2026-11.gsqu's 2026-11-24 amendment): air before our first sample of a boot, and the unseen stretch up to a
+reboot, are never assumed spent, so a first connection or a replugged board starts at zero, a 100 % band never holds, and a band no row places is never
+judged (`LoraBand.placedPercent` null; the 0.1 % fallback feeds the allowance alone). The brake (`MeshcoreAirRing`) is Δ(`rx_air` +
 `tx_air`) over ≥ 60 s at 40 %. Each EU duty assumes its row's power limit (25 mW, 500 mW at 869.4–869.65), the board's power being
 the user's; on a 0.1 % or unmatched band the plane is effectively dead, by design; `rx_air` counts only packets the firmware parsed, and a client-repeat board inflates both.
 
@@ -1230,8 +1231,8 @@ Behind `MESHCORE_PLANE` (every build since ADR 2026-11.gsqu's 2026-11-22 amendme
   every frame until `releaseInSecs` (`LoraPacePolicy.holdForLaw`, a floor on `nextDueAt`, never a tick), logged
   `lora law hold` / `lora law clear` (the pacer told only of a change), shown as `LoraFacts.lawHeld` (the saturated notices).
   The rings are persisted in `meshcore_plane_state` (`LoraPlaneSnapshot.meshcoreLaws`, the last four boards) under a SHA-256
-  digest of each board's key and applied when that board identifies. A board with no ring is bounded from the counter since
-  boot: up to an hour's hold at a first connection on a 1 % band. The brake reads the board's
+  digest of each board's key and applied when that board identifies. A board with no ring starts at zero: only air observed
+  from its first sample counts (the 2026-11-24 amendment). The brake reads the board's
   `MeshcoreAirRing` through `boardAir`, as Meshtastic's reads its telemetry.
 - **Dialling.** An unbonded board is never dialled in the background's place: after its three direct dials it waits out the
   background window (its bond re-read each minute), so the hourly direct net is its only dial. A board without NUS twice in a

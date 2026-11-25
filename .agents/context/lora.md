@@ -408,19 +408,21 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
 
 - **Before touching MeshCore's price, band or law — `MeshcoreTraits` (`phyBytes`, `airMs`, `preambleSymbolsAt`, `FIXED_MS`,
   `pathReturnPlaintext`, `dutyPolicy`, `maxFlights`, `deadlineMs`), `LoraBand` (`holding`, `dutyPercent`,
-  `STRICTEST_PERCENT`), `MeshcoreDutyLaw`, `MeshcoreAirRing`'s uptime reset, `MeshcoreRefusal.classOf`, `SessionOp`,
+  `STRICTEST_PERCENT`, `placedPercent`), `MeshcoreTraits.lawDutyPercent`, `MeshcoreDutyLaw` (`MAX_PRE_BOOTS`), `PreBootStamp`, `MeshcoreAirRing`'s uptime reset, `MeshcoreRefusal.classOf`, `SessionOp`,
   `MeshcoreSession.WRITE_TOO_LONG` / `CommandRefused` / `MeshcoreCounters.commandsRefused`:** READ ADR 2026-11.gsqu's Stage
-  5a-1 amendment (and the maintainer's Stage 5 decisions above it), then ADR 2026-10.ug4a, then "MeshCore's price, band and
+  5a-1 amendment and its 2026-11-24 amendment (and the maintainer's Stage 5 decisions above it), then ADR 2026-10.ug4a, then "MeshCore's price, band and
   law" in `lora-bridge.md`. Pure and JVM-tested, wired in debug builds since Stage 5a-2 (the next entry). A MeshCore packet is priced by purpose off
   the firmware's own framing — 4 B of transport codes on a scoped **flood** only, never a zero-hop DM or an ack; AES to 16
   — at the formula with the firmware's preamble (32 symbols at SF ≤ 8) plus 17 ms, never Meshtastic's signing facts or
   LongFast. **The law is Knit's on this kind** (its firmware has a 50 % token bucket and no region): the duty comes off the
   frequency and bandwidth (`LoraBand`: the whole channel inside a row, the strictest holding row, else 0.1 %, never
   `FALLBACK_PERCENT`; EU edges to check against EN 300 220), and `MeshcoreDutyLaw` holds every Knit frame while the board's
-  trailing-hour `tx_air` (every client, acks, repeats) reaches it — on the board's uptime clock, its ring the state to
-  persist, a new boot dropping it, and with no hour-old baseline the counter since boot read as spent, so a restart never
-  hands out a fresh hour, nor a board reboot (the old boot's hour and the unseen stretch to the reboot carried as a pre-boot term on the wall
-  clock). Each EU
+  trailing-hour `tx_air` (every client, acks, repeats) **as Knit observed it** reaches it — on the board's uptime clock, its
+  ring the state to persist, a new boot dropping it. Since ADR 2026-11.gsqu's 2026-11-24 amendment only the rise between
+  samples Knit took counts: never the counter since boot, never the unseen stretch up to a reboot, so a first connection
+  starts at zero; a 100 % band (US, ANZ) never holds; a band no row places is never judged (`placedPercent` null,
+  the 0.1 % fallback feeding the ledger alone); each reboot's observed term keeps its own hour. Complying with local law is the user's burden; the law is a
+  courtesy and assumes nothing it did not see. Each EU
   duty assumes its row's power limit; the board's power is the user's. On a 0.1 % or unmatched band the plane is
   effectively dead, by design. Two flights (8 ack codes / 3 airings); a deadline never under `MAX_FLIGHT_MS`. A send its call
   deadline caught unstarted is `Busy`, never `Timeout`; the deadline and the actor's refusal each claim in one atomic step

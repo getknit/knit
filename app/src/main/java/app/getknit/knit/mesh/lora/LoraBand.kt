@@ -93,6 +93,17 @@ internal enum class LoraBand(
         fun dutyPercent(
             freqHz: Long,
             bandwidthHz: Long,
-        ): Double = holding(freqHz, bandwidthHz).minOfOrNull { it.dutyPercent } ?: STRICTEST_PERCENT
+        ): Double = placedPercent(freqHz, bandwidthHz) ?: STRICTEST_PERCENT
+
+        /**
+         * The duty of the strictest row holding the channel, or null when no row does. What the law check reads
+         * (`MeshcoreDutyLaw`): a band this table cannot place is not judged at all, since [STRICTEST_PERCENT]'s 3.6 s an
+         * hour would hold every frame on a few seconds of acks (lora-reviewer, 2026-11-24). The ledger's allowance keeps
+         * the fallback ([dutyPercent]).
+         */
+        fun placedPercent(
+            freqHz: Long,
+            bandwidthHz: Long,
+        ): Double? = holding(freqHz, bandwidthHz).minOfOrNull { it.dutyPercent }
     }
 }

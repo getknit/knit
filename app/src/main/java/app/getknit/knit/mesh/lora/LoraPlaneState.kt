@@ -65,7 +65,7 @@ internal data class LoraPlaneSnapshot(
     /**
      * MeshCore boards' duty laws (`MeshcoreDutyLaw`, ADR 2026-11.gsqu's Stage 5a-1 and 5a-2 amendments), one per board digest,
      * the last four boards bound: each the ring of that board's own `(uptime, tx_air)` samples and its pre-boot term, so a
-     * restart or a rebind back keeps the trailing hour's baseline and never hands out a fresh one. Only
+     * restart or a rebind back keeps the trailing hour's observed baseline. Only
      * `meshcore_plane_state` carries it; an empty list is never written, so Meshtastic's blob is the one it always was.
      */
     val meshcoreLaws: List<MeshcoreLawStamp> = emptyList(),
@@ -74,6 +74,12 @@ internal data class LoraPlaneSnapshot(
 /**
  * The duty law's persisted ring for one board ([board]: a short digest of the board's public key, never the key — it only
  * tells this board's ring from another's): its samples and the pre-boot term, all on the board's uptime and the wall clock.
+ *
+ * [preBootObserved] marks a term built under the observed-air rule (the maintainer's decision, 2026-11-24): only what the
+ * old boot was seen to spend. A term without it was built before, with the unseen gap to the reboot counted as spent (a
+ * replugged US 915 board persisted `"preBootTxSecs":3601`), and a restore drops it rather than hold on air nobody saw. The
+ * two older keys keep their names and meaning, so an older build still reads a newer blob (it ignores the marker) and
+ * holds only on the observed term.
  */
 @Serializable
 internal data class MeshcoreLawStamp(
@@ -81,6 +87,20 @@ internal data class MeshcoreLawStamp(
     val samples: List<LawSampleStamp> = emptyList(),
     val preBootTxSecs: Long? = null,
     val preBootUntilWall: Long? = null,
+    val preBootObserved: Boolean = false,
+    /**
+     * Every live pre-boot term, each to its own deadline (lora-reviewer, 2026-11-24: one boot's air never counts past its
+     * own hour). An older build ignores it and reads [preBootTxSecs] / [preBootUntilWall], written as the latest-deadline
+     * term alone.
+     */
+    val preBootTerms: List<PreBootStamp> = emptyList(),
+)
+
+/** One observed pre-boot term of a board's duty law: [txSecs] counted until [untilWall] on the wall clock. */
+@Serializable
+internal data class PreBootStamp(
+    val txSecs: Long,
+    val untilWall: Long,
 )
 
 /** One `(uptime, tx_air)` sample of a board's boot, the boot stamped on the wall clock. */

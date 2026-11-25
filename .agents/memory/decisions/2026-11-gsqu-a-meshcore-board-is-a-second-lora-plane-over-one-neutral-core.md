@@ -2539,3 +2539,36 @@ defaults on in a release build as it does in debug, still never without `LORA_PL
 what takes it back out. `di/builtBoardKinds` therefore builds a MeshCore child in release. The posture is the LoRa
 plane's (ADR 2026-09.6gtm): visible and reachable, switched off, and inert until the user pairs and sets up a MeshCore
 board. Release builds already carried the plane's code (ADR 050's 2026-11 amendment), so the dex ceiling does not move.
+
+## Amendment 2026-11-24 — the duty law counts only air Knit saw
+
+The maintainer's decision (2026-11-24), after a field miss: a Pixel 9's MeshCore board on US 915 ran flat, was
+replugged, and booted at 16:30. The law (Stage 5a-1, "A board reboot never hands out a fresh hour either") carried the
+84 minutes it had not seen, capped at an hour, as a pre-boot term of 3601 s against a 3600-s limit. It held every Knit
+frame until 17:30, and a DM typed at 16:32 to a contact out of short range never aired. No radio can exceed 100 % duty,
+so that hold could not have been right.
+
+Abiding by local law is the user's burden. Knit's law check is a courtesy, and it must not assume the worst about air it
+did not see. Otherwise the first send of a user who has just bought and connected a board is held on the assumption
+that the board was used before, with no evidence either way. So:
+
+- **Only observed air counts.** The trailing hour is the board's `tx_air` rise between samples Knit took. A ring
+  persisted across an app restart of the same boot is still observation. Air before Knit's first sample of a boot is
+  not: `tx_air` since boot and "at most the seconds before a sample" are no longer bounds. A first connection starts
+  at zero.
+- **A reboot carries no unseen stretch.** The seconds between our last sample of the old boot and the new boot are no
+  longer assumed transmitted. Across a reboot the law carries at most what the old boot was observed to spend inside
+  the hour.
+- **A band with no duty limit never holds.** At 100 % (`LoraBand.US_915`, `ANZ_915`) the verdict never holds.
+- **A band Knit cannot place is never judged.** The law check takes `LoraBand.placedPercent` (through
+  `MeshcoreTraits.lawDutyPercent`), null for a frequency no row holds, a board that reported none, and before the first
+  Ready. No duty means no verdict and no hold. `STRICTEST_PERCENT` still feeds the ledger's allowance (`dutyPolicy`).
+- **Each reboot keeps its own hour.** A pre-boot term is one boot's observed air (plus the truncation second), living
+  until an hour after our last sample of that boot. Terms are never folded into a later one (`MAX_PRE_BOOTS` of them,
+  earliest dropped). A term persisted under the old rule (no `preBootObserved` marker) is dropped at restore.
+- **A gap within one boot is placed least-in-window.** From a baseline older than the window, only the rise that must
+  fall inside the hour counts (`max(0, rise − seconds before the window)`), never the whole rise. The release is the
+  first second at which this projection, with no more air, falls under the duty.
+- Superseded here: Stage 5a-1's "A board reboot never hands out a fresh hour either" and its "With no baseline an hour
+  old" bullet, and Stage 5a-2's "Cost, by design" paragraph. The law still holds, on a band with a duty, while the air
+  Knit observed in the trailing hour reaches it.

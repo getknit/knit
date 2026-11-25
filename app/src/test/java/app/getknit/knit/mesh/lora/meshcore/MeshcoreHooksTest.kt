@@ -541,11 +541,13 @@ class MeshcoreHooksTest {
         hooks.onIdentified(boardKey)
         hooks.beforeReady(ready(detail = detail(freqKhz = 868_100), radio = RadioParams(8, 125_000, 5)))
         val wall = 1_800_000_000_000L
-        // 40 s sent since boot, against the 1 % band's 36 s an hour: every frame is held, to the verdict's release.
-        hooks.onRadioStats(wall, uptimeSecs = 100, txAirSecs = 40)
+        // 40 s seen to rise over a minute, against the 1 % band's 36 s an hour: every frame is held, to the verdict's release.
+        hooks.onRadioStats(wall, uptimeSecs = 100, txAirSecs = 0)
+        hooks.onRadioStats(wall + 60_000, uptimeSecs = 160, txAirSecs = 40)
         val until = core.holds.last()
         assertNotNull(until)
-        assertEquals(now + 3_600_000L, until)
+        // The 40 s rose over 100..160: the least of it left inside the window falls under 36 s once its start passes 106.
+        assertEquals(now + 3_546_000L, until)
         assertTrue(logs.any { it.startsWith("lora law hold ") })
         assertEquals(1L, hooks.counters.lawHolds.get())
         assertTrue(hooks.lawState().holding)
@@ -567,6 +569,7 @@ class MeshcoreHooksTest {
     @Test
     fun theLawsRingIsPersistedUnderADigestOfTheBoardsKeyAndRestoredOnlyForThatBoard() {
         hooks.onIdentified(boardKey)
+        hooks.beforeReady(ready()) // a placed band: the law judges only one
         val wall = 1_800_000_000_000L
         hooks.onRadioStats(wall, uptimeSecs = 100, txAirSecs = 40)
         hooks.onRadioStats(wall + 61_000, uptimeSecs = 161, txAirSecs = 41)
@@ -581,6 +584,7 @@ class MeshcoreHooksTest {
 
         // The next process: the ring waits for its board, then comes back.
         val again = hooks(Ops(), Core())
+        again.beforeReady(ready())
         again.restoreState(saved, WallShift(0, wall))
         assertNull("not before its board identifies", again.lawState().trailingTxSecs)
         assertEquals(
@@ -593,6 +597,7 @@ class MeshcoreHooksTest {
 
         // Another board's process: the ring is not this radio's, but it is kept for a rebind back.
         val other = hooks(Ops(), Core())
+        other.beforeReady(ready())
         other.restoreState(saved, WallShift(0, wall))
         other.onIdentified(ByteArray(32) { 3 })
         assertNull(other.lawState().trailingTxSecs)
@@ -604,6 +609,7 @@ class MeshcoreHooksTest {
     fun aRebindAwayAndBackKeepsTheFirstBoardsRingAndTheRingsAreCapped() {
         val wall = 1_800_000_000_000L
         hooks.onIdentified(boardKey)
+        hooks.beforeReady(ready()) // a placed band: the law judges only one
         hooks.onRadioStats(wall, uptimeSecs = 100, txAirSecs = 40)
         val trailing = hooks.lawState().trailingTxSecs
         assertNotNull(trailing)
@@ -628,9 +634,11 @@ class MeshcoreHooksTest {
         val other = ByteArray(32) { 9 }
         hooks.beforeReady(ready(detail = detail(freqKhz = 868_100), radio = RadioParams(8, 125_000, 5)))
         hooks.onIdentified(other)
-        hooks.onRadioStats(wall, uptimeSecs = 100, txAirSecs = 40)
+        hooks.onRadioStats(wall, uptimeSecs = 100, txAirSecs = 0)
+        hooks.onRadioStats(wall + 60_000, uptimeSecs = 160, txAirSecs = 40)
         hooks.onIdentified(boardKey)
-        hooks.onRadioStats(wall, uptimeSecs = 100, txAirSecs = 40)
+        hooks.onRadioStats(wall, uptimeSecs = 100, txAirSecs = 0)
+        hooks.onRadioStats(wall + 60_000, uptimeSecs = 160, txAirSecs = 40)
         val before = core.holds.size
         // Back to the first board, whose ring holds too: the hold carries over and no lift is handed in between.
         hooks.onIdentified(other)
@@ -651,7 +659,9 @@ class MeshcoreHooksTest {
                 samples =
                     listOf(
                         app.getknit.knit.mesh.lora
-                            .LawSampleStamp(100, 40, wall - 100_000),
+                            .LawSampleStamp(100, 0, wall - 160_000),
+                        app.getknit.knit.mesh.lora
+                            .LawSampleStamp(160, 40, wall - 160_000),
                     ),
             )
         hooks.onIdentified(boardKey)
@@ -667,7 +677,8 @@ class MeshcoreHooksTest {
         // while an earlier boot's hour is still spent.
         hooks.onIdentified(boardKey)
         hooks.beforeReady(ready(detail = detail(freqKhz = 868_100), radio = RadioParams(8, 125_000, 5)))
-        hooks.onRadioStats(WALL_NOW, uptimeSecs = 100, txAirSecs = 40)
+        hooks.onRadioStats(WALL_NOW - 60_000, uptimeSecs = 100, txAirSecs = 0)
+        hooks.onRadioStats(WALL_NOW, uptimeSecs = 160, txAirSecs = 40)
         assertNotNull(core.holds.last())
         val before = core.holds.size
         val preBootOnly =
@@ -676,6 +687,7 @@ class MeshcoreHooksTest {
                 samples = emptyList(),
                 preBootTxSecs = 100,
                 preBootUntilWall = WALL_NOW + 30 * 60_000L,
+                preBootObserved = true,
             )
         hooks.restoreState(LoraPlaneSnapshot(savedAtWall = WALL_NOW, meshcoreLaws = listOf(preBootOnly)), WallShift(0, WALL_NOW))
         assertTrue("no lift handed to the pacer", core.holds.drop(before).none { it == null })
@@ -691,12 +703,132 @@ class MeshcoreHooksTest {
         hooks.onIdentified(boardKey)
         hooks.beforeReady(ready(detail = detail(freqKhz = 868_100), radio = RadioParams(8, 125_000, 5)))
         val wall = 1_800_000_000_000L
-        hooks.onRadioStats(wall, uptimeSecs = 100, txAirSecs = 40)
+        hooks.onRadioStats(wall, uptimeSecs = 100, txAirSecs = 0)
+        hooks.onRadioStats(wall + 60_000, uptimeSecs = 160, txAirSecs = 40)
         val told = core.holds.size
+        assertNotNull(core.holds.last())
         // A second later, nothing new sent: the hold's end is where it was.
-        hooks.onRadioStats(wall + 1_000, uptimeSecs = 101, txAirSecs = 40)
-        hooks.onRadioStats(wall + 2_000, uptimeSecs = 102, txAirSecs = 40)
+        hooks.onRadioStats(wall + 61_000, uptimeSecs = 161, txAirSecs = 40)
+        hooks.onRadioStats(wall + 62_000, uptimeSecs = 162, txAirSecs = 40)
         assertEquals("the pacer is told once", told, core.holds.size)
+    }
+
+    /**
+     * Regression (e): a pre-boot term persisted under the rule before 2026-11-24 (the unseen gap counted; the field's
+     * replugged US 915 board wrote 3,601) is dropped at restore, on any band: only an observed term may hold.
+     */
+    @Test
+    fun aPreBootTermFromTheOldRuleIsDroppedAtRestore() {
+        hooks.onIdentified(boardKey)
+        hooks.beforeReady(ready(detail = detail(freqKhz = 868_100), radio = RadioParams(8, 125_000, 5)))
+        val old =
+            app.getknit.knit.mesh.lora.MeshcoreLawStamp(
+                board = MeshcoreHooks.digest(boardKey),
+                samples = emptyList(),
+                preBootTxSecs = 3_601,
+                preBootUntilWall = WALL_NOW + 30 * 60_000L,
+            )
+        hooks.restoreState(LoraPlaneSnapshot(savedAtWall = WALL_NOW, meshcoreLaws = listOf(old)), WallShift(0, WALL_NOW))
+        assertFalse(hooks.lawState().holding)
+        assertNull("nothing known", hooks.lawState().trailingTxSecs)
+        assertTrue(core.holds.none { it != null })
+        // An older build's blob, read through the store's JSON: no crash, and the term still dropped.
+        val blob =
+            """{"savedAtWall":$WALL_NOW,"meshcoreLaws":[{"board":"${MeshcoreHooks.digest(boardKey)}","samples":[],""" +
+                """"preBootTxSecs":3601,"preBootUntilWall":${WALL_NOW + 1_800_000}}]}"""
+        val decoded = LENIENT_JSON.decodeFromString<LoraPlaneSnapshot>(blob)
+        assertFalse(decoded.meshcoreLaws.single().preBootObserved)
+        hooks.restoreState(decoded, WallShift(0, WALL_NOW))
+        assertFalse(hooks.lawState().holding)
+        // And a term this build writes says it was observed, so the next process keeps it.
+        hooks.onRadioStats(WALL_NOW - 60_000, uptimeSecs = 100, txAirSecs = 0)
+        hooks.onRadioStats(WALL_NOW, uptimeSecs = 160, txAirSecs = 40)
+        hooks.onRadioStats(WALL_NOW, uptimeSecs = 10, txAirSecs = 0) // a reboot
+        val stamp = hooks.extendSnapshot(LoraPlaneSnapshot(savedAtWall = WALL_NOW)).meshcoreLaws.single()
+        assertEquals(41L, stamp.preBootTxSecs)
+        assertTrue(stamp.preBootObserved)
+        assertEquals(
+            listOf(
+                app.getknit.knit.mesh.lora
+                    .PreBootStamp(41, WALL_NOW + 3_600_000L),
+            ),
+            stamp.preBootTerms,
+        )
+    }
+
+    /**
+     * lora-reviewer, 2026-11-24: a band the table cannot place (no frequency reported, a preset with no row, before the
+     * first Ready) is not judged by the law at all — the strictest 0.1 % is the ledger's fallback only — and a ring restored
+     * before the first Ready waits for the band, then holds at once.
+     */
+    @Test
+    fun anUnplacedBandIsNeverJudgedAndARestoredRingWaitsForTheBand() {
+        hooks.onIdentified(boardKey)
+        val stamp =
+            app.getknit.knit.mesh.lora.MeshcoreLawStamp(
+                board = MeshcoreHooks.digest(boardKey),
+                samples =
+                    listOf(
+                        app.getknit.knit.mesh.lora
+                            .LawSampleStamp(100, 0, WALL_NOW - 160_000),
+                        app.getknit.knit.mesh.lora
+                            .LawSampleStamp(160, 40, WALL_NOW - 160_000),
+                    ),
+            )
+        hooks.restoreState(LoraPlaneSnapshot(savedAtWall = WALL_NOW, meshcoreLaws = listOf(stamp)), WallShift(0, WALL_NOW))
+        assertNull("no band yet", hooks.lawState().dutyPercent)
+        assertFalse(hooks.lawState().holding)
+        assertTrue(core.holds.none { it != null })
+        // A Ready with no frequency, then one on a channel no row holds (470 MHz): still nothing judged, though the
+        // ledger runs on the strictest fallback.
+        hooks.beforeReady(ready(detail = detail(freqKhz = null)))
+        assertNull(hooks.lawState().dutyPercent)
+        hooks.beforeReady(ready(detail = detail(freqKhz = 470_000), radio = RadioParams(8, 125_000, 5)))
+        assertNull(hooks.lawState().dutyPercent)
+        assertEquals((15 * 60_000 * LoraBand.STRICTEST_PERCENT / 100 * 0.5).toLong(), core.airtime.allowanceMs())
+        hooks.onRadioStats(WALL_NOW + 60_000, uptimeSecs = 220, txAirSecs = 80)
+        assertFalse(hooks.lawState().holding)
+        assertTrue(core.holds.none { it != null })
+        // A Ready on a placed 1 % band: the restored ring's observed air holds at once.
+        hooks.beforeReady(ready(detail = detail(freqKhz = 868_100), radio = RadioParams(8, 125_000, 5)))
+        assertEquals(1.0, hooks.lawState().dutyPercent!!, 0.0)
+        assertTrue(hooks.lawState().holding)
+        assertNotNull(core.holds.last())
+        assertTrue(logs.any { it.startsWith("lora law hold ") })
+        // Retuned off the table: no verdict, the hold lifts, and its clear is logged after the hold.
+        hooks.beforeReady(ready(detail = detail(freqKhz = 470_000), radio = RadioParams(8, 125_000, 5)))
+        assertNull(core.holds.last())
+        assertFalse(hooks.lawState().holding)
+        assertEquals("lora law clear duty=null", logs.last { it.startsWith("lora law ") })
+    }
+
+    /**
+     * Regressions (a), (b) and (d) through the hooks: a US 915 board (100 %, FCC Part 15) connected for the first time with
+     * hours of `tx_air`, replugged after a long unobserved gap, and then run flat out, is never held.
+     */
+    @Test
+    fun aUs915BoardIsNeverHeldOnAFirstConnectionAReplugOrHeavyAir() {
+        hooks.onIdentified(boardKey)
+        hooks.beforeReady(ready(detail = detail(freqKhz = 910_525), radio = RadioParams(10, 250_000, 5)))
+        assertEquals(100.0, hooks.lawState().dutyPercent!!, 0.0)
+        hooks.onRadioStats(WALL_NOW, uptimeSecs = 8 * 3_600, txAirSecs = 9_000)
+        assertFalse(hooks.lawState().holding)
+        assertEquals("a first connection starts at zero", 0L, hooks.lawState().trailingTxSecs)
+        // The battery ran flat; replugged 84 minutes later.
+        hooks.onRadioStats(WALL_NOW + 84 * 60_000L, uptimeSecs = 60, txAirSecs = 1)
+        assertFalse(hooks.lawState().holding)
+        assertNull(
+            hooks
+                .extendSnapshot(LoraPlaneSnapshot(savedAtWall = WALL_NOW))
+                .meshcoreLaws
+                .single()
+                .preBootTxSecs,
+        )
+        // Flat out for an hour, every second of it seen.
+        hooks.onRadioStats(WALL_NOW + 85 * 60_000L + 3_600_000L, uptimeSecs = 60 + 3_660, txAirSecs = 3_661)
+        assertFalse(hooks.lawState().holding)
+        assertTrue(core.holds.none { it != null })
+        assertEquals(0L, hooks.counters.lawHolds.get())
     }
 
     // --- setup, teaching, the face ---
@@ -1597,7 +1729,8 @@ class MeshcoreHooksTest {
             hooks.onIdentified(boardKey)
             hooks.beforeReady(ready(detail = detail(freqKhz = 868_100), radio = RadioParams(8, 125_000, 5)))
             ops.ready = ready(detail = detail(freqKhz = 868_100), radio = RadioParams(8, 125_000, 5))
-            hooks.onRadioStats(WALL_NOW, uptimeSecs = 100, txAirSecs = 40)
+            hooks.onRadioStats(WALL_NOW - 60_000, uptimeSecs = 100, txAirSecs = 0)
+            hooks.onRadioStats(WALL_NOW, uptimeSecs = 160, txAirSecs = 40)
             val held = hooks.debugSend("probe".encodeToByteArray())
             assertEquals(MeshcoreRawSend.LAW_HOLDS, held.result)
             assertTrue(held.lawHolding)
@@ -1634,6 +1767,9 @@ class MeshcoreHooksTest {
         const val BOARD = "DD:DD"
         const val POST_STAMP = 1_790_000_123L
         const val WALL_NOW = 1_800_000_000_000L
+
+        /** The plane-state store's own reading of a blob: unknown keys ignored (`LoraPlaneStateStore`). */
+        private val LENIENT_JSON = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
         const val KNIT_SLOT = 1
         const val SIGNED_PLAIN = 2
         const val FRAME_TAG: Byte = 0x05

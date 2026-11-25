@@ -197,8 +197,9 @@ internal data class SigningFacts(
  * included, it over-books a client on a busy mesh by most of an allowance and under-books a recent burst.
  * **Not on MeshCore**: its firmware has only a 50 % token bucket and knows no region (`Dispatcher::updateTxBudget`, spike
  * Q4), so there the law is Knit's alone — the allowance reads the band's duty ([LoraBand], never above it) and
- * `MeshcoreDutyLaw` checks the board's own trailing-hour `tx_air`, which outlives an app restart (ADR 2026-11.gsqu's
- * Stage 5a-1 amendment). The ledger itself stays unpersisted there too: the law check is what a restart cannot reset.
+ * `MeshcoreDutyLaw` checks the board's own trailing-hour `tx_air` as Knit observed it rise, which outlives an app
+ * restart (ADR 2026-11.gsqu's Stage 5a-1 amendment). The ledger itself stays unpersisted there too: the law check is what
+ * a restart cannot reset.
  *
  * One thing the packet we hand the board is not: what leaves it. Firmware **2.8 signs the broadcasts it
  * originates** — tag 2.8.1 always, a build with upstream `34cb8d582` (2.8.2) only under a `BALANCED` or `STRICT`

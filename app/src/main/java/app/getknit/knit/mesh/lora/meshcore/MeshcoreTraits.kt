@@ -399,6 +399,15 @@ internal object MeshcoreTraits : BoardTraits {
         bandwidthHz: Int,
     ): DutyPolicy = DutyPolicy(LoraBand.dutyPercent(freqKhz * HZ_PER_KHZ, bandwidthHz.toLong()), dedicatedSlot = false)
 
+    /**
+     * The duty the law check judges a board on [freqKhz] at [bandwidthHz] by: its band's ([LoraBand.placedPercent]), or
+     * null when the table holds no row for it — never the strictest fallback [dutyPolicy] gives the ledger.
+     */
+    fun lawDutyPercent(
+        freqKhz: Long,
+        bandwidthHz: Int,
+    ): Double? = LoraBand.placedPercent(freqKhz * HZ_PER_KHZ, bandwidthHz.toLong())
+
     /** Own room posts in up to two elided packets (§4): [roomPartLimit] since Stage 5c-1. */
     const val ROOM_PART_LIMIT = 2
 
