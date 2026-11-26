@@ -373,7 +373,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   erases (Stage 5b-2, the next entry), then writes `[38, 1]`, auto-add off, `Knit abcd` (only on a board this phone holds
   no record for: a re-setup keeps the name the board carries, ADR 2026-11.f4d3) and the channel, each read back;
   restore touches only what still reads as Knit's, so a handle is left. The encoder's command set is pinned (`MeshcoreProtoTest`): never a key export or import, a PIN, the radio, a raw
-  packet or the CLI. Room posts ride `DATA_TYPE_DEV` until registered, and a release build may not ship on it. Pinned
+  packet or the CLI. Room posts ride MeshCore's registered `0x0160` (`KNIT_DATA_TYPE`, ADR 2026-11.gsqu's 2026-11-25 amendment), sent and accepted; no send or receive path names `DATA_TYPE_DEV`, which only `MeshcoreProto` keeps, as the retired value. Pinned
   against the real firmware's frames (`src/test/resources/meshcore/`) and, through `MeshcoreFakeVsSimTest`, the fake.
   The Android half (Stage 3c, `mesh/bluetooth/meshcore/MeshcoreGatt` over the shared `BoardGatt`) is routed in
   `bluetooth.md`; a dial whose own subscribe failed the bond is terminal (`NusDialResult.BondRefused`), as a first write's; after a close

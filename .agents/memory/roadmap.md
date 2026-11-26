@@ -217,7 +217,8 @@ doc). **Don't start a deferred item without explicit direction.**
     change to parse and keep the profile field.
   - **Owed before release:** the board trials in gsqu's Stage 8, including a third board as a repeater and real-range
     loss outdoors, and a 157 B DM through the board's BLE notify (the one bench check a simulator can't answer);
-    then a registered `data_type` (MeshCore's `number_allocations.md` asks for a working app first).
+    ~~then a registered `data_type`~~ **done 2026-11-25:** MeshCore registered `0x0160` (PR #3918, `dev` at
+    `9f7e591b`) and room posts carry it (ADR 2026-11.gsqu's 2026-11-25 amendment).
   - **Deferred:** both boards at once (router preference and failover, a two-board radio screen, per-kind
     diagnostics), the Meshtastic room's reactions and MeshCore Open's `r:` form (the MeshCore room reads and writes MeshCore One's since the 2026-11-21 amendment), the lean profile and `keyreq`, one named-repeater hop, region-scope UX, the
     auto-reply, MeshCore on iOS.

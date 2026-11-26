@@ -1115,8 +1115,9 @@ have held it. RADIO stats feed `BoardAir` over a ≥ 60 s ring
   still shows Knit's, and reports the rest (`leftAsFound`): a handle the user chose stays. `rename` writes
   `SET_ADVERT_NAME` alone, behind the set-up gate, read back, and never touches the record (ADR 2026-11.f4d3). The radio, the PIN and
   the keys are never touched; the encoder cannot even write them (`MeshcoreProto.ENCODED_COMMANDS`, pinned).
-- **Room posts** are `SEND_CHANNEL_DATA` on the bound slot, flooded, `data_type` `0xFFFF` (`DATA_TYPE_DEV`) until
-  MeshCore registers Knit's; the slot is re-read when its last read is over 60 s old and refused when it is not Knit's.
+- **Room posts** are `SEND_CHANNEL_DATA` on the bound slot, flooded, `data_type` `0x0160` (`KNIT_DATA_TYPE`, MeshCore's
+  `number_allocations.md` on `dev` at `9f7e591b`; ADR 2026-11.gsqu's 2026-11-25 amendment), and only `0x0160` is routed
+  as Knit's: `v2.13.0-alpha.1`'s `0xFFFF` is a foreign post (a clean cut, both ways); the slot is re-read when its last read is over 60 s old and refused when it is not Knit's.
   Its `NOT_FOUND` is a slot the board no longer has (`SLOT_NOT_KNIT`, the reading dropped), never a contact.
   A reading never outlives its connection: it is cleared at every handshake and session end, and set only for a slot
   read as Knit's.

@@ -1019,6 +1019,17 @@ class MeshcoreSessionTest {
             assertFalse(r.session.slotReading()!!.knit)
         }
 
+    /** An own room post reaches the board under MeshCore's registered `0x0160` for Knit, never the development `0xFFFF`. */
+    @Test
+    fun aRoomPostIsWrittenUnderTheRegisteredDataType() =
+        runTest {
+            val r = rig()
+            up(r)
+            assertTrue(r.session.send(ByteArray(40) { 1 }, SendPurpose.KnitFrame(1)).result is SendResult.Queued)
+            val post = r.ch.writes.single { it[0].toInt() == MeshcoreProto.CMD_SEND_CHANNEL_DATA }
+            assertEquals("the data type the board was handed", 0x0160, MeshcoreProto.u16(post, 3))
+        }
+
     @Test
     fun aPublicPostTheFirmwareWouldTrimIsRefused() =
         runTest {

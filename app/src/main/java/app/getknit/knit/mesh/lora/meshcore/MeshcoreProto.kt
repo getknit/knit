@@ -180,14 +180,20 @@ internal object MeshcoreProto {
     fun hopsOf(pathLen: Int): Int? = if (pathLen == PATH_UNKNOWN) null else pathLen and PATH_HOPS_MASK
 
     /**
-     * `DATA_TYPE_DEV` (`TxtDataHelpers.h:12`), the firmware's own development namespace. The binding rule of the
-     * 2026-11-13 design passes: Knit's channel data rides this until MeshCore's `number_allocations.md` registers a
-     * value for Knit, and `MeshcoreProtoTest` keeps a release build from shipping on it.
+     * `DATA_TYPE_DEV` (`TxtDataHelpers.h:12`), the firmware's own development namespace. Knit's room posts rode it
+     * until MeshCore registered [KNIT_DATA_TYPE] (the 2026-11-13 design passes' binding rule); nothing sends or accepts
+     * it now, which `MeshcoreProtoTest.aReleaseBuildNeverCarriesTheDevelopmentDataType` pins.
      */
     const val DATA_TYPE_DEV = 0xFFFF
 
-    /** What Knit's room posts are tagged with ([DATA_TYPE_DEV] until registered): the one constant to move. */
-    const val KNIT_DATA_TYPE = DATA_TYPE_DEV
+    /**
+     * What Knit's room posts are tagged with: `0x0160`, the single GroupData value MeshCore registered for Knit
+     * (`docs/number_allocations.md` row `| 0160 | Knit |` on MeshCore's `dev` branch at `9f7e591b`, PR #3918; ADR
+     * 2026-11.gsqu's 2026-11-25 amendment). The file reserves `0000-00FF` and leaves `FF00-FFFF` to development, which is
+     * where [DATA_TYPE_DEV] sits. Every send carries it, and it is the only type the hooks route as Knit's: an alpha.1
+     * post under [DATA_TYPE_DEV] is dropped as foreign, a clean cut.
+     */
+    const val KNIT_DATA_TYPE = 0x0160
 
     /** `AUTO_ADD_OVERWRITE_OLDEST` (`MyMesh.cpp:146`): a full table evicts the oldest non-favourite contact. */
     const val AUTO_ADD_OVERWRITE_OLDEST = 0x01

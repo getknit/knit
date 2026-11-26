@@ -240,7 +240,8 @@ internal class MeshcoreHooks(
      * Knit's traffic, judged on what the board says about a packet before a byte of it is decoded: the channel key is public
      * (`KnitChannel.PSK`), so anyone can write a post the board decrypts.
      * - Channel data on the Knit slot ([bound], the board's own report) under [MeshcoreProto.KNIT_DATA_TYPE] is a Knit frame
-     *   ([PacketRoute.KNIT]; under the burned tag, [PacketRoute.RETIRED]).
+     *   ([PacketRoute.KNIT]; under the burned tag, [PacketRoute.RETIRED]). The development `0xFFFF` `v2.13.0-alpha.1`
+     *   aired is another data type: a clean cut (ADR 2026-11.gsqu's 2026-11-25 amendment).
      * - A contact DM whose text decoded as COBS to a `0x11` seal's shape is a compact DM ([PacketRoute.DIRECT]); whether it
      *   opens is the core's to count. COBS decoding is no proof: anything else falls back to the text it was and is a
      *   foreign DM — never dropped unread by a throw, never a Knit frame.

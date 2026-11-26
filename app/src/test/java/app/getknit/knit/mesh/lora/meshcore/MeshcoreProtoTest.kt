@@ -10,7 +10,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Test
 import java.io.File
 import kotlin.random.Random
@@ -370,22 +369,44 @@ class MeshcoreProtoTest {
         }
     }
 
-    @Ignore("6013d18c9 ships the MeshCore plane in release while room posts still ride DATA_TYPE_DEV; parked for now")
     @Test
     fun aReleaseBuildNeverCarriesTheDevelopmentDataType() {
-        // Binding rule "sends" 9: room posts ride DATA_TYPE_DEV (0xFFFF, TxtDataHelpers.h:12) until MeshCore registers a
-        // value for Knit. The MeshCore plane is off in a release build by default; while the type is unregistered, that
-        // default must stay off. Registering a value is what lets this test pass with the default turned on.
-        if (MeshcoreProto.KNIT_DATA_TYPE != MeshcoreProto.DATA_TYPE_DEV) return
-        val gradle = listOf(File("build.gradle.kts"), File("app/build.gradle.kts")).first { it.exists() }.readText()
-        val fields =
-            Regex(
-                """buildConfigField\("boolean", "MESHCORE_PLANE", ([^\n]+)\)""",
-            ).findAll(gradle).map { it.groupValues[1] }.toList()
-        assertEquals("one debug and one release definition", 2, fields.size)
-        assertTrue("the release default is off: ${fields[1]}", fields[1].contains("meshcorePlane ?: false"))
-        val release = gradle.substring(gradle.indexOf("release {"))
-        assertTrue("the off default sits in the release block", release.contains("\"MESHCORE_PLANE\", ((meshcorePlane ?: false)"))
+        // Binding rule "sends" 9, met: MeshCore registered 0x0160 for Knit (`number_allocations.md` on `dev` at 9f7e591b,
+        // PR #3918; ADR 2026-11.gsqu's 2026-11-25 amendment), so room posts leave DATA_TYPE_DEV (0xFFFF,
+        // TxtDataHelpers.h:12) and a release build, which defaults the plane on, never airs it.
+        assertEquals(0x0160, MeshcoreProto.KNIT_DATA_TYPE)
+        assertTrue(MeshcoreProto.KNIT_DATA_TYPE != MeshcoreProto.DATA_TYPE_DEV)
+        val post = requireNotNull(MeshcoreProto.sendChannelData(1, byteArrayOf(0x06, 1, 2)))
+        assertArrayEquals("little-endian 0x0160 at bytes 3..4", byteArrayOf(0x60, 0x01), post.copyOfRange(3, 5))
+        // No send path names the development value: every `SEND_CHANNEL_DATA` in the plane takes the default.
+        val root = listOf(File("src/main/java"), File("app/src/main/java")).first { it.exists() }
+        val sources = root.walk().filter { it.isFile && it.extension == "kt" }.toList()
+        // Each call's whole argument list, to its matching parenthesis, so a call split over lines is read too.
+        val calls =
+            sources.flatMap { f ->
+                val text = f.readText()
+                Regex("""(?<!fun )\bsendChannelData\(""")
+                    .findAll(text)
+                    .map { m ->
+                        var depth = 1
+                        var end = m.range.last + 1
+                        while (end < text.length && depth > 0) {
+                            if (text[end] == '(') {
+                                depth++
+                            } else if (text[end] == ')') {
+                                depth--
+                            }
+                            end++
+                        }
+                        f.name to text.substring(m.range.last + 1, end - 1)
+                    }.toList()
+            }
+        assertTrue("the room post's call is found", calls.any { it.first == "MeshcoreSession.kt" })
+        for ((file, args) in calls) {
+            assertFalse("$file: $args", Regex("""DATA_TYPE_DEV|0x[Ff]{4}\b|dataType\s*=""").containsMatchIn(args))
+        }
+        val devReaders = sources.filter { Regex("""\bDATA_TYPE_DEV\b""").containsMatchIn(it.readText()) }.map { it.name }.toSet()
+        assertEquals(setOf("MeshcoreProto.kt"), devReaders)
     }
 
     /**

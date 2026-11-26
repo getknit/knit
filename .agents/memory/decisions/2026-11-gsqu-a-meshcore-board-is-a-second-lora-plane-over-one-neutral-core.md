@@ -164,7 +164,8 @@ it is symmetric. The receiver's own teaching is what lets a DM land.
 **4. The room floods, up to two packets, under a flood ceiling.** In short:
 
 - **Form.** An own room post rides as `GRP_DATA` on the Knit slot:
-  - with a registered `data_type` (development `0xFF4B` until MeshCore's `number_allocations.md` lists Knit's);
+  - with a registered `data_type` (development `0xFF4B` until MeshCore's `number_allocations.md` lists Knit's;
+    superseded: `0xFFFF` from the 2026-11-13 binding rules, then the registered `0x0160` from the 2026-11-25 amendment);
   - flooded under the board's default scope, which the firmware applies to every flood;
   - in the elided-id form `0x06` (`FastFrameCodec.encodeElided`, `IdElision`), resolved on receipt against pinned
     peers.
@@ -2572,3 +2573,24 @@ that the board was used before, with no evidence either way. So:
 - Superseded here: Stage 5a-1's "A board reboot never hands out a fresh hour either" and its "With no baseline an hour
   old" bullet, and Stage 5a-2's "Cost, by design" paragraph. The law still holds, on a band with a duty, while the air
   Knit observed in the trailing hour reaches it.
+
+## Amendment 2026-11-25 — room posts move to MeshCore's registered data type (draft)
+
+MeshCore registered a value for Knit: PR #3918 (meshcore-dev/MeshCore), merged into `dev` on 2026-11-26 as merge commit
+`9f7e591b79fc`, adds the row `| 0160 | Knit |` to `docs/number_allocations.md`. It is the single GroupData value
+`0x0160`. The file keeps `0000-00FF` reserved and `FF00-FFFF` for development; `main`'s copy does not list Knit yet.
+
+- **Sending.** `MeshcoreProto.KNIT_DATA_TYPE` is `0x0160`, its KDoc citing the row at `9f7e591b`. Every send carries
+  it: `sendChannelData`'s default and so `MeshcoreSession`'s room post. No send path names `DATA_TYPE_DEV`
+  (`MeshcoreProtoTest.aReleaseBuildNeverCarriesTheDevelopmentDataType`, no longer parked, pins the value, its bytes
+  `0x60 0x01` at `[3..4]` and the source). The 2026-11-13 rule ("§4, the data type") is met rather than superseded:
+  it held room posts on `DATA_TYPE_DEV` only until a value was registered.
+- **Receiving: a clean cut.** `MeshcoreHooks.route` takes channel data on the bound Knit slot only under `0x0160`.
+  `0xFFFF`, what `v2.13.0-alpha.1` aired, is another data type there, dropped and counted as `foreignPosts` like any
+  other; there is no legacy accept (the maintainer's call, 2026-11-25: an alpha cost, accepted).
+- **Compatibility.** A pre-release break of a MeshCore-air value under `docs/WIRE_COMPAT.md`'s pre-release precedent:
+  `v2.13.0-alpha.1` (a GitHub prerelease of 2026-11-25) is the only build that airs `0xFFFF`, and no stable release
+  carries the plane, so it needs no `docs/NEXT_WIRE_BREAK.md` entry. No Knit wire, vector, schema or iOS change. The
+  cost: alpha.1 phones and newer ones do not hear each other's room posts, in either direction, until alpha.1 updates.
+  DMs (contact text, not channel data) are unaffected.
+- **Air.** None: the type is two bytes either value.

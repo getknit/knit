@@ -333,6 +333,20 @@ class MeshcoreHooksTest {
     }
 
     /**
+     * Knit's registered `0x0160` (ADR 2026-11.gsqu's 2026-11-25 amendment) is Knit's only on the Knit slot; the development
+     * `0xFFFF` `v2.13.0-alpha.1` aired is foreign there, a clean cut.
+     */
+    @Test
+    fun theRegisteredDataTypeIsKnitsOnlyOnTheKnitSlot() {
+        val channel = MeshcorePacket.Type.CHANNEL_DATA
+        assertEquals(PacketRoute.KNIT, hooks.route(packet(channel, dataType = 0x0160), KNIT_SLOT))
+        assertEquals("an unregistered type", PacketRoute.DROPPED, hooks.route(packet(channel, dataType = 0x1234), KNIT_SLOT))
+        assertEquals("a foreign slot", PacketRoute.DROPPED, hooks.route(packet(channel, slot = 2, dataType = 0x0160), KNIT_SLOT))
+        assertEquals("alpha.1's development type", PacketRoute.DROPPED, hooks.route(packet(channel, dataType = 0xFFFF), KNIT_SLOT))
+        assertEquals(3L, hooks.counters.foreignPosts.get())
+    }
+
+    /**
      * Stage 5c-1: a bound part (`0x07`, part 0 committing to part 1) is Knit's, for the core's candidates
      * (`LoraFragCandidates`); an unbound `0x04` — the form a stranger on the public key can crowd, which no MeshCore phone
      * sends — and a bound part that does not parse are refused and counted. A whole elided frame (`0x06`) is Knit's too.
