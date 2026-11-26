@@ -1,6 +1,7 @@
 package app.getknit.knit.net
 
 import android.net.Network
+import android.os.Looper
 import app.getknit.knit.linkpreview.PublicAddressPolicy
 import app.getknit.knit.mesh.inet.Datagram
 import app.getknit.knit.mesh.inet.LinkCandidate
@@ -58,6 +59,9 @@ private class AndroidLinkPort(
 ) : LinkPort {
     override val localPort: Int = socket.localPort
 
+    // A close on the main thread (the mesh stopping) sends its BYE and closes the socket off it, in that order.
+    private val offMain = OffMainIo({ Looper.getMainLooper().isCurrentThread }, OffMainIo.shared)
+
     private val own = gate.ownAddresses(network)
 
     // The network's IPv6 prefixes: a peer's IPv6 address inside one is on this link (`PunchPolicy.preferred`).
@@ -79,13 +83,15 @@ private class AndroidLinkPort(
         port: Int,
         data: ByteArray,
     ): Boolean =
-        try {
-            socket.send(DatagramPacket(data, data.size, InetAddress.getByAddress(address), port))
-            true
-        } catch (_: IOException) {
-            false
-        } catch (_: SecurityException) {
-            false
+        offMain.send {
+            try {
+                socket.send(DatagramPacket(data, data.size, InetAddress.getByAddress(address), port))
+                true
+            } catch (_: IOException) {
+                false
+            } catch (_: SecurityException) {
+                false
+            }
         }
 
     // One reader at a time (the session's), blocking on the I/O pool up to the timeout; a close ends the wait at once.
@@ -115,7 +121,7 @@ private class AndroidLinkPort(
 
     override fun onLink(address: ByteArray): Boolean = prefixes.any { PunchPolicy.inPrefix(it.bytes, it.prefixLength, address) }
 
-    override fun close() = socket.close()
+    override fun close() = offMain.close(socket::close)
 
     private companion object {
         const val V6_BYTES = 16
