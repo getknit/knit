@@ -1,0 +1,19 @@
+See who read your message, mute a chat, and reach further with a MeshCore radio
+
+Knit now shows when your messages are read: the ticks become a filled circle, and Message info lists who read
+it and when, in direct chats and groups. Only people on this version send reads, and turning them off in
+Settings › Chats stops both sending and showing them. You can also mute a chat, for an hour up to always.
+Calls still ring, and in a group a message that mentions you by name gets through.
+
+Knit can use a MeshCore board as well as a Meshtastic one, for the Nearby room, your private messages and the
+board's Public channel. Stickers show without a bubble and have a tray of your saved and recent ones, a chat's
+menu lists its media, links and files, and each day in a chat gets a header. Knit can cover the faces in a
+photo before you send it, a starting point sets your defaults when you first open Knit, and Block screenshots
+blanks Knit in screenshots, screen recordings and recent apps. Mesh calls have a Hands-free switch, voice
+messages save to Recordings, your Bluetooth signal no longer carries a fixed ID, and Knit comes in Indonesian.
+Settings is sorted into groups, and two phones that meet briefly now send each other's messages first.
+
+Fixed: messages lost at busy gatherings, a message that went missing after a restore or an encryption reset, a
+supporter badge that vanished with two relays, Bluetooth still connecting during a pause, Knit closing on
+Restart mesh with a direct link open, Wi-Fi Direct calls and transfers that failed on some 5 GHz networks, and
+Bluetooth messages held back for up to ten minutes.

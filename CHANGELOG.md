@@ -9,7 +9,7 @@ product:
   platforms: [android]
   category: Communication
 document:
-  updated: 2026-11-21T23:44:00Z
+  updated: 2026-11-28T01:27:39Z
   coverage: partial
   canonical: https://whatsnew.fyi/product/knit
   locale: en
@@ -18,7 +18,9 @@ document:
 
 # Knit changelog
 
-## Unreleased
+## [2.13.0](https://github.com/getknit/knit/releases/tag/v2.13.0) — 2026-11-28T01:27:39Z
+
+> See who read your message, mute a chat, and reach further with a MeshCore radio
 
 ### Added
 
@@ -81,6 +83,10 @@ document:
   (#292).
 - Knit closed when you tapped Restart mesh in Diagnostics while a direct Internet link to a contact was
   open. Restart mesh now works with a link open.
+- Calls and direct transfers over Wi-Fi Direct could fail to connect when one phone's Wi-Fi network was on a
+  5 GHz channel the other phone can't use. The two phones now pick a channel both can use.
+- When messages came in over Bluetooth faster than Knit could take them in, some were dropped and not sent
+  again for up to ten minutes. Knit now holds them until it has room (#331).
 
 ## [2.12.1](https://github.com/getknit/knit/releases/tag/v2.12.1) — 2026-11-21T23:44:00Z
 

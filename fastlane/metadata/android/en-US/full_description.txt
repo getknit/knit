@@ -7,7 +7,7 @@ PRIVATE BY DEFAULT
 • A crash report stays on your phone until you read it and decide to send it.
 
 END-TO-END ENCRYPTED
-Direct messages and group chats are end-to-end encrypted with forward secrecy, and so are delivery receipts and reactions. Every phone and relay that carries a message sees only ciphertext. Keys are made on your phone and held in Android's hardware-backed keystore, and a safety number or QR scan confirms who you're talking to. Links between phones on current versions are encrypted as well, so a radio nearby can't read what passes between them.
+Direct messages and group chats are end-to-end encrypted with forward secrecy, and so are reactions and delivery and read receipts. Every phone and relay that carries a message sees only ciphertext. Keys are made on your phone and held in Android's hardware-backed keystore, and a safety number or QR scan confirms who you're talking to. Links between phones on current versions are encrypted as well, so a radio nearby can't read what passes between them.
 
 The public Nearby room is the one exception. It has no fixed set of recipients, so it isn't encrypted, and it never leaves the radio mesh.
 
@@ -21,7 +21,7 @@ OFF THE GRID
 • Voice calls phone to phone, and walkie-talkie calls that hop across the mesh
 • Big files go phone to phone over Wi-Fi, with no network around
 • Install offline hands Knit to a nearby phone, no store or internet needed
-• Pair an optional Meshtastic LoRa radio and direct messages and the Nearby room reach kilometres instead of metres
+• Pair an optional Meshtastic or MeshCore LoRa radio and direct messages and the Nearby room reach kilometres instead of metres
 
 PERFECT FOR
 • Power cuts and emergencies when networks fail
