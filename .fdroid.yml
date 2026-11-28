@@ -182,7 +182,7 @@ Builds:
 
   - versionName: 2.13.0
     versionCode: 21300900
-    commit: v2.13.0
+    commit: 7d4fd2e5f278c6fc6a268b3ed6c3f71530043066
     subdir: app
     gradle:
       - yes
